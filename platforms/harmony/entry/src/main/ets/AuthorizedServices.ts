@@ -8,7 +8,7 @@ function capabilityFor(method: string): string {
     case 'sync.state.synchronize': return 'companion.sync.state';
     case 'sync.messages.send': case 'sync.messages.ack': return 'companion.sync.message';
     case 'sync.files.offer': case 'sync.files.accept': case 'sync.files.cancel':
-    case 'sync.files.status': return 'companion.sync.file';
+    case 'sync.files.status': case 'sync.files.save': return 'companion.sync.file';
     case 'notifications.status': case 'notifications.requestPermission':
     case 'notifications.schedule': case 'notifications.cancel':
     case 'notifications.listPending': return 'notification.local';

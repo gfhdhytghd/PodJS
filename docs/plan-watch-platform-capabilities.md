@@ -1,6 +1,244 @@
 # PodJS 手表平台能力补全计划
 
+## Quota-stop handoff — 2026-09-09
+
+用户设定的剩余额度 35% 已到达，停止开发并提交当前全部更改；计划未完成。
+最新已完成验证为 Swift/Linux 93 项、Rust runtime 55 项。Apple 已有真实
+QuickJS incoming 文件同意/保存与状态读写的宿主基础，但正常 watchOS 接入、
+状态事件/认证 synchronize、混合及其余 guest 服务、iOS 示例、OS 传输和
+Apple SDK/真机验收仍未完成。Android/Harmony 与通知/后台/无障碍的完整
+剩余边界见 [implementation-status.md](implementation-status.md)。此次停止后
+未继续实现状态事件；恢复工作应从未完成项继续，而非把源码测试视为全平台验收。
+
 ## Implementation progress — 2026-09-08
+
+- Apple guest state get/set/delete 已接持久状态与框架 entry 格式，区分缺失、JSON null 和删除墓碑；新增 state-only queue/runtime-pump 入口，public runtime 入口要求原生 state capability。请求信封上限升为 128 KiB 以容纳有效状态值，文件 args 仍 4 KiB。Swift/Linux 93 项通过，覆盖 16,000 字符排队写入、真实重开、身份字段拒绝与预取消。状态事件、混合路由和认证 synchronize 等待尚未接入，synchronize 明确 unsupported 而非拿本地游标冒充对端应用。
+
+- Apple public runtime-pump 构造现检查原生已挂载 runtime 的 companion.sync.file；共享 `pod_runtime_has_capability` 在包校验/挂载前返回 false，挂载后授权不可变直至销毁。incoming service 构造同时拒绝文件 owner 与 guest storage 的 app 不同。Rust 全量 55 项、Swift/Linux 92 项通过；首次测试误将挂载后重校验当作可撤权，已按实际不可重校验语义修正。宿主仍须可信绑定 runtime/app/root 和安装策略，不能据查询视为完成授权 UI 或正常 watchOS 接线。
+
+- Apple incoming guest 实链路已用真实 QuickJS 验证：文件事件触发 guest 同意，宿主认证入口写块/完成，完成事件触发 guest 保存至同一 runtime 的 files/result；核对实际字节、接收源保留和两条成功回执，frame 使用同一 IO gate 的独立描述符。Swift/Linux 92 项通过；pump 前后 flush 已共享单次 64 回执预算。此测试的传输入口由宿主注入，非 OS 手机/手表连接或正常安装授权验收。
+
+- Apple `SyncGuestRuntimePump` 已连真实 runtime effect poll/event post：复制借用原文、保留堵塞请求、仅原生入队成功确认回执/文件事件，每通道每次最多 64 项。Swift/Linux 91 项通过，新增真实 QuickJS 发请求→填满原生事件队列→保留回执→guest 排空→重试且仅收到一次回执。宿主须同一 runtime executor、guest IO gate 外调用并在销毁前 close；FIFO 背压可能延迟排队取消，生命周期直接 close。watchOS 正常宿主、授权与 Apple SDK/真机仍未接入/验收。
+
+- 接 runtime 队列时发现外部 post_event 原无背压，已增加单 JSON 1 MiB、队列 256 条/总 4 MiB 准入；满队列返回 -2 且不入队，宿主保留原文待 guest 排空重试。内部输入/lifecycle 生产者不受此外部入口限额约束。Rust runtime 全量 54 项、Swift/Linux 90 项通过，新增计数/字节边界与 FIFO 重试；各平台二进制需重建，watchOS runtime 接线仍未完成。
+
+- Apple 新增 foreground `SyncGuestServiceQueue`：串行 worker 执行 incoming 服务，运行/排队/回执共 64 项；取消信号及回执资格分离，取消的排队任务排空前不释放容量，重复 live ID 不覆盖，精确回执 token 隔离 ID 复用。Swift/Linux 90 项通过，新增取消 churn 容量边界、回执背压、重复 ID、复用和错误包验证。宿主仍须在 submit=false 时保留 effect、入队成功才确认，runtime poll/post 与 watchOS 生命周期尚未接入；未宣称已安装 capability。
+
+- Apple incoming 事件交付新增订阅开关、单条待发 token 和显式入队确认：背压保留精确 JSON，确认后才记录状态/暴露 ID；退订使旧确认失效，重新订阅重放快照。每次最多扫描 64 个 ID，nil 可能只是安静分页。Swift/Linux 88 项通过，覆盖背压、过期确认、重新订阅及接收进度变化；尚未接 watchOS event queue，宿主必须在锁外投递且只对入队成功确认。
+
+- Apple incoming guest 服务适配器已路由 status/accept/cancel/save JSON，状态不暴露 peer/私有路径，统计已验证块，完成副本损坏报告 failed；变更要求本次 adapter 生命周期先暴露状态，拒绝 guest peer 参数和 outgoing 方法。Swift/Linux 87 项通过，覆盖同意门控、进度、远端取消后的完成副本真实保存、重建后暴露重置及损坏拒绝。宿主仍须安装授权并在 runtime IO gate 外调度；请求/回执 pump、事件、outgoing guest 服务和 watchOS 接入未完成，未新增 capability 声明。
+
+- Apple 导入在获得共享 owner、恢复各项旧意图及分配保留 ID 前再次检查取消，缩小等锁期间取消后仍分配 ID 的窗口；新增空文件携带有效 token 的导入/注册测试。Swift/Linux 全量 86 项通过，仍为协作取消而非与所有 IO 原子化的强取消。
+
+- Apple 宿主导入/保存新增线程安全可选 `SyncCancellation`，原生扫描、配额/恢复遍历及分块复制协作检查取消；发布前清理私有暂存，原子 link 或 outgoing 注册提交后不因迟到取消撤销成功。Swift/Linux 85 项、Rust runtime 全量 53 项通过，含确定性首块复制后取消、预取消无任务、注册提交后取消保留任务。不是 OS IO 抢占，系统文件授权、guest 服务路由和 Apple SDK/真机验收仍缺。
+
+- Apple 宿主保存桥已接共享 Unix 发布器：完整 incoming 在同一源租约/guest IO 锁下，经描述符相对路径检查、与 runtime 一致的 files/ 16 MiB 配额扫描、流式整体 hash 后原子无覆盖发布；同内容目标幂等，不删除接收副本，恢复/失败清理私有暂存。Swift/Linux 83 项通过，覆盖未完成拒绝、远端取消后保留副本可保存、路径/符号链接拒绝、不同内容不覆盖、坏源清理、锁竞争、满配额和已发布暂存恢复。仍缺 guest 服务路由、复制中取消及 Apple SDK/真机文件系统验收，不能声称完整 watch sync 已启用。
+
+- guest save 前置共享 Unix IO 锁已加入 Rust C ABI：runtime data root/sync-save/owner.lock，独立描述符互斥，检查目录权限/owner 和锁硬链接。watchOS 源码已在初始化/eval 与 guest frame 持锁，busy 延后且保留输入。Swift/Linux 80 项、Rust runtime 全量 52 项通过，含锁互斥/释放/FFI；未编译 watchOS 条件分支或更新 Apple runtime slice。此为配额安全发布前置条件，`syncFiles.save` 发布器和 guest 服务仍未完成，不能视为 watchOS 真机能力。
+
+- Apple 文件准入支持声明/profile 取最小值，仅能收紧 16 MiB/32 MiB/128 ID 上限；schema 7 持久有效限额，重开须一致，旧日志按默认限额解释，不自动迁移已有 namespace 限额。补上损坏完成文件修复前的双副本持久预留，防止小 profile 配额被修复绕过。Swift/Linux 79 项通过，覆盖取交集、双向准入、保留 ID 上限、错误重开和修复超限无变更；宿主仍须从可信 manifest/profile 提供配置，尚非 guest 安装策略实现。
+
+- Apple `importOutgoing` 合并源冻结与 peer 注册：schema 6 持久 registering/目标 peer；重读任务日志，匹配已提交注册则保留源，无记录才清理，读取失败/身份冲突不猜测。client 重开自动恢复中断导入。Swift/Linux 77 项通过，新增注册前失败/提交后报错及两种真实日志重开，续传测试已改走组合 API。提交不确定仍需查看历史，不承诺错误即未创建任务；系统文件授权、取消集成和 Apple 真机仍未完成。
+
+- Apple `stepOutgoing(peer:)` 已接注册任务自动步骤：优先恢复原 pending，回执先持久观察再精确消费，按 offer/status/missing/chunk/finish/cancel 每次最多排一项；消费与排入之间中断可幂等 reoffer，等待同意由宿主节流。Swift/Linux 75 项通过，新增首回执丢失→真实 client 重开→新会话重放→多块完整字节验收，以及首次 offer 前取消且保留源。需独占该 peer 请求队列；仍不包含 OS 网络调度/后台适配或真机验收。
+
+- Apple 新增独立 outgoing transfer CAS 日志及客户端注册：共享源锁内重验完整源后永久绑定 peer/manifest；保存 queued/cancelRequested/complete/cancelled、缺块快照和块确认，先落任务观察再由调用者消费精确回执，块内容再次绑定源清单。Swift/Linux 73 项通过，覆盖真实 client 重开、peer 冲突、取消意图非终态、错误块及观察写失败/精确重复。自动请求选择/消费和导入注册协调仍待接入；宿主显式删源不等于远端任务取消。
+
+- Apple 新增真实宿主文件导入：原生描述符贯穿两遍 64 KiB 流式扫描/校验暂存，源路径替换不重定向读取，块或大小改变（含空文件增长）拒绝；同一共享锁/配额内完成冻结。schema 5 的 importing 意图重开时清理未发布数据，提交不确定时重读并保护已完成记录，删除仍保留 ID。Swift/Linux 71 项、Rust runtime 全量 51 项通过；首次 C bool 头文件编译错误已修复。尚无系统选择器/security-scoped 授权、取消令牌、peer 任务注册或自动发送，Apple SDK/真机仍未验收。
+
+- Apple 客户端新增 `outgoingFiles` 源暂存：与 incoming 共用 journal/native root/租约/锁、128 个保留 ID 和 32 MiB 准入，活跃源完成后仍保守保留双副本空间；完成源不可再写、删除不释放 ID。schema 4 可读 1–3，IO 前持久 preparing/completing/removing。Swift/Linux 68 项通过，新增真实重开读取/意图恢复、双向配额拒绝与跨方向 ID 冲突；仍是宿主给定 manifest/chunks 的暂存接口，缺 OS 文件导入、peer 任务账本及自动发送状态机，Apple SDK/设备仍未验证。
+
+- 共享 Rust/Apple 新增宿主专用完成文件分块读取：同一描述符流式校验整文件与目标块后才返回至多 64 KiB，Unix 拒绝符号链接/硬链接/非普通文件，损坏读取不修复或删除；未加入远端 wire。Rust 文件 10 项、Swift/Linux 65 项通过，覆盖目标块未变但其他块损坏、尾块、越界、路径及链接拒绝。发送源快照/共同配额/任务驱动仍未实现，每块重验整文件的真机 IO 成本待测。
+
+- Apple 混合会话新增文件回执 CAS 失败注入：确认全部通道关闭、pending 原文保留、客户端存储可继续使用；不完整文件服务/广授权独立 pump 的构造失败不抢占会话。Swift/Linux 64 项通过，README 已清理已过时的“file pump 尚未接线”说明。发送源快照、跨收发身份和共同 32 MiB 配额仍待实现，未据窄测试宣称完整文件 SDK。
+
+- Apple 混合会话与持久客户端已接 file：三通道模式保持原授权，四通道需完整文件服务与显式授权；私有子 pump 共用锁/序号，detach 或任一路由失败一起关闭。Swift/Linux 63 项测试覆盖真实客户端交错 state/message/file、应用 ACK、同意后 chunk/finish 及完成字节，独立 file pump 仍拒绝广授权。OS 连接、outgoing 源快照/全局 ID、配对和 Apple SDK/真机仍未完成。
+
+- Apple 新增独立认证 `SyncFilePump`：绑定同 app/device 的文件请求队列与接收器，仅允许 file 授权；先持久执行回执再提交传输序号，重试复用原始签名帧，回执严格绑定 peer/ID/请求原文。未知或已消费回执关闭会话，宿主必须保留观察至传输排空且不复用 ID。Swift/Linux 62 项通过，新增同意后精确重放/后续状态/旧请求拒绝、回执存储失败及身份隔离测试；尚未并入混合 client，也不包含 OS 传输、outgoing 快照或 Apple SDK/设备验收。
+
+- Apple incoming 文件 journal 升为 schema 3，保留每 peer 最新 request ID/原文/精确回执；先存 pending 并预留最大回执空间，再执行幂等文件操作、持久回执。已完成重放返回首次回执而非后来同意状态，pending 仅允许同 ID 重试，未知旧传输重复不执行。Swift/Linux 59 项通过，含实际重开与同意后恢复 pending chunk。依赖顺序请求/不重用宿主 ID，不是无限历史归档；可读旧 schema 1/2，旧实现不能回读。认证 file pump 仍待接入。
+
+- 修复共享 Rust 文件接收器的完成副本损坏修复配额：分块写入/重新组装前重新检查双副本保留空间，超额时不写入、不删除；通过准入后移除已验证损坏的私有 complete/旧组装暂存，避免三副本并存。16 MiB＋8 MiB 实盘损坏测试覆盖拒绝与释放空间后恢复，Rust 文件 8 项、Swift/Linux 58 项通过。新增检查会重验其他完成文件并增加 IO，真机时延/功耗尚未验收；各平台已安装二进制未据此视为更新完成。
+
+- Apple 文件 wire 执行已接同意门控操作与无路径回执；远端 cancel 单独持久 remoteCancelled，使协议状态为 cancelled，但已完成本地副本仍保留在 complete 历史，重开后拒绝远端写入。以真实 journal 区分传输终态与本地副本，不再伪造回执；incoming 写入 schema 2、可读 schema 1（旧实现不能回读）。Swift/Linux 58 项通过，含 offer/同意/分块/完成/远端取消/重开及副本不变。仍缺 request-ID 重放 journal 和认证 file pump。
+
+- Apple 客户端新增独立文件请求 journal：保存宿主 ID/peer/请求原文/摘要/精确回执，单 peer 一个 pending、128 条/8 MiB 计费上限，不自动淘汰；保留 ID 相同原文可调和 enqueue 不确定提交，消费必须匹配完整观察。Swift/Linux 全套 57 项通过，含写失败、peer/ID 冲突、变更重复回执拒绝及客户端两次真实重开。未知回执当前拒绝，宿主不得重用已消费 ID；此非跨方向任务身份或接收重放 journal，file 网络调度仍缺。
+
+- Apple 文件请求/回执已接共享 Rust 严格校验与 Swift 编解码：拒绝未知/重复嵌套字段、非规范 Base64、块越界及方法/回执 phase 不兼容；保留原始请求字节，回执摘要绑定原文而非重序列化结果。Swift/Linux 全套 54 项通过，无远端 accept/path/save 方法。仍需认证 peer/request-ID 持久关联、请求重放日志和 file pump；wire cancel 要求 cancelled，而本地 guest cancel 保护完成品，接线时必须明确区分，不能伪造成功回执。
+
+- Apple 客户端已纳入 incomingFiles 独立租约/关闭生命周期，app 隔离及所有日志重开测试覆盖待同意文件；补充 32 MiB 组装配额拒绝不授予同意、整文件 hash 失败后的显式本地清理。Swift/Linux 全套 51 项通过，Rust runtime 全量库测试 46 项通过，implementation-status 已更新当前实际能力及缺口。完成意图遇坏 hash 时普通取消保守拒绝，宿主可显式移除；文件 wire/outgoing/跨方向身份及 guest save 仍未完成。
+
+- Apple 文件接收新增独占 journal/receiver 同意工作流：offer 不分配文件、local accept 先存 accepting 再 reserve；completing/cancelling 可重开恢复，分块/缺块/完成受同意门控制，普通取消保护完整副本，显式本地 remove 才删除。128 个跨 peer incoming ID 保留、按临时组装空间计 32 MiB 上限。修正原生取消已缺失目录的幂等处理并补父目录 fsync；最初恢复测试两项失败后定位修正，最终 Swift/Linux 50 项与 Rust 文件 7 项通过。尚未绑定 SDK/网络、跨收发身份账本或 guest 安全保存，不是真机断电验收。
+
+- Apple 新增持久 `SyncCompanionClient`：按宿主 app 隔离目录、父目录独占租约与 app/device 身份落盘，状态/outbox/inbox 独立子日志，至多一个混合连接；detach 关闭会话，close 先释放子日志再释放父租约。Swift/Linux 全套 48 项通过，含真实 app 隔离、所有日志重开、错误设备身份拒绝、重复 owner 与借用 pump 关闭。实例不自动联网或配对，文件同意服务、OS 传输、iOS 示例和 Apple SDK/设备验证仍缺。
+
+- Apple 新增同会话 state/message/ACK 混合调度，子 pump 私有、共享调用顺序，ACK 在原始认证后按 kind 路由独立日志，任一路径失败关闭整条连接；独立公开 pump 仍只接受窄授权。Swift/Linux 全套 46 项通过，含双向混合状态/消息及共享序列 ACK、非法 ACK kind 关闭所有路由。文件 channel、OS IO/调度和真机验收仍未接线，状态订阅唤醒须排队，不能同步重入收发器。
+
+- Apple 认证消息 pump 已接独立 inbox/outbox 与精确 message/ACK 授权，验证原始帧后再路由；持久 pending 只推进传输序列，不发应用 ACK，宿主显式完成并落盘 applied 后才 ACK。当前待发帧/最新匹配 ACK 重用精确签名字节，失败关闭会话。Swift/Linux 全套 44 项通过，含延迟处理、ACK 丢失重放、过期零效果、applied 存储失败无 ACK；尚未接真实 OS IO/guest 效果、发现配对或 Apple 设备验收。
+
+- Apple 新增独立持久消息 inbox：pending 效果与 applied 回执分离、相同 live 重放保持状态、同 peer/ID 内容变化拒绝、过期不分配效果；digest token 匹配且完成落盘后才返回 applied。优先级/FIFO 分页恢复与 1000 条/8 MiB 配额，实际两次磁盘重开保留 pending/applied。Swift/Linux 全套 41 项通过，含接收/完成落盘失败与到期边界。宿主业务效果必须按认证 peer/ID 幂等，效果执行后、回执前崩溃仍可能重试；guest 效果适配与消息网络 pump 尚未接线。
+
+- Apple 消息新增持久 TTL outbox：首次过期时间/重试身份和队列同 CAS，精确认证 ACK 仅移除待发内容，已确认请求重试不会重新入队；原生 SHA-256 校验内容与 envelope，优先级内 FIFO、1000 条/8 MiB（含每条 1 KiB）及 10000 条到期身份上限。首次 Swift/Linux 全套 37 项通过，含实际文件重开、ACK 写失败和首次 expiry 保持。接收 journal/效果交付及网络路由仍缺，尚非完整消息服务；Apple SDK/真机未验证。
+
+- Apple 消息新增 Android/Harmony 二进制 envelope 与 kind-1/2 ACK 编解码，校验 256 KiB、优先级、安全整数过期时间和精确长度；快照 store 可在独立消息 namespace 显式选 18 MiB 上限，状态默认仍 4 MiB，小上限重开拒读写但保留大快照。Swift/Linux 34 项与 C11 警告即错误检查通过，含黄金字节、切片 Data 和 5 MiB 实际重开。此为消息协议/存储底座，持久队列、去重/效果确认和网络路由尚未完成，不据此声明消息服务可用。
+
+- Apple 状态订阅仅在实际条目变化且 CAS 成功后，在状态锁外发送原始已提交快照；发送游标/回执推进、重复或败选版本不通知。Swift/Linux 30 项通过，覆盖存储失败零回调、回调读状态/取消订阅无死锁。回调为同步宿主接口，不保证并发/重入通知顺序，已捕获回调可晚于取消；run 唤醒需排到 IO worker，不能在 receive 内重入 run。尚未接 OS/UI 调度或真实 WatchConnectivity。
+
+- Apple 状态新增只读持久 ACK barrier 与显式前台 run：单个在途批次、签名/完整写入/接收处理共用序列化顺序、单调 100 ms–120 s 期限和失败关闭；双向原生认证状态收敛后才返回已同步，新修改使 barrier 失效。Swift/Linux 全套 29 项通过，含写失败保留批次与超时不再发送。此 run 为同步 IO-worker 接口，宿主必须提供有界非重入写入、定期 step 和后台/EOF close；无内部定时器/OS hook，不能中断阻塞写入，WatchConnectivity/Apple SDK/真机仍未完成。
+
+- Apple 新增 state/ACK 专用认证调度器，绑定 app/local/peer 与精确通道，原始帧验证后路由、持久提交后才推进会话并返回 kind-3 ACK；保留待发签名帧和最新重复回复，异常关闭会话，重连复用持久批次。Swift/Linux 真实 Rust 认证收发、丢 ACK 精确重传、存储失败无 ACK 与新挑战重连测试通过（本轮首次全套 25 项）。宿主仍须提供有序可靠加密 IO 与生命周期，未接 WatchConnectivity/BLE，也非 Apple SDK/设备验收。
+
+- Apple 状态新增持久发送 cycle/批次/ACK 日志：先 CAS 后返回待发送批次，重开重试保留精确 ID/字节，仅匹配 ACK 推进，发送中新修改进入下一 cycle；512 条/256 KiB 分页，4 MiB 总快照含冻结 cycle，超额失败不返回可发送批次。schema 1 可读、写入 schema 2（旧实现不能回读）。Swift/Linux 22 项与 Rust 状态 6 项测试通过，含落盘失败、513 条分页、篡改及周期中修改；尚未绑定 Apple 网络/订阅/synchronize，也非 Apple SDK/真机验收。
+
+- Apple 新增持久状态 get/set/delete、LWW 合并与认证批次接收：共享 Rust 纯变换保留不同 Unicode JSON 键，状态与精确最新回执在同一次 CAS 落盘后才返回，失败不确认。Swift/Linux 真实原生库 20 项测试通过，覆盖 null/删除、重开、回放冲突、数字等价及 CAS 失败；既有 Rust 会话测试 2 项通过。尚无 outgoing 批次/ACK 日志、订阅调度或 synchronize 协调器，Apple SDK/设备未验收，能力保持关闭。
+
+- Apple 新增 4 MiB 有界快照/CAS 存储，使用独占租约、目录 fd 相对操作、暂存 fsync/rename/目录同步、缺失与空值区分和安全暂存恢复；拒绝不安全文件及符号链接，FIFO 非阻塞拒绝。Swift/Linux 实际 C/Rust 联编回归 16 项通过，含 40 次并发 CAS 无丢失；C11 `-Wall -Wextra -Werror` 检查通过。此为状态/队列底座，尚非状态合并或完整消息队列；Apple SDK、设备文件系统/断电验收未完成。
+
+- Apple Swift 新增低层宿主文件接收封装，调用 Rust 持久 manifest/分块/缺块重验/完成接口；持有安全 sibling 文件锁以排除重复接收器，关闭与 IO 串行，锁文件拒绝符号链接、多链接、外来 owner 和宽权限。真实 Rust 静态链接的 Swift/Linux 10 项测试通过，包含磁盘重开续传和错误哈希。此层无持久同意/身份账本、跨 peer 总配额、guest save 或网络路由；清理原语会删除完整宿主副本，不直接映射 guest cancel。Apple SDK/真机未验证，capability 不开放。
+
+- Apple 新增 Swift package 会话基础层，复用 Rust ABI 2 认证/帧校验/显式 commit，锁序列化原生句柄和 close、复制借用回复；原始输入帧交给 Rust 严格解析。可复现脚本使用固定 Swift 6.0.3 容器和真实 Rust 静态库，6 项测试通过（含篡改、错误 proof/channel、未知字段、重复投递及并发关闭）。本机动态库首次链接因 glibc 版本不符失败，已改静态链接；未进行 Apple SDK 构建或真机测试，尚缺持久三通道、配对/传输、iOS 示例和 watchOS 服务接线，不能据此开放 Apple capability。
+
+- 更新后完整 Harmony TS 回归通过：349 项测试、4790 断言（80 文件，2.34 秒）。2026-09-09 重新核实设备：ADB 仅 OWW242 在线，DevEco HDC 无设备；同步设置/邀请/guest 服务源码已接线，但不据此开放能力或宣称真机验收。同步更新 implementation-status，移除已过时的“Harmony 页面未接同步”描述；Apple SDK/宿主同步入口仍是当前实际缺口。
+
+- Harmony 新 guest 发送快照与任务登记共用导入租约，新增持久 `registering`/peer：恢复查询登记，匹配已提交任务则保留完整源，未登记则删除，登记不可读/冲突时保留并报错；读块会先恢复该中间态。原生回归通过，覆盖提交后返回丢失、提交前失败、子进程提交后退出再恢复；相关 TS 10 项通过（70 断言），DevEco ArkTS/HAP 构建通过（5.955 秒）。旧流程留下的无归属 complete 副本仍不能自动推断归属；新 phase 不支持旧实现回读，真机恢复/时延和完整跨端验收仍待完成，capability 保持关闭。
+
+- Harmony guest 新建发送快照使用整段原生独占导入租约与持久 `importing` 标记：受控失败尝试删除，进程退出后可在新租约下恢复删除，活跃导入不可被并发清理；普通可恢复导入不变，迟到 writer 失效。原生存储全套回归通过，包含子进程持锁写入后退出/重开清理；相关 TS 10 项通过（68 断言），实际 DevEco ArkTS/HAP 构建通过（6.473 秒）。新 phase 不能由旧实现读取；完成快照到任务登记之间的孤立副本窗口仍未关闭，真机导入暂停时延/恢复验收未完成，capability 保持关闭。
+
+- Harmony 前台已认证文件 driver 新增终态源副本回收：本机持久 complete/cancelled、对端队列/回执为空、全局身份与 manifest 一致时，每轮最多删除一份宿主 outgoing 快照，保留登记身份与 guest 原文件；移除失败保留重试依据。8 项专项测试通过（56 断言），实际 DevEco ArkTS/HAP 构建通过（5.793 秒）。变更前完整 Harmony TS 回归 345 项通过（4770 断言）；尚未回收未登记的失败导入孤立副本，也未验证真机清理/无线链路，capability 保持关闭。
+
+- Harmony 正常宿主新增新设备邀请页：真实 app/device 身份、五分钟临时二维码、指定对端 BLE responder 验证、双方显式确认和部分保存提示；取消/后台/退出销毁租约与图片，迟到图片不重新显示。15 项组件事件/邀请/初始配对测试通过（87 断言），实际 DevEco ArkTS/HAP 构建通过（5.657 秒，修正 ArkUI 保留方法名）。未验证真机扫码可读性、圆屏输入和物理配对收发，主动发现/平台专用链路及完整验收仍未完成，capability 保持关闭。
+
+- Harmony 同步设置新增已批准设备的 BLE 等待连接操作：原生权限请求后按真实配对身份进入 responder 认证，取消/页面退出/Ability 后台使旧权限回调失效并停止等待；已连接后返回应用保留前台会话，不自动重连。8 项相关测试通过（66 断言），实际 DevEco ArkTS/HAP 构建通过（5.592 秒）。当前手表作为被连接端；新设备邀请、主动发现及物理无线/界面验收仍未完成，capability 保持关闭。
+
+- Harmony 正常宿主页面新增能力门控的同步设置入口：圆屏单列配对记录/恢复/二次确认撤销、连接状态刷新与断开、返回应用焦点恢复；退出或后台后旧确认和异步读取不会更新页面或发起撤销。7 项相关测试通过（59 断言，含真实组件事件方法但不含 ArkUI 渲染），实际 DevEco ArkTS/HAP 构建通过（5.706 秒）。邀请二维码、无线连接操作及真机显示/表冠/读屏验收仍待接入，capability 保持关闭。
+
+- Harmony 宿主新增共享配对 owner 入口，使用已安装应用的持久 app/device 身份；并发打开只取得一份配对租约，失败可重试，跨目录和 capability 关闭时拒绝访问，读取入口不自动邀请或连接。懒加载测试通过（24 断言），实际 DevEco ArkTS/HAP 构建通过（6.039 秒）。配对/连接界面仍未接入，尚未做真机配对，capability 保持关闭。
+
+- Harmony guest 消息 ACK 已接正常页面的即时回执路由：本地业务确认持久提交后，异步尝试同一前台/对端/message 授权连接；网络失败不改变本地成功，后台或对端不匹配不路由。认证内存链路验证 guest ACK 后发送端立即出队且不依赖重发；相关 23 项测试通过（141 断言），实际 DevEco ArkTS/HAP 构建通过（5.854 秒）。尚未完成正常配对/连接 UI 与真机消息收发验收，capability 保持关闭。
+
+- Harmony guest `sync.state.synchronize` 已接现有批准连接的持久 ACK 等待：最多 8 个独立等待、最长 30 秒，取消/超时不关闭共享连接，当前状态全部确认后返回同一持久快照的 incoming cursor；新写入仍须继续确认，不声称对端没有尚未发送的变更。31 项相关测试通过（179 断言），包含 513 条跨批次确认、只读 ACK 查询、容量回收及 guest 取消；实际 DevEco ArkTS/HAP 构建通过（7.198 秒）。正常宿主配对/连接 UI 与真机验收仍未完成，capability 保持关闭。
+
+- Harmony 正常宿主新增显式连接入口和前台控制器：从原生能力声明生成通道，页面/Ability 退后台断开，能力变化中止连接；每秒唤醒消息与文件 driver，单连接调度串行且不延长两分钟期限，不自动重连。5 项相关测试通过（57 断言），最终 DevEco ArkTS/HAP 构建通过（6.397 秒）。入口仍需实际宿主配对/连接 UI 调用，尚未验证真机生命周期与无线收发，失败副本清理仍待补齐，capability 保持关闭。
+
+- Harmony 连接 owner 可接收精确宿主通道授权并在异步前复制，拒绝缺 ACK、重复或未知通道；传输层自动发送只访问已授权通道，显式未授权发送失败不关闭其他正常通道，文件 driver 也检查 file 授权。认证 state-only 测试证明消息队列零读取且拒绝消息/文件后状态仍能同步。全部 328 项 Harmony TS 测试通过（4663 断言），实际 DevEco ArkTS/HAP 构建通过（6.625 秒）。正常手表宿主的配对/连接 UI 与生命周期调度仍未接入，capability 保持关闭。
+
+- Harmony outgoing 进度改为持久缺块清单/分块 ACK：消费请求回执前先登记，保留精确尾块字节数，全部字节确认仍等待 finish 回执才完成；状态和事件共享该进度。登记 schema 1 可读、写入迁移 schema 2（旧实现不能回读新格式）。16 项专项测试通过（90 断言），原生跨进程进度保存及完整 background-store 回归通过，实际 DevEco ArkTS/HAP 构建通过（5.588 秒）。正常宿主连接调度、失败副本清理及真机进度验收仍待完成，capability 保持关闭。
+
+- Harmony outgoing 文件事件已接正常页面/Ability 投递循环：每轮最多 64 条游标分页、状态去重、拒收重试、跨方向冲突跳过及前后台 generation 隔离，原生队列接受后才登记取消操作凭据。收发相关 15 项测试通过（108 断言）；修正 ArkTS 要求显式实现事件接口后，实际 DevEco ArkTS/HAP 构建通过（5.914 秒）。精确 ACK 进度、正常宿主连接/调度、失败副本清理和真机事件验收仍待完成，capability 保持关闭。
+
+- Harmony 登记发送器/任务选择器新增认证内存传输集成验证：真实协议与 incoming 状态机在明确同意后收齐 65,539 字节并校验一致，随后处理第二项未分配空间的取消任务；两端终态及 outgoing 登记一致、请求回执消费、队列归于 idle。传输测试共 9 项通过（63 断言）。接收存储为测试内存 port，不是真机文件落盘、正常宿主连接或双设备无线验收；这些边界仍待完成。
+
+- Harmony 新增持久发送任务选择器：优先恢复当前对端请求，等待同意时复用 sender，终态后选择下一项；SDK 仅在已有对应连接时提供单实例 driver，关闭客户端同步关闭选择器，迟到初始化不再调用 transport。相关 4 项测试通过（38 断言），实际 DevEco ArkTS/HAP 构建通过（5.591 秒）。当前仍需宿主按前台生命周期调用 step，未自动连接/重连；正常宿主连接 UI、事件、ACK 进度与真机验收仍未完成，capability 保持关闭。
+
+- Harmony 新增持久登记版文件发送器与 SDK 工厂：终态先写 outgoing 登记再消费请求回执，提交失败保留恢复依据，终态重开不重新 offer；取消意图等待当前请求，必要时先建立幂等 offer 再取消，不读取文件块。相关 5 项测试通过（57 断言），实际 DevEco ArkTS/HAP 构建通过（5.562 秒）。发送器尚未绑定正常宿主认证连接的自动任务选择，精确 ACK 进度、outgoing 事件和真机验收仍待完成，capability 保持关闭。
+
+- Harmony 正常页面已接 guest `sync.files.offer`、outgoing status/cancel：系统随机 ID、固定输入快照、取消隔离、已查看身份门、本地取消意图与未知进度标记；incoming 状态/取消仍路由原服务，能力检查保持在最外层。全部 313 项 Harmony TS 测试通过（4559 断言），实际 DevEco ArkTS/HAP 构建通过（5.707 秒）。尚缺 outgoing 事件、认证发送驱动、精确 ACK 进度及失败副本清理，未做真机 guest 文件发送，capability 保持关闭。
+
+- Harmony SDK 新增 `queueGuestFile` 本地发送编排：宿主提供新 ID，先校验 peer/元数据、拒绝已有身份及源副本，再导入固定来源，导入后复查身份并登记 queued；取消或新出现冲突不登记发送。客户端测试通过（21 断言），实际 DevEco ArkTS/HAP 构建通过（5.427 秒）。尚未接 guest 服务、ID 生成、网络驱动或失败导入清理；中断副本保留，queued 不表示对端收到，capability 保持关闭。
+
+- Harmony incoming 状态/接受/取消/保存与事件入口新增跨日志身份检查：同时查询 incoming、outgoing 登记及请求回执，终态仍占用 ID，跨方向/对端冲突和未登记请求拒绝操作；正常页面已接此门。12 项相关测试通过（95 断言），实际 DevEco ArkTS/HAP 构建通过（5.598 秒）。检查是只读快照，不是跨日志原子锁；outgoing guest offer/status、网络驱动和真机验收仍未完成，capability 保持关闭。
+
+- Harmony 正常页面的已安装同步 owner 已统一为 `NativeCompanionClient`，状态/消息/incoming 共用实例，新增受文件能力门控制的宿主客户端入口供后续 outgoing 编排使用；构造不启动网络。owner/客户端两项测试通过（25 断言），覆盖并发初始化、失败重试、目录隔离和能力撤销；实际 DevEco ArkTS/HAP 构建通过（5.424 秒）。guest offer、跨方向身份解析、网络连接与真机验收仍未完成，capability 保持关闭。
+
+- Harmony outgoing 登记的 SDK 接线已通过实际 DevEco ArkTS/HAP 构建（6.515 秒）；首次编译发现 ArkTS 不支持构造参数字段声明，已改成显式字段后重跑。客户端/登记 5 项 TS 测试再次通过（36 断言）。这补齐编译证据，不代表 guest offer、网络发送恢复或真机收发已经完成；capability 保持关闭。
+
+- Harmony outgoing 登记已绑定独立原生 CAS namespace，并导出 HAR 工厂、装入 `NativeCompanionClient`。实际 N-API 回归验证 SDK 登记、子进程重开并更新取消意图、app/请求队列隔离及过期 CAS 拒绝；完整 background-store 脚本通过，客户端/登记 5 项 TS 测试通过。初次测试暴露 namespace 白名单缺失，已补齐并重跑通过；尚未完成本轮 DevEco 编译、guest offer、网络发送恢复及真机验收，capability 保持关闭。
+
+- Harmony 新增独立 outgoing 传输登记核心：固定 peer/manifest、128 条保留身份、取消意图及单调终态、CAS 冲突拒绝与重开恢复；请求队列另增跨 peer 的只读身份查询，包含终态但不冒充完整传输历史。11 项相关 TS 测试通过（70 断言），覆盖并发 CAS、容量、损坏与返回快照隔离。登记核心尚未绑定原生持久存储、SDK owner、guest offer 或网络驱动；本轮未做 DevEco 编译与真机验证，capability 保持关闭。
+
+- Harmony 新增 guest 文件源租约：固定私有根、逐层 no-follow、打开 FD 固定来源、16 MiB/64 KiB 分块限制，与 guest 帧/保存共用 IO 锁。SDK `importGuestFile` 在两遍校验导入后无论成功/失败均释放租约；源路径改写不影响已完成的 outgoing 副本。原生 N-API/SDK 实际落盘测试通过，包含重复占用拒绝、关闭中读取、越界与源修改隔离；最终 DevEco SDK/HAP 构建通过（6.875 秒）。尚未接 guest offer 或持久 peer 传输登记，未验证真机导入暂停时延，capability 保持关闭。
+
+- Harmony incoming 文件事件已接正常页面/Ability 生命周期：每秒按 ID 游标最多检查 64 项，状态内容去重，拒收不登记操作凭据，歧义 ID 和单项读取失败不阻塞后续项；退后台隔离迟到快照，恢复重新提供最新状态。全部 301 项 Harmony TS 测试通过（4462 断言），DevEco SDK/HAP 构建通过（6.743 秒）。当前只覆盖 incoming，outgoing 来源快照/传输登记、统一身份解析与网络宿主仍待实现；真机 guest 文件事件和性能未验收，capability 保持关闭。
+
+- Harmony `sync.files.save` 已接通 guest 服务、SDK 完成态租约与原生 worker。guest boot/执行帧和保存共用 `sync-save/owner.lock`，保存期间不执行 guest 帧，避免配额扫描与 guest 写入交错；确认 runtime 写入实时扫描用量，无缓存需要刷新。补齐同进程/跨进程锁、SDK→N-API 落盘、损坏源拒绝和 guest 完成态门测试；原生回归及 ASan/UBSan 脚本通过，299 项 Harmony TS 测试通过（4450 断言），最终 SDK 原生宿主/HAP 构建通过（3.713 秒）。未验证真机保存及帧暂停时延；文件发送、事件和网络宿主仍待完成，capability 保持关闭。
+
+- Harmony 原生存储新增完整文件保存核心：固定 guest 私有根、已存在相对目录逐层 no-follow、独立锁与精确 staging 恢复、完整副本及暂存流 SHA-256 校验、`renameat2(RENAME_NOREPLACE)` 发布、同内容重试及目录 fsync；路径穿越/目标冲突/符号链接拒绝。原生存储/N-API 回归脚本通过，DevEco companion C++/HAP 构建通过（3.816 秒）。目前仅内部 C++ 方法，尚未导出 N-API 或接 guest save；16 MiB 配额为扫描快照，仍需与 guest FS 写入协调，不能据此开放 capability 或宣称保存端到端完成。
+
+- 文件保存前置检查发现 Harmony 普通 boot 原先传 `data_dir=null`，guest FS 为内存模式。现由宿主传入系统 filesDir，在独立 `podjs-guest` 下初始化私有 files/tmp 并传给 runtime，隔离宿主同步/配对日志；固定目录拒绝符号链接和宽权限，重开不清已有文件。新增原生目录测试，ASan/UBSan host-contract 脚本通过；DevEco 重编 C++ 宿主与 ArkTS、HAP 打包通过（6.467 秒）。Rust 预编译 runtime 未重建，尚未验证真机重启持久化，`sync.files.save` 本身仍待实现。
+
+- Harmony 正常页面新增 incoming 文件 status/accept/cancel：先由状态查询明确唯一来源再允许操作，不采信 guest peer；进度读取验证实际分块，损坏副本不只凭 complete 日志报完成；guest 取消与完成检查同锁，已完成文件不删除。此适配尚只覆盖收件，offer/save、文件事件及跨 outgoing 的全局身份解析仍待接入。七项相关测试通过，最终 DevEco SDK/HAP 构建通过（5.709 秒）；未开启 capability，未做真机收发/保存验收。
+
+- Harmony 正常页面已接消息收件事件与显式业务 ACK：严格 UTF-8/有限 JSON/重复键校验，100 条分页轮转，未确认重投；仅原生事件队列接受后登记复制的内容摘要，ACK 持久提交后可重试，隐藏/后台清除 guest 凭据并隔离迟到投递。非法消息不自动确认，也不阻挡后续页。全部 295 项 Harmony TS 测试通过（4421 断言），DevEco SDK/HAP 构建通过（6.384 秒）。这只完成本地宿主队列/事件/确认装配，未接网络 owner 的即时回执，未验证真机 guest 收件及双设备收发，capability 保持关闭。
+
+- Harmony 正常页面接入 guest 消息发送服务：稳定有限 JSON 编码、256 KiB 载荷限制、宿主固定身份与 TTL 持久队列，异步 owner 初始化前后取消检查及请求快照隔离；成功只返回本地 `queued`。状态/消息共用已安装身份，各自能力门独立。修正宿主跨模块相对导入为 companion 包内 TS 子路径，避开 TS 导入 ArkTS 入口限制；最终 SDK 构建通过（5.595 秒）且无该类导入诊断。全套 Harmony TS 测试在调整前通过 291 项，最终包路径调整后三类宿主测试 15 项通过。消息收件事件/业务 ACK、网络宿主与真机验证仍待完成，capability 未开启。
+
+- Harmony 消息队列新增 TTL 入队：首次过期时间与队列同一 CAS 提交，重试/重启保持原时间，ACK 后保留身份记录避免重新入队；变更内容/TTL/优先级和绝对过期请求冲突均拒绝。独立 10,000 条身份配额不驱逐未过期记录，schema 1 在写入时迁移至 2（旧实现不可回读新格式）。队列/消息链路 20 项测试通过，DevEco HAP 构建通过（5.887 秒）。guest 消息服务入口尚未接入，未完成真实设备收发，未开启 Harmony sync capability。
+
+- Harmony 状态事件已接到正常页面和 Ability 前台生命周期，使用原生 `postEvent` 每秒有界投递；隐藏/后台/销毁关闭旧投递器并取消定时器，恢复时以新实例重新提供最新快照。实际 DevEco ArkTS 编译和未签名 HAP 打包通过（5.635 秒），11 项相关 TS 测试通过。仍有既有权限/设备能力警告；未验证真机 guest 收件或生命周期，未重建原生 runtime/guest，Harmony sync capability 仍关闭，消息/文件/网络宿主装配仍待完成。
+
+- Harmony 新增状态事件投递核心：按持久快照合并最新条目和墓碑、每轮最多 64 条、原生队列拒绝后重试、已投递内容去重，关闭或授权撤销抑制异步迟到结果。事件核心与服务适配共 11 项 TS 测试通过；尚未接入页面生命周期/原生事件队列，未完成本轮 ArkTS SDK 编译，capability 保持关闭。这是最新状态流，不保证逐次历史变化或 guest 业务处理完成。
+
+- Harmony 页面状态接线已完成实际 DevEco SDK 编译与未签名 HAP 打包（28.662 秒）；包内 ABC 确认包含身份工厂和状态服务。构建仍有设备能力/权限警告，Harmony sync capability 保持关闭；未验证原生 runtime 与新 guest 包的实际启动、备份迁移或同步收发，不把编译结果视为四端验收。
+
+- Harmony 已安装 owner 异步初始化新增取消与失败重试测试：等待 owner 时取消不会随后写入状态；初始化失败仅返回通用错误，复用请求 ID 可正常重试。身份/适配/pump 共 17 项 TS 测试通过；不替代 SDK 编译或真机启动验证。
+
+- Harmony 正常页面接入懒加载状态 owner 工厂：系统 bundle 名称绑定 app，随机 watch 身份经原生 CAS namespace 持久化，并发首次创建收敛，损坏/外来记录拒绝且不静默轮换。状态适配等待 owner 时仍检查取消。身份/服务/pump 共 15 项 TS 测试通过；本轮未完成 ArkTS SDK 编译、真实启动与备份迁移身份隔离验证，Harmony sync capability 仍关闭，消息/文件/网络服务尚未接通。
+
+- Harmony 状态适配新增取消后复用同一请求对象的回归测试，先复现旧操作恢复并使新请求超时，再改为每次调用独立 operation token 与固定 ID；18 项相关 TS 测试通过。此修复不改变尚未绑定正常宿主 owner、未完成 SDK 编译和真机验收的状态。
+
+- Harmony 手表新增 `SyncStateServices` 内部适配，复用持久 `CompanionState` 实现 get/set/delete，保留 null 与墓碑，忽略 guest 身份，异步前快照参数并隔离取消/复用 ID 的回调；补齐 `sync.files.save` 的文件能力授权映射。17 项相关 TS 测试通过。适配尚未绑定正常页面的已安装 owner，也未通过本轮 ArkTS SDK 编译；网络同步、事件、消息/文件宿主及安全保存目录仍待实现，未开启 Harmony sync capability。OWW242 充电遮挡仍存在，本轮未重跑权限 UI 验收。
+
+- 新增正常 APK 的真实权限拒绝测试 `InstalledSyncPermissionTest`，检查弹窗期间设置关闭/密钥清空及拒绝后不自动扫描。当前未通过：OWW242 的 `SysUI.Charging` 长时间充电提示遮挡权限界面，返回键无法关闭，系统要求插拔 USB。测试显式识别该阻挡，不将其记为权限流程通过；需恢复设备界面后继续验证。
+
+- 正常安装包测试补上宿主按钮认证闭环：实际设置面板填写测试身份/密钥、二次批准、LAN 连接，隔离对端写入状态后经认证会话和真实 guest 订阅写回 KV，再显式断开并撤销宿主测试配对。Android 与 Wear APK 各一项在 OWW242 上通过，全程不注入 owner。对端仍在同一物理设备内，未替代双设备无线、BLE 权限或实际 Wear OS 验收。
+
+- 安装包同步测试改为解析目标 APK 的实际 launcher，Wear module 增加独立 instrumentation 配置；Wear APK 的正常 Activity/native boot、三通道本地 guest 服务和同步设置入口在 OWW242 上通过，Android APK 同测回归通过。两个测试包使用不同 application ID，未混用存储。OWW242 不是 Wear OS，此结果仅验证 Wear APK 通用宿主代码路径，不作为 Wear OS/Data Layer/无线验收。
+
+- 正常 `sync-apk` 启动测试扩展覆盖三通道 guest 服务：状态读写之外，实际 guest 消息离线入队，以及五字节文件写入、offer/status/cancel/status 均经 MainActivity/native bridge 完成；OWW242 一项集成测试通过。使用无配对的测试 peer，只验证本地排队/文件状态，不宣称消息已送达或文件已无线传输。
+
+- Android/Wear profile 与 JNI 同步开启通用 state/message/file 能力，新增独立 `sync-apk` fixture 与 `InstalledSyncTest`：从实际 MainActivity 冷启动经过 native 包校验，guest state set/get 完成并打开真实已安装 owner 的同步设置，不注入 owner。首次运行定位旧预编译 runtime revision 不匹配，按仓库脚本重建 ARMv7/ARM64 后 OWW242 测试通过；框架/target 六项通过。尚未做物理双设备 BLE、实际 Wear OS、平台专用通道或四端验收；能力开启不代表完整计划完成。
+
+- BLE 候选列表新增真机控件测试，先复现取消后迟到点击恢复候选的问题，再以当前 dialog 身份检查和 dismiss 清理修复。验证选择后仍需单独连接、取消/关闭后的旧列表点击不能恢复候选；连同已有设置测试，OWW242 三项通过。候选由测试直接提供，未启动无线扫描或连接，不替代实际无线与授权弹窗验收。
+
+- 同步设置新增原生 BLE 面板：显式权限请求、十秒有界扫描、候选选择、单独连接、等待连接和取消扫描；不使用广播名称作可信身份，选择不批准配对，关闭/退后台取消扫描并忽略迟到结果。沿用单列大触控目标；授权不自动启动操作。OWW242 两项设置测试通过，包含无 owner 时四个 BLE 操作拒绝、关闭清理及原 LAN 已批准按钮回归。真实扫描/授权弹窗/候选选择与 BLE 无线 UI 闭环、布局/读屏仍待验收；profile 仍关闭。
+
+- Android 共享 runtime 补齐网络及 BLE manifest 权限，修复 Wear 宿主缺少 INTERNET 的声明缺口；合并后的 Android/Wear manifest 已核对。新增操作级权限检查：Android 12+ 连接/扫描/广播分开，旧系统仅发现要求定位；宿主 BLE 在访问无线前拒绝缺失授权，不自动弹窗、开蓝牙或续接。OWW242 权限策略与服务连接共七项通过；高版本分支仅策略测试，实际授权弹窗、设备选择 UI 和无线验收仍待完成。
+
+- 手表共享宿主控制器接入 `PodSyncBleAttempt` 与原生 `connectCompanionBle`：LAN/BLE 共用单连接、前台门、generation、认证后服务挂载及异步取消；BLE 只使用已批准通道，不将无线候选身份当作配对授权。OWW242 原八项回归通过，新增后台/关闭拒绝测试后服务连接四项通过。尚未接权限/设备选择 UI，未验证宿主 BLE 实际无线交接；普通包 profile 仍未启用。
+
+- BLE 单次认证连接移入共享 Android runtime `PodSyncBleAttempt`，手机 `PodBleAttempt` 保留兼容薄封装；不再要求手表依赖手机模块。原五项连接测试随实现迁入 runtime，在 OWW242 上全部通过，覆盖错误配对密钥、MTU 23 认证交接、总超时、取消与关闭后拒绝；手机示例编译通过。测试使用内存 BLE 帧链路，不代表真实无线验收；手表宿主 BLE 控制器与选择/权限 UI 装配仍待完成。
+
+- Wear OS Activity 接入共享同步设置菜单与显式 intent（冷启动和已有 Activity），并补齐停止生命周期通知；`:wearApp:compileDebugJavaWithJavac --offline` 编译通过。未开启 profile 同步声明，普通包 native boot、Wear 菜单可达性与双设备无线仍待验收；此项仅补齐宿主入口，不代表完整同步能力可用。
+
+- Android 同步设置的已批准流程新增真机仪表测试：隔离 app 存储与临时测试密钥，经实际按钮填写、二次确认、LAN 认证连接、远端状态同步和断开，提交后密钥清空；连同无 owner 拒绝用例，OWW242 两项通过。测试注入批准 owner，不验证普通包 manifest/启动路径；端点同在设备内，真实跨设备无线、布局/读屏与 profile 启用仍待完成。
+
+- Android 宿主新增单列滚动同步设置面板：展示 app/device 身份，64 位十六进制共享密钥经二次确认批准，数字 IP/端口连接或等待、显式断开；密钥不保存 View 状态/自动填充，关闭与后台清空，窗口禁止截图。Android Activity 菜单及 `dev.podjs.action.COMPANION_SETTINGS` 显式 intent 接入，冷启动等待 native boot 后再打开。编译及 OWW242 无 owner 拒绝/密钥清理测试通过；当前 profile 仍关闭，正常包显示不可用。批准后的 UI 全流程、布局/读屏及真实无线验收尚未通过。
+
+- Android 宿主 LAN 控制器已接入已安装 owner 与 `PodRuntimeView` 前台生命周期：认证成功借用前台会话给 guest，后台同步撤销路由、异步关闭，generation 隔离迟到握手/回调；通道仅取批准能力，驱动不再启动未授权通道。OWW242 上三项集成测试通过，包含 state-only 认证同步和退后台拒绝路由。原生 `connectCompanion` 入口已有，但应用配对/连接 UI 尚未调用；profile 仍关闭，不代表普通包已经可用。
+
+- 完整缺口复核确认 Android guest 服务已具备内部收发闭环，但普通应用仍缺宿主配对/连接 UI；Apple SDK、远程推送及四端验收仍未完成。LAN 尝试实现已移入共享 runtime `PodSyncLanAttempt`，手机 `PodLanAttempt` 保留薄封装，不再要求手表依赖手机模块。OWW242 上共享 runtime 两项集成测试、手机 LAN 四项测试通过，手机示例编译通过；implementation status 已纠正旧的服务缺口描述。
+
+- Android 保存 staging 增加同进程串行及跨进程文件锁：取得锁后只清理精确 `save-UUID` 普通文件，保留未知条目/链接，扫描限 256 项，清理与发布后同步目录。OWW242 上保存集成/路径测试通过，覆盖锁占用时不清理、模拟残留清理及未知文件保留。这不是实际强杀/双进程竞态验收；其他平台 save 与真实宿主无线/UI 仍待完成。
+
+- 文件 API 补充显式 `syncFiles.save(transferId, path)` 交付入口：Android 只保存已暴露且完整校验的 incoming 文件到应用相对路径，私有 staging 流式校验后以 `renameat2(RENAME_NOREPLACE)` 原子发布，目标已有相同内容可重试，不覆盖不同内容/符号链接，也不随 status 自动复制。OWW242 上端到端保存/重试/拒绝覆盖与路径测试通过；框架 9 项测试通过。真机硬链接发布被拒绝后已改为上述不覆盖原子重命名；崩溃 staging 清理、其他平台 save 实现和真实无线/UI 验收仍待完成。
+
+- Android 状态服务新增本地 set/delete 后唤醒已批准连接及 `sync.state.changed` 事件：比较条目稳定摘要，包含墓碑，不重复发未变化快照，每轮最多 64 条轮转处理。OWW242 上 9 项服务测试通过，覆盖 null/墓碑/去重/能力隔离和认证双端服务写入后自动抵达对端。事件为宿主观察到的变化，不承诺晚订阅重放历史；完成文件交付与真实宿主无线/UI 验收仍待完成。
+
+- Android 文件事件已接 guest sink：收发日志按唯一 transferId 合并游标分页，每轮最多 64 条并循环重投以支持晚订阅；事件绑定身份但不授权接收，冲突/暂时不可读记录跳过。最近 256 条暴露身份保留，旧操作可通过 status 重新查看后执行。OWW242 上 9 项测试通过，覆盖 65 条跨页事件和 event → accept → 自动传输完成。完成文件的 guest 可访问路径交付与真实无线/UI 验收仍待补齐。
+
+- Android 前台文件传输新增每秒授权状态查询，仅在现有已批准、最长两分钟的前台会话内运行，停止/失败/截止一起关闭，不重连也不续期。认证内存 BLE 服务测试已覆盖 offer → status → accept → 自动恢复 → 完成文件字节一致；宿主真实无线/UI、guest 文件事件与完成文件路径交付仍待接入。
+
+- Android 文件服务新增显式 accept/cancel：只操作当前 guest 通过 status/offer 已暴露的身份，重新检查跨 peer/方向冲突，拒绝接受 outgoing；接收端取消在日志锁内拒绝删除已完成文件。OWW242 上接收/路径相关 8 项测试通过，覆盖未查看拒绝接受、状态查询后接受、取消 offered 和完成文件保留。文件事件、对端 consent 轮询驱动与完成文件交付仍待接入。
+
+- Android `sync.files.status` 已接收发两侧唯一身份解析和真实字节进度：接收侧仅在已接受状态读取 native 缺块清单，不接受 offered 或恢复 accepting/cancelling 意图；全部字节收到但尚未 finish 时仍为 transferring，已完成却缺块显示 failed。OWW242 上接收日志/服务状态与身份共 8 项测试通过。显式 accept/cancel、文件事件、应用可访问的完成文件交付和宿主真实无线链路仍待实现。
+
+- Android `sync.files.offer` 已接应用文件根与持久完整快照：逐级描述符相对打开、拒绝路径穿越/符号链接/非普通文件，快照直接读取已授权 descriptor；持久 offer 后唤醒批准连接，拒绝发给自己，失败时只释放无活动引用的快照。OWW242 上 4 项路径/快照测试通过，覆盖中间/末端链接、打开后重命名与服务入队。接收授权/status/cancel/event 和真实宿主无线 UI 仍待补齐。
+
+- Android 文件身份新增只读解析：按 transferId 分别有界查询收发日志，跨对端/跨方向重名明确拒绝，终态记录也参与冲突判定，未发送快照不冒充传输。OWW242 上专项测试通过。此查询不是接收授权，也不提供跨日志原子 mutation 保证；guest 文件操作接入还需绑定具体已暴露传输及严格应用路径授权。
+
+- Android 文件发送状态新增 totalBytes / acknowledgedBytes / progressKnown：仅依据对端已持久回复的缺块清单和逐块 ACK 计算进度，正确计入不足 64 KiB 的尾块；尚未取得清单时明确未知，字节全到但等待 finish 回执仍不标记完成。OWW242 上 3 项发送日志测试和 14 项 SDK 测试通过。文件 guest 服务路径授权、跨 peer 唯一传输解析、接收进度与 UI/真机双端验收仍待补齐。
+
+- Android 消息服务已接认证前台驱动：持久入队后唤醒该 peer 的发送，显式业务确认先保存不可变摘要绑定的收件回执，再排队即时 ACK；停止/ACK 队列满不撤销本地已提交结果，对端重试仍可读取持久回执。OWW242 上 8 项服务测试通过，认证内存 BLE 双端测试覆盖服务 send → guest event → ack → 对端出队；仍不是真实双设备无线/宿主 UI 验收。
+
+- Android `sync.state.synchronize` 已路由到宿主借用的认证前台会话：校验同一 client owner、精确 peer、最多 8 个活动 peer，已停止/未注入/已分离连接不路由；等待 30 秒持久 ACK 屏障，分离不关闭宿主连接。OWW242 上认证内存 BLE 双端服务测试与原服务测试共 8 项通过。仍缺真实宿主连接选择/UI 装配，测试不是双设备无线验收，能力声明保持关闭。
+
+- Android 前台同步驱动新增状态 ACK 完成等待接口：已有认证会话发送当前状态，只有持久确认当前完整状态后返回本地 incoming cursor；限制等待预算，取消/超时不关闭共享连接，停止的连接失败。该接口不是双端未来写入收敛证明；guest 服务路由与已批准连接选择仍待装配。
+
+- Android 新增 native boot 成功后的已安装 APK 同步 owner 接入点：限当前包名与精确 target/schema/capability，设备 UUID 原子保存到 no-backup 目录，损坏身份拒绝启动而不静默更换；guest 生命周期结束关闭自有 owner，不生成配对凭据。OWW242 上身份/声明与服务共 9 项测试通过。当前平台 profile 仍未声明同步能力，因此常规包不会创建此 owner；缺少实际连接/文件操作与完整能力验收，不能宣称启动后的同步功能已可用。
+
+- Android 已批准同步 owner 的消息事件接入 guest sink：严格 UTF-8/JSON 解码、剩余 TTL、每秒最多 100 条轮转分页、未确认重投；非法消息保持待处理且不会挡住后续页，旧 owner 的排队事件在切换后丢弃。OWW242 上服务测试覆盖事件投递、显式确认、取消、非法载荷与分页。正常启动 owner 注入、即时网络回执和跨设备验证仍未完成，未开启完整 capability 声明。
+
+- Android 同步服务新增显式业务消息确认：宿主仅能登记实际投递的消息，确认绑定不可变内容摘要；未暴露消息拒绝确认，取消不落盘，重复确认可重试，收件 payload 后续变更不改变已登记摘要。OWW242 上 4 项服务测试通过。此处只证明本地持久业务确认；guest 消息事件、启动注入与对端即时回执仍未装配，不能据此开启完整消息能力声明。
 
 - Android 同步服务新增消息离线入队映射：稳定 JSON 编码、调用方 messageId、普通/高优先级与 TTL。首次入队和 TTL 身份记录同事务提交；重试/重启/ACK 后保留首次到期时间，不重新投递已确认消息，改内容或 TTL 拒绝；独立 10,000 条未过期身份记录配额不驱逐旧请求。OWW242 上队列与服务共 9 项测试通过。消息事件/回执、实际宿主注入和双端链路仍待接入。
 
@@ -382,7 +620,7 @@
   - 至少一次投递，以 messageId 去重；支持 TTL、优先级和离线队列。
   - 默认单条上限 256 KiB；队列上限 1,000 条或 8 MiB，超限拒绝新普通优先级消息，不删除未确认消息。
 - 文件通道：
-  - API：`syncFiles.offer/accept/cancel/status/subscribe`。
+  - API：`syncFiles.offer/accept/cancel/status/subscribe`，以及显式交付完整接收文件到应用目录的 `syncFiles.save(transferId, path)`。
   - manifest 先交换文件大小、SHA-256、MIME 和分块哈希；默认 64 KiB 分块。
   - 支持缺块请求、逐块校验、断点续传、最终整文件校验和原子改名。
   - 默认单文件 16 MiB、每应用 32 MiB；target profile 可以收紧但不能扩大应用声明的配额。

@@ -61,14 +61,14 @@ export const POD_TARGETS: Readonly<Record<PodTargetProfile["id"], PodTargetProfi
     hostAbi: POD_HOST_ABI,
     logicalViewport: POD_LOGICAL_VIEWPORT,
     renderer: "vulkan-1.1",
-capabilities: [...common, PodCapability.Back, PodCapability.Network, PodCapability.Files, PodCapability.Sqlite, PodCapability.TextInput, PodCapability.Secure, PodCapability.Crypto, PodCapability.FileChunks, PodCapability.Audio, PodCapability.Tts, PodCapability.Video, PodCapability.Timer, PodCapability.Images, PodCapability.BrowserAuth, PodCapability.HttpDownload, PodCapability.Browser, PodCapability.ScheduledBackground, PodCapability.LocalNotification],
+capabilities: [...common, PodCapability.Back, PodCapability.Network, PodCapability.Files, PodCapability.Sqlite, PodCapability.TextInput, PodCapability.Secure, PodCapability.Crypto, PodCapability.FileChunks, PodCapability.Audio, PodCapability.Tts, PodCapability.Video, PodCapability.Timer, PodCapability.Images, PodCapability.BrowserAuth, PodCapability.HttpDownload, PodCapability.Browser, PodCapability.ScheduledBackground, PodCapability.LocalNotification, PodCapability.SyncState, PodCapability.SyncMessage, PodCapability.SyncFile],
   },
   "wearos-watch": {
     id: "wearos-watch",
     hostAbi: POD_HOST_ABI,
     logicalViewport: POD_LOGICAL_VIEWPORT,
     renderer: "vulkan-1.1",
-    capabilities: [...common, PodCapability.Back, PodCapability.Network, PodCapability.Files, PodCapability.Sqlite, PodCapability.TextInput, PodCapability.Secure, PodCapability.Crypto, PodCapability.FileChunks, PodCapability.Audio, PodCapability.Tts, PodCapability.Video, PodCapability.Timer, PodCapability.Images, PodCapability.BrowserAuth, PodCapability.HttpDownload, PodCapability.Browser, PodCapability.ScheduledBackground, PodCapability.LocalNotification],
+    capabilities: [...common, PodCapability.Back, PodCapability.Network, PodCapability.Files, PodCapability.Sqlite, PodCapability.TextInput, PodCapability.Secure, PodCapability.Crypto, PodCapability.FileChunks, PodCapability.Audio, PodCapability.Tts, PodCapability.Video, PodCapability.Timer, PodCapability.Images, PodCapability.BrowserAuth, PodCapability.HttpDownload, PodCapability.Browser, PodCapability.ScheduledBackground, PodCapability.LocalNotification, PodCapability.SyncState, PodCapability.SyncMessage, PodCapability.SyncFile],
   },
   "watchos-watch": {
     id: "watchos-watch",

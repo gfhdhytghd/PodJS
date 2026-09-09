@@ -109,6 +109,19 @@ export class CompanionFileRequests {
       return record === undefined ? null : new CompanionPendingFileRequest(record);
     });
   }
+  /** Read-only identity evidence across all peers, including completed receipts.
+   * This is not an outgoing transfer registry: a sender may temporarily have no
+   * request between consuming a reply and enqueueing its next operation. */
+  recordsForTransfer(transferId: string): Promise<CompanionPendingFileRequest[]> {
+    identity(transferId); return this.run(async () => {
+      const snapshot = await this.load(await this.store.read());
+      return snapshot.records.filter((record: RequestRecord) => {
+        const request = decodeFileRequest(unhex(record.payload));
+        const id = request.method === 'offer' ? (request.manifest as CompanionFileManifest).transfer_id : request.transfer_id;
+        return id === transferId;
+      }).map((record: RequestRecord) => new CompanionPendingFileRequest(record));
+    });
+  }
   receiveAuthenticated(peer: string, id: string, bytes: Uint8Array): Promise<string> {
     identity(peer); identity(id); if (bytes.length > 4096) throw new Error('file reply too large');
     const stable = bytes.slice(); decodeFileReplyHeader(stable);

@@ -6,6 +6,7 @@
 namespace pod_incoming_napi {
 struct Lease {
   std::unique_ptr<pod_incoming::Storage> storage;
+  std::unique_ptr<pod_incoming::GuestSource> source;
   std::atomic<bool> closed{false}, busy{false};
 };
 struct Holder { std::shared_ptr<Lease> lease; };
@@ -18,6 +19,7 @@ struct Work {
   std::shared_ptr<Lease> lease;
   bool opening = false;
   bool outgoing = false;
+  bool guestSource = false;
   std::string root, app, method, peer, text, error;
   pod_incoming::Manifest manifest;
   size_t index = 0;
@@ -48,12 +50,23 @@ inline void finalize(napi_env, void* pointer, void*) {
 inline void execute(napi_env, void* pointer) {
   auto& job = *static_cast<Work*>(pointer);
   try {
-    if (job.opening) { job.lease = std::make_shared<Lease>(); job.lease->storage = std::make_unique<pod_incoming::Storage>(job.root, job.app, job.outgoing); return; }
-    pod_store::require(!job.lease->closed, "Incoming lease closed"); auto& storage = *job.lease->storage;
+    if (job.opening) {
+      job.lease = std::make_shared<Lease>();
+      if (job.guestSource) job.lease->source = std::make_unique<pod_incoming::GuestSource>(job.root, job.text);
+      else job.lease->storage = std::make_unique<pod_incoming::Storage>(job.root, job.app, job.outgoing);
+      return;
+    }
+    pod_store::require(!job.lease->closed, "Incoming lease closed");
+    if (job.method == "readGuestChunk") {
+      pod_store::require(job.lease->source != nullptr, "Not a guest source lease");
+      job.bytes = job.lease->source->readChunk(job.index); return;
+    }
+    pod_store::require(job.lease->storage != nullptr, "Not a file storage lease"); auto& storage = *job.lease->storage;
     if (job.method == "readJournal") job.output = storage.readJournal();
     else if (job.method == "writeJournal") storage.writeJournal(job.text);
     else if (job.method == "reserve") storage.reserve(job.peer, job.manifest);
     else if (job.method == "remove") storage.remove(job.peer, job.manifest);
+    else if (job.method == "saveComplete") storage.saveComplete(job.peer, job.manifest, job.text);
     else if (job.method == "chunk") storage.chunk(job.peer, job.manifest, job.index, job.bytes);
     else if (job.method == "missing") job.missing = storage.missing(job.peer, job.manifest);
     else if (job.method == "finish") storage.finish(job.peer, job.manifest);
@@ -79,7 +92,7 @@ inline void complete(napi_env env, napi_status status, void* pointer) {
       { std::lock_guard lock(holdersMutex); holders.insert(holder.get()); } holder.release();
     } else if (job->method == "readJournal") {
       if (job->output) napi_create_string_utf8(env, job->output->data(), job->output->size(), &value); else napi_get_null(env, &value);
-    } else if (job->method == "readCompleteChunk") {
+    } else if (job->method == "readCompleteChunk" || job->method == "readGuestChunk") {
       void* bytes = nullptr; napi_value buffer{};
       if (napi_create_arraybuffer(env, job->bytes.size(), &bytes, &buffer) != napi_ok ||
           napi_create_typedarray(env, napi_uint8_array, job->bytes.size(), buffer, 0, &value) != napi_ok) {
@@ -118,6 +131,22 @@ inline napi_value openStore(napi_env env, napi_callback_info info, bool outgoing
 }
 inline napi_value open(napi_env env, napi_callback_info info) { return openStore(env, info, false); }
 inline napi_value openOutgoing(napi_env env, napi_callback_info info) { return openStore(env, info, true); }
+inline napi_value openGuest(napi_env env, napi_callback_info info) {
+  try {
+    auto job = work(); job->opening = true; job->guestSource = true;
+    size_t count = 2; napi_value args[2]{}; napi_get_cb_info(env, info, &count, args, nullptr, nullptr);
+    pod_store::require(count == 2, "Invalid guest source arguments"); job->root = string(env, args[0], 4096); job->text = string(env, args[1], 1024);
+    return queue(env, std::move(job));
+  } catch (const std::exception& error) { napi_throw_error(env, nullptr, error.what()); return nullptr; }
+}
+inline napi_value guestSize(napi_env env, napi_callback_info info) {
+  try {
+    size_t count = 1; napi_value args[1]{}; napi_get_cb_info(env, info, &count, args, nullptr, nullptr);
+    pod_store::require(count == 1, "Invalid guest size arguments"); const auto lease = get(env, args[0]);
+    pod_store::require(lease->source != nullptr, "Not a guest source lease"); napi_value value{};
+    napi_create_uint32(env, lease->source->size(), &value); return value;
+  } catch (const std::exception& error) { napi_throw_error(env, nullptr, error.what()); return nullptr; }
+}
 inline napi_value close(napi_env env, napi_callback_info info) {
   try {
     size_t count = 1; napi_value args[1]{}; napi_get_cb_info(env, info, &count, args, nullptr, nullptr); pod_store::require(count == 1, "Invalid incoming close arguments");
@@ -132,8 +161,10 @@ inline napi_value run(napi_env env, napi_callback_info info) {
     auto lease = get(env, args[0]); bool expected = false; pod_store::require(lease->busy.compare_exchange_strong(expected, true), "Incoming lease already busy"); job->lease = lease;
     job->method = string(env, property(env, args[1], "method"), 32);
     if (job->method == "writeJournal") job->text = string(env, property(env, args[1], "text"), 4194304);
+    else if (job->method == "readGuestChunk") job->index = number(env, property(env, args[1], "index"), 255);
     else if (job->method != "readJournal") {
-      pod_store::require(job->method == "reserve" || job->method == "remove" || job->method == "chunk" || job->method == "missing" || job->method == "finish" || job->method == "readCompleteChunk", "Unknown incoming operation");
+      pod_store::require(job->method == "reserve" || job->method == "remove" || job->method == "chunk" || job->method == "missing" || job->method == "finish" || job->method == "readCompleteChunk" || job->method == "saveComplete", "Unknown incoming operation");
+      if (job->method == "saveComplete") job->text = string(env, property(env, args[1], "text"), 1024);
       job->peer = string(env, property(env, args[1], "peer"), 128); pod_store::companionStateNamespace(job->peer);
       const auto manifest = property(env, args[1], "manifest");
       job->manifest.id = string(env, property(env, manifest, "transfer_id"), 128);
@@ -166,9 +197,11 @@ inline bool install(napi_env env, napi_value exports) {
   napi_property_descriptor properties[] = {
     {"incomingFilesOpen", nullptr, open, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"outgoingFilesOpen", nullptr, openOutgoing, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"guestFileOpen", nullptr, openGuest, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"guestFileSize", nullptr, guestSize, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"incomingFilesClose", nullptr, close, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"incomingFilesRun", nullptr, run, nullptr, nullptr, nullptr, napi_default, nullptr}
   };
-  return napi_define_properties(env, exports, 4, properties) == napi_ok;
+  return napi_define_properties(env, exports, 6, properties) == napi_ok;
 }
 }

@@ -194,6 +194,7 @@ export class CompanionSyncSession extends CompanionSyncHandshake {
   appId(): string { return this.boundApp; }
   localId(): string { return this.boundLocal; }
   peerId(): string { return this.boundPeer; }
+  allowsChannel(channel: string): boolean { this.ready(); return this.grants.includes(channel); }
   private enqueue<T>(work: () => Promise<T>): Promise<T> {
     const result = this.tail.then(() => { this.check(); return work(); });
     this.tail = result.then(() => {}, () => {}); return result;

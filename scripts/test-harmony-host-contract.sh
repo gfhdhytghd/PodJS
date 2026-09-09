@@ -10,6 +10,10 @@ trap 'rm -f -- "$test_dir/contract-test"; rmdir -- "$test_dir"' EXIT
 "$test_dir/contract-test"
 "${CXX:-clang++}" -std=c++17 -Wall -Wextra -fsanitize=address,undefined -g \
   -I"$project_root/platforms/harmony/entry/src/main/cpp" \
+  "$project_root/tests/harmony-guest-storage.test.cpp" -o "$test_dir/contract-test"
+"$test_dir/contract-test"
+"${CXX:-clang++}" -std=c++17 -Wall -Wextra -fsanitize=address,undefined -g \
+  -I"$project_root/platforms/harmony/entry/src/main/cpp" \
   "$project_root/tests/harmony-journal-storage.test.cpp" -o "$test_dir/contract-test"
 "$test_dir/contract-test"
 "${CXX:-clang++}" -std=c++17 -Wall -Wextra -fsanitize=address,undefined -g \

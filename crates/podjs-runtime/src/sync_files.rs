@@ -90,9 +90,12 @@ impl FileReceiver {
         }
         sync_dir(directory)
     }
-    fn directory(&self, id: &str) -> Result<PathBuf> {
+    fn target(&self, id: &str) -> Result<PathBuf> {
         ensure!(!id.is_empty() && id.len() <= 128 && id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'), "invalid transfer id");
-        let path = self.root.join(id);
+        Ok(self.root.join(id))
+    }
+    fn directory(&self, id: &str) -> Result<PathBuf> {
+        let path = self.target(id)?;
         ensure!(fs::symlink_metadata(&path)?.file_type().is_dir(), "invalid transfer directory"); Ok(path)
     }
     fn manifest(&self, id: &str) -> Result<FileManifest> {
@@ -133,10 +136,24 @@ impl FileReceiver {
         }
         Ok(missing)
     }
+    pub fn verified_complete(&self, id: &str) -> Result<bool> {
+        let manifest = self.manifest(id)?;
+        verified_file(&self.directory(id)?.join("complete"), &manifest)
+    }
     /// Cancel/release exactly this transfer, including its completed artifact.
     pub fn cancel(&self, id: &str) -> Result<()> {
-        let directory = self.directory(id)?;
-        let files: Vec<PathBuf> = fs::read_dir(&directory)?.map(|entry| entry.map(|entry| entry.path())).collect::<std::io::Result<_>>()?;
+        let directory = self.target(id)?;
+        match fs::symlink_metadata(&directory) {
+            Ok(metadata) => ensure!(metadata.file_type().is_dir(), "invalid transfer directory"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => { sync_dir(&self.root)?; return Ok(()); }
+            Err(error) => return Err(error.into()),
+        }
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => { sync_dir(&self.root)?; return Ok(()); }
+            Err(error) => return Err(error.into()),
+        };
+        let files: Vec<PathBuf> = entries.map(|entry| entry.map(|entry| entry.path())).collect::<std::io::Result<_>>()?;
         for path in &files { regular(path)?; }
         for path in files { fs::remove_file(path)?; }
         fs::remove_dir(&directory)?; sync_dir(&self.root)?; Ok(())
@@ -148,6 +165,8 @@ impl FileReceiver {
         ensure!(bytes.len() == expected_len && hash(bytes) == manifest.chunk_hashes[index], "chunk checksum mismatch");
         let directory = self.directory(id)?; let target = directory.join(format!("chunk-{index}"));
         if verified_file(&directory.join("complete"), &manifest)? { return Ok(()); }
+        self.ensure_repair_capacity(id)?;
+        self.remove_invalid_assembly(&directory)?;
         let temporary = directory.join("chunk.tmp");
         if temporary.exists() { regular(&temporary)?; fs::remove_file(&temporary)?; }
         write_new(&temporary, bytes)?; fs::rename(&temporary, target)?; sync_dir(&directory)?; Ok(())
@@ -157,6 +176,8 @@ impl FileReceiver {
         let destination = directory.join("complete");
         if verified_file(&destination, &manifest)? { self.cleanup_chunks(&directory, &manifest)?; return Ok(destination); }
         ensure!(self.missing(id)?.is_empty(), "file has missing or damaged chunks");
+        self.ensure_repair_capacity(id)?;
+        self.remove_invalid_assembly(&directory)?;
         let temp = directory.join("complete.tmp");
         if temp.exists() { regular(&temp)?; fs::remove_file(&temp)?; }
         let mut output = OpenOptions::new().write(true).create_new(true).open(&temp)?;
@@ -171,6 +192,66 @@ impl FileReceiver {
         self.cleanup_chunks(&directory, &manifest)?;
         Ok(destination)
     }
+    /// Host-only immutable source read. Verify the whole artifact and selected
+    /// chunk through the same descriptor before returning any bytes. The host
+    /// must hold its receiver lease; no network path or repair is accepted here.
+    pub fn read_complete_chunk(&self, id: &str, index: usize) -> Result<Vec<u8>> {
+        let manifest = self.manifest(id)?;
+        ensure!(index < manifest.chunk_hashes.len(), "chunk index out of range");
+        let path = self.directory(id)?.join("complete");
+        regular(&path)?;
+        let mut options = OpenOptions::new(); options.read(true);
+        #[cfg(unix)] {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        let mut input = options.open(path)?;
+        let metadata = input.metadata()?;
+        ensure!(metadata.is_file() && metadata.len() == manifest.size, "invalid completed source");
+        #[cfg(unix)] {
+            use std::os::unix::fs::MetadataExt;
+            ensure!(metadata.nlink() == 1, "linked completed source");
+        }
+        let mut whole = Sha256::new(); let mut buffer = [0u8; CHUNK_BYTES]; let mut result = Vec::new();
+        for block in 0..manifest.chunk_hashes.len() {
+            let count = (manifest.size - block as u64 * CHUNK_BYTES as u64).min(CHUNK_BYTES as u64) as usize;
+            input.read_exact(&mut buffer[..count])?; whole.update(&buffer[..count]);
+            if block == index {
+                ensure!(hash(&buffer[..count]) == manifest.chunk_hashes[index], "source chunk checksum mismatch");
+                result.extend_from_slice(&buffer[..count]);
+            }
+        }
+        ensure!(input.read(&mut buffer[..1])? == 0 && input.metadata()?.len() == manifest.size, "source size changed");
+        ensure!(format!("{:x}", whole.finalize()) == manifest.sha256, "source checksum mismatch");
+        Ok(result)
+    }
+    // A completed file was admitted as one copy. If it is damaged, restoring
+    // chunks/assembly requires reserving two copies again BEFORE any mutation.
+    fn ensure_repair_capacity(&self, target: &str) -> Result<()> {
+        let mut reserved = 0u64; let mut count = 0;
+        for entry in fs::read_dir(&self.root)? {
+            let entry = entry?; ensure!(entry.file_type()?.is_dir(), "unexpected receiver entry");
+            let id = entry.file_name().into_string().map_err(|_| anyhow::anyhow!("invalid directory name"))?;
+            let manifest = self.manifest(&id)?;
+            reserved += if id != target && verified_file(&entry.path().join("complete"), &manifest)? { manifest.size } else { manifest.size * 2 };
+            count += 1;
+        }
+        ensure!(reserved <= MAX_APP_BYTES && count <= 128, "application repair quota exceeded"); Ok(())
+    }
+    // Only called after the current complete file failed verification and quota
+    // admitted repair. Do not keep a third corrupt assembly beside two copies.
+    fn remove_invalid_assembly(&self, directory: &Path) -> Result<()> {
+        let mut changed = false;
+        for name in ["complete", "complete.tmp"] {
+            let path = directory.join(name);
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) => { ensure!(metadata.file_type().is_file(), "invalid assembly file"); fs::remove_file(path)?; changed = true; }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        if changed { sync_dir(directory)?; } Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -184,6 +265,49 @@ mod tests {
     }}
     impl Drop for Temp { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
     fn manifest(bytes: &[u8]) -> FileManifest { FileManifest { transfer_id: "test".into(), size: bytes.len() as u64, sha256: hash(bytes), chunk_hashes: bytes.chunks(CHUNK_BYTES).map(hash).collect(), mime: "application/octet-stream".into() } }
+    #[test] fn completed_chunk_read_verifies_entire_source_and_bounds() {
+        let temp = Temp::new(); let r = FileReceiver::open(&temp.0).unwrap();
+        let bytes = vec![7; CHUNK_BYTES + 3]; r.offer(&manifest(&bytes)).unwrap();
+        assert!(r.read_complete_chunk("test", 0).is_err());
+        for (index, chunk) in bytes.chunks(CHUNK_BYTES).enumerate() { r.receive_chunk("test", index, chunk).unwrap(); }
+        let path = r.finish("test").unwrap();
+        assert_eq!(r.read_complete_chunk("test", 0).unwrap(), &bytes[..CHUNK_BYTES]);
+        assert_eq!(r.read_complete_chunk("test", 1).unwrap(), &[7; 3]);
+        assert!(r.read_complete_chunk("test", 2).is_err()); assert!(r.read_complete_chunk("../test", 0).is_err());
+        let mut damaged = bytes.clone(); damaged[CHUNK_BYTES] = 8; fs::write(&path, &damaged).unwrap();
+        // Even an unchanged selected chunk cannot escape whole-source failure.
+        assert!(r.read_complete_chunk("test", 0).is_err());
+        assert_eq!(fs::read(&path).unwrap(), damaged);
+        fs::write(&path, &bytes).unwrap();
+        let mut changed_manifest = manifest(&bytes); changed_manifest.chunk_hashes[0] = hash(b"wrong");
+        fs::write(temp.0.join("test/manifest.json"), serde_json::to_vec(&changed_manifest).unwrap()).unwrap();
+        assert!(r.read_complete_chunk("test", 0).is_err());
+    }
+    #[cfg(unix)]
+    #[test] fn completed_chunk_read_rejects_linked_artifacts() {
+        let temp = Temp::new(); let r = FileReceiver::open(&temp.0).unwrap();
+        r.offer(&manifest(b"abc")).unwrap(); r.receive_chunk("test", 0, b"abc").unwrap();
+        let path = r.finish("test").unwrap(); let other = temp.0.join("alias");
+        fs::hard_link(&path, &other).unwrap(); assert!(r.read_complete_chunk("test", 0).is_err());
+        fs::remove_file(&path).unwrap(); std::os::unix::fs::symlink(&other, &path).unwrap();
+        assert!(r.read_complete_chunk("test", 0).is_err()); assert_eq!(fs::read(other).unwrap(), b"abc");
+    }
+    #[test] fn damaged_completion_requires_renewed_assembly_reservation() {
+        let temp = Temp::new(); let receiver = FileReceiver::open(&temp.0).unwrap();
+        let large_bytes = vec![7; 16 * 1024 * 1024]; let large = manifest(&large_bytes);
+        receiver.offer(&large).unwrap(); fs::write(temp.0.join("test/complete"), &large_bytes).unwrap();
+        let other_bytes = vec![8; 8 * 1024 * 1024]; let mut other = manifest(&other_bytes); other.transfer_id = "other".into();
+        receiver.offer(&other).unwrap(); fs::write(temp.0.join("other/complete"), &other_bytes).unwrap();
+        // Corrupt a completed copy after its one-copy admission released space.
+        fs::write(temp.0.join("test/complete"), vec![9; large_bytes.len()]).unwrap();
+        assert!(receiver.receive_chunk("test", 0, &large_bytes[..CHUNK_BYTES]).is_err());
+        assert!(!temp.0.join("test/chunk-0").exists()); assert!(temp.0.join("test/complete").exists());
+        receiver.cancel("other").unwrap();
+        fs::write(temp.0.join("test/complete.tmp"), b"stale").unwrap();
+        receiver.receive_chunk("test", 0, &large_bytes[..CHUNK_BYTES]).unwrap();
+        assert!(!temp.0.join("test/complete").exists()); assert!(!temp.0.join("test/complete.tmp").exists());
+        assert_eq!(fs::read(temp.0.join("test/chunk-0")).unwrap(), &large_bytes[..CHUNK_BYTES]);
+    }
     #[test] fn real_disk_resume_and_final_hash() {
         let temp = Temp::new(); let bytes: Vec<u8> = (0..CHUNK_BYTES * 3 + 7).map(|i| (i % 251) as u8).collect();
         let receiver = FileReceiver::open(&temp.0).unwrap(); receiver.offer(&manifest(&bytes)).unwrap();
@@ -213,6 +337,8 @@ mod tests {
         r.offer(&manifest(b"a")).unwrap();
         let mut other = manifest(b"b"); other.transfer_id = "other".into(); r.offer(&other).unwrap();
         r.cancel("test").unwrap(); assert!(!temp.0.join("test").exists());
+        r.cancel("test").unwrap(); r.cancel("never-allocated").unwrap();
+        assert!(r.cancel("../other").is_err());
         assert_eq!(r.missing("other").unwrap(), vec![0]);
     }
     #[test] fn restart_cleans_staging_and_reuses_completed_file() {

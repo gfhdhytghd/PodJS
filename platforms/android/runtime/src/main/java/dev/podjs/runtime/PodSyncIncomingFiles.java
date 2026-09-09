@@ -150,8 +150,13 @@ public final class PodSyncIncomingFiles implements Closeable {
         });
     }
     public Offer cancel(String peer, String id) throws Exception {
+        return cancel(peer,id,true);
+    }
+    Offer cancelUnfinished(String peer,String id) throws Exception { return cancel(peer,id,false); }
+    private Offer cancel(String peer,String id,boolean removeCompleted) throws Exception {
         return locked(() -> {
             Offer offer=require(peer,id); if(offer.phase.equals("cancelled")) return offer;
+            if(!removeCompleted && offer.phase.equals("complete")) throw new IllegalStateException("Completed file must be removed explicitly");
             if(offer.phase.equals("offered")) { phase(offer,"cancelled"); return require(peer,id); }
             phase(offer,"cancelling"); recoverOne(require(peer,id)); return require(peer,id);
         });
@@ -179,6 +184,48 @@ public final class PodSyncIncomingFiles implements Closeable {
         });
     }
     public Offer status(String peer, String id) throws Exception { return locked(() -> require(peer,id)); }
+    /** Does not grant consent or recover accepting/cancelling intents. */
+    JSONObject serviceStatus(String peer,String id) throws Exception {
+        return locked(() -> {
+            Offer offer=require(peer,id); long total=offer.manifest.getLong("size"), received=0;
+            boolean known=offer.phase.equals("accepted") || offer.phase.equals("complete");
+            String state=offer.phase.equals("offered")?"offered":offer.phase.equals("cancelled")?"cancelled":"transferring";
+            if(known) {
+                JSONArray missing=nativeCommand(peer,command("missing",id)).getJSONArray("missing");
+                long absent=0; java.util.HashSet<Integer> seen=new java.util.HashSet<>();
+                int count=offer.manifest.getJSONArray("chunk_hashes").length();
+                for(int n=0;n<missing.length();n++) {
+                    Object raw=missing.get(n);
+                    if(!(raw instanceof Number)) throw new IOException("Invalid missing chunk index");
+                    int index=((Number)raw).intValue();
+                    if(((Number)raw).doubleValue()!=index || index<0 || index>=count || !seen.add(index)) throw new IOException("Invalid missing chunk index");
+                    absent+=Math.min(65536L,total-index*65536L);
+                }
+                received=total-absent;
+                if(offer.phase.equals("complete")) state=missing.length()==0?"complete":"failed";
+            }
+            return new JSONObject().put("transferId",id).put("state",state).put("totalBytes",total)
+                .put("receivedBytes",received).put("progressKnown",known);
+        });
+    }
+    java.util.List<Offer> findTransfer(String id) throws Exception {
+        identity(id); return locked(() -> {
+            ArrayList<Offer> result=new ArrayList<>();
+            try(Cursor rows=db.rawQuery("SELECT peer,id,phase,manifest FROM offers WHERE id=? ORDER BY peer LIMIT 2",new String[]{id})) {
+                while(rows.moveToNext()) result.add(new Offer(rows));
+            }
+            return result;
+        });
+    }
+    java.util.List<String> transferIdsAfter(String after) throws Exception {
+        return locked(() -> {
+            ArrayList<String> result=new ArrayList<>();
+            try(Cursor rows=db.rawQuery("SELECT DISTINCT id FROM offers WHERE id>? ORDER BY id LIMIT 64",new String[]{after})) {
+                while(rows.moveToNext()) result.add(rows.getString(0));
+            }
+            return result;
+        });
+    }
     /** Host-only recovery inventory, including accepted and terminal transfers.
      * Does not recover intents, open native receivers or imply fresh consent. */
     public java.util.List<Offer> list() throws Exception {

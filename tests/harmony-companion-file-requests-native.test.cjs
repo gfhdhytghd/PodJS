@@ -5,7 +5,13 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { createHash, randomUUID } = require('node:crypto');
 const api = require(process.argv[2]);
-const { CompanionFileRequests, CompanionFileRequest } = require(process.argv[3]);
+const { CompanionFileRequests, CompanionFileRequest, CompanionOutgoingTransfers } = require(process.argv[3]);
+function registry(root) {
+  return new CompanionOutgoingTransfers('app', 'phone', {
+    read: () => api.companionOutgoingTransfersRead(root, 'app'),
+    compareExchange: (old, next) => api.companionOutgoingTransfersCompareExchange(root, 'app', old, next),
+  });
+}
 function queue(root) {
   return new CompanionFileRequests('app', 'phone', {
     read: () => api.companionFileRequestsRead(root, 'app'),
@@ -13,6 +19,12 @@ function queue(root) {
   }, { sha256: async bytes => new Uint8Array(createHash('sha256').update(bytes).digest()), messageId: async () => randomUUID() });
 }
 async function main() {
+  if (process.argv[4] === 'registry') {
+    const sdk = registry(process.argv[5]);
+    assert.equal((await sdk.list())[0].manifest.transfer_id, 'file');
+    await sdk.observeMissing('watch', 'file', []);
+    await sdk.transition('watch', 'file', 'cancel_requested'); return;
+  }
   if (process.argv[4] === 'reply') {
     const sdk = queue(process.argv[5]), pending = await sdk.next('watch'); assert.ok(pending);
     assert.equal(JSON.parse(new TextDecoder().decode(pending.payload)).method, 'chunk');
@@ -31,6 +43,14 @@ async function main() {
     await api.companionOutboxCompareExchange(root, 'app', null, '{"outbox":true}');
     const sdk = queue(root), request = new CompanionFileRequest(); request.method = 'chunk'; request.transfer_id = 'file'; request.data = new Uint8Array(65536).fill(255);
     const pending = await sdk.enqueue('watch', request); assert.deepEqual(await queue(root).next('watch'), pending);
+    await registry(root).register('watch', { transfer_id: 'file', size: 0, sha256: 'a'.repeat(64), chunk_hashes: [], mime: '' });
+    const registryChild = spawnSync(process.execPath, [__filename, process.argv[2], process.argv[3], 'registry', root], { encoding: 'utf8' });
+    assert.equal(registryChild.status, 0, registryChild.stderr);
+    assert.equal((await registry(root).list())[0].phase, 'cancel_requested');
+    assert.equal((await registry(root).list())[0].progressKnown, true);
+    assert.equal(await api.companionOutgoingTransfersRead(root, 'other'), null);
+    assert.equal(await api.companionOutgoingTransfersCompareExchange(root, 'app', null, '{}'), false);
+    assert.deepEqual(await queue(root).next('watch'), pending);
     assert.equal(await api.companionFileRequestsRead(root, 'other'), null);
     assert.equal(await api.companionFileRequestsCompareExchange(root, 'app', null, '{}'), false);
     const journal = path.join(root, 'podjs-companion-file-requests-app', 'journal.json');

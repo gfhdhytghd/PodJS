@@ -1,4 +1,5 @@
 import { expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
 import { CompanionState, type CompanionStatePort } from '../platforms/harmony/entry/src/main/ets/CompanionState';
 import { SyncStateStore, type StateSnapshot } from '../packages/framework/src/sync-state';
 class Port implements CompanionStatePort {
@@ -16,6 +17,22 @@ class Port implements CompanionStatePort {
     return true;
   }
 }
+test('state acknowledgement query is read-only, excludes unacknowledged changes and returns own peer cursor', async () => {
+  const port = new Port(); let id = 0;
+  const sdk = new CompanionState('app', 'phone', port, {
+    async sha256(text) { return createHash('sha256').update(text).digest('hex'); }, async messageId() { return 'id-' + ++id; }
+  });
+  await sdk.set('key', 1); const before = port.values.get('app');
+  expect(await sdk.acknowledgement('__proto__')).toEqual({ synchronized: false, appliedCursor: 0 });
+  expect(port.values.get('app')).toBe(before);
+  const batch = (await sdk.prepare('__proto__'))!;
+  expect((await sdk.acknowledgement('__proto__')).synchronized).toBe(false);
+  await sdk.acknowledgeAuthenticated('__proto__', batch.messageId, batch.to, batch.digest);
+  expect((await sdk.acknowledgement('__proto__')).synchronized).toBe(true);
+  await sdk.receiveAuthenticated('__proto__', 0, 1, []);
+  expect(await sdk.acknowledgement('__proto__')).toEqual({ synchronized: true, appliedCursor: 1 });
+  await sdk.delete('key'); expect((await sdk.acknowledgement('__proto__')).synchronized).toBe(false);
+});
 test('Harmony SDK merges the same entries and tombstones as the reference engine', async () => {
   const port = new Port(), sdk = new CompanionState('app', 'phone', port);
   let saved: StateSnapshot | undefined;

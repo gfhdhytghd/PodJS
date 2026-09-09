@@ -1,5 +1,6 @@
 #define PODJS_FILE_STORAGE_HOST_TEST
 #include "../platforms/harmony/companion/src/main/cpp/incoming_file_storage.h"
+#include "../platforms/harmony/entry/src/main/cpp/guest_storage.h"
 #include <cassert>
 #include <filesystem>
 #include <fstream>
@@ -30,6 +31,33 @@ int main() {
       assert(reopened.missing("phone", manifest).empty()); reopened.finish("phone", manifest);
       std::ifstream input(root + "/podjs-companion-incoming-app/peer-phone/file/complete", std::ios::binary);
       std::vector<unsigned char> actual((std::istreambuf_iterator<char>(input)), {}); assert(actual == data);
+      const auto guest = root + "/podjs-guest";
+      assert(mkdir(guest.c_str(), 0700) == 0); assert(mkdir((guest + "/files").c_str(), 0700) == 0);
+      assert(mkdir((guest + "/files/received").c_str(), 0700) == 0);
+      reopened.saveComplete("phone", manifest, "received/file.bin");
+      { pod_guest::IoGate frame(root); pod_guest::IoGuard executing(&frame); assert(executing.held());
+        rejects([&] { reopened.saveComplete("phone", manifest, "received/blocked.bin"); });
+        assert(!std::filesystem::exists(guest + "/files/received/blocked.bin")); }
+      assert(chmod((guest + "/files/received/file.bin").c_str(), 0644) == 0);
+      reopened.saveComplete("phone", manifest, "received/file.bin");
+      std::ifstream saved(guest + "/files/received/file.bin", std::ios::binary);
+      std::vector<unsigned char> savedBytes((std::istreambuf_iterator<char>(saved)), {}); assert(savedBytes == data);
+      for (const auto& unsafe : {"../escape", "/absolute", "received/../escape", "received//x", "received/", "x\\y"})
+        rejects([&] { reopened.saveComplete("phone", manifest, unsafe); });
+      { std::ofstream conflict(guest + "/files/received/conflict"); conflict << "existing"; }
+      assert(chmod((guest + "/files/received/conflict").c_str(), 0600) == 0);
+      rejects([&] { reopened.saveComplete("phone", manifest, "received/conflict"); });
+      assert(std::filesystem::file_size(guest + "/files/received/conflict") == 8);
+      assert(symlink("file.bin", (guest + "/files/received/link").c_str()) == 0);
+      rejects([&] { reopened.saveComplete("phone", manifest, "received/link"); });
+      assert(unlink((guest + "/files/received/link").c_str()) == 0);
+      assert(symlink("received", (guest + "/files/linked-dir").c_str()) == 0);
+      rejects([&] { reopened.saveComplete("phone", manifest, "linked-dir/copy"); });
+      assert(unlink((guest + "/files/linked-dir").c_str()) == 0);
+      { std::ofstream stale(guest + "/sync-save/pending"); stale << "interrupted"; }
+      assert(chmod((guest + "/sync-save/pending").c_str(), 0600) == 0);
+      reopened.saveComplete("phone", manifest, "received/file.bin");
+      assert(!std::filesystem::exists(guest + "/sync-save/pending"));
       auto different = manifest; different.descriptor = "changed"; rejects([&] { reopened.reserve("phone", different); });
       rejects([&] { reopened.reserve("../escape", manifest); });
       auto wrongWhole = manifest; wrongWhole.id = "wrong"; wrongWhole.sha256 = std::string(64, '0');

@@ -1,4 +1,5 @@
-export { CompanionState, CompanionStateEntry, CompanionStateSnapshot, CompanionStateBatch, CompanionStateReceipt } from './src/main/ets/CompanionState';
+export { CompanionState, CompanionStateEntry, CompanionStateSnapshot, CompanionStateBatch, CompanionStateReceipt, CompanionStateAcknowledgement, encodeCompanionJson } from './src/main/ets/CompanionState';
+export { CompanionStateWait } from './src/main/ets/CompanionMessageTransport';
 export type { CompanionStatePort, CompanionStateCrypto } from './src/main/ets/CompanionState';
 export { NativeCompanionStateCas, createCompanionState } from './src/main/ets/NativeCompanionState';
 export { CompanionStateAck, encodeStateAck, decodeStateAck } from './src/main/ets/CompanionStateAck';
@@ -35,14 +36,20 @@ export { CompanionFileRequests, CompanionPendingFileRequest, CompanionFileReques
 export { NativeCompanionFileRequestsStore, createCompanionFileRequests } from './src/main/ets/NativeCompanionFileRequests';
 export { CompanionFilePump, CompanionFilePumpResult, CompanionFileReceiver } from './src/main/ets/CompanionFilePump';
 export { CompanionFileChannels } from './src/main/ets/CompanionFilePump';
-export { CompanionIncomingFiles, CompanionIncomingFilePort, CompanionIncomingFileOffer } from './src/main/ets/CompanionIncomingFiles';
+export { CompanionIncomingFiles, CompanionIncomingFilePort, CompanionIncomingFileOffer, CompanionIncomingFileStatus } from './src/main/ets/CompanionIncomingFiles';
 export { createCompanionIncomingFiles } from './src/main/ets/NativeCompanionIncomingFiles';
 export { CompanionIncomingFilesPanel } from './src/main/ets/CompanionIncomingFilesPanel';
 export { CompanionFileSender, CompanionFileSource } from './src/main/ets/CompanionFileSender';
 export { NativeCompanionClient } from './src/main/ets/NativeCompanionClient';
 export { CompanionOutgoingFiles, CompanionOutgoingFile, CompanionStoredFileSource } from './src/main/ets/CompanionOutgoingFiles';
 export { createCompanionOutgoingFiles } from './src/main/ets/NativeCompanionOutgoingFiles';
+export { CompanionOutgoingTransfers, CompanionOutgoingTransfer } from './src/main/ets/CompanionOutgoingTransfers';
+export { CompanionFileIdentity, resolveCompanionFileIdentity } from './src/main/ets/CompanionFileIdentity';
+export { CompanionRegisteredFileSender } from './src/main/ets/CompanionRegisteredFileSender';
+export { CompanionRegisteredFileDriver, CompanionRegisteredFileClient, CompanionRegisteredFileTransport } from './src/main/ets/CompanionRegisteredFileDriver';
+export { NativeCompanionOutgoingTransfersStore, createCompanionOutgoingTransfers } from './src/main/ets/NativeCompanionOutgoingTransfers';
 export { importCompanionFile, CompanionImportCrypto, CompanionStreamingDigest } from './src/main/ets/CompanionFileImporter';
+export { NativeCompanionGuestFile, openCompanionGuestFile } from './src/main/ets/NativeCompanionGuestFile';
 export { pickCompanionFile } from './src/main/ets/NativeCompanionFilePicker';
 export { NativeCompanionHuks } from './src/main/ets/NativeCompanionHuks';
 export { NativeCompanionPairingStore } from './src/main/ets/NativeCompanionPairingStore';

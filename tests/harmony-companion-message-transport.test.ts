@@ -13,6 +13,11 @@ import { CompanionFileRequest } from '../platforms/harmony/companion/src/main/et
 import { CompanionFileManifest } from '../platforms/harmony/companion/src/main/ets/CompanionFileWire';
 import { CompanionFileSender } from '../platforms/harmony/companion/src/main/ets/CompanionFileSender';
 import { CompanionFileValue } from '../platforms/harmony/companion/src/main/ets/CompanionFileReply';
+import { CompanionIncomingFiles, CompanionIncomingFilePort } from '../platforms/harmony/companion/src/main/ets/CompanionIncomingFiles';
+import { CompanionOutgoingTransfers } from '../platforms/harmony/companion/src/main/ets/CompanionOutgoingTransfers';
+import { CompanionRegisteredFileSender } from '../platforms/harmony/companion/src/main/ets/CompanionRegisteredFileSender';
+import { CompanionRegisteredFileDriver } from '../platforms/harmony/companion/src/main/ets/CompanionRegisteredFileDriver';
+import { SyncMessageInbox } from '../platforms/harmony/entry/src/main/ets/SyncMessageInbox';
 class Store {
   raw: string | null = null;
   async read(): Promise<string | null> { return this.raw; }
@@ -36,9 +41,9 @@ const crypto = {
   async sha256(bytes: Uint8Array) { return new Uint8Array(createHash('sha256').update(bytes).digest()); },
   async hmacSha256(key: Uint8Array, bytes: Uint8Array) { return new Uint8Array(createHmac('sha256', key).update(bytes).digest()); }
 };
-async function peers(mixed = false, receive?: (request: CompanionFileRequest) => Promise<CompanionFileValue>) {
+async function peers(mixed = false, receive?: (request: CompanionFileRequest) => Promise<CompanionFileValue>, approved?: string[]) {
   const binding = new CompanionSyncBinding('app', 'phone', 'watch', Array(32).fill(1), Array(32).fill(2));
-  const grants = mixed ? ['state', 'message', 'ack', 'file'] : ['message', 'ack'];
+  const grants = approved ?? (mixed ? ['state', 'message', 'ack', 'file'] : ['message', 'ack']);
   const a = new CompanionSyncSession(new Uint8Array(32).fill(7), binding, true, grants, crypto);
   const b = new CompanionSyncSession(new Uint8Array(32).fill(7), binding, false, grants, crypto);
   await a.authenticate(await b.proof()); await b.authenticate(await a.proof());
@@ -61,6 +66,126 @@ async function peers(mixed = false, receive?: (request: CompanionFileRequest) =>
   return { x, y, outA, inB, aStore, bStore, timer, left, right, stateA, stateB, requests };
 }
 async function until(check: () => Promise<boolean>) { for (let i = 0; i < 100; i++) { if (await check()) return; await new Promise(resolve => setTimeout(resolve, 0)); } throw new Error('test progress timeout'); }
+test('guest durable business ACK immediately drains sender over the existing authenticated session', async () => {
+  const p = await peers(true);
+  const delivery = new SyncMessageInbox(async () => p.inB, () => 2, () => true, applied => p.y.acknowledge(applied));
+  try {
+    await p.outA.enqueue('watch', 'guest-ack', new CompanionMessageEnvelope(1000, false, new TextEncoder().encode('{"ok":true}')), 2);
+    await p.x.sendNext(); await until(async () => (await p.inB.pending(2, 100)).length === 1);
+    expect(await p.outA.pending('watch', 2, 100)).toHaveLength(1); expect(p.right.sent).toHaveLength(0);
+    delivery.setActive(true); await delivery.pump(); await delivery.acknowledge('phone', 'guest-ack', () => true);
+    await until(async () => (await p.outA.pending('watch', 2, 100)).length === 0);
+    expect(await p.inB.pending(2, 100)).toHaveLength(0);
+    expect(p.left.sent).toEqual([1]); expect(p.right.sent).toEqual([1]);
+  } finally { delivery.setActive(false); p.x.close(); p.y.close(); }
+});
+test('shared state barrier waits for durable ACKs across batches and cancellation leaves other waiters live', async () => {
+  const p = await peers(true, undefined, ['state', 'ack']); let release!: () => void;
+  const gate = new Promise<void>(done => { release = done; }), write = p.right.write.bind(p.right);
+  p.right.write = async bytes => { await gate; await write(bytes); };
+  try {
+    for (let i = 0; i < 513; i++) await p.stateA.set('key-' + i.toString().padStart(3, '0'), i);
+    const first = p.x.synchronizeState(), second = p.x.synchronizeState();
+    let completed = false; const done = second.done.then(value => { completed = true; return value; });
+    await until(async () => await p.stateB.get('key-000') === 0);
+    expect(completed).toBe(false); expect((await p.stateA.acknowledgement('watch')).synchronized).toBe(false);
+    first.cancel(); await expect(first.done).rejects.toThrow('cancelled'); expect(p.left.closed).toBe(false);
+    release(); expect(await done).toBe(0);
+    expect(await p.stateB.get('key-512')).toBe(512);
+    expect((await p.stateA.acknowledgement('watch')).synchronized).toBe(true);
+    await p.stateA.set('later', true); expect(await p.x.synchronizeState().done).toBe(0);
+    expect(await p.stateB.get('later')).toBe(true);
+  } finally { release(); p.x.close(); p.y.close(); }
+});
+test('state wait timeout removes only its waiter and later ACK can complete a new barrier', async () => {
+  const p = await peers(true, undefined, ['state', 'ack']); let release!: () => void;
+  const gate = new Promise<void>(done => { release = done; }), write = p.right.write.bind(p.right);
+  p.right.write = async bytes => { await gate; await write(bytes); };
+  try {
+    await p.stateA.set('key', 1); const wait = p.x.synchronizeState(100);
+    await until(async () => await p.stateB.get('key') === 1);
+    p.timer.expire(); await expect(wait.done).rejects.toThrow('deadline'); expect(p.left.closed).toBe(false);
+    release(); expect(await p.x.synchronizeState().done).toBe(0);
+    const last = p.x.synchronizeState(); p.x.close(); await expect(last.done).rejects.toThrow('closed');
+  } finally { release(); p.x.close(); p.y.close(); }
+});
+test('state wait capacity is bounded and cancelling waiters releases their slots', async () => {
+  const p = await peers(true, undefined, ['state', 'ack']);
+  try {
+    const waits = Array.from({ length: 8 }, () => p.x.synchronizeState());
+    expect(() => p.x.synchronizeState()).toThrow('capacity');
+    for (const wait of waits) wait.cancel();
+    expect((await Promise.allSettled(waits.map(wait => wait.done))).every(result => result.status === 'rejected')).toBe(true);
+    expect(await p.x.synchronizeState().done).toBe(0);
+  } finally { p.x.close(); p.y.close(); }
+});
+test('state-only authenticated transport skips other channels without reading their queues', async () => {
+  const p = await peers(true, undefined, ['state', 'ack']);
+  try {
+    let messageReads = 0; p.aStore.read = async () => { messageReads++; throw Error('unauthorized message read'); };
+    await p.stateA.set('allowed', 1); p.x.driveOutgoing();
+    await until(async () => await p.stateB.get('allowed') === 1);
+    expect(messageReads).toBe(0);
+    await expect(p.x.sendNext()).rejects.toThrow('not authorized');
+    await expect(p.x.sendFile()).rejects.toThrow('not authorized');
+    expect(messageReads).toBe(0);
+    await p.stateA.set('still-connected', 2);
+    await until(async () => await p.stateB.get('still-connected') === 2);
+    expect(p.left.closed).toBe(false);
+    p.x.close(); await expect(p.x.sendState()).rejects.toThrow('stopped');
+  } finally { p.x.close(); p.y.close(); }
+});
+test('registered driver sends full file after consent then cancels next task over authenticated transport', async () => {
+  let journal: string | null = null, tail = Promise.resolve();
+  const chunks = new Map<string, Uint8Array>(), allocations: string[] = [];
+  const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+  const port: CompanionIncomingFilePort = {
+    exclusive<T>(work: () => Promise<T>): Promise<T> { const result = tail.then(work); tail = result.then(() => {}, () => {}); return result; },
+    async readJournal() { return journal; }, async writeJournal(value) { journal = value; },
+    async reserve(_peer, manifest) { allocations.push(manifest.transfer_id); },
+    async remove(_peer, manifest) { for (let i = 0; i < manifest.chunk_hashes.length; i++) chunks.delete(manifest.transfer_id + ':' + i); },
+    async writeChunk(_peer, manifest, index, bytes) { chunks.set(manifest.transfer_id + ':' + index, bytes.slice()); },
+    async missing(_peer, manifest) { return manifest.chunk_hashes.map((_, i) => i).filter(i => !chunks.has(manifest.transfer_id + ':' + i)); },
+    async finish(_peer, manifest) {
+      const bytes = Buffer.concat(manifest.chunk_hashes.map((_, i) => chunks.get(manifest.transfer_id + ':' + i)!));
+      if (hash(bytes) !== manifest.sha256) throw Error('file bytes differ');
+    },
+    async readCompleteChunk(_peer, manifest, index) { return chunks.get(manifest.transfer_id + ':' + index)!.slice(); }
+  };
+  const incoming = new CompanionIncomingFiles('app', 'watch', port, crypto);
+  const p = await peers(true, request => incoming.executeAuthenticated('phone', request));
+  const registry = new CompanionOutgoingTransfers('app', 'phone', new Store());
+  const bytes = Uint8Array.from({ length: 65539 }, (_, i) => i % 251);
+  const first = new CompanionFileManifest(); first.transfer_id = 'first'; first.size = bytes.length;
+  first.sha256 = hash(bytes); first.chunk_hashes = [hash(bytes.slice(0, 65536)), hash(bytes.slice(65536))];
+  const second = new CompanionFileManifest(); second.transfer_id = 'second'; second.sha256 = hash(new Uint8Array());
+  await registry.register('watch', first); await registry.register('watch', second);
+  await registry.transition('watch', 'second', 'cancel_requested');
+  const driver = new CompanionRegisteredFileDriver({
+    fileRequests: p.requests, outgoingTransfers: registry,
+    async createRegisteredFileSender(peer, id) {
+      const manifest = (await registry.list()).find(record => record.manifest.transfer_id === id)!.manifest;
+      return new CompanionRegisteredFileSender(p.requests, peer, manifest, {
+        async readChunk(index) { expect(id).toBe('first'); return bytes.slice(index * 65536, (index + 1) * 65536); }
+      }, crypto, registry);
+    }
+  }, p.x, 'watch');
+  try {
+    await driver.step(); await until(async () => p.x.fileStatus() === 'waiting_consent');
+    expect(allocations).toEqual([]); expect(chunks.size).toBe(0);
+    await incoming.acceptLocal('phone', 'first'); await driver.step();
+    await until(async () => p.x.fileStatus() === 'complete');
+    expect((await registry.list())[0].phase).toBe('complete');
+    expect((await incoming.statusLocal('phone', 'first')).phase).toBe('complete');
+    expect(Buffer.concat([chunks.get('first:0')!, chunks.get('first:1')!])).toEqual(Buffer.from(bytes));
+    expect(await p.requests.terminal('watch')).toBeNull();
+    await driver.step(); await until(async () => p.x.fileStatus() === 'cancelled');
+    expect((await registry.list())[1].phase).toBe('cancelled');
+    expect((await incoming.statusLocal('phone', 'second')).phase).toBe('cancelled');
+    expect(allocations.includes('second')).toBe(false);
+    expect(await driver.step()).toBe('idle'); expect(await p.requests.terminal('watch')).toBeNull();
+  } finally { driver.close(); p.x.close(); p.y.close(); }
+});
 test('opt-in outgoing driver advances state batches and queued messages without polling or implicit business ACK', async () => {
   const p = await peers(true);
   try {

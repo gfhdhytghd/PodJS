@@ -8,6 +8,10 @@
 #include <string>
 #include <vector>
 #include <cstring>
+#include <cerrno>
+#include <unistd.h>
+#include <sys/syscall.h>
+#include <linux/fs.h>
 #include "podjs_runtime.h"
 #include "vulkan_renderer.h"
 
@@ -31,6 +35,22 @@ struct Host {
   bool frameFailed = false;
 };
 static void fail(JNIEnv* env, const char* message) { jclass c = env->FindClass("java/lang/IllegalStateException"); env->ThrowNew(c, message); }
+
+extern "C" JNIEXPORT jint JNICALL Java_dev_podjs_runtime_PodSyncGuestFiles_publishNoReplace(
+    JNIEnv* env,jclass,jint from,jbyteArray source,jint to,jbyteArray target) {
+  auto component=[env](jbyteArray bytes,std::string& result) {
+    if(!bytes)return false;
+    jsize size=env->GetArrayLength(bytes); if(size<1||size>4096)return false;
+    result.resize(size);env->GetByteArrayRegion(bytes,0,size,reinterpret_cast<jbyte*>(result.data()));
+    return !env->ExceptionCheck() && result!="." && result!=".." && result.find('/')==std::string::npos && result.find('\0')==std::string::npos;
+  };
+  std::string a,b;if(from<0||to<0||!component(source,a)||!component(target,b))return EINVAL;
+#ifdef __NR_renameat2
+  return syscall(__NR_renameat2,from,a.c_str(),to,b.c_str(),RENAME_NOREPLACE)==0?0:errno;
+#else
+  return ENOSYS;
+#endif
+}
 
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeAccessibilityEnabled(JNIEnv*,jclass,jlong p,jboolean enabled) {
   auto* h=reinterpret_cast<Host*>(p); if(h)pod_runtime_set_accessibility_enabled(h->runtime,enabled?1:0);
@@ -166,7 +186,7 @@ extern "C" JNIEXPORT jlong JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeC
   const char* t = env->GetStringUTFChars(target, nullptr); const char* d = env->GetStringUTFChars(dataDir, nullptr);
   if (std::string(t) != "android-watch" && std::string(t) != "wearos-watch") { fail(env, "PodJS target mismatch"); return 0; }
   ANativeWindow* window = ANativeWindow_fromSurface(env, surface);
-const char* capabilities = "[\"input.touch\",\"input.rotary\",\"data.kv\",\"device.haptics\",\"host.lifecycle\",\"host.theme\",\"display.round\",\"input.back\",\"net.http\",\"data.fs\",\"data.sqlite\",\"input.text\",\"data.secure\",\"crypto.basic\",\"data.files.chunks\",\"media.audio\",\"media.tts\",\"media.video\",\"runtime.timer\",\"data.images\",\"system.browser.auth\",\"net.download\",\"system.browser\",\"background.scheduled\",\"notification.local\"]";
+const char* capabilities = "[\"input.touch\",\"input.rotary\",\"data.kv\",\"device.haptics\",\"host.lifecycle\",\"host.theme\",\"display.round\",\"input.back\",\"net.http\",\"data.fs\",\"data.sqlite\",\"input.text\",\"data.secure\",\"crypto.basic\",\"data.files.chunks\",\"media.audio\",\"media.tts\",\"media.video\",\"runtime.timer\",\"data.images\",\"system.browser.auth\",\"net.download\",\"system.browser\",\"background.scheduled\",\"notification.local\",\"companion.sync.state\",\"companion.sync.message\",\"companion.sync.file\"]";
   PodRuntimeConfig config{sizeof(config), t, PODJS_RUNTIME_ABI_VERSION, 2, (uint32_t)width, (uint32_t)height,
       density, POD_DISPLAY_ROUND, 0, 0, 0, 0, d, capabilities};
   auto host = std::make_unique<Host>(); host->runtime = pod_runtime_create(&config);

@@ -12,6 +12,26 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class PodSyncOutgoingFilesTest {
+    @Test public void progressCountsOnlyDurablePeerReceiptsIncludingShortFinalChunk() throws Exception {
+        String app=UUID.randomUUID().toString(); PodSyncFileSnapshots snapshots=new PodSyncFileSnapshots(context(),app);
+        File source=File.createTempFile("progress-",".bin",context().getCacheDir()); Files.write(source.toPath(),new byte[65539]);
+        String id;
+        try { id=snapshots.create(source,"application/octet-stream").getString("transfer_id"); } finally { Files.delete(source.toPath()); }
+        try(PodSyncFileRequests queue=new PodSyncFileRequests(context(),app); PodSyncOutgoingFiles files=new PodSyncOutgoingFiles(queue,snapshots)) {
+            assertFalse(files.start("watch",id).progressKnown);
+            PodSyncFileRequests.Request offer=files.advance("watch",false); queue.receive("watch",offer.messageId,reply(offer,"accepted"));
+            PodSyncFileRequests.Request missing=files.advance("watch",false);
+            JSONObject response=reply(missing,"accepted"); response.getJSONObject("value").put("missing",new org.json.JSONArray().put(0).put(1));
+            queue.receive("watch",missing.messageId,response);
+            PodSyncFileRequests.Request first=files.advance("watch",false);
+            assertTrue(files.status("watch",id).progressKnown); assertEquals(0,files.status("watch",id).acknowledgedBytes);
+            queue.receive("watch",first.messageId,reply(first,"accepted"));
+            PodSyncFileRequests.Request last=files.advance("watch",false);
+            assertEquals(65536,files.status("watch",id).acknowledgedBytes);
+            queue.receive("watch",last.messageId,reply(last,"accepted")); files.advance("watch",false);
+            assertEquals(65539,files.status("watch",id).acknowledgedBytes); assertEquals("finish",files.status("watch",id).phase);
+        }
+    }
     private Context context() { return InstrumentationRegistry.getInstrumentation().getTargetContext(); }
     private String snapshot(PodSyncFileSnapshots snapshots) throws Exception {
         File source=File.createTempFile("transfer-",".bin",context().getCacheDir()); Files.write(source.toPath(),new byte[]{1,2,3});

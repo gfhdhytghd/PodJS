@@ -22,6 +22,7 @@
 #include "journal_napi.h"
 #include "background_napi.h"
 #include "background_store_napi.h"
+#include "guest_storage.h"
 
 namespace {
 struct EffectSignal {
@@ -34,6 +35,7 @@ struct Host {
   std::mutex mutex;
   OH_NativeXComponent* component = nullptr;
   PodRuntime* runtime = nullptr;
+  std::unique_ptr<pod_guest::IoGate> guestIo;
   pod_host::RuntimeEvents events;
   EffectSignal* effectSignal = nullptr;
   GlesRenderer renderer;
@@ -54,6 +56,8 @@ struct Host {
 
   bool frame() {
     if (!runtime || !surfaceAvailable || !surfaceVisible) return false;
+    pod_guest::IoGuard fileIo(guestIo.get());
+    if (!fileIo.held()) return false;
     const int32_t rotaryPrimary = rotaryPrimaryMillidegrees;
     rotaryPrimaryMillidegrees = 0;
     PodInputFrame input{sizeof(input), 0, 0, touches.data(),
@@ -412,11 +416,11 @@ napi_value preflight(napi_env env, napi_callback_info info) {
 }
 
 napi_value boot(napi_env env, napi_callback_info info) {
-  size_t count = 3;
-  napi_value args[3]{};
+  size_t count = 4;
+  napi_value args[4]{};
   napi_get_cb_info(env, info, &count, args, nullptr, nullptr);
-  if (count != 3) {
-    napi_throw_type_error(env, nullptr, "boot requires JS, pak and manifest assets");
+  if (count != 4) {
+    napi_throw_type_error(env, nullptr, "boot requires JS, pak, manifest assets and host filesDir");
     return nullptr;
   }
   const uint8_t* js = nullptr;
@@ -435,10 +439,27 @@ napi_value boot(napi_env env, napi_callback_info info) {
     napi_throw_error(env, nullptr, "PodJS runtime is already booted");
     return nullptr;
   }
+  size_t directoryLength = 0;
+  if (napi_get_value_string_utf8(env, args[3], nullptr, 0, &directoryLength) != napi_ok ||
+      directoryLength == 0 || directoryLength > 4096) {
+    napi_throw_type_error(env, nullptr, "Invalid host filesDir"); return nullptr;
+  }
+  std::vector<char> directory(directoryLength + 1);
+  if (napi_get_value_string_utf8(env, args[3], directory.data(), directory.size(), &directoryLength) != napi_ok) return nullptr;
+  std::string dataDirectory;
+  std::unique_ptr<pod_guest::IoGate> guestIo;
+  try {
+    const std::string filesDir(directory.data(), directoryLength);
+    dataDirectory = pod_guest::openStorage(filesDir);
+    guestIo = std::make_unique<pod_guest::IoGate>(filesDir);
+  }
+  catch (const std::exception&) { napi_throw_error(env, nullptr, "Cannot initialize private guest storage"); return nullptr; }
+  pod_guest::IoGuard fileIo(guestIo.get());
+  if (!fileIo.held()) { napi_throw_error(env, nullptr, "Guest file IO is busy"); return nullptr; }
   const std::string capabilities = pod_host::capabilitiesJson();
   PodRuntimeConfig config{sizeof(config), "harmonyos-watch", PODJS_RUNTIME_ABI_VERSION, 2,
                           g_host.width, g_host.height, 2.0f, POD_DISPLAY_ROUND,
-                          0, 0, 0, 0, nullptr, capabilities.c_str()};
+                          0, 0, 0, 0, dataDirectory.c_str(), capabilities.c_str()};
   std::unique_ptr<PodRuntime, decltype(&pod_runtime_destroy)> runtime(
       pod_runtime_create(&config), pod_runtime_destroy);
   if (!runtime || pod_runtime_load_pak(runtime.get(), pak, pakLength) != 0 ||
@@ -448,13 +469,14 @@ napi_value boot(napi_env env, napi_callback_info info) {
     return nullptr;
   }
   g_host.runtime = runtime.release();
+  g_host.guestIo = std::move(guestIo);
   if (g_host.accessibilityBound) pod_runtime_set_accessibility_enabled(g_host.runtime, 1);
   g_host.logicalWidth = pod_runtime_logical_width(g_host.runtime);
   g_host.logicalHeight = pod_runtime_logical_height(g_host.runtime);
   g_host.framebuffer.resize(
       static_cast<size_t>(g_host.logicalWidth) * GlesRenderer::kRasterScale *
       g_host.logicalHeight * GlesRenderer::kRasterScale * 4);
-  g_host.frame();
+  fileIo.release(); g_host.frame();
   lock.unlock(); pod_a11y::flush();
   return boolean(env, true);
 }

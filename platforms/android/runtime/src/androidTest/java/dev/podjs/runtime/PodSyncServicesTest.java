@@ -15,6 +15,89 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class PodSyncServicesTest {
+    @Test public void stateEventsEmitChangesAndTombstonesWithoutRepeatingUnchangedSnapshot() throws Exception {
+        try(PodSyncClient client=new PodSyncClient(context(),UUID.randomUUID().toString(),"watch")) {
+            PodSyncServices services=new PodSyncServices(client,Collections.singleton("companion.sync.state"),null);
+            assertEquals(0,services.stateEvents().length());
+            client.setState("key",JSONObject.NULL);
+            org.json.JSONArray initial=services.stateEvents(); assertEquals(1,initial.length());
+            assertEquals("sync.state.changed",initial.getJSONObject(0).getString("t"));
+            assertEquals(0,services.stateEvents().length());
+            client.deleteState("key");
+            assertTrue(services.stateEvents().getJSONObject(0).getJSONObject("value").getBoolean("deleted"));
+            assertEquals(0,services.stateEvents().length());
+            assertEquals(0,new PodSyncServices(client,Collections.emptySet(),null).stateEvents().length());
+        }
+    }
+    @Test public void invalidFirstPageDoesNotStarveLaterMessage() throws Exception {
+        String app=UUID.randomUUID().toString(); long now=System.currentTimeMillis();
+        try(PodSyncClient client=new PodSyncClient(context(),app,"watch"); PodSyncInbox inbox=new PodSyncInbox(context(),app)) {
+            for(int i=0;i<100;i++) inbox.receive("phone","bad"+i,new byte[]{(byte)0xff},now+60000,true,now);
+            inbox.receive("phone","valid",new byte[]{'1'},now+60000,false,now);
+            PodSyncServices services=new PodSyncServices(client,Collections.singleton("companion.sync.message"),null);
+            assertEquals(0,services.messageEvents(now).length());
+            assertEquals("valid",services.messageEvents(now).getJSONObject(0).getJSONObject("value").getJSONObject("message").getString("messageId"));
+            assertEquals(0,services.messageEvents(now).length());
+        }
+    }
+    @Test public void approvedServicePumpDeliversMessageOnGuestSink() throws Exception {
+        String app=UUID.randomUUID().toString(); long now=System.currentTimeMillis();
+        try(PodSyncClient client=new PodSyncClient(context(),app,"watch"); PodSyncInbox inbox=new PodSyncInbox(context(),app)) {
+            inbox.receive("phone","sink","null".getBytes(java.nio.charset.StandardCharsets.UTF_8),now+60000,false,now);
+            CountDownLatch received=new CountDownLatch(1); AtomicReference<JSONObject> event=new AtomicReference<>();
+            PodServices services=new PodServices(context(),line->{
+                try { JSONObject parsed=new JSONObject(line); if("sync.message.received".equals(parsed.optString("t"))) {event.set(parsed);received.countDown();} }
+                catch(Exception error) { throw new RuntimeException(error); }
+            });
+            try {
+                services.attachApprovedSync(new PodSyncServices(client,Collections.singleton("companion.sync.message"),null));
+                services.pumpNotifications(); assertTrue(received.await(5,TimeUnit.SECONDS));
+                assertTrue(event.get().getJSONObject("value").getJSONObject("message").isNull("payload"));
+                assertEquals(1,client.receivedMessages(now).size());
+            } finally { services.close(); }
+        }
+    }
+    @Test public void messageEventsRedeliverJsonWithoutAcknowledgingInvalidPayloads() throws Exception {
+        String app=UUID.randomUUID().toString(); long now=System.currentTimeMillis();
+        try(PodSyncClient client=new PodSyncClient(context(),app,"watch"); PodSyncInbox inbox=new PodSyncInbox(context(),app)) {
+            inbox.receive("phone","good","{\"text\":\"hello\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8),now+60000,true,now);
+            inbox.receive("phone","bad","{unquoted:1}".getBytes(java.nio.charset.StandardCharsets.UTF_8),now+60000,false,now);
+            inbox.receive("phone","trailing","null,true".getBytes(java.nio.charset.StandardCharsets.UTF_8),now+60000,false,now);
+            PodSyncServices denied=new PodSyncServices(client,Collections.emptySet(),null);
+            assertEquals(0,denied.messageEvents(now).length());
+            PodSyncServices services=new PodSyncServices(client,Collections.singleton("companion.sync.message"),null);
+            org.json.JSONArray events=services.messageEvents(now);
+            assertEquals(1,events.length()); assertEquals("sync.message.received",events.getJSONObject(0).getString("t"));
+            JSONObject value=events.getJSONObject(0).getJSONObject("value");
+            assertEquals("phone",value.getString("peerId"));
+            assertEquals("hello",value.getJSONObject("message").getJSONObject("payload").getString("text"));
+            assertEquals(60000,value.getJSONObject("message").getLong("ttlMs"));
+            assertEquals(1,services.messageEvents(now+1).length());
+            assertEquals(3,client.receivedMessages(now).size());
+            services.execute("sync.messages.ack",new JSONObject().put("peerId","phone").put("messageId","good"),new CancellationSignal());
+            assertEquals(0,services.messageEvents(now).length()); assertEquals(2,client.receivedMessages(now).size());
+        }
+    }
+    @Test public void ackRequiresExposedDeliveryAndPersistsRetryableBusinessReceipt() throws Exception {
+        String app=UUID.randomUUID().toString(); long now=System.currentTimeMillis();
+        try(PodSyncClient client=new PodSyncClient(context(),app,"watch"); PodSyncInbox inbox=new PodSyncInbox(context(),app)) {
+            inbox.receive("phone","message",new byte[]{1},now+60000,false,now);
+            PodSyncServices services=new PodSyncServices(client,Collections.singleton("companion.sync.message"),null);
+            JSONObject args=new JSONObject().put("peerId","phone").put("messageId","message");
+            try { services.execute("sync.messages.ack",args,new CancellationSignal()); fail("Unseen delivery acknowledged"); }
+            catch(IllegalArgumentException expected) { }
+            PodSyncInbox.Message delivery=client.receivedMessages(now).get(0);
+            services.exposeMessage(delivery,now); delivery.payload[0]=9;
+            CancellationSignal cancelled=new CancellationSignal(); cancelled.cancel();
+            try { services.execute("sync.messages.ack",args,cancelled); fail("Cancelled acknowledgement"); }
+            catch(OperationCanceledException expected) { }
+            assertEquals(1,client.receivedMessages(now).size());
+            services.execute("sync.messages.ack",args,new CancellationSignal());
+            services.execute("sync.messages.ack",args,new CancellationSignal());
+            assertTrue(client.receivedMessages(now).isEmpty());
+            assertEquals(PodSyncInbox.Delivery.APPLIED,inbox.receive("phone","message",new byte[]{1},now+60000,false,now));
+        }
+    }
     private Context context() { return InstrumentationRegistry.getInstrumentation().getTargetContext(); }
     @Test public void dispatchUsesApprovedOwnerAndReturnsExactDurableStateAndTombstone() throws Exception {
         String app=UUID.randomUUID().toString();

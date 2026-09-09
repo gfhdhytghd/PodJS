@@ -18,11 +18,15 @@ export interface CompanionIncomingFilePort {
   missing(peer: string, manifest: CompanionFileManifest): Promise<number[]>;
   finish(peer: string, manifest: CompanionFileManifest): Promise<void>;
   readCompleteChunk(peer: string, manifest: CompanionFileManifest, index: number): Promise<Uint8Array>;
+  saveComplete?(peer: string, manifest: CompanionFileManifest, path: string): Promise<void>;
 }
 export class CompanionIncomingFileOffer {
   peer: string = '';
   manifest: CompanionFileManifest = new CompanionFileManifest();
   phase: string = 'offered';
+}
+export class CompanionIncomingFileStatus extends CompanionIncomingFileOffer {
+  receivedBytes: number = 0;
 }
 class IncomingJournal {
   schema: number = 1;
@@ -94,6 +98,26 @@ export class CompanionIncomingFiles implements CompanionFileReceiver {
   listLocal(): Promise<CompanionIncomingFileOffer[]> {
     return this.port.exclusive(async () => (await this.load()).offers);
   }
+  /** Read-only progress from verified chunks; never grants consent or allocates.
+   * A damaged completed copy is not reported complete just from its journal. */
+  statusLocal(peer: string, id: string): Promise<CompanionIncomingFileStatus> {
+    identity(peer);
+    return this.port.exclusive(async () => {
+      const offer = this.find(await this.load(), peer, id), result = new CompanionIncomingFileStatus();
+      result.peer = offer.peer; result.manifest = manifestCopy(offer.manifest); result.phase = offer.phase;
+      if (offer.phase === 'accepted' || offer.phase === 'complete') {
+        const missing = await this.port.missing(peer, manifestCopy(offer.manifest));
+        let previous = -1, absent = 0;
+        for (const index of missing) {
+          if (!Number.isInteger(index) || index <= previous || index >= offer.manifest.chunk_hashes.length) throw new Error('invalid backend missing chunks');
+          previous = index; absent += Math.min(65536, offer.manifest.size - index * 65536);
+        }
+        result.receivedBytes = offer.manifest.size - absent;
+        if (result.phase === 'complete' && missing.length > 0) result.phase = 'accepted';
+      }
+      return result;
+    });
+  }
   private async cancel(journal: IncomingJournal, offer: CompanionIncomingFileOffer): Promise<void> {
     if (offer.phase === 'offered') await this.phase(journal, offer, 'cancelled');
     else if (offer.phase !== 'cancelled') {
@@ -107,6 +131,16 @@ export class CompanionIncomingFiles implements CompanionFileReceiver {
       const journal = await this.load(); await this.cancel(journal, this.find(journal, peer, id));
     });
   }
+  /** Guest cancellation must not delete an already completed local artifact.
+   * Check and cancellation share the same file-store lock. */
+  cancelUnfinishedLocal(peer: string, id: string): Promise<void> {
+    identity(peer);
+    return this.port.exclusive(async () => {
+      const journal = await this.load(), offer = this.find(journal, peer, id);
+      if (offer.phase === 'complete') return;
+      await this.cancel(journal, offer);
+    });
+  }
   /** Local consumption only; the authenticated remote command set cannot read files. */
   readCompleteChunk(peer: string, id: string, index: number): Promise<Uint8Array> {
     identity(peer);
@@ -115,6 +149,15 @@ export class CompanionIncomingFiles implements CompanionFileReceiver {
       if (offer.phase !== 'complete') throw new Error('incoming file not complete');
       if (!Number.isInteger(index) || index < 0 || index >= offer.manifest.chunk_hashes.length) throw new Error('invalid completed chunk index');
       return this.port.readCompleteChunk(peer, manifestCopy(offer.manifest), index);
+    });
+  }
+  saveCompleteLocal(peer: string, id: string, path: string): Promise<void> {
+    identity(peer);
+    return this.port.exclusive(async () => {
+      const offer = this.find(await this.load(), peer, id);
+      if (offer.phase !== 'complete') throw new Error('Incoming file not complete');
+      if (!this.port.saveComplete) throw new Error('Guest save unavailable');
+      await this.port.saveComplete(peer, manifestCopy(offer.manifest), path);
     });
   }
   acceptLocal(peer: string, id: string): Promise<void> {

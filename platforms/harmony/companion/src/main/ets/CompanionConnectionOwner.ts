@@ -49,14 +49,17 @@ export class CompanionConnectionOwner {
     try { this.client.close(); } catch (_) {}
   }
   async connect(attempt: CompanionPairedAttempt, app: string, local: string, peer: string,
-    initiator: boolean, durationMs: number = 120000): Promise<CompanionMessageTransport> {
+    initiator: boolean, durationMs: number = 120000, channels: string[] = ['state', 'message', 'file', 'ack']): Promise<CompanionMessageTransport> {
     if (this.attempt !== null || this.transport !== null) throw new Error('companion connection already active');
     if (!Number.isInteger(durationMs) || durationMs < 100 || durationMs > 120000) throw new Error('invalid foreground connection duration');
+    if (!Array.isArray(channels) || channels.length < 2 || channels.length > 4 || new Set(channels).size !== channels.length ||
+      !channels.includes('ack') || !channels.every((channel: string) => ['state', 'message', 'file', 'ack'].includes(channel))) throw new Error('invalid foreground channel grants');
+    const grants = channels.slice();
     const epoch = ++this.generation; this.attempt = attempt;
     this.publish('connecting', peer, '');
     try {
       if (epoch !== this.generation) throw new Error('companion connection cancelled');
-      const connection = await attempt.start(app, local, peer, initiator, ['state', 'message', 'file', 'ack']);
+      const connection = await attempt.start(app, local, peer, initiator, grants);
       if (epoch !== this.generation) { connection.close(); throw new Error('late companion connection'); }
       this.connection = connection;
       const transport = this.client.attach(connection, durationMs); this.transport = transport;

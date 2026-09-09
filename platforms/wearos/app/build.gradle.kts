@@ -7,7 +7,13 @@ val podDistDir = providers.gradleProperty("podDistDir").orElse("../../../dist/we
 android {
     androidResources { noCompress += "pak" }
     namespace = "dev.podjs.wear"; compileSdk = 36
-    defaultConfig { applicationId = podAppId; minSdk = 30; targetSdk = 36; versionCode = podVersionCode; versionName = podVersionName; manifestPlaceholders["podAppName"] = podAppName }
+    defaultConfig { applicationId = podAppId; minSdk = 30; targetSdk = 36; versionCode = podVersionCode; versionName = podVersionName; manifestPlaceholders["podAppName"] = podAppName; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     sourceSets["main"].assets.srcDir(podDistDir)
+    providers.gradleProperty("podTestSourceDir").orNull?.let { sourceSets["androidTest"].java.srcDir(it) }
 }
-dependencies { implementation(project(":runtime")) }
+dependencies {
+    implementation(project(":runtime"))
+    androidTestImplementation("androidx.test:core:1.7.0")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    androidTestImplementation("androidx.test:runner:1.7.0")
+}

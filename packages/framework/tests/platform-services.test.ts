@@ -29,7 +29,7 @@ test("notification inbox acknowledges only successful subscriber delivery", asyn
 test("unimplemented native capabilities are not advertised by any target", () => {
   for (const target of Object.values(POD_TARGETS)) {
     for (const capability of Object.values(platformMethods)) {
-      if (["background.scheduled", "notification.local"].includes(capability) && ["android-watch", "wearos-watch"].includes(target.id)) {
+      if (["background.scheduled", "notification.local", "companion.sync.state", "companion.sync.message", "companion.sync.file"].includes(capability) && ["android-watch", "wearos-watch"].includes(target.id)) {
         expect(target.capabilities).toContain(capability);
       } else expect(target.capabilities).not.toContain(capability);
     }
@@ -40,7 +40,7 @@ test("new APIs fail closed without a supporting host", async () => {
   const commands: string[] = [];
   (globalThis as { pod?: unknown }).pod = { takeEvents: () => undefined, capabilities: () => "[]", emit: (s: string) => commands.push(s) };
   try {
-    const operations = [syncState.get("x"), syncFiles.status("transfer"), syncMessages.send("phone", { messageId: "m1", payload: null, ttlMs: 1000, priority: "normal" }), notifications.schedule({ id: "n", title: "Hello", body: "World" }), notifications.registerRemote(), background.register({ id: "b", handler: "refresh", earliestAt: 0 })];
+    const operations = [syncState.get("x"), syncFiles.status("transfer"), syncFiles.save("transfer", "received.bin"), syncMessages.send("phone", { messageId: "m1", payload: null, ttlMs: 1000, priority: "normal" }), notifications.schedule({ id: "n", title: "Hello", body: "World" }), notifications.registerRemote(), background.register({ id: "b", handler: "refresh", earliestAt: 0 })];
     for (const operation of operations) await expect(operation.result).rejects.toMatchObject({ code: "unsupported" });
     expect(commands).toEqual([]);
     expect(() => syncState.subscribe(() => {})).toThrow("companion.sync.state");

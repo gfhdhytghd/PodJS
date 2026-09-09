@@ -47,6 +47,25 @@ async function main() {
     await run('finish');
     assert.deepEqual(await run('missing'), []);
     const completed = path.join(root, 'podjs-companion-incoming-app/peer-phone/file/complete');
+    fs.mkdirSync(path.join(root, 'podjs-guest'), { mode: 0o700 });
+    fs.mkdirSync(path.join(root, 'podjs-guest/files'), { mode: 0o700 });
+    await run('saveComplete', { text: 'saved.bin' });
+    await run('saveComplete', { text: 'saved.bin' });
+    assert.deepEqual(fs.readFileSync(path.join(root, 'podjs-guest/files/saved.bin')), Buffer.from(bytes));
+    const source = await native.guestFileOpen(root, 'saved.bin');
+    assert.equal(native.guestFileSize(source), bytes.length);
+    assert.deepEqual(await native.incomingFilesRun(source, { method: 'readGuestChunk', index: 0 }), chunks[0]);
+    assert.deepEqual(await native.incomingFilesRun(source, { method: 'readGuestChunk', index: 1 }), chunks[1]);
+    await assert.rejects(native.guestFileOpen(root, 'saved.bin'), /already active/);
+    await assert.rejects(run('saveComplete', { text: 'blocked.bin' }), /already active/);
+    await assert.rejects(native.incomingFilesRun(source, { method: 'readJournal' }), /storage lease/);
+    await assert.rejects(native.incomingFilesRun(source, { method: 'readGuestChunk', index: 2 }), /index/);
+    const sourceRead = native.incomingFilesRun(source, { method: 'readGuestChunk', index: 0 });
+    native.incomingFilesClose(source); await assert.rejects(sourceRead, /closed/);
+    assert.throws(() => native.guestFileSize(source), /closed/);
+    const reopenedSource = await native.guestFileOpen(root, 'saved.bin'); native.incomingFilesClose(reopenedSource);
+    await assert.rejects(native.guestFileOpen(root, '../escape'), /path/);
+    await assert.rejects(run('saveComplete', { text: '../escape' }), /path/);
     assert.deepEqual(fs.readFileSync(completed), Buffer.from(bytes));
     assert.deepEqual(await run('readCompleteChunk', { index: 0 }), chunks[0]);
     assert.deepEqual(await run('readCompleteChunk', { index: 1 }), chunks[1]);
@@ -54,6 +73,7 @@ async function main() {
     const fd = fs.openSync(completed, 'r+');
     try { fs.writeSync(fd, Buffer.from([255]), 0, 1, 65536); } finally { fs.closeSync(fd); }
     await assert.rejects(run('readCompleteChunk', { index: 1 }), /hash mismatch/);
+    await assert.rejects(run('saveComplete', { text: 'corrupt.bin' }), /verification/);
     await assert.rejects(run('reserve', { manifest: { ...manifest, mime: 'changed' } }));
     assert.throws(() => run('chunk', { index: NaN, data: chunks[0] }), /number/);
     await run('remove');
@@ -75,6 +95,7 @@ async function main() {
     const directory = path.join(root, 'podjs-companion-incoming-lifecycle/peer-phone/file');
     assert.equal(fs.existsSync(directory), false);
     await assert.rejects(receiver.readCompleteChunk('phone', 'file', 0), /not complete/);
+    await assert.rejects(receiver.saveCompleteLocal('phone', 'file', 'sdk.bin'), /not complete/);
     await assert.rejects(receiver.executeAuthenticated('phone', command('missing')), /not accepted/);
     await receiver.acceptLocal('phone', 'file');
     await receiver.executeAuthenticated('phone', command('chunk', { index: 0, data: chunks[0] }));
@@ -82,6 +103,27 @@ async function main() {
     assert.deepEqual((await receiver.executeAuthenticated('phone', command('missing'))).missing, [1]);
     await receiver.executeAuthenticated('phone', command('chunk', { index: 1, data: chunks[1] }));
     assert.equal((await receiver.executeAuthenticated('phone', command('finish'))).phase, 'complete');
+    await receiver.saveCompleteLocal('phone', 'file', 'sdk.bin');
+    assert.deepEqual(fs.readFileSync(path.join(root, 'podjs-guest/files/sdk.bin')), Buffer.from(bytes));
+    const { CompanionOutgoingFiles: GuestOutgoingFiles, importCompanionFile: importGuestCopy } = require(process.argv[3]);
+    const sourceHandle = await native.guestFileOpen(root, 'sdk.bin');
+    const outgoingFiles = new GuestOutgoingFiles('lifecycle', new CompanionIncomingNativePort({
+      incomingFilesOpen: (root, app) => native.outgoingFilesOpen(root, app),
+      incomingFilesClose: handle => native.incomingFilesClose(handle),
+      incomingFilesRun: (handle, request) => native.incomingFilesRun(handle, request)
+    }, root, 'lifecycle'));
+    try {
+      const copy = await importGuestCopy(outgoingFiles, {
+        readChunk: index => native.incomingFilesRun(sourceHandle, { method: 'readGuestChunk', index })
+      }, {
+        async sha256(data) { return new Uint8Array(createHash('sha256').update(data).digest()); },
+        streamingSha256() { const digest = createHash('sha256'); return { async update(data) { digest.update(data); }, async finish() { return new Uint8Array(digest.digest()); } }; }
+      }, 'guest-copy', native.guestFileSize(sourceHandle), 'application/octet-stream');
+      assert.equal(copy.sha256, manifest.sha256);
+    } finally { native.incomingFilesClose(sourceHandle); }
+    fs.writeFileSync(path.join(root, 'podjs-guest/files/sdk.bin'), 'changed after lease release');
+    assert.deepEqual(await outgoingFiles.readChunk('guest-copy', 0), chunks[0]);
+    assert.deepEqual(await outgoingFiles.readChunk('guest-copy', 1), chunks[1]);
     assert.deepEqual(fs.readFileSync(path.join(directory, 'complete')), Buffer.from(bytes));
     assert.deepEqual(await receiver.readCompleteChunk('phone', 'file', 0), chunks[0]);
     assert.deepEqual(await receiver.readCompleteChunk('phone', 'file', 1), chunks[1]);
@@ -182,6 +224,83 @@ async function main() {
     await importCompanionFile(resumedImports, { async readChunk(index) { reads++; return chunks[index]; } }, importCrypto, 'resume', bytes.length, '');
     assert.equal(reads, 3);
     assert.deepEqual(await resumedImports.readChunk('resume', 1), chunks[1]);
+    const freshImports = new CompanionOutgoingFiles('freshimports', sourcePort('freshimports'));
+    reads = 0;
+    await assert.rejects(importCompanionFile(freshImports, { async readChunk(index) {
+      reads++; return reads > 2 ? new Uint8Array(chunks[index].length) : chunks[index];
+    } }, importCrypto, 'changed', bytes.length, '', () => false, true), /content changed/);
+    assert.equal((await freshImports.list())[0].phase, 'removed');
+    assert.equal(fs.existsSync(path.join(root, 'podjs-companion-outgoing-freshimports/peer-source/changed')), false);
+    const freshManifest = { ...manifest, transfer_id: 'exclusive' };
+    await assert.rejects(freshImports.importFresh(freshManifest, async put => {
+      await put(0, chunks[0]);
+      await assert.rejects(new CompanionOutgoingFiles('freshimports', sourcePort('freshimports')).recover(), /already owned/);
+      throw new Error('source interrupted');
+    }), /source interrupted/);
+    assert.equal((await freshImports.list()).find(file => file.manifest.transfer_id === 'exclusive').phase, 'removed');
+    const freshSuccess = await importCompanionFile(freshImports, { async readChunk(index) { return chunks[index]; } },
+      importCrypto, 'success', bytes.length, '', () => false, true);
+    assert.equal(freshSuccess.sha256, manifest.sha256);
+    assert.deepEqual(await freshImports.readChunk('success', 1), chunks[1]);
+    let latePut;
+    await freshImports.importFresh({ ...manifest, transfer_id: 'latewriter' }, async put => {
+      latePut = put; await put(0, chunks[0]); await put(1, chunks[1]);
+    });
+    await assert.rejects(latePut(0, chunks[0]), /writer closed/);
+    // Kill the importer with its OS lease still held and one durable chunk.
+    const child = require('node:child_process').spawnSync(process.execPath, ['-e', `
+      const native = require(process.argv[1]);
+      const { CompanionIncomingNativePort, CompanionOutgoingFiles } = require(process.argv[2]);
+      const data = new Uint8Array([1, 2, 3]);
+      const hash = require('node:crypto').createHash('sha256').update(data).digest('hex');
+      const port = new CompanionIncomingNativePort({ incomingFilesOpen: native.outgoingFilesOpen,
+        incomingFilesClose: native.incomingFilesClose, incomingFilesRun: native.incomingFilesRun }, process.argv[3], 'crashimport');
+      new CompanionOutgoingFiles('crashimport', port).importFresh({ transfer_id: 'crashed', size: 3, mime: '', sha256: hash, chunk_hashes: [hash] },
+        async put => { await put(0, data); process.exit(27); }).catch(error => { console.error(error); process.exit(1); });
+    `, process.argv[2], process.argv[3], root], { encoding: 'utf8', timeout: 10000 });
+    assert.equal(child.status, 27, child.stderr);
+    const crashedImports = new CompanionOutgoingFiles('crashimport', sourcePort('crashimport'));
+    assert.equal((await crashedImports.list())[0].phase, 'importing');
+    await crashedImports.recover(); assert.equal((await crashedImports.list())[0].phase, 'removed');
+    assert.equal(fs.existsSync(path.join(root, 'podjs-companion-outgoing-crashimport/peer-source/crashed')), false);
+    const { CompanionOutgoingTransfers } = require(process.argv[3]);
+    const registrationStore = app => new CompanionOutgoingTransfers(app, 'watch', {
+      read: () => native.companionOutgoingTransfersRead(root, app),
+      compareExchange: (expected, desired) => native.companionOutgoingTransfersCompareExchange(root, app, expected, desired)
+    });
+    const registration = registrationStore('registeredimport');
+    const registeredImports = new CompanionOutgoingFiles('registeredimport', sourcePort('registeredimport'), registration);
+    const register = registration.register.bind(registration);
+    registration.register = async (...args) => { await register(...args); throw new Error('lost registration result'); };
+    await assert.rejects(importCompanionFile(registeredImports, { async readChunk(index) { return chunks[index]; } },
+      importCrypto, 'uncertain', bytes.length, '', () => false, true, 'phone'), /lost registration result/);
+    assert.equal((await registration.list())[0].phase, 'queued');
+    assert.equal((await registeredImports.list())[0].phase, 'complete');
+    assert.deepEqual(await registeredImports.readChunk('uncertain', 1), chunks[1]);
+    registration.register = async () => { throw new Error('registration unavailable'); };
+    await assert.rejects(importCompanionFile(registeredImports, { async readChunk(index) { return chunks[index]; } },
+      importCrypto, 'unregistered', bytes.length, '', () => false, true, 'phone'), /registration unavailable/);
+    assert.equal((await registeredImports.list()).find(file => file.manifest.transfer_id === 'unregistered').phase, 'removed');
+    const registeredChild = require('node:child_process').spawnSync(process.execPath, ['-e', `
+      const native = require(process.argv[1]);
+      const { CompanionIncomingNativePort, CompanionOutgoingFiles, CompanionOutgoingTransfers } = require(process.argv[2]);
+      const root = process.argv[3], app = 'crashregistered', data = new Uint8Array([1, 2, 3]);
+      const hash = require('node:crypto').createHash('sha256').update(data).digest('hex');
+      const port = new CompanionIncomingNativePort({ incomingFilesOpen: native.outgoingFilesOpen,
+        incomingFilesClose: native.incomingFilesClose, incomingFilesRun: native.incomingFilesRun }, root, app);
+      const registry = new CompanionOutgoingTransfers(app, 'watch', {
+        read: () => native.companionOutgoingTransfersRead(root, app),
+        compareExchange: (expected, desired) => native.companionOutgoingTransfersCompareExchange(root, app, expected, desired) });
+      const register = registry.register.bind(registry);
+      registry.register = async (...args) => { await register(...args); process.exit(28); };
+      new CompanionOutgoingFiles(app, port, registry).importFresh({ transfer_id: 'crashed', size: 3, mime: '', sha256: hash, chunk_hashes: [hash] },
+        async put => { await put(0, data); }, () => false, 'phone').catch(error => { console.error(error); process.exit(1); });
+    `, process.argv[2], process.argv[3], root], { encoding: 'utf8', timeout: 10000 });
+    assert.equal(registeredChild.status, 28, registeredChild.stderr);
+    const registeredRecovery = new CompanionOutgoingFiles('crashregistered', sourcePort('crashregistered'), registrationStore('crashregistered'));
+    assert.equal((await registeredRecovery.list())[0].phase, 'registering');
+    await registeredRecovery.recover(); assert.equal((await registeredRecovery.list())[0].phase, 'complete');
+    assert.deepEqual(await registeredRecovery.readChunk('crashed', 0), new Uint8Array([1, 2, 3]));
     await sourceFiles().prepare(manifest);
     await assert.rejects(sourceFiles().readChunk('file', 0), /not complete/);
     await sourceFiles().writeChunk('file', 0, chunks[0]);

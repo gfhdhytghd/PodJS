@@ -10,7 +10,7 @@ export const journalRead: () => Promise<string | null>;
 export const journalWrite: (json: string) => Promise<void>;
 /** Host steady clock for elapsed-time throttling, independent of wall-clock edits. */
 export const monotonicMillis: () => number;
-export const boot: (js: Uint8Array, pak: Uint8Array, manifest: Uint8Array) => boolean;
+export const boot: (js: Uint8Array, pak: Uint8Array, manifest: Uint8Array, filesDir: string) => boolean;
 export const rotary: (millidegrees: number) => boolean;
 /** Host-only, single consumer. Removes one effect; null means empty/not booted. */
 export const pollEffect: () => string | null;

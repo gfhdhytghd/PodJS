@@ -20,6 +20,7 @@ public class PodSyncClient implements AutoCloseable {
     private final ReentrantReadWriteLock lifetime=new ReentrantReadWriteLock();
     private volatile boolean closing;
     private boolean disposed;
+    public String localDeviceId() { return localId; }
     private enum Topic { STATE, MESSAGES, FILES }
     private final java.util.concurrent.CopyOnWriteArrayList<Subscription> subscriptions=new java.util.concurrent.CopyOnWriteArrayList<>();
     private interface Operation<T> { T run() throws Exception; }
@@ -70,7 +71,8 @@ public class PodSyncClient implements AutoCloseable {
     /** Takes ownership of the connected stream, including on handshake failure.
      * Trusted host supplies the allowed channel subset after app authorization. */
     public Session open(String peer,PodSyncStream stream,boolean initiator,String[] channels) throws Exception {
-        try { return use(()->new Session(resources.connections.open(peer,stream,initiator,channels))); }
+        String[] approved=channels==null?null:channels.clone();
+        try { return use(()->new Session(resources.connections.open(peer,stream,initiator,approved),approved)); }
         catch(Exception error) { try { stream.close(); } catch(Exception cleanup) { error.addSuppressed(cleanup); } throw error; }
     }
     public Object getState(String key) throws Exception { return use(()->resources.state.get(key)); }
@@ -96,10 +98,15 @@ public class PodSyncClient implements AutoCloseable {
     }
     public List<PodSyncOutbox.Message> pendingMessages(String peer,long now) throws Exception { return use(()->resources.outbox.pending(peer,now,100)); }
     public List<PodSyncInbox.Message> receivedMessages(long now) throws Exception { return use(()->resources.inbox.pending(now,100)); }
+    List<PodSyncInbox.Message> receivedMessagePage(long now,int offset) throws Exception { return use(()->resources.inbox.pendingPage(now,100,offset)); }
     /** Offline completion: marks a receipt now; the peer receives its ACK when
      * it retries. Use Session.ackMessage for immediate authenticated delivery. */
     public void ackMessage(PodSyncInbox.Message delivery,long now) throws Exception {
         change(Topic.MESSAGES,()->{ resources.inbox.acknowledge(delivery.peerId,delivery.messageId,delivery.acknowledgementToken(),now); return null; });
+    }
+    PodSyncInbox.Message ackMessageToken(String peer,String messageId,byte[] token,long now) throws Exception {
+        byte[] stable=token.clone();
+        return change(Topic.MESSAGES,()->resources.inbox.acknowledge(peer,messageId,stable,now));
     }
     /** Bounded, coalesced wake-up subscription, not message application or ACK.
      * Runs on the caller's executor. Read receivedMessages and/or pendingMessages in the callback;
@@ -138,26 +145,88 @@ public class PodSyncClient implements AutoCloseable {
         @Override public void close() { active=false; subscriptions.remove(this); }
     }
     public JSONObject snapshotFile(File source,String mime) throws Exception { return change(Topic.FILES,()->{ resources.outgoing.pause(); return resources.snapshots.create(source,mime); }); }
-    public PodSyncOutgoingFiles.Status offerFile(String peer,String snapshotId) throws Exception { return change(Topic.FILES,()->resources.outgoing.start(peer,snapshotId)); }
+    JSONObject snapshotGuestFile(File root,String path,String mime) throws Exception {
+        try(android.os.ParcelFileDescriptor.AutoCloseInputStream input=PodSyncGuestFiles.open(root,path)) {
+            return change(Topic.FILES,()->{ resources.outgoing.pause(); return resources.snapshots.create(input.getChannel(),mime); });
+        }
+    }
+    public PodSyncOutgoingFiles.Status offerFile(String peer,String snapshotId) throws Exception {
+        if(localId.equals(peer)) throw new IllegalArgumentException("Cannot offer file to self");
+        return change(Topic.FILES,()->resources.outgoing.start(peer,snapshotId));
+    }
     public List<String> sourceSnapshots() throws Exception { return use(()->{ resources.outgoing.pause(); return resources.snapshots.inventory(); }); }
     public void releaseSource(String snapshotId) throws Exception { change(Topic.FILES,()->{ resources.outgoing.releaseSnapshot(snapshotId); return null; }); }
     public List<PodSyncOutgoingFiles.Status> outgoingFiles(String peer) throws Exception { return use(()->resources.outgoing.list(peer)); }
+    static final class FileIdentity {
+        final String peerId,transferId; final boolean incoming;
+        FileIdentity(String peer,String id,boolean incoming) { peerId=peer; transferId=id; this.incoming=incoming; }
+    }
+    /** Read-only identity resolution, not file consent. Terminal rows participate
+     * in ambiguity checks; callers must not silently select a newer direction. */
+    FileIdentity resolveFileIdentity(String id) throws Exception {
+        return use(()->{
+            List<PodSyncIncomingFiles.Offer> incoming=resources.incoming.findTransfer(id);
+            List<PodSyncOutgoingFiles.Status> outgoing=resources.outgoing.findTransfer(id);
+            int count=incoming.size()+outgoing.size();
+            if(count==0) throw new IOException("Unknown file transfer");
+            if(count!=1) throw new IllegalArgumentException("Ambiguous file transfer identity");
+            return incoming.isEmpty()?new FileIdentity(outgoing.get(0).peerId,id,false):new FileIdentity(incoming.get(0).peerId,id,true);
+        });
+    }
+    JSONObject fileServiceStatus(String id) throws Exception {
+        FileIdentity identity=resolveFileIdentity(id);
+        return use(()->{
+            if(identity.incoming) return resources.incoming.serviceStatus(identity.peerId,id);
+            PodSyncOutgoingFiles.Status status=resources.outgoing.status(identity.peerId,id);
+            String state=status.phase.equals("complete")?"complete":status.phase.equals("cancelled")?"cancelled":
+                (status.phase.equals("offer") || status.phase.equals("waiting"))?"offered":"transferring";
+            return new JSONObject().put("transferId",id).put("state",state).put("receivedBytes",status.acknowledgedBytes)
+                .put("totalBytes",status.totalBytes).put("progressKnown",status.progressKnown);
+        });
+    }
+    List<String> fileEventIdsAfter(String after) throws Exception {
+        return use(()->{
+            java.util.TreeSet<String> ids=new java.util.TreeSet<>(resources.incoming.transferIdsAfter(after));
+            ids.addAll(resources.outgoing.transferIdsAfter(after));
+            ArrayList<String> result=new ArrayList<>();
+            for(String id:ids) { result.add(id); if(result.size()==64) break; }
+            return result;
+        });
+    }
     public List<PodSyncIncomingFiles.Offer> pendingFileConsent() throws Exception { return use(()->resources.incoming.pendingConsent()); }
     public List<PodSyncIncomingFiles.Offer> incomingFiles() throws Exception { return use(()->resources.incoming.list()); }
     public PodSyncIncomingFiles.Offer incomingFile(String peer,String id) throws Exception { return use(()->resources.incoming.status(peer,id)); }
     /** Local approval only; never call from a remote self-approval request. */
     public void acceptFile(String peer,String id) throws Exception { change(Topic.FILES,()->{ resources.incoming.accept(peer,id); return null; }); }
     public void cancelIncomingFile(String peer,String id) throws Exception { change(Topic.FILES,()->{ resources.incoming.cancel(peer,id); return null; }); }
+    void cancelUnfinishedIncomingFile(String peer,String id) throws Exception { change(Topic.FILES,()->resources.incoming.cancelUnfinished(peer,id)); }
     public void cancelOutgoingFile(String peer,String id) throws Exception { change(Topic.FILES,()->{ resources.outgoing.cancel(peer,id); return null; }); }
     public File completedIncomingFile(String peer,String id) throws Exception { return use(()->resources.incoming.completedFile(peer,id)); }
+    JSONObject saveIncomingFile(String peer,String id,File root,String path,android.os.CancellationSignal cancellation) throws Exception {
+        return use(()->{
+            cancellation.throwIfCanceled();
+            PodSyncIncomingFiles.Offer offer=resources.incoming.status(peer,id);
+            File source=resources.incoming.completedFile(peer,id);
+            PodSyncGuestFiles.save(root,path,source,offer.manifest.getLong("size"),offer.manifest.getString("sha256"),cancellation);
+            return new JSONObject().put("path",path).put("size",offer.manifest.getLong("size"));
+        });
+    }
     public void recoverFileIntents() throws Exception { change(Topic.FILES,()->{ resources.incoming.recover(); return null; }); }
     public final class Session implements AutoCloseable {
         private final PodSyncConnections.Connection connection;
         private final PodSyncChannelPump pump;
-        private Session(PodSyncConnections.Connection connection) {
+        private final java.util.Set<String> channels;
+        private Session(PodSyncConnections.Connection connection,String[] approved) {
             this.connection=connection; pump=new PodSyncChannelPump(connection,resources.state,resources.outbox,resources.inbox,resources.incoming,resources.requests);
+            channels=new java.util.HashSet<>(java.util.Arrays.asList(approved));
         }
+        boolean permits(String channel) { return channels.contains(channel); }
         public String peerId() { return connection.peerId(); }
+        boolean ownedBy(PodSyncClient client) { return PodSyncClient.this==client; }
+        JSONObject acknowledgedStateReceipt() throws Exception {
+            return use(()->resources.state.currentStateAcknowledged(peerId())
+                ? new JSONObject().put("appliedCursor",resources.state.snapshot().getJSONObject("cursors").optLong(peerId(),0)) : null);
+        }
         public boolean sendState() throws Exception { return use(pump::sendState); }
         public boolean sendMessage(long now) throws Exception { return use(()->pump.sendMessage(now)); }
         public boolean sendFile(boolean pollConsent) throws Exception {

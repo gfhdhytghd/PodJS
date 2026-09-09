@@ -1,0 +1,8 @@
+{
+  "entry": "main.tsx",
+  "appId": "dev.podjs.syncboottest",
+  "name": "PodJS Sync Boot Test",
+  "versionName": "0.1.0",
+  "versionCode": 1,
+  "capabilities": ["companion.sync.state", "companion.sync.message", "companion.sync.file", "data.files.chunks"]
+}

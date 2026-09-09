@@ -1,0 +1,5 @@
+module CPodJSSync [system] {
+  header "podjs_sync.h"
+  link "podjs_runtime"
+  export *
+}

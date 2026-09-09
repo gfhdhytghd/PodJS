@@ -123,6 +123,8 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
             accessibilityEnabled = false;
             nativeBootAssets(host, getContext().getAssets());
             services.approveInstalledBackground(targetId);
+            services.approveInstalledSync(targetId);
+            if(companionSettingsRequested) {companionSettingsRequested=false;showCompanionSettings();}
             nativeTheme(host, currentTheme());
             Choreographer.getInstance().removeFrameCallback(frameCallback);
             if (active) Choreographer.getInstance().postFrameCallback(frameCallback);
@@ -292,10 +294,30 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     }
 
     public void setLifecycle(int state) {
+        if(state!=0)companionSettingsRequested=false;
+        if(state!=0 && companionSettings!=null) {companionSettings.close();companionSettings=null;}
+        services.syncForeground(state==0);
         active = state != 2;
         if (host != 0) nativeLifecycle(host, state);
         Choreographer.getInstance().removeFrameCallback(frameCallback);
         if (active) Choreographer.getInstance().postFrameCallback(frameCallback);
+    }
+    /** Native host UI only; pairing approval is a separate prerequisite. */
+    public void connectCompanion(String peer,java.net.InetSocketAddress address,boolean listen,PodSyncHostConnection.Listener listener) {
+        services.connectSync(peer,address,listen,listener);
+    }
+    public static final String ACTION_COMPANION_SETTINGS="dev.podjs.action.COMPANION_SETTINGS";
+    /** Native host only: caller obtains radio permissions and explicit device selection.
+     * A null device is allowed only when listening; radio identity never grants pairing. */
+    public void connectCompanionBle(String peer,android.bluetooth.BluetoothDevice selected,boolean listen,PodSyncHostConnection.Listener listener) {
+        services.connectSyncBle(peer,selected,listen,listener);
+    }
+    private PodSyncSettingsDialog companionSettings;
+    private boolean companionSettingsRequested;
+    public void showCompanionSettings() {
+        if(host==0){companionSettingsRequested=true;return;}
+        if(companionSettings!=null)companionSettings.close();
+        companionSettings=new PodSyncSettingsDialog(getContext(),services);companionSettings.show();
     }
     public boolean sendBack() { return host != 0 && nativeBack(host); }
     public boolean canNavigateBack() { return host != 0 && nativeCanGoBack(host); }

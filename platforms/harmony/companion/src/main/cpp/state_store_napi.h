@@ -54,7 +54,7 @@ inline bool string(napi_env env, napi_value value, size_t limit, std::string& ou
   output.assign(bytes.data(), size);
   return pod_store::utf8(output);
 }
-enum class MessageBox { None, Outbox, Inbox, FileRequests, Pairings };
+enum class MessageBox { None, Outbox, Inbox, FileRequests, Pairings, OutgoingTransfers };
 inline napi_value enqueue(napi_env env, napi_callback_info info, bool compare, bool companion = false, MessageBox box = MessageBox::None) {
   unsigned count = active.load();
   do {
@@ -74,6 +74,7 @@ inline napi_value enqueue(napi_env env, napi_callback_info info, bool compare, b
       if (valid && box == MessageBox::Outbox) job->directory = "podjs-companion-outbox-" + app;
       if (valid && box == MessageBox::Inbox) job->directory = "podjs-companion-inbox-" + app;
       if (valid && box == MessageBox::FileRequests) job->directory = "podjs-companion-file-requests-" + app;
+      if (valid && box == MessageBox::OutgoingTransfers) job->directory = "podjs-companion-outgoing-transfers-" + app;
       if (valid && box == MessageBox::Pairings) job->directory = "podjs-companion-pairings-" + app;
     }
   }
@@ -122,6 +123,8 @@ inline bool install(napi_env env, napi_value exports, bool companionOnly = false
     {"companionInboxRead", nullptr, inboxRead, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"companionInboxCompareExchange", nullptr, inboxCompareExchange, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"companionFileRequestsRead", nullptr, fileRequestsRead, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"companionOutgoingTransfersRead", nullptr, [](napi_env e, napi_callback_info i) { return enqueue(e, i, false, true, MessageBox::OutgoingTransfers); }, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"companionOutgoingTransfersCompareExchange", nullptr, [](napi_env e, napi_callback_info i) { return enqueue(e, i, true, true, MessageBox::OutgoingTransfers); }, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"companionFileRequestsCompareExchange", nullptr, fileRequestsCompareExchange, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"companionPairingsRead", nullptr, [](napi_env e, napi_callback_info i) { return enqueue(e, i, false, true, MessageBox::Pairings); }, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"companionPairingsCompareExchange", nullptr, [](napi_env e, napi_callback_info i) { return enqueue(e, i, true, true, MessageBox::Pairings); }, nullptr, nullptr, nullptr, napi_default, nullptr}

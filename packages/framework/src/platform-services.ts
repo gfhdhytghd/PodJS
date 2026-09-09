@@ -30,6 +30,7 @@ export const syncMessages = {
   subscribe(handler: (event: { peerId: string; message: SyncMessage }) => void) { return subscribe("sync.message.received", "companion.sync.message", handler); },
 };
 export const syncFiles = {
+  save(transferId: string, path: string) { return hostOperation<{ path: string; size: number }>("sync.files.save", { transferId: id(transferId), path }); },
   offer(peerId: string, path: string, mime: string) { return hostOperation<FileTransfer>("sync.files.offer", { peerId: id(peerId), path, mime }); },
   accept(transferId: string) { return hostOperation<FileTransfer>("sync.files.accept", { transferId: id(transferId) }); },
   cancel(transferId: string) { return hostOperation<void>("sync.files.cancel", { transferId: id(transferId) }); },

@@ -34,7 +34,56 @@ final class PodServices implements Closeable {
     private final PodHttpServices http;
     private final PodBrowserServices browser;
     private PodBackgroundServices background;
-    private PodSyncServices sync;
+    private volatile PodSyncServices sync;
+    private volatile PodInstalledSync installedSync;
+    private volatile boolean syncForeground;
+    void syncForeground(boolean active) {
+        syncForeground=active;
+        PodInstalledSync owner=installedSync;
+        if(owner!=null) owner.connection.setForeground(active);
+    }
+    void connectSync(String peer,java.net.InetSocketAddress address,boolean listen,PodSyncHostConnection.Listener listener) {
+        worker.execute(()->{
+            try {
+                if(closed || installedSync==null) throw new IllegalStateException("Installed sync owner unavailable");
+                installedSync.connection.start(peer,address,listen,listener);
+            } catch(Exception unavailable) { main.post(()->{if(!closed)listener.changed("failed","Approved sync connection unavailable");}); }
+        });
+    }
+    void connectSyncBle(String peer,android.bluetooth.BluetoothDevice selected,boolean listen,PodSyncHostConnection.Listener listener) {
+        java.util.Objects.requireNonNull(listener);
+        worker.execute(()->{
+            try {
+                if(closed || installedSync==null) throw new IllegalStateException("Installed sync owner unavailable");
+                installedSync.connection.startBle(context,peer,selected,listen,listener);
+            } catch(Exception unavailable) { main.post(()->{if(!closed)listener.changed("failed","Approved sync connection unavailable");}); }
+        });
+    }
+    void syncIdentity(java.util.function.Consumer<String> callback) {
+        worker.execute(()->{ PodInstalledSync owner=installedSync; String identity=owner==null?null:context.getPackageName()+"\n"+owner.client.localDeviceId();
+            main.post(()->{if(!closed)callback.accept(identity);}); });
+    }
+    void approveSyncPair(String peer,byte[] key,java.util.function.Consumer<Boolean> callback) {
+        byte[] stable=key.clone();
+        try { worker.execute(()->{
+            boolean approved=false;
+            try { if(closed || !syncForeground || installedSync==null) throw new IllegalStateException("Sync unavailable");
+                installedSync.client.authorizeAfterUserApproval(peer,stable); approved=true;
+            } catch(Exception rejected) { /* UI receives no credential-bearing error. */ }
+            finally { java.util.Arrays.fill(stable,(byte)0); }
+            boolean result=approved; main.post(()->{if(!closed)callback.accept(result);});
+        }); } catch(RuntimeException rejected) { java.util.Arrays.fill(stable,(byte)0); throw rejected; }
+    }
+    void disconnectSync() { PodInstalledSync owner=installedSync; if(owner!=null) owner.connection.disconnect(); }
+    void approveInstalledSync(String target) {
+        worker.execute(() -> {
+            if(closed || installedSync!=null) return;
+            try {
+                installedSync=PodInstalledSync.open(context,target);
+                if(installedSync!=null) { sync=installedSync.services; installedSync.connection.setForeground(syncForeground); }
+            } catch(Exception error) { android.util.Log.e("PodJS","Installed sync owner unavailable",error); }
+        });
+    }
     private PodNotifications notifications;
     private final PodNotificationPermission notificationPermission;
     private long notificationPollAt;
@@ -59,6 +108,24 @@ final class PodServices implements Closeable {
         worker.execute(() -> {
             try {
                 if(!closed) {
+                    if(sync!=null) {
+                        PodSyncServices owner=sync;
+                        org.json.JSONArray states=owner.stateEvents();
+                        for(int i=0;i<states.length();i++) {
+                            String event=states.getJSONObject(i).toString();
+                            main.post(() -> {if(!closed && sync==owner)sink.complete(event);});
+                        }
+                        org.json.JSONArray messages=owner.messageEvents(System.currentTimeMillis());
+                        for(int i=0;i<messages.length();i++) {
+                            String event=messages.getJSONObject(i).toString();
+                            main.post(() -> {if(!closed && sync==owner)sink.complete(event);});
+                        }
+                        org.json.JSONArray files=owner.fileEvents();
+                        for(int i=0;i<files.length();i++) {
+                            String event=files.getJSONObject(i).toString();
+                            main.post(() -> {if(!closed && sync==owner)sink.complete(event);});
+                        }
+                    }
                     org.json.JSONArray batch=notifications().pendingEvents();
                     for(int i=0;i<batch.length();i++) {
                         String event=batch.getJSONObject(i).toString();
@@ -316,7 +383,11 @@ final class PodServices implements Closeable {
         browserAuth.close();
         http.close();
         transfers.shutdownNow();
-        worker.execute(() -> { if(database != null) database.close(); if(background!=null) background.close(); if(notifications!=null)notifications.close(); device.close(); });
+        worker.execute(() -> {
+            sync=null;
+            if(installedSync!=null) try { installedSync.close(); } catch(Exception error) {android.util.Log.e("PodJS","Sync owner close failed",error);}
+            if(database != null) database.close(); if(background!=null) background.close(); if(notifications!=null)notifications.close(); device.close();
+        });
         worker.shutdown();
     }
 }

@@ -53,8 +53,15 @@ public final class PodSyncFileSnapshots {
      */
     public JSONObject create(File source,String mime) throws Exception {
         if(source==null || !Files.isRegularFile(source.toPath(),LinkOption.NOFOLLOW_LINKS)) throw new IOException("Snapshot source must be a regular file");
-        String id=UUID.randomUUID().toString();
         try(FileChannel input=FileChannel.open(source.toPath(),StandardOpenOption.READ,LinkOption.NOFOLLOW_LINKS)) {
+            return create(input,mime);
+        }
+    }
+    /** Caller retains the already-authorized descriptor; no path is reopened. */
+    JSONObject create(FileChannel input,String mime) throws Exception {
+        String id=UUID.randomUUID().toString();
+        {
+            input.position(0);
             if(input.size()>16L*1024*1024) throw new IOException("Snapshot source too large");
             MessageDigest total=MessageDigest.getInstance("SHA-256"); JSONArray hashes=new JSONArray();
             byte[] bytes=new byte[65536]; long size=0; int count;

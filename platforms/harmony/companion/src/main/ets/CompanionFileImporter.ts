@@ -19,7 +19,7 @@ function hex(bytes: Uint8Array): string {
  * indexed rereads; cancellation retains staged data for explicit resume/remove. */
 export async function importCompanionFile(files: CompanionOutgoingFiles, source: CompanionFileSource,
   crypto: CompanionImportCrypto, transferId: string, size: number, mime: string,
-  cancelled: () => boolean = () => false): Promise<CompanionFileManifest> {
+  cancelled: () => boolean = () => false, fresh: boolean = false, peer: string = ''): Promise<CompanionFileManifest> {
   const manifest = new CompanionFileManifest(); manifest.transfer_id = transferId; manifest.size = size; manifest.mime = mime;
   // Validate all user metadata before touching the source or allocating storage.
   if (!Number.isSafeInteger(size) || size < 0 || size > 16777216) throw new Error('invalid import size');
@@ -36,6 +36,16 @@ export async function importCompanionFile(files: CompanionOutgoingFiles, source:
     manifest.chunk_hashes[index] = hex(await crypto.sha256(bytes)); check();
   }
   manifest.sha256 = hex(await whole.finish()); check();
+  if (fresh) {
+    await files.importFresh(manifest, async (put: (index: number, bytes: Uint8Array) => Promise<void>) => {
+      for (let index = 0; index < manifest.chunk_hashes.length; index++) {
+        const bytes = await read(index);
+        if (hex(await crypto.sha256(bytes)) !== manifest.chunk_hashes[index]) throw new Error('import source content changed');
+        check(); await put(index, bytes);
+      }
+    }, cancelled, peer);
+    check(); return manifest;
+  }
   await files.prepare(manifest); check();
   for (const index of await files.missing(transferId)) {
     if (!Number.isInteger(index) || index < 0 || index >= manifest.chunk_hashes.length) throw new Error('invalid import missing index');

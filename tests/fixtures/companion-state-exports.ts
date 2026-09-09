@@ -7,6 +7,7 @@ export { CompanionMessageEnvelope } from '../../platforms/harmony/companion/src/
 export { CompanionMessageInbox } from '../../platforms/harmony/companion/src/main/ets/CompanionMessageInbox';
 export { encodeMessageEnvelope } from '../../platforms/harmony/companion/src/main/ets/CompanionMessageWire';
 export { CompanionFileRequests } from '../../platforms/harmony/companion/src/main/ets/CompanionFileRequests';
+export { CompanionOutgoingTransfers } from '../../platforms/harmony/companion/src/main/ets/CompanionOutgoingTransfers';
 export { CompanionIncomingFiles } from '../../platforms/harmony/companion/src/main/ets/CompanionIncomingFiles';
 export { CompanionIncomingNativePort } from '../../platforms/harmony/companion/src/main/ets/CompanionIncomingNativePort';
 export { CompanionFileSender } from '../../platforms/harmony/companion/src/main/ets/CompanionFileSender';

@@ -15,6 +15,49 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class PodSyncIncomingFilesTest {
+    @Test public void fileEventsPageDurableOffersAndDoNotGrantConsent() throws Exception {
+        String app=app();
+        try(PodSyncIncomingFiles files=new PodSyncIncomingFiles(context(),app); PodSyncClient client=new PodSyncClient(context(),app,"watch")) {
+            for(int n=0;n<65;n++) files.offer("phone",manifest(String.format(java.util.Locale.ROOT,"item-%03d",n),new byte[0]));
+            PodSyncServices denied=new PodSyncServices(client,java.util.Collections.emptySet(),null);
+            assertEquals(0,denied.fileEvents().length());
+            PodSyncServices services=new PodSyncServices(client,java.util.Collections.singleton("companion.sync.file"),null);
+            assertEquals(64,services.fileEvents().length());
+            JSONArray last=services.fileEvents(); assertEquals(1,last.length());
+            assertEquals("item-064",last.getJSONObject(0).getJSONObject("value").getString("transferId"));
+            assertEquals(64,services.fileEvents().length()); assertEquals(65,files.pendingConsent().size());
+            services.execute("sync.files.accept",new JSONObject().put("transferId","item-064"),new android.os.CancellationSignal());
+            assertEquals("accepted",files.status("phone","item-064").phase);
+        }
+    }
+    @Test public void serviceStatusDoesNotAcceptOfferAndReportsDurableTailBytesBeforeFinish() throws Exception {
+        String app=app(); byte[] data=new byte[65539];
+        try(PodSyncIncomingFiles files=new PodSyncIncomingFiles(context(),app);
+            PodSyncClient client=new PodSyncClient(context(),app,"watch")) {
+            files.offer("phone",manifest("progress",data));
+            PodSyncServices services=new PodSyncServices(client,java.util.Collections.singleton("companion.sync.file"),null);
+            JSONObject args=new JSONObject().put("transferId","progress");
+            try { services.execute("sync.files.accept",args,new android.os.CancellationSignal()); fail("Unseen file accepted"); }
+            catch(IllegalArgumentException expected) { }
+            JSONObject offered=(JSONObject)services.execute("sync.files.status",args,new android.os.CancellationSignal());
+            assertEquals("offered",offered.getString("state")); assertFalse(offered.getBoolean("progressKnown"));
+            assertEquals("offered",files.status("phone","progress").phase);
+            services.execute("sync.files.accept",args,new android.os.CancellationSignal()); files.chunk("phone","progress",0,new byte[65536]);
+            JSONObject partial=(JSONObject)services.execute("sync.files.status",args,new android.os.CancellationSignal());
+            assertEquals(65536,partial.getLong("receivedBytes")); assertEquals("transferring",partial.getString("state"));
+            files.chunk("phone","progress",1,new byte[3]);
+            assertEquals("transferring",client.fileServiceStatus("progress").getString("state"));
+            files.finish("phone","progress"); JSONObject complete=client.fileServiceStatus("progress");
+            assertEquals(65539,complete.getLong("receivedBytes")); assertEquals("complete",complete.getString("state"));
+            try { services.execute("sync.files.cancel",args,new android.os.CancellationSignal()); fail("Completed file removed by cancel"); }
+            catch(IllegalStateException expected) { }
+            assertTrue(files.completedFile("phone","progress").isFile());
+            files.offer("phone",manifest("cancel",new byte[0])); JSONObject cancelArgs=new JSONObject().put("transferId","cancel");
+            services.execute("sync.files.status",cancelArgs,new android.os.CancellationSignal());
+            services.execute("sync.files.cancel",cancelArgs,new android.os.CancellationSignal());
+            assertEquals("cancelled",files.status("phone","cancel").phase);
+        }
+    }
     @Test public void pendingConsentSurvivesRestartWithoutAcceptingOrLeakingApps() throws Exception {
         String app=app();
         try(PodSyncIncomingFiles files=new PodSyncIncomingFiles(context(),app)) {

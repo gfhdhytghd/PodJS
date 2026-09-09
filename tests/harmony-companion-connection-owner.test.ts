@@ -17,6 +17,18 @@ function fixture() {
   return { owner, attempt, client, raw, transport, counts, resolve: () => resolve(raw), stop };
 }
 const connect = (f: ReturnType<typeof fixture>) => f.owner.connect(f.attempt as any, 'app', 'phone', 'watch', true);
+test('owner snapshots exact host channel grants and rejects invalid grants before handshake', async () => {
+  const f = fixture(), channels = ['state', 'ack']; let observed: string[] = [];
+  f.attempt.start = (...args: any[]) => { observed = args[4]; return Promise.resolve(f.raw); };
+  f.owner.subscribe(status => { if (status.phase === 'connecting') channels.push('file'); });
+  await f.owner.connect(f.attempt as any, 'app', 'phone', 'watch', true, 1000, channels);
+  expect(observed).toEqual(['state', 'ack']); f.owner.disconnect();
+  for (const invalid of [[], ['state'], ['ack'], ['state', 'state', 'ack'], ['unknown', 'ack']]) {
+    const other = fixture(); let starts = 0; other.attempt.start = () => { starts++; return Promise.resolve(other.raw); };
+    await expect(other.owner.connect(other.attempt as any, 'app', 'phone', 'watch', true, 1000, invalid)).rejects.toThrow('grants');
+    expect(starts).toBe(0); expect(other.counts.attach).toBe(0);
+  }
+});
 
 test('owner attaches once, drives outgoing and releases all connection resources', async () => {
   const f = fixture(); const phases: string[] = [];

@@ -8,6 +8,26 @@ const crypto = { async sha256(bytes: Uint8Array) { return new Uint8Array(createH
 const open = (store: Store) => new CompanionFileRequests('app', 'phone', store, crypto);
 function request() { const value = new CompanionFileRequest(); value.method = 'status'; value.transfer_id = 'file'; return value; }
 function reply(digest: string, phase = 'offered') { return new TextEncoder().encode(JSON.stringify({ version: 1, type: 'reply', request_sha256: digest, value: { phase } })); }
+test('transfer identity query spans peers and terminal receipts without exposing mutable storage', async () => {
+  const store = new Store(), queue = open(store);
+  const first = await queue.enqueue('watch', request());
+  await queue.receiveAuthenticated('watch', first.messageId, reply(first.digest, 'complete'));
+  const second = await queue.enqueue('other', request());
+  const unrelated = request(); unrelated.transfer_id = 'unrelated';
+  await queue.enqueue('third', unrelated);
+  const before = store.raw, records = await open(store).recordsForTransfer('file');
+  expect(records.map(record => record.peer)).toEqual(['watch', 'other']);
+  expect(records[0].reply).toEqual(reply(first.digest, 'complete'));
+  expect(records[1]).toEqual(second);
+  records[0].payload.fill(0); records[0].reply!.fill(0); records[1].peer = 'changed';
+  expect((await queue.recordsForTransfer('file'))[1]).toEqual(second);
+  expect(await queue.recordsForTransfer('absent')).toEqual([]);
+  expect(store.raw).toBe(before);
+  expect(() => queue.recordsForTransfer('../invalid')).toThrow('identity');
+  const corrupt = JSON.parse(before!); corrupt.records[2].digest = '0'.repeat(64);
+  store.raw = JSON.stringify(corrupt);
+  await expect(queue.recordsForTransfer('file')).rejects.toThrow('digest mismatch');
+});
 test('file request exact bytes and identity survive reopen; first reply remains stable until explicit consumption', async () => {
   const store = new Store(), queue = open(store), pending = await queue.enqueue('watch', request());
   expect(await open(store).next('watch')).toEqual(pending);

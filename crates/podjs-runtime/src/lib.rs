@@ -7,8 +7,15 @@
 use std::cell::RefCell;
 pub mod sync_files;
 pub mod sync_file_ffi;
+pub mod sync_file_source;
+pub mod sync_cancellation;
+pub mod guest_io;
+pub mod guest_publish;
 pub mod sync_auth;
 pub mod sync_session_ffi;
+pub mod sync_state_ffi;
+pub mod sync_message_ffi;
+pub mod sync_file_wire;
 pub mod background;
 pub mod background_ffi;
 pub mod kv;
@@ -674,11 +681,28 @@ pub extern "C" fn pod_runtime_post_event(runtime: *mut PodRuntime, object: *cons
     let Some(raw) = cstr(object) else {
         return ERR_ARGUMENT;
     };
-    if !serde_json::from_str::<Value>(raw).is_ok_and(|v| v.is_object()) {
+    if raw.len() > 1024 * 1024 || !serde_json::from_str::<Value>(raw).is_ok_and(|v| v.is_object()) {
         return ERR_ARGUMENT;
     }
-    runtime.bridge.borrow_mut().events.push_back(raw.to_owned());
+    let mut bridge = runtime.bridge.borrow_mut();
+    if bridge.events.len() >= 256
+        || bridge.events.iter().map(String::len).sum::<usize>() + raw.len() > 4 * 1024 * 1024
+    {
+        set_error("host event queue full; retain and retry after guest drain");
+        return ERR_STATE;
+    }
+    bridge.events.push_back(raw.to_owned());
     OK
+}
+
+/// Host-side authority query. Configured capabilities alone do not authorize IO
+/// before package validation and successful guest mounting.
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_has_capability(runtime: *mut PodRuntime, name: *const c_char) -> bool {
+    let Ok(runtime) = runtime_mut(runtime) else { return false };
+    let Some(name) = cstr(name) else { return false };
+    runtime.mounted && runtime.package_validated && name.len() <= 128
+        && runtime.capabilities.iter().any(|value| value == name)
 }
 
 #[unsafe(no_mangle)]
@@ -1175,6 +1199,57 @@ mod tests {
         let mut value = config(target);
         value.capabilities_json = capabilities.as_ptr();
         value
+    }
+
+    #[test]
+    fn external_event_admission_is_bounded_and_retry_preserves_fifo() {
+        let target = CString::new("watchos-watch").unwrap();
+        let caps = CString::new("[]").unwrap();
+        let runtime = pod_runtime_create(&valid_config(&target, &caps));
+        assert!(!runtime.is_null());
+        let event = CString::new("{\"t\":\"test\"}").unwrap();
+        for _ in 0..256 { assert_eq!(pod_runtime_post_event(runtime, event.as_ptr()), OK); }
+        let next = CString::new("{\"t\":\"next\"}").unwrap();
+        assert_eq!(pod_runtime_post_event(runtime, next.as_ptr()), ERR_STATE);
+        let bridge = unsafe { &*runtime }.bridge.clone();
+        assert_eq!(bridge.borrow().events.len(), 256);
+        assert_eq!(bridge.borrow_mut().events.pop_front().unwrap(), event.to_str().unwrap());
+        assert_eq!(pod_runtime_post_event(runtime, next.as_ptr()), OK);
+        assert_eq!(bridge.borrow().events.back().unwrap(), next.to_str().unwrap());
+        bridge.borrow_mut().events.clear();
+        let large = CString::new(format!("{{\"x\":\"{}\"}}", "x".repeat(1024 * 1024 - 8))).unwrap();
+        assert_eq!(large.as_bytes().len(), 1024 * 1024);
+        for _ in 0..4 { assert_eq!(pod_runtime_post_event(runtime, large.as_ptr()), OK); }
+        assert_eq!(pod_runtime_post_event(runtime, event.as_ptr()), ERR_STATE);
+        let oversize = CString::new(format!("{{\"x\":\"{}\"}}", "x".repeat(1024 * 1024))).unwrap();
+        assert_eq!(pod_runtime_post_event(runtime, oversize.as_ptr()), ERR_ARGUMENT);
+        assert_eq!(bridge.borrow().events.len(), 4);
+        pod_runtime_destroy(runtime);
+    }
+
+    #[test]
+    fn capability_authority_requires_validated_mounted_guest() {
+        let target = CString::new("watchos-watch").unwrap();
+        let caps = CString::new("[\"companion.sync.file\"]").unwrap();
+        let runtime = pod_runtime_create(&valid_config(&target, &caps));
+        assert!(!runtime.is_null());
+        let name = CString::new("companion.sync.file").unwrap();
+        assert!(!pod_runtime_has_capability(std::ptr::null_mut(), name.as_ptr()));
+        assert!(!pod_runtime_has_capability(runtime, name.as_ptr()));
+        let source = b"globalThis.frame = function() {}";
+        validate(runtime, "watchos-watch", b"pak", source, &["companion.sync.file"]);
+        assert!(!pod_runtime_has_capability(runtime, name.as_ptr()));
+        assert_eq!(pod_runtime_validate_package(runtime, std::ptr::null()), ERR_ARGUMENT);
+        assert!(!pod_runtime_has_capability(runtime, name.as_ptr()));
+        validate(runtime, "watchos-watch", b"pak", source, &["companion.sync.file"]);
+        assert_eq!(pod_runtime_eval_bundle(runtime, source.as_ptr(), source.len(), std::ptr::null()), OK);
+        assert!(pod_runtime_has_capability(runtime, name.as_ptr()));
+        assert!(!pod_runtime_has_capability(runtime, std::ptr::null()));
+        let other = CString::new("companion.sync.message").unwrap();
+        assert!(!pod_runtime_has_capability(runtime, other.as_ptr()));
+        assert_eq!(pod_runtime_validate_package(runtime, std::ptr::null()), ERR_STATE);
+        assert!(pod_runtime_has_capability(runtime, name.as_ptr()));
+        pod_runtime_destroy(runtime);
     }
 
     #[test]

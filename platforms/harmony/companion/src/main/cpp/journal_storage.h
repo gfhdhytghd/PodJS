@@ -77,7 +77,10 @@ class JournalStorage {
     const std::string pairingsPrefix = "podjs-companion-pairings-";
     const bool pairings = directory.rfind(pairingsPrefix, 0) == 0 &&
         companionStateNamespace(directory.substr(pairingsPrefix.size())) == companionPrefix + directory.substr(pairingsPrefix.size());
-    require(directory == "podjs-notifications" || directory == "podjs-background" || directory == "podjs-execution" || directory == "podjs-scheduler" || companion || outbox || inbox || requests || pairings, "Invalid journal namespace");
+    const std::string transfersPrefix = "podjs-companion-outgoing-transfers-";
+    const bool transfers = directory.rfind(transfersPrefix, 0) == 0 &&
+        companionStateNamespace(directory.substr(transfersPrefix.size())) == companionPrefix + directory.substr(transfersPrefix.size());
+    require(directory == "podjs-notifications" || directory == "podjs-background" || directory == "podjs-execution" || directory == "podjs-scheduler" || companion || outbox || inbox || requests || pairings || transfers, "Invalid journal namespace");
     Fd parent(open(root.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
     require(parent.value >= 0, "Cannot open private files directory");
     if (mkdirat(parent.value, directory.c_str(), 0700) != 0) require(errno == EEXIST, "Cannot create journal directory");

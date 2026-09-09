@@ -3,6 +3,10 @@ import { window } from '@kit.ArkUI';
 import { NotificationOpenReceiver } from '../NotificationOpenReceiver';
 import { reminderJournal } from '../NativeReminderStore';
 import { notificationAbilityVisible } from '../NativeNotificationDelivery';
+import { syncStateAbilityVisible } from '../NativeSyncStateDelivery';
+import { syncMessageAbilityVisible } from '../NativeSyncMessageDelivery';
+import { syncFileAbilityVisible } from '../NativeSyncFileDelivery';
+import { installedSyncAbilityVisible } from '../NativeInstalledSyncConnection';
 import { BackgroundRecovery } from '../BackgroundRecovery';
 import { nativeBackgroundMaintenance } from '../NativeBackgroundSchedules';
 export default class EntryAbility extends UIAbility {
@@ -24,8 +28,8 @@ export default class EntryAbility extends UIAbility {
   }
   onCreate(want: Want, _params: AbilityConstant.LaunchParam): void { this.capture(want); }
   onNewWant(want: Want, _params: AbilityConstant.LaunchParam): void { this.capture(want); }
-  onForeground(): void { notificationAbilityVisible(true); this.opens.retry(); this.backgroundMaintenance(true); }
-  onBackground(): void { notificationAbilityVisible(false); this.backgroundMaintenance(false); }
-  onDestroy(): void { notificationAbilityVisible(false); this.backgroundMaintenance(false); }
+  onForeground(): void { notificationAbilityVisible(true); syncStateAbilityVisible(true); syncMessageAbilityVisible(true); syncFileAbilityVisible(true); installedSyncAbilityVisible(true); this.opens.retry(); this.backgroundMaintenance(true); }
+  onBackground(): void { installedSyncAbilityVisible(false); notificationAbilityVisible(false); syncStateAbilityVisible(false); syncMessageAbilityVisible(false); syncFileAbilityVisible(false); this.backgroundMaintenance(false); }
+  onDestroy(): void { installedSyncAbilityVisible(false); notificationAbilityVisible(false); syncStateAbilityVisible(false); syncMessageAbilityVisible(false); syncFileAbilityVisible(false); this.backgroundMaintenance(false); }
   onWindowStageCreate(stage: window.WindowStage): void { stage.loadContent('pages/Index'); }
 }

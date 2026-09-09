@@ -10,7 +10,8 @@ import java.util.concurrent.TimeUnit;
 
 /** Explicit, bounded foreground sync run over an already authenticated Session.
  * Owns that Session, not its SDK client. Host MUST close on leaving foreground.
- * Two IO workers and one deadline timer stop together; no reconnect, polling,
+ * Two IO workers and one timer stop together; one-second consent polling is
+ * limited to this run. No reconnect,
  * discovery, foreground service or automatic business-message ACK is created.
  */
 public class PodSyncForeground implements AutoCloseable {
@@ -21,7 +22,7 @@ public class PodSyncForeground implements AutoCloseable {
     private final Listener listener;
     private final ExecutorService receiveWorker,sendWorker;
     private final ScheduledExecutorService deadline;
-    private final boolean[] wanted={true,true,true}, inFlight=new boolean[3];
+    private final boolean[] wanted=new boolean[3], inFlight=new boolean[3];
     private final ArrayDeque<PodSyncInbox.Message> acknowledgements=new ArrayDeque<>();
     private boolean closed,writerScheduled,pollConsent;
     private int turn;
@@ -39,14 +40,47 @@ public class PodSyncForeground implements AutoCloseable {
         sendWorker=Executors.newSingleThreadExecutor(threads("podjs-sync-send"));
         deadline=Executors.newSingleThreadScheduledExecutor(threads("podjs-sync-deadline"));
         synchronized(gate) {
+            wanted[0]=session.permits("state"); wanted[1]=session.permits("message"); wanted[2]=session.permits("file");
             receiveWorker.execute(this::receiveLoop); scheduleWriter();
             deadline.schedule(()->stop("deadline",null),durationMillis,TimeUnit.MILLISECONDS);
+            // A peer can approve an offer after its initial "offered" reply.
+            // Poll only inside this explicitly bounded, existing foreground run.
+            if(session.permits("file")) deadline.scheduleWithFixedDelay(()->{
+                synchronized(gate) {
+                    if(closed) return;
+                    wanted[2]=true; pollConsent=true; scheduleWriter();
+                }
+            },1000,1000,TimeUnit.MILLISECONDS);
         }
     }
     public void requestState() throws IOException { request(0,false); }
+    public String peerId() { return session.peerId(); }
+    boolean ownedBy(PodSyncClient client) { return session.ownedBy(client); }
+    /** Blocking host-IO barrier for this authenticated peer. Success means the
+     * current local state was durably acknowledged at the observation point.
+     * appliedCursor is the locally received peer cursor, not proof that all
+     * future remote writes have arrived. Cancellation leaves the shared run alive. */
+    public org.json.JSONObject synchronizeState(long timeoutMillis,android.os.CancellationSignal cancellation) throws Exception {
+        if(timeoutMillis<1 || timeoutMillis>120000) throw new IllegalArgumentException("Invalid sync timeout");
+        java.util.Objects.requireNonNull(cancellation).throwIfCanceled();
+        long end=android.os.SystemClock.elapsedRealtime()+timeoutMillis;
+        requestState();
+        synchronized(gate) {
+            while(true) {
+                cancellation.throwIfCanceled();
+                if(closed) throw new IOException("Foreground sync stopped",failure);
+                org.json.JSONObject receipt=session.acknowledgedStateReceipt();
+                if(receipt!=null) { cancellation.throwIfCanceled(); return receipt; }
+                long remaining=end-android.os.SystemClock.elapsedRealtime();
+                if(remaining<=0) throw new java.net.SocketTimeoutException("State acknowledgement timed out");
+                gate.wait(Math.min(remaining,100));
+            }
+        }
+    }
     public void requestMessages() throws IOException { request(1,false); }
     public void requestFiles(boolean pollConsent) throws IOException { request(2,pollConsent); }
     private void request(int channel,boolean poll) throws IOException {
+        if(!session.permits(new String[]{"state","message","file"}[channel])) throw new IOException("Channel not approved");
         synchronized(gate) { if(closed) throw new IOException("Foreground sync stopped"); wanted[channel]=true; pollConsent|=poll; scheduleWriter(); }
     }
     /** Application explicitly completed this delivery; no receive callback return
@@ -104,6 +138,7 @@ public class PodSyncForeground implements AutoCloseable {
                     else if(result.equals("message.ack")) { inFlight[1]=false; wanted[1]=true; }
                     else if(result.equals("file.reply")) { inFlight[2]=false; wanted[2]=true; }
                     scheduleWriter();
+                    gate.notifyAll();
                 }
             }
         } catch(Exception error) { stop("failed",error); }
@@ -112,7 +147,7 @@ public class PodSyncForeground implements AutoCloseable {
     public String stopReason() { synchronized(gate) { return reason; } }
     public Exception failure() { synchronized(gate) { return failure; } }
     private void stop(String reason,Exception error) {
-        synchronized(gate) { if(closed) return; closed=true; this.reason=reason; failure=error; acknowledgements.clear(); }
+        synchronized(gate) { if(closed) return; closed=true; this.reason=reason; failure=error; acknowledgements.clear(); gate.notifyAll(); }
         try { session.close(); } catch(Exception closing) { synchronized(gate) { if(failure==null) failure=closing; else failure.addSuppressed(closing); } }
         receiveWorker.shutdownNow(); sendWorker.shutdownNow(); deadline.shutdownNow();
         try { events.execute(()->{ try { listener.stopped(reason); } catch(RuntimeException ignored) { android.util.Log.w("PodCompanion","Sync stop observer failed"); } }); }

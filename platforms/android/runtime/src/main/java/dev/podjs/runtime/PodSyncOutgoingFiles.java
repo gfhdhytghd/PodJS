@@ -24,7 +24,25 @@ public final class PodSyncOutgoingFiles implements AutoCloseable {
     public static final class Status {
         public final String peerId,transferId,phase,requestId;
         public final boolean cancelRequested;
-        private Status(Row row) { peerId=row.peer; transferId=row.id; phase=row.phase; requestId=row.request; cancelRequested=row.cancel; }
+        public final long totalBytes, acknowledgedBytes;
+        public final boolean progressKnown;
+        private Status(Row row) throws Exception {
+            peerId=row.peer; transferId=row.id; phase=row.phase; requestId=row.request; cancelRequested=row.cancel;
+            totalBytes=row.manifest.getLong("size");
+            progressKnown=phase.equals("chunks") || phase.equals("finish") || phase.equals("complete");
+            long missingBytes=0; java.util.HashSet<Integer> seen=new java.util.HashSet<>();
+            if(progressKnown && !phase.equals("complete")) {
+                int count=row.manifest.getJSONArray("chunk_hashes").length();
+                for(int n=0;n<row.missing.length();n++) {
+                    Object raw=row.missing.get(n);
+                    if(!(raw instanceof Number)) throw new IOException("Invalid missing chunk index");
+                    int index=((Number)raw).intValue();
+                    if(((Number)raw).doubleValue()!=index || index<0 || index>=count || !seen.add(index)) throw new IOException("Invalid missing chunk index");
+                    missingBytes+=Math.min(65536L,totalBytes-index*65536L);
+                }
+            }
+            acknowledgedBytes=progressKnown?totalBytes-missingBytes:0;
+        }
     }
     private static final class Row {
         String peer,id,phase,request; boolean cancel; JSONObject manifest; JSONArray missing;
@@ -65,6 +83,25 @@ public final class PodSyncOutgoingFiles implements AutoCloseable {
     }
     public Status status(String peer,String id) throws Exception {
         identity(peer); identity(id); synchronized(requests) { check(); Row row=read(peer,id); if(row==null) throw new IOException("Unknown outgoing transfer"); return new Status(row); }
+    }
+    /** Bounded cross-peer lookup for the local guest adapter, not a wire API. */
+    java.util.List<Status> findTransfer(String id) throws Exception {
+        identity(id); synchronized(requests) {
+            check(); java.util.ArrayList<Status> result=new java.util.ArrayList<>();
+            try(Cursor rows=db.rawQuery("SELECT peer,id,phase,request,cancel,manifest,missing FROM transfers WHERE id=? ORDER BY ordinal LIMIT 2",new String[]{id})) {
+                while(rows.moveToNext()) result.add(new Status(new Row(rows)));
+            }
+            return result;
+        }
+    }
+    java.util.List<String> transferIdsAfter(String after) throws Exception {
+        synchronized(requests) {
+            check(); java.util.ArrayList<String> result=new java.util.ArrayList<>();
+            try(Cursor rows=db.rawQuery("SELECT DISTINCT id FROM transfers WHERE id>? ORDER BY id LIMIT 64",new String[]{after})) {
+                while(rows.moveToNext()) result.add(rows.getString(0));
+            }
+            return result;
+        }
     }
     /** Rebuild host UI/recovery state without an in-memory transfer ID list. */
     public java.util.List<Status> list(String peer) throws Exception {

@@ -115,8 +115,9 @@ export class CompanionMessageInbox {
       return new CompanionIncomingMessage(peer, id, envelope, unhex(record.digest), 'applied');
     });
   }
-  pending(now: number, limit: number): Promise<CompanionIncomingMessage[]> {
+  pending(now: number, limit: number, offset: number = 0): Promise<CompanionIncomingMessage[]> {
     time(now); if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('invalid inbox batch');
+    if (!Number.isInteger(offset) || offset < 0 || offset >= 1000) throw new Error('invalid inbox offset');
     return this.run(async () => {
       const snapshot = await this.load(await this.store.read()), result: CompanionIncomingMessage[] = [];
       for (const record of snapshot.records) {
@@ -124,7 +125,7 @@ export class CompanionMessageInbox {
         if (!record.applied && envelope.expiresAt > now) result.push(new CompanionIncomingMessage(record.peer, record.id, envelope, unhex(record.digest), 'pending'));
       }
       result.sort((a: CompanionIncomingMessage, b: CompanionIncomingMessage) => Number(b.envelope.highPriority) - Number(a.envelope.highPriority));
-      return result.slice(0, limit);
+      return result.slice(offset, offset + limit);
     });
   }
 }

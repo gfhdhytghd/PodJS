@@ -57,6 +57,9 @@ export class CompanionIncomingNativePort implements CompanionIncomingFilePort {
   }
   async missing(peer: string, manifest: CompanionFileManifest): Promise<number[]> { return await this.run(this.request('missing', peer, manifest)) as number[]; }
   async finish(peer: string, manifest: CompanionFileManifest): Promise<void> { await this.run(this.request('finish', peer, manifest)); }
+  async saveComplete(peer: string, manifest: CompanionFileManifest, path: string): Promise<void> {
+    const request = this.request('saveComplete', peer, manifest); request.text = path; await this.run(request);
+  }
   async readCompleteChunk(peer: string, manifest: CompanionFileManifest, index: number): Promise<Uint8Array> {
     const request = this.request('readCompleteChunk', peer, manifest); request.index = index;
     return await this.run(request) as Uint8Array;

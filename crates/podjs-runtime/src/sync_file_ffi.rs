@@ -10,9 +10,11 @@ pub struct PodSyncFiles { receiver: FileReceiver, response: CString }
 enum Command {
     #[serde(rename = "offer")] Offer { manifest: FileManifest },
     #[serde(rename = "missing")] Missing { transfer_id: String },
+    #[serde(rename = "verified_complete")] VerifiedComplete { transfer_id: String },
     #[serde(rename = "chunk")] Chunk { transfer_id: String, index: usize, data_base64: String },
     #[serde(rename = "finish")] Finish { transfer_id: String },
     #[serde(rename = "cancel")] Cancel { transfer_id: String },
+    #[serde(rename = "read_complete_chunk")] ReadCompleteChunk { transfer_id: String, index: usize },
 }
 impl PodSyncFiles {
     fn dispatch(&self, bytes: &[u8]) -> anyhow::Result<serde_json::Value> {
@@ -20,6 +22,7 @@ impl PodSyncFiles {
         Ok(match serde_json::from_slice::<Command>(bytes)? {
             Command::Offer { manifest } => { self.receiver.offer(&manifest)?; json!({"transferId":manifest.transfer_id}) }
             Command::Missing { transfer_id } => json!({"missing":self.receiver.missing(&transfer_id)?}),
+            Command::VerifiedComplete { transfer_id } => json!({"complete":self.receiver.verified_complete(&transfer_id)?}),
             Command::Chunk { transfer_id, index, data_base64 } => {
                 anyhow::ensure!(data_base64.len() <= CHUNK_BYTES.div_ceil(3) * 4, "chunk too large");
                 let bytes = base64::engine::general_purpose::STANDARD.decode(data_base64)?;
@@ -27,6 +30,10 @@ impl PodSyncFiles {
             }
             Command::Finish { transfer_id } => json!({"path":self.receiver.finish(&transfer_id)?,"state":"complete"}),
             Command::Cancel { transfer_id } => { self.receiver.cancel(&transfer_id)?; json!({"state":"cancelled"}) }
+            Command::ReadCompleteChunk { transfer_id, index } => {
+                let bytes = self.receiver.read_complete_chunk(&transfer_id, index)?;
+                json!({"index": index, "data_base64": base64::engine::general_purpose::STANDARD.encode(bytes)})
+            }
         })
     }
 }

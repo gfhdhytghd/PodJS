@@ -25,6 +25,9 @@ export class CompanionStateReceipt {
   digest: string = '';
   duplicate: boolean = false;
 }
+export class CompanionStateAcknowledgement {
+  constructor(readonly synchronized: boolean, readonly appliedCursor: number) {}
+}
 class IncomingState {
   peer: string = '';
   from: number = 0;
@@ -112,6 +115,12 @@ function canonical(value: Object | null, depth: number = 0): string {
   }
   throw new Error('Sync values must be finite JSON data');
 }
+/** Stable finite JSON for service payloads; no state-specific size quota. */
+export function encodeCompanionJson(value: Object | null): string {
+  const text = canonical(value);
+  if (canonical(JSON.parse(JSON.stringify(value)) as Object | null) !== text) throw new Error('Non-JSON sync value');
+  return text;
+}
 function freezeValue(value: Object | null): Object | null {
   const text = canonical(value);
   if (text.length > 65536) throw new Error('State value too large; use file sync');
@@ -165,6 +174,20 @@ export class CompanionState {
   }
   snapshot(): Promise<CompanionStateSnapshot> {
     return this.serial(async () => this.load(await this.port.read(this.appId)).state);
+  }
+  /** Read-only ACK barrier for the current durable snapshot, not a claim that
+   * the peer has no undisclosed edits. Does not prepare or send another batch. */
+  acknowledgement(peer: string): Promise<CompanionStateAcknowledgement> {
+    identity(peer);
+    return this.serial(async () => {
+      const stored = this.load(await this.port.read(this.appId));
+      if (this.crypto === null) throw new Error('State sender crypto unavailable');
+      const hash = await this.crypto.sha256(JSON.stringify(stored.state.entries)); digest(hash);
+      const outgoing = stored.outgoing.find(value => value.peer === peer);
+      const synchronized = outgoing !== undefined && outgoing.pending === null && outgoing.cycle === null && outgoing.sentHash === hash;
+      const cursor = Object.keys(stored.state.cursors).includes(peer) ? stored.state.cursors[peer] : 0;
+      return new CompanionStateAcknowledgement(synchronized, cursor);
+    });
   }
   set(key: string, value: Object | null): Promise<CompanionStateEntry> { return this.write(key, value, false); }
   delete(key: string): Promise<CompanionStateEntry> { return this.write(key, null, true); }

@@ -39,13 +39,25 @@ random-ID `sendMessage` phone methods remain available. The shared-owner and
 phone-facade regression class passed all 13 tests on the connected OWW242; its
 in-process/loopback peers are not a two-physical-device wireless acceptance run.
 
-`currentStateAcknowledged(peer)` is a read-only checkpoint for a future
+`currentStateAcknowledged(peer)` is a read-only checkpoint for a
 synchronization completion barrier: it compares the current entries with the
 durably acknowledged complete cycle and rejects pending/partial cycles. Reading
 it does not prepare work or advance cursors. State subscribers now also wake on
 authenticated state ACKs. A true value only covers the current local snapshot;
 it cannot prove that an offline peer has no additional changes, and is not by
 itself a completed bidirectional `sync.state.synchronize` implementation.
+
+`PodSyncForeground.synchronizeState(timeoutMillis, cancellation)` now provides
+the blocking host-IO barrier over its existing authenticated session: it requests
+state and waits for that checkpoint, with a 1–120000 ms budget, stopped-session
+failure and cancellation checks at most 100 ms apart while waiting. Cancellation
+or timeout does not close the shared foreground run. The returned `appliedCursor`
+is the locally persisted incoming peer cursor, not a guarantee that the remote
+device has no unseen changes. Do not call it on the UI thread. Guest service
+routing can now borrow a host-selected foreground run through the internal
+adapter: it checks client ownership and exact peer identity and applies a
+30-second service wait budget. Real host connection selection/UI remains to be
+integrated; the installed owner still has no live foreground run by default.
 
 `releaseSource(id)` rejects active peer references, but also permits cleanup of a
 never-offered snapshot. Repeating a completed release is idempotent; it does not
@@ -431,7 +443,10 @@ Initial work resumes state, messages and files. After enqueuing new data, call
 `requestState`, `requestMessages` or `requestFiles(pollConsent)`. Requests coalesce,
 the writer rotates across channels and explicit ACK work, and each data channel
 has at most one outstanding request. ACK arrival drains the next persisted batch;
-file approval status is queried only when explicitly requested. A flight marker is
+file approval status is queried at most once per second during this bounded run
+(or when explicitly requested), so a later peer approval resumes transfer without
+a second UI action. No connection is created or lifetime extended by this timer.
+A flight marker is
 set before sending so a fast ACK cannot be overwritten by a late send return.
 
 Messages always use deferred delivery. The application reads its durable pending

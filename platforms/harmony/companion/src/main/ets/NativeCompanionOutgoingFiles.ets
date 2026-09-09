@@ -5,6 +5,7 @@ import { CompanionOutgoingFiles } from './CompanionOutgoingFiles';
 import cryptoFramework from '@ohos.security.cryptoFramework';
 import { CompanionImportCrypto, CompanionStreamingDigest } from './CompanionFileImporter';
 import { NativeCompanionSyncCrypto } from './NativeCompanionSync';
+import { CompanionOutgoingTransfers } from './CompanionOutgoingTransfers';
 
 class ImportDigest implements CompanionStreamingDigest {
   private digest: cryptoFramework.Md = cryptoFramework.createMd('SHA256');
@@ -22,6 +23,6 @@ class OutgoingBridge implements IncomingNativeBridge {
     return native.incomingFilesRun(lease, request);
   }
 }
-export function createCompanionOutgoingFiles(context: common.UIAbilityContext, appId: string): CompanionOutgoingFiles {
-  return new CompanionOutgoingFiles(appId, new CompanionIncomingNativePort(new OutgoingBridge(), context.filesDir, appId));
+export function createCompanionOutgoingFiles(context: common.UIAbilityContext, appId: string, transfers: CompanionOutgoingTransfers | null = null): CompanionOutgoingFiles {
+  return new CompanionOutgoingFiles(appId, new CompanionIncomingNativePort(new OutgoingBridge(), context.filesDir, appId), transfers);
 }

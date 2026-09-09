@@ -101,9 +101,13 @@ public final class PodSyncInbox implements Closeable {
         } finally { db.endTransaction(); }
     }
     public synchronized List<Message> pending(long now, int limit) {
+        return pendingPage(now,limit,0);
+    }
+    synchronized List<Message> pendingPage(long now, int limit, int offset) {
         time(now); if (limit < 1 || limit > 100) throw new IllegalArgumentException("Invalid batch limit");
+        if(offset<0 || offset>PodSyncOutbox.MAX_MESSAGES) throw new IllegalArgumentException("Invalid batch offset");
         List<Message> result = new ArrayList<>();
-        try (Cursor rows = db.rawQuery("SELECT peer,id,payload,expires,priority FROM inbox WHERE applied=0 AND expires>? ORDER BY priority DESC,ordinal ASC LIMIT ?",new String[]{Long.toString(now),Integer.toString(limit)})) {
+        try (Cursor rows = db.rawQuery("SELECT peer,id,payload,expires,priority FROM inbox WHERE applied=0 AND expires>? ORDER BY priority DESC,ordinal ASC LIMIT ? OFFSET ?",new String[]{Long.toString(now),Integer.toString(limit),Integer.toString(offset)})) {
             while (rows.moveToNext()) result.add(new Message(rows));
         }
         return result;

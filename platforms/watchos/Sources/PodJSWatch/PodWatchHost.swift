@@ -10,6 +10,7 @@ public final class PodWatchHost: ObservableObject {
     private var semanticHash: UInt64 = 0
     public let scene: PodScene
     private var runtime: OpaquePointer?
+    private var guestIoGate: OpaquePointer?
     private let logicalWidth: CGFloat
     private let logicalHeight: CGFloat
     private var crownRemainder: Double = 0
@@ -27,6 +28,20 @@ public final class PodWatchHost: ObservableObject {
         scene = PodScene(size: CGSize(width: logicalWidth, height: logicalHeight))
         guard pod_runtime_abi_version() == PODJS_RUNTIME_ABI_VERSION else { throw HostError.abi }
         let data = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].path
+        try FileManager.default.createDirectory(atPath: data, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        guard let gate = data.withCString({ pod_guest_io_open($0) }) else { throw HostError.runtime("Guest file IO gate unavailable") }
+        guestIoGate = gate
+        guard pod_guest_io_try_enter(gate) == 1 else {
+            pod_guest_io_close(gate); guestIoGate = nil; throw HostError.runtime("Guest file IO busy")
+        }
+        var initialized = false
+        defer {
+            pod_guest_io_leave(gate)
+            if !initialized {
+                if let runtime { pod_runtime_destroy(runtime); self.runtime = nil }
+                pod_guest_io_close(gate); guestIoGate = nil
+            }
+        }
         runtime = "watchos-watch".withCString { target in data.withCString { path in
           let caps = "[\"input.touch\",\"input.rotary\",\"data.kv\",\"device.haptics\",\"host.lifecycle\",\"host.theme\",\"display.round\",\"net.http\",\"data.fs\"]"
           return caps.withCString { capabilities in
@@ -45,8 +60,9 @@ public final class PodWatchHost: ObservableObject {
         scene.scaleMode = .aspectFit
         scene.backgroundColor = .black
         try checked(pod_runtime_set_accessibility_enabled(runtime, 1))
+        initialized = true
     }
-    deinit { if let runtime { pod_runtime_destroy(runtime) } }
+    deinit { if let runtime { pod_runtime_destroy(runtime) }; if let guestIoGate { pod_guest_io_close(guestIoGate) } }
     public func addCrownDegrees(_ degrees: Double) { crownRemainder += degrees * 1000 }
     public func updatePrimaryTouch(location: CGPoint, in hostSize: CGSize) {
         guard let point = Self.logicalTouchPoint(location, in: hostSize, logicalSize: scene.size) else {
@@ -95,6 +111,11 @@ public final class PodWatchHost: ObservableObject {
     /// Advance one deterministic guest turn. A SpriteKit texture is submitted
     /// only when the canonical DrawList/resource hash changes.
     public func frame() throws {
+        guard let guestIoGate else { throw HostError.runtime("Guest file IO gate closed") }
+        let acquired = pod_guest_io_try_enter(guestIoGate)
+        if acquired == 0 { return } // Keep input/crown state for the next turn.
+        guard acquired == 1 else { throw HostError.runtime("Guest file IO gate failed") }
+        defer { pod_guest_io_leave(guestIoGate) }
         var input = PodInputFrame(
             struct_size: UInt32(MemoryLayout<PodInputFrame>.size),
             buttons: 0,

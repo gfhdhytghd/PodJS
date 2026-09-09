@@ -3,10 +3,16 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
+typedef struct PodSyncCancellation PodSyncCancellation;
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+PodSyncCancellation *pod_sync_cancellation_new(void);
+void pod_sync_cancellation_cancel(const PodSyncCancellation *value);
+bool pod_sync_cancellation_is_cancelled(const PodSyncCancellation *value);
+void pod_sync_cancellation_free(PodSyncCancellation *value);
 
 #define PODJS_RUNTIME_ABI_VERSION 2
 #define PODJS_RUNTIME_MIN_ABI_VERSION 1
@@ -46,6 +52,14 @@ void pod_background_close(PodBackgroundRun *handle);
 PodSyncSession *pod_sync_session_open(const uint8_t *config, size_t length);
 const char *pod_sync_session_command(PodSyncSession *handle, const uint8_t *bytes, size_t length);
 void pod_sync_session_close(PodSyncSession *handle);
+/* Pure host state transform. NULL/0 snapshot means absent. Returned allocation
+ * is owned; CAS the proposed snapshot before publishing receipts/results. */
+char *pod_sync_state_calculate(const uint8_t *snapshot, size_t snapshot_length, const uint8_t *request, size_t request_length);
+void pod_sync_state_response_free(char *response);
+int32_t pod_sync_message_sha256(const uint8_t *bytes, size_t length, uint8_t *digest);
+char *pod_sync_file_request_validate(const uint8_t *bytes, size_t length);
+char *pod_sync_file_reply_validate(const uint8_t *request, size_t request_length, const uint8_t *reply, size_t reply_length);
+void pod_sync_file_wire_free(char *response);
 /* Optional host-only file receiver. Private per-app/per-peer root, serialized
  * IO worker access, authenticated/authorized peers. Command limit: 96 KiB.
  * JSON methods: offer(manifest), missing(transfer_id), chunk(transfer_id,index,
@@ -56,6 +70,15 @@ void pod_sync_session_close(PodSyncSession *handle);
 PodSyncFiles *pod_sync_files_open(const char *private_root);
 const char *pod_sync_files_command(PodSyncFiles *handle, const uint8_t *bytes, size_t length);
 void pod_sync_files_close(PodSyncFiles *handle);
+typedef struct PodSyncFileSource PodSyncFileSource;
+/* Host-approved source; retain descriptor across manifest scan and chunk reads.
+ * Borrowed results must be copied before next read/close. No guest paths. */
+PodSyncFileSource *pod_sync_file_source_open(const char *path, const char *transfer_id, const char *mime);
+PodSyncFileSource *pod_sync_file_source_open_cancellable(const char *path, const char *transfer_id, const char *mime, const PodSyncCancellation *cancellation);
+const char *pod_sync_file_source_manifest(const PodSyncFileSource *source);
+bool pod_sync_file_source_check(const PodSyncFileSource *source);
+const uint8_t *pod_sync_file_source_read(PodSyncFileSource *source, size_t index, size_t *length);
+void pod_sync_file_source_close(PodSyncFileSource *source);
 
 typedef enum PodLifecycleState {
   POD_LIFECYCLE_ACTIVE = 0,
@@ -143,6 +166,17 @@ typedef struct PodFontView {
 } PodFontView;
 
 uint32_t pod_runtime_abi_version(void);
+/* Unix host file IO gate. All guest filesystem execution and host publication
+ * for a runtime data root must share it. Busy must defer work, not bypass it. */
+typedef struct PodGuestIo PodGuestIo;
+PodGuestIo *pod_guest_io_open(const char *runtime_data_root);
+int32_t pod_guest_io_try_enter(PodGuestIo *gate);
+void pod_guest_io_leave(PodGuestIo *gate);
+void pod_guest_io_close(PodGuestIo *gate);
+/* Acquired gate; source is a host-private artifact, path is guest-relative.
+ * No overwrite; 16 MiB guest files quota. Error can follow successful publish. */
+int32_t pod_guest_publish(const PodGuestIo *gate, const char *source, const char *path, uint64_t size, const char *sha256);
+int32_t pod_guest_publish_cancellable(const PodGuestIo *gate, const char *source, const char *path, uint64_t size, const char *sha256, const PodSyncCancellation *cancellation);
 typedef struct PodAccessibilityText {
   const uint8_t *bytes;
   size_t byte_length;
@@ -180,7 +214,15 @@ int32_t pod_runtime_eval_bundle(PodRuntime *runtime, const uint8_t *source, size
                                 const char *label);
 int32_t pod_runtime_set_lifecycle(PodRuntime *runtime, uint32_t state);
 int32_t pod_runtime_set_theme(PodRuntime *runtime, const char *theme);
+/* External event admission: JSON object <= 1 MiB, at most 256 queued events and
+ * 4 MiB total existing queue bytes. Returns -2 when full without enqueuing;
+ * retain/retry after the guest drains events. Internal lifecycle/input events
+ * share the queue but are not governed by this external-admission API. */
 int32_t pod_runtime_post_event(PodRuntime *runtime, const char *json_object);
+/* Host executor only. False until package validation and successful mounting,
+ * and after a failed pre-mount revalidation. Mounted package authority is
+ * immutable until runtime destruction. Never reads guest-supplied lists. */
+bool pod_runtime_has_capability(PodRuntime *runtime, const char *name);
 int32_t pod_runtime_frame(PodRuntime *runtime, const PodInputFrame *input);
 int32_t pod_runtime_snapshot(PodRuntime *runtime, PodDrawList *out);
 /* Opt in to primary-output semantics. Collection is off by default. */

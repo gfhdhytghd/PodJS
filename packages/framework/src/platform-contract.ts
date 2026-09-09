@@ -7,6 +7,7 @@ export const platformMethods: Readonly<Record<string, PodCapabilityId>> = Object
   "sync.state.synchronize": "companion.sync.state",
   "sync.messages.send": "companion.sync.message",
   "sync.messages.ack": "companion.sync.message",
+  "sync.files.save": "companion.sync.file",
   "sync.files.offer": "companion.sync.file",
   "sync.files.accept": "companion.sync.file",
   "sync.files.cancel": "companion.sync.file",

@@ -258,6 +258,8 @@ public class PodCompanionTest {
             PodForegroundSync watch=new PodForegroundSync(pair.w,30000,Runnable::run,reason->{})) {
             pair.phone.setState("automatic",true); for(int n=0;n<100;n++) phone.requestState();
             await(()->Boolean.TRUE.equals(pair.watch.getState("automatic")));
+            assertTrue(phone.synchronizeState(5000,new android.os.CancellationSignal()).has("appliedCursor"));
+            assertTrue(pair.phone.currentStateAcknowledged("watch"));
             long now=System.currentTimeMillis(); String message=pair.phone.sendMessage("watch",new byte[]{1},now+60000,false,now); phone.requestMessages();
             await(()->!pair.watch.receivedMessages(System.currentTimeMillis()).isEmpty());
             assertEquals(message,pair.phone.pendingMessages("watch",System.currentTimeMillis()).get(0).messageId);
@@ -267,8 +269,22 @@ public class PodCompanionTest {
             String id=pair.phone.snapshotFile(source,"application/octet-stream").getString("transfer_id"); Files.delete(source.toPath()); pair.phone.offerFile("watch",id); phone.requestFiles(false);
             await(()->!pair.watch.pendingFileConsent().isEmpty()); pair.watch.acceptFile("phone",id); phone.requestFiles(true);
             await(()->pair.phone.outgoingFiles("watch").get(0).phase.equals("complete"));
+            dev.podjs.runtime.PodSyncOutgoingFiles.Status progress=pair.phone.outgoingFiles("watch").get(0);
+            assertTrue(progress.progressKnown); assertEquals(bytes.length,progress.totalBytes); assertEquals(bytes.length,progress.acknowledgedBytes);
             assertArrayEquals(bytes,Files.readAllBytes(pair.watch.completedIncomingFile("phone",id).toPath()));
             assertFalse(phone.isStopped()); assertFalse(watch.isStopped()); pair.phone.releaseSource(id); pair.watch.cancelIncomingFile("phone",id);
+        }
+    }
+    @Test public void stateBarrierTimesOutWithoutPeerAckAndCancellationKeepsRunAlive() throws Exception {
+        try(Pair pair=new Pair(); PodForegroundSync phone=new PodForegroundSync(pair.p,30000,Runnable::run,reason->{})) {
+            pair.phone.setState("unacked",true);
+            try { phone.synchronizeState(100,new android.os.CancellationSignal()); fail("Queued state counted as acknowledged"); }
+            catch(java.net.SocketTimeoutException expected) { }
+            assertFalse(pair.phone.currentStateAcknowledged("watch")); assertFalse(phone.isStopped());
+            android.os.CancellationSignal cancel=new android.os.CancellationSignal(); cancel.cancel();
+            try { phone.synchronizeState(5000,cancel); fail("Cancelled barrier succeeded"); }
+            catch(android.os.OperationCanceledException expected) { }
+            assertFalse(phone.isStopped());
         }
     }
     @Test public void driverDeadlineClosesOnceAndKeepsUnacknowledgedOutbox() throws Exception {
