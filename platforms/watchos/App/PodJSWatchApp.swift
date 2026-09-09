@@ -17,6 +17,7 @@ private struct PodJSWatchRootView: View {
     @State private var host: PodWatchHost?
     @State private var status = "Starting PodJS…"
     @State private var crownValue = 0.0
+    @FocusState private var crownFocused: Bool
     private let frameTimer = Timer.publish(every: 1.0 / 60.0, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -38,38 +39,38 @@ private struct PodJSWatchRootView: View {
                         }
                     }
                     .accessibilityHidden(true)
-                    Color.clear
-                        .accessibilityHidden(true)
-                        .accessibilityIdentifier("podjs-crown-status")
-                        .frame(width: 1, height: 1)
-                        .focusable(true, interactions: .edit)
-                        .digitalCrownRotation(
-                            Binding(
-                                get: { crownValue },
-                                set: { newValue in
-                                    host.addCrownDegrees((newValue - crownValue) * 0.12)
-                                    crownValue = newValue
-                                    do {
-                                        try host.frame()
-                                    } catch {
-                                        let message = String(describing: error)
-                                        status = message
-                                        recordDiagnostic(message)
-                                    }
-                                }
-                            ),
-                            from: -100_000,
-                            through: 100_000,
-                            by: 1,
-                            sensitivity: .high,
-                            isContinuous: true,
-                            isHapticFeedbackEnabled: false
-                        )
                     PodAccessibilityOverlay(host: host)
                 }
                 .ignoresSafeArea()
                 ._statusBarHidden(true)
                 .persistentSystemOverlays(.hidden)
+                .accessibilityIdentifier("podjs-crown-status")
+                .focusable(true, interactions: .edit)
+                .focused($crownFocused)
+                .digitalCrownRotation(
+                    Binding(
+                        get: { crownValue },
+                        set: { newValue in
+                            // Keep the list's touch-scroll direction unchanged;
+                            // the crown's native delta is opposite to the list axis.
+                            host.addCrownDegrees((newValue - crownValue) * -0.12)
+                            crownValue = newValue
+                            do {
+                                try host.frame()
+                            } catch {
+                                let message = String(describing: error)
+                                status = message
+                                recordDiagnostic(message)
+                            }
+                        }
+                    ),
+                    from: -100_000,
+                    through: 100_000,
+                    by: 1,
+                    sensitivity: .high,
+                    isContinuous: true,
+                    isHapticFeedbackEnabled: false
+                )
             } else {
                 VStack(spacing: 8) {
                     Text("PodJS")
@@ -89,6 +90,7 @@ private struct PodJSWatchRootView: View {
                 try created.frame()
                 host = created
                 status = "Runtime ready"
+                crownFocused = true
                 recordDiagnostic("runtime ready")
                 print("PodJSWatch: runtime ready")
             } catch {

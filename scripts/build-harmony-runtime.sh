@@ -55,6 +55,7 @@ export CFLAGS_aarch64_unknown_linux_ohos="--target=aarch64-linux-ohos --sysroot=
 export C_INCLUDE_PATH="$CLANG_RESOURCE_DIR/include:$SYSROOT/usr/include:$SYSROOT/usr/include/aarch64-linux-ohos"
 export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_OHOS_LINKER="$CLANG"
 export RUSTFLAGS="-C link-arg=--target=aarch64-linux-ohos -C link-arg=--sysroot=$SYSROOT"
+export PODJS_POCKETJS_REVISION="$(git -C "$PROJECT_ROOT/vendor/pocketjs" rev-parse HEAD)"
 mkdir -p "$HVIGOR_USER_HOME"
 
 rustup target add "$TARGET_TRIPLE"
@@ -89,7 +90,9 @@ done
 (
   cd "$HARMONY_ROOT"
   "$OHPM" install
-  "$NODE" "$HVIGOR" --mode module -p product=default assembleHap
+  # The wearable runtime is the entry module. companion_example targets
+  # phone/tablet and must not be built with requiredDeviceType=wearable.
+  "$NODE" "$HVIGOR" --mode module -p module=entry@default -p product=default -p requiredDeviceType=wearable assembleHap
 )
 
 hap="$HARMONY_ROOT/entry/build/default/outputs/default/entry-default-unsigned.hap"
