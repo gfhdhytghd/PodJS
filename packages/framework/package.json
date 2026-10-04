@@ -11,7 +11,10 @@
     "./sync-framing": "./src/sync-framing.ts",
     "./sync-messages": "./src/sync-messages.ts",
     "./platform-services": "./src/platform-services.ts",
-    "./background-handler": "./src/background-handler.ts"
+    "./background-handler": "./src/background-handler.ts",
+    "./text": "./src/text.tsx",
+    "./media-surface": "./src/media-surface.tsx",
+    "./bytes": "./src/bytes.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",

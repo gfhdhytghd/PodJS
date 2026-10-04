@@ -7,6 +7,9 @@ use anyhow::{Result, ensure};
 use sha2::{Digest, Sha256};
 use std::{ffi::{c_char, CStr, CString}, fs::File, io::{Read, Write}, os::fd::{AsRawFd, FromRawFd, IntoRawFd}, os::unix::fs::MetadataExt};
 const QUOTA: u64 = 16 * 1024 * 1024;
+const MODE_DIRECTORY: u32 = libc::S_IFDIR as u32;
+const MODE_REGULAR: u32 = libc::S_IFREG as u32;
+fn file_kind(info: &libc::stat) -> u32 { info.st_mode as u32 & libc::S_IFMT as u32 }
 fn file(fd: i32) -> Result<File> { ensure!(fd >= 0, "guest file open: {}", std::io::Error::last_os_error()); Ok(unsafe { File::from_raw_fd(fd) }) }
 fn directory(parent: &File, name: &CStr) -> Result<File> {
     let result = file(unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) })?;
@@ -15,7 +18,8 @@ fn directory(parent: &File, name: &CStr) -> Result<File> {
 }
 fn errno_pointer() -> *mut i32 {
     #[cfg(target_vendor = "apple")] { unsafe { libc::__error() } }
-    #[cfg(not(target_vendor = "apple"))] { unsafe { libc::__errno_location() } }
+    #[cfg(target_os = "android")] { unsafe { libc::__errno() } }
+    #[cfg(target_os = "linux")] { unsafe { libc::__errno_location() } }
 }
 fn entries(parent: &File, maximum: usize) -> Result<Vec<CString>> {
     // Open a new description so enumeration never shares/stales a caller offset.
@@ -45,9 +49,9 @@ fn usage(parent: &File, depth: usize, count: &mut usize, cancellation: Option<&P
         check(cancellation)?;
         *count += 1; ensure!(*count <= 16384, "guest entry quota exceeded");
         let info = metadata(parent, &name)?;
-        let size = match info.st_mode & libc::S_IFMT {
-            libc::S_IFDIR => usage(&directory(parent, &name)?, depth + 1, count, cancellation)?,
-            libc::S_IFREG => { ensure!(info.st_size >= 0, "negative guest file length"); info.st_size as u64 }
+        let size = match file_kind(&info) {
+            MODE_DIRECTORY => usage(&directory(parent, &name)?, depth + 1, count, cancellation)?,
+            MODE_REGULAR => { ensure!(info.st_size >= 0, "negative guest file length"); info.st_size as u64 }
             _ => anyhow::bail!("unsupported guest file type"),
         };
         total = total.checked_add(size).ok_or_else(|| anyhow::anyhow!("guest quota overflow"))?;
@@ -81,7 +85,7 @@ fn recover(gate: &PodGuestIo, cancellation: Option<&PodSyncCancellation>) -> Res
         let bytes = name.to_bytes();
         if bytes.starts_with(b"save-") && bytes.len() <= 96 && bytes[5..].iter().all(|byte| byte.is_ascii_hexdigit() || *byte == b'-') {
             let info = metadata(&gate.staging, &name)?;
-            ensure!(info.st_mode & libc::S_IFMT == libc::S_IFREG && info.st_uid == unsafe { libc::geteuid() } && info.st_nlink <= 2, "unsafe publication staging");
+            ensure!(file_kind(&info) == MODE_REGULAR && info.st_uid == unsafe { libc::geteuid() } && info.st_nlink <= 2, "unsafe publication staging");
             ensure!(unsafe { libc::unlinkat(gate.staging.as_raw_fd(), name.as_ptr(), 0) } == 0, "cannot recover publication");
         }
     }

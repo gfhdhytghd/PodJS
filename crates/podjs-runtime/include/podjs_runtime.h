@@ -209,6 +209,16 @@ PodRuntime *pod_runtime_create(const PodRuntimeConfig *config);
 uint32_t pod_runtime_logical_width(const PodRuntime *runtime);
 uint32_t pod_runtime_logical_height(const PodRuntime *runtime);
 int32_t pod_runtime_load_pak(PodRuntime *runtime, const uint8_t *bytes, size_t length);
+/* Synchronous immutable source. Return bytes read (0 means EOF, negative means
+ * IO failure); positive short reads are retried. Each request is <= 64 KiB.
+ * The callback must not unwind or re-enter runtime and is never retained.
+ * The full source is hashed before resource ingestion, using the same checksum
+ * and tolerant PAK format as load_pak. At most one entry blob is staged at once.
+ * On failure discard the partially loaded runtime; validation is revoked.
+ * Source bytes must remain unchanged until this call returns. */
+typedef int64_t (*PodPakReadAt)(void *context, uint64_t offset, uint8_t *out, size_t length);
+int32_t pod_runtime_load_pak_reader(PodRuntime *runtime, size_t length,
+                                  PodPakReadAt read_at, void *context);
 int32_t pod_runtime_validate_package(PodRuntime *runtime, const char *manifest_json);
 int32_t pod_runtime_eval_bundle(PodRuntime *runtime, const uint8_t *source, size_t length,
                                 const char *label);
@@ -223,6 +233,18 @@ int32_t pod_runtime_post_event(PodRuntime *runtime, const char *json_object);
  * and after a failed pre-mount revalidation. Mounted package authority is
  * immutable until runtime destruction. Never reads guest-supplied lists. */
 bool pod_runtime_has_capability(PodRuntime *runtime, const char *name);
+/* Host-only IO/lifecycle completion turn, including while visual frames are
+ * suspended. Calls the optional framework service pump and drains Promise jobs;
+ * exposes all queued host events, but does not tick layout/animation or commit
+ * a draw snapshot. */
+int32_t pod_runtime_pump_services(PodRuntime *runtime);
+/* Foreground completion turn: runs the same optional pump and Promise jobs,
+ * exposing only service.result events through pod.takeEvents. All other host
+ * events remain queued in their relative order for a normal frame or the
+ * unrestricted lifecycle pump above. Also promotes completed legacy NET IO.
+ * Does not advance the frame clock, layout/animation, or draw snapshot. Hosts
+ * must serialize this call with frames and runtime destruction. */
+int32_t pod_runtime_pump_service_results(PodRuntime *runtime);
 int32_t pod_runtime_frame(PodRuntime *runtime, const PodInputFrame *input);
 int32_t pod_runtime_snapshot(PodRuntime *runtime, PodDrawList *out);
 /* Opt in to primary-output semantics. Collection is off by default. */
@@ -253,6 +275,15 @@ int32_t pod_runtime_render_rgba_incremental(PodRuntime *runtime, uint32_t scale,
  * their opaque-black behavior. */
 int32_t pod_runtime_render_rgba_transparent_incremental(
     PodRuntime *runtime, uint32_t scale, uint8_t *pixels, size_t length);
+/* Native-owned RGBA textures: serialized with frame calls, power-of-two bounds
+ * up to 1024. Upload returns a handle >=0; update/free return status.
+ * The original upload API retains nearest sampling. Updates preserve sampling. */
+int32_t pod_runtime_upload_rgba(PodRuntime *runtime, const uint8_t *pixels, size_t length, uint32_t width, uint32_t height);
+enum { POD_TEXTURE_SAMPLING_NEAREST = 0, POD_TEXTURE_SAMPLING_LINEAR = 1 };
+/* Sampling is immutable for the returned handle. Other values are rejected. */
+int32_t pod_runtime_upload_rgba_sampled(PodRuntime *runtime, const uint8_t *pixels, size_t length, uint32_t width, uint32_t height, int32_t sampling);
+int32_t pod_runtime_update_rgba(PodRuntime *runtime, int32_t handle, const uint8_t *pixels, size_t length);
+int32_t pod_runtime_free_texture(PodRuntime *runtime, int32_t handle);
 int32_t pod_runtime_texture(PodRuntime *runtime, uint32_t slot, PodTextureView *out);
 /* Resolve a generation-tagged live texture handle. Returns 1 for a stale or
  * missing handle; unlike pod_runtime_texture this does not enumerate slots. */

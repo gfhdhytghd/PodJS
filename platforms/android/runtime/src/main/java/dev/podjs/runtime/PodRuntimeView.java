@@ -5,6 +5,8 @@ import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.content.res.AssetManager;
 import android.graphics.SurfaceTexture;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.Surface;
@@ -30,6 +32,16 @@ import java.io.ByteArrayOutputStream;
 public final class PodRuntimeView extends TextureView implements TextureView.SurfaceTextureListener {
     static { System.loadLibrary("podjs_android"); }
     private long host;
+    private static final class HostLifetime {
+        final long handle;
+        HostLifetime(long handle) { this.handle = handle; }
+    }
+    private volatile HostLifetime hostLifetime;
+    private HostLifetime rendererTimingOwner;
+    private final Handler serviceHandler = new Handler(Looper.getMainLooper());
+    private boolean serviceTurnRunning;
+    private HostLifetime queuedServiceTurn;
+    private boolean rootSwipeEnabled = true;
     private final PodAccessibility accessibility;
     private boolean accessibilityEnabled;
     private final long[] accessibilityMetadata = new long[3];
@@ -41,6 +53,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private final String targetId;
     private float rotaryRemainder;
     private boolean active = true;
+    private int lifecycleState;
     private final ExecutorService network = Executors.newCachedThreadPool();
     private final Map<Integer, HttpURLConnection> requests = new ConcurrentHashMap<>();
     private final Choreographer.FrameCallback frameCallback = new Choreographer.FrameCallback() {
@@ -60,34 +73,132 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                     firstFrameLogged = true;
                     android.util.Log.i("PodJSPerf", "surfaceToFirstFrameMs=" + (android.os.SystemClock.elapsedRealtime() - surfaceBegan));
                 }
-                String effect;
-                while ((effect = nativePollEffect(host)) != null) {
-                    try {
-                        JSONObject command = new JSONObject(effect);
-                        if ("haptic".equals(command.optString("t"))) performHapticFeedback(6);
-                        else if ("navigation".equals(command.optString("t"))) {
-                            nativeNavigationState(host, command.optBoolean("canGoBack", false));
-                        }
-                        else if (command.optString("t").startsWith("service.")) services.dispatch(command);
-                        else if ("notification.ack".equals(command.optString("t"))) services.acknowledgeNotification(command.getString("eventId"));
-                    } catch (Exception error) { android.util.Log.e("PodJS", "Invalid host effect", error); }
-                }
-                String command;
-                while ((command = nativePollNet(host)) != null) handleNetwork(command);
+                drainHostEffects(true);
                 services.pumpNotifications();
             }
             if (active) Choreographer.getInstance().postFrameCallback(this);
         }
     };
 
+    private void drainHostEffects(boolean foreground) {
+        String effect;
+        while ((effect = nativePollEffect(host)) != null) {
+            try {
+                JSONObject command = new JSONObject(effect);
+                if ("haptic".equals(command.optString("t"))) { if (foreground) performHapticFeedback(6); }
+                else if ("navigation".equals(command.optString("t"))) {
+                    nativeNavigationState(host, command.optBoolean("canGoBack", false));
+                    rootSwipeEnabled = command.optBoolean("rootSwipeEnabled", true);
+                    if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(!canSwipeDismiss());
+                }
+                else if (command.optString("t").startsWith("service.")) services.dispatch(command);
+                else if ("notification.ack".equals(command.optString("t"))) services.acknowledgeNotification(command.getString("eventId"));
+            } catch (Exception error) { android.util.Log.e("PodJS", "Invalid host effect", error); }
+        }
+        String command;
+        while ((command = nativePollNet(host)) != null) handleNetwork(command);
+    }
+    private void pumpServicesWhileSuspended() {
+        if (host == 0 || lifecycleState == 0) return;
+        nativePumpServices(host);
+        drainHostEffects(false);
+    }
+
+    private void setHost(long handle) {
+        host = handle;
+        hostLifetime = handle == 0 ? null : new HostLifetime(handle);
+    }
+    private void destroyHost() {
+        long previous = host;
+        setHost(0);
+        queuedServiceTurn = null;
+        if (previous != 0) nativeDestroy(previous);
+    }
+    private boolean ownsHost(HostLifetime owner) { return owner != null && hostLifetime == owner; }
+
+    /** Host-only diagnostic schema; CPU wall time includes waits, not display time. */
+    static final class RendererTiming {
+        static final int HEADER_SIZE=7,FIELD_COUNT=15,MAX_CAPACITY=4096;
+        static final int H_VERSION=0,H_FIELDS=1,H_CAPACITY=2,H_COUNT=3,H_DROPPED=4,H_START_NS=5,H_STOP_NS=6;
+        static final int SEQUENCE=0,HOST_FRAME=1,RENDERER_FRAME=2,STAGE=3,BEGIN_NS=4,END_NS=5,
+            OUTCOME=6,RESULT_CODE=7,TEXTURE_KEY=8,REVISION=9,WIDTH=10,HEIGHT=11,BYTES=12,COUNT=13,FLAGS=14;
+        static final int SUCCESS=1,FAILURE=-1;
+        static final int HOST_FRAME_STAGE=1,GUEST=2,SNAPSHOT=3,DRAW_LIST=9,DECODE=10,UPLOAD_IMAGES=11,
+            UPLOAD_PRIOR_FENCE_WAIT=12,CREATE_TEXTURE=13,STAGING_COPY=14,UPLOAD_RECORD=15,
+            UPLOAD_SUBMIT=16,UPLOAD_FENCE_WAIT=17,FRAME_FENCE_WAIT=18,ACQUIRE_IMAGE=19,
+            SCENE_RECORD=20,FRAME_SUBMIT=21,PRESENT=22,DESTROY_TEXTURE=23,CACHE_HIT=24,
+            UPLOAD_COMMITTED=25,STAGING_CAPACITY=26,CPU_FRAME=27;
+    }
+    void beginRendererTiming(int capacity) {
+        if (Looper.myLooper() != Looper.getMainLooper()) throw new IllegalStateException("Renderer timing requires the main looper");
+        if (capacity < 1 || capacity > RendererTiming.MAX_CAPACITY) throw new IllegalArgumentException("Invalid renderer timing capacity");
+        HostLifetime owner = hostLifetime;
+        if (!ownsHost(owner)) throw new IllegalStateException("Renderer timing requires a live host");
+        if (rendererTimingOwner != null) throw new IllegalStateException("Renderer timing already owned");
+        if (!nativeBeginRendererTiming(owner.handle, capacity)) throw new IllegalStateException("Renderer timing unavailable or already active");
+        rendererTimingOwner = owner;
+    }
+    long[] endRendererTiming() {
+        if (Looper.myLooper() != Looper.getMainLooper()) throw new IllegalStateException("Renderer timing requires the main looper");
+        HostLifetime owner = rendererTimingOwner;
+        rendererTimingOwner = null;
+        if (owner == null) throw new IllegalStateException("Renderer timing is not owned");
+        // A destroyed renderer releases its trace. Never use the old native
+        // pointer if this View has already acquired a different guest lifetime.
+        if (!ownsHost(owner)) throw new IllegalStateException("Renderer timing host lifetime changed");
+        // Native detaches/stops the trace before allocating the return array.
+        // A failed Java allocation therefore cannot leave recording enabled.
+        long[] snapshot = nativeEndRendererTiming(owner.handle);
+        if (snapshot == null) throw new IllegalStateException("Renderer timing snapshot unavailable");
+        return snapshot;
+    }
+
+    // Every completion enters through a new main-looper job. A token identifies
+    // the guest lifetime even if the allocator later reuses its native address.
+    private void postHostCompletion(HostLifetime owner, Runnable completion) {
+        if (owner == null) return;
+        serviceHandler.post(() -> {
+            if (!ownsHost(owner)) return;
+            completion.run();
+            pumpServiceResults(owner);
+        });
+    }
+    private void receiveServiceEvent(String event) {
+        HostLifetime owner = hostLifetime;
+        if (owner == null) return;
+        byte[] bytes = event.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        postHostCompletion(owner, () -> nativePostEvent(owner.handle, bytes));
+    }
+    private void pumpServiceResults(HostLifetime owner) {
+        if (Looper.myLooper() != Looper.getMainLooper()) throw new IllegalStateException("Service turns require the main looper");
+        if (!ownsHost(owner)) return;
+        if (serviceTurnRunning) {
+            // A nested host callback may request one later turn, never recursively
+            // enter QuickJS or wait for another operation to finish.
+            if (queuedServiceTurn != owner) {
+                queuedServiceTurn = owner;
+                serviceHandler.post(() -> {
+                    if (queuedServiceTurn != owner) return;
+                    queuedServiceTurn = null;
+                    pumpServiceResults(owner);
+                });
+            }
+            return;
+        }
+        serviceTurnRunning = true;
+        try {
+            if (lifecycleState == 0) nativePumpServiceResults(owner.handle);
+            else nativePumpServices(owner.handle);
+            if (ownsHost(owner)) drainHostEffects(lifecycleState == 0);
+        } finally { serviceTurnRunning = false; }
+    }
+
     public PodRuntimeView(Context context, String targetId) {
         super(context);
         this.targetId = targetId;
         accessibility = new PodAccessibility(this, (id, hash, action) -> host != 0 && nativeAccessibilityAction(host, id, hash, action));
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
-        services = new PodServices(context, event -> post(() -> {
-            if (host != 0) nativePostEvent(host, event.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        }));
+        services = new PodServices(context, this::receiveServiceEvent);
         setSurfaceTextureListener(this);
         setOpaque(false);
         setFocusable(true);
@@ -99,7 +210,14 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
 
     @Override protected void onAttachedToWindow() {
         super.onAttachedToWindow();
-        if (getParent() instanceof ViewGroup) services.attachVideo((ViewGroup) getParent());
+        if (getParent() instanceof ViewGroup) {
+            services.attachVideo((ViewGroup) getParent());
+            services.attachMediaSurfaces((ViewGroup)getParent(),new PodMediaSurfaceServices.TextureSink(){
+                public int write(int handle,int[] pixels,int width,int height,boolean linear){return host==0?-1:nativeMediaTexture(host,handle,pixels,width,height,linear);}
+                public void free(int handle){if(host!=0)nativeFreeMediaTexture(host,handle);}
+            });
+            services.attachInlineText((ViewGroup)getParent());
+        }
     }
     @Override protected void onWindowVisibilityChanged(int visibility) {
         super.onWindowVisibilityChanged(visibility);
@@ -112,24 +230,36 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
             if (host != 0) {
                 nativeResize(host, surface, width, height);
                 nativeTheme(host, currentTheme());
+            nativeLifecycle(host, lifecycleState);
+            pumpServicesWhileSuspended();
                 return;
             }
             surfaceBegan = android.os.SystemClock.elapsedRealtime();
             firstFrameLogged = false;
             File data = new File(getContext().getFilesDir(), "podjs");
             if (!data.exists() && !data.mkdirs()) throw new IllegalStateException("PodJS data directory");
-            host = nativeCreate(surface, targetId, width, height,
-                getResources().getDisplayMetrics().density, data.getAbsolutePath());
+            setHost(nativeCreate(surface, targetId, width, height,
+                getResources().getDisplayMetrics().density, data.getAbsolutePath()));
             accessibilityEnabled = false;
-            nativeBootAssets(host, getContext().getAssets());
+            android.content.pm.ApplicationInfo packageInfo = getContext().getApplicationInfo();
+            try (PodPakReader pak = new PodPakReader(packageInfo.sourceDir, packageInfo.splitSourceDirs)) {
+                nativeBootAssets(host, getContext().getAssets(), pak, pak.length());
+            } catch (java.io.IOException error) {
+                throw new IllegalStateException("PodJS package asset read failed", error);
+            }
             services.approveInstalledBackground(targetId);
             services.approveInstalledSync(targetId);
             if(companionSettingsRequested) {companionSettingsRequested=false;showCompanionSettings();}
             nativeTheme(host, currentTheme());
+            nativeLifecycle(host, lifecycleState);
+            // Boot may already have emitted IO. Start it before the first visual
+            // frame; later completion jobs advance dependent operations directly.
+            pumpServiceResults(hostLifetime);
             Choreographer.getInstance().removeFrameCallback(frameCallback);
             if (active) Choreographer.getInstance().postFrameCallback(frameCallback);
-        } catch (RuntimeException error) {
-            if (host != 0) { nativeDestroy(host); host = 0; }
+        } catch (RuntimeException | Error error) {
+            destroyHost();
+            if (error instanceof Error) throw (Error) error;
             throw new IllegalStateException("PodJS boot failed", error);
         } finally { surface.release(); }
     }
@@ -152,7 +282,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     @Override protected void onDetachedFromWindow() {
         Choreographer.getInstance().removeFrameCallback(frameCallback);
         accessibility.clear();
-        if (host != 0) { nativeDestroy(host); host = 0; }
+        destroyHost();
         for (HttpURLConnection connection : requests.values()) connection.disconnect();
         requests.clear();
         network.shutdownNow();
@@ -166,6 +296,8 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     @Override protected void onConfigurationChanged(Configuration configuration) {
         super.onConfigurationChanged(configuration);
         if (host != 0) nativeTheme(host, currentTheme());
+            nativeLifecycle(host, lifecycleState);
+            pumpServicesWhileSuspended();
     }
 
     @Override public boolean onTouchEvent(MotionEvent event) {
@@ -215,11 +347,16 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     }
 
     /** Translate physical crowns and simulated mouse wheels to the watch axis ABI. */
-    static float scrollDegrees(MotionEvent event) {
+    static float rawScrollDelta(MotionEvent event) {
         if (event.getAction() != MotionEvent.ACTION_SCROLL) return Float.NaN;
         float vertical = event.getAxisValue(MotionEvent.AXIS_VSCROLL);
         if (vertical == 0f) vertical = event.getAxisValue(MotionEvent.AXIS_SCROLL);
-        if (vertical == 0f) return Float.NaN;
+        return vertical == 0f || !Float.isFinite(vertical) ? Float.NaN : vertical;
+    }
+
+    static float scrollDegrees(MotionEvent event) {
+        float vertical = rawScrollDelta(event);
+        if (Float.isNaN(vertical)) return Float.NaN;
         float scale = event.isFromSource(InputDevice.SOURCE_MOUSE)
             ? ANDROID_MOUSE_WHEEL_SCALE
             : 1f;
@@ -229,8 +366,16 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     }
 
     public boolean handleScrollMotion(MotionEvent event) {
+        if (services.handleInlineCrownScroll(event)) return true;
         float degrees = scrollDegrees(event);
         if (Float.isNaN(degrees)) return false;
+        // Retain unscaled Android motion for applications matching physical device policies.
+        // The existing normalized axis is still delivered for scrolling/navigation.
+        if (host != 0) {
+            String eventJson = "{\"t\":\"input.scroll\",\"vertical\":" + rawScrollDelta(event)
+                    + ",\"uptimeMs\":" + event.getEventTime() + ",\"source\":" + event.getSource() + "}";
+            nativePostEvent(host, eventJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        }
         addRotaryDegrees(degrees);
         return true;
     }
@@ -249,18 +394,20 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                 if (connection != null) connection.disconnect();
                 return;
             }
-            long requestHost = host;
-            network.execute(() -> executeRequest(requestHost, handle, command));
+            HostLifetime owner = hostLifetime;
+            if (owner != null) network.execute(() -> executeRequest(owner, handle, command));
         } catch (Exception error) {
             throw new IllegalStateException("Invalid PodJS network command", error);
         }
     }
 
-    private void executeRequest(long requestHost, int handle, JSONObject command) {
+    private void executeRequest(HostLifetime owner, int handle, JSONObject command) {
         HttpURLConnection connection = null;
         try {
+            if (!ownsHost(owner)) return;
             connection = (HttpURLConnection) new URL(command.getString("url")).openConnection();
             requests.put(handle, connection);
+            if (!ownsHost(owner)) return;
             connection.setRequestMethod(command.getString("method"));
             int timeout = command.getInt("timeoutMs");
             connection.setConnectTimeout(timeout); connection.setReadTimeout(timeout);
@@ -276,12 +423,12 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
             JSONObject responseHeaders = new JSONObject();
             for (Map.Entry<String, java.util.List<String>> entry : connection.getHeaderFields().entrySet()) if (entry.getKey() != null && !entry.getValue().isEmpty()) responseHeaders.put(entry.getKey(), entry.getValue().get(0));
             byte[] body = output.toByteArray(); String finalUrl = connection.getURL().toString(); String encodedHeaders = responseHeaders.toString();
-            post(() -> { if (host == requestHost) nativeCompleteHttp(requestHost, handle, status, finalUrl, encodedHeaders, body); });
+            postHostCompletion(owner, () -> nativeCompleteHttp(owner.handle, handle, status, finalUrl, encodedHeaders, body));
         } catch (Exception error) {
             String message = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
-            post(() -> { if (host == requestHost) nativeFailHttp(requestHost, handle, "network_error", message); });
+            postHostCompletion(owner, () -> nativeFailHttp(owner.handle, handle, "network_error", message));
         } finally {
-            requests.remove(handle); if (connection != null) connection.disconnect();
+            if (connection != null) { requests.remove(handle, connection); connection.disconnect(); }
         }
     }
 
@@ -294,11 +441,15 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     }
 
     public void setLifecycle(int state) {
+        lifecycleState=state;
+        services.screenLifecycle(state==0);
+        if(state!=0)services.pauseVideoForLifecycle();
         if(state!=0)companionSettingsRequested=false;
         if(state!=0 && companionSettings!=null) {companionSettings.close();companionSettings=null;}
         services.syncForeground(state==0);
         active = state != 2;
         if (host != 0) nativeLifecycle(host, state);
+        pumpServicesWhileSuspended();
         Choreographer.getInstance().removeFrameCallback(frameCallback);
         if (active) Choreographer.getInstance().postFrameCallback(frameCallback);
     }
@@ -320,7 +471,19 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         companionSettings=new PodSyncSettingsDialog(getContext(),services);companionSettings.show();
     }
     public boolean sendBack() { return host != 0 && nativeBack(host); }
+    public void restoreActivityState(String saved, String retained) { services.activityState.restore(saved, retained); }
+    private void flushActivityState() { if (host != 0) { nativePumpServices(host); drainHostEffects(false); } }
+    public String savedActivityState() { flushActivityState(); return services.activityState.saved(); }
+    public String retainedActivityState() { flushActivityState(); return services.activityState.retained(); }
     public boolean canNavigateBack() { return host != 0 && nativeCanGoBack(host); }
+    /** Independent from system back: consent screens can allow root back while
+     * preventing the platform or host from recognizing a dismissing swipe. */
+    public boolean canSwipeDismiss() { return rootSwipeEnabled && !canNavigateBack(); }
+    @Override public boolean canScrollHorizontally(int direction) {
+        // Platform SwipeDismissLayout checks whether its child owns horizontal
+        // movement. Keep internal navigation and explicit swipe locks in-app.
+        return !canSwipeDismiss() || super.canScrollHorizontally(direction);
+    }
 
     private static native void nativePostEvent(long host, byte[] event);
     private static native void nativeAccessibilityEnabled(long host, boolean enabled);
@@ -328,13 +491,19 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private static native boolean nativeAccessibilityAction(long host, int id, long hash, int action);
     private static native void nativeNavigationState(long host, boolean canGoBack);
     private static native boolean nativeCanGoBack(long host);
-    private static native void nativeBootAssets(long host, AssetManager assets);
+    private static native void nativeBootAssets(long host, AssetManager assets, PodPakReader pak, long pakLength);
     private static native long nativeCreate(Surface surface, String target, int width, int height, float density, String dataDir);
     private static native void nativeBoot(long host, byte[] pak, byte[] js, byte[] manifest);
     private static native void nativeResize(long host, Surface surface, int width, int height);
     private static native void nativeDetachSurface(long host);
     private static native void nativeInput(long host, int[] ids, float[] xy, int count, int rotaryMilliDegrees);
+    private static native void nativePumpServices(long host);
+    private static native void nativePumpServiceResults(long host);
     private static native void nativeFrame(long host);
+    private static native boolean nativeBeginRendererTiming(long host,int capacity);
+    private static native long[] nativeEndRendererTiming(long host);
+    private static native int nativeMediaTexture(long host,int handle,int[] argb,int width,int height,boolean linear);
+    private static native void nativeFreeMediaTexture(long host,int handle);
     private static native String nativePollEffect(long host);
     private static native String nativePollNet(long host);
     private static native void nativeCompleteHttp(long host, int handle, int status, String url, String headers, byte[] body);

@@ -1,6 +1,15 @@
+import { bytesToBase64 as portableBytesToBase64 } from "../../../vendor/pocketjs/framework/src/bytes.ts";
 import { __onHostEvent, hasCapability } from "./watch.ts";
 import type { PodCapabilityId } from "./targets.ts";
 import { platformMethods } from "./platform-contract.ts";
+
+/** Native byte conversion avoids per-character guest work for file/stream payloads.
+ * Older hosts retain the portable codec, including an empty result. */
+export function bytesToBase64(bytes:Uint8Array):string {
+  const native=(globalThis as {pod?:{encodeBase64?:(value:Uint8Array)=>string|null|undefined}}).pod?.encodeBase64;
+  const encoded=native?.(bytes);
+  return typeof encoded==='string'?encoded:portableBytesToBase64(bytes);
+}
 
 export type SqlValue = string | number | null;
 export interface SqlStatement { sql: string; params?: readonly SqlValue[] }
@@ -12,19 +21,48 @@ const pending = new Map<number, { resolve(value: unknown): void; reject(error: E
 let nextId = 1;
 const methods: Record<string, PodCapabilityId> = {
   ...platformMethods,
+  "app.finishTask": "host.lifecycle",
+  "app.activityState.read": "host.lifecycle", "app.activityState.write": "host.lifecycle",
+  "rfcomm.requestPermission": "net.rfcomm", "rfcomm.status": "net.rfcomm", "rfcomm.listen": "net.rfcomm", "rfcomm.accept": "net.rfcomm", "rfcomm.close": "net.rfcomm",
+  "tcp.listen":"net.tcp", "tcp.accept":"net.tcp", "tcp.close":"net.tcp", "tcp.addresses":"net.tcp",
+  "discovery.networkSnapshot": "net.discovery", "discovery.networkSubscribe": "net.discovery", "discovery.networkUnsubscribe": "net.discovery",
+  "discovery.mdns": "net.discovery", "discovery.status": "net.discovery", "discovery.requestPermission": "net.discovery", "discovery.bleReadCharacteristic": "net.discovery",
+  "websocket.connect": "net.websocket", "websocket.readText": "net.websocket", "websocket.writeText": "net.websocket", "websocket.close": "net.websocket",
+  "stream.read": "net.stream", "stream.write": "net.stream", "stream.close": "net.stream",
   "runtime.delay": "runtime.timer",
+  "display.state": "display.power", "display.keepAwake": "display.power",
+  "audio.silenceState": "media.audio", "audio.silenceEnabled": "media.audio", "audio.silenceLease": "media.audio",
+  "ui.toast": "system.toast",
   "http.download": "net.download",
   "browser.open": "system.browser",
-  "audio.start": "media.audio", "audio.pause": "media.audio", "audio.resume": "media.audio", "audio.stop": "media.audio", "audio.state": "media.audio",
+  "audio.start": "media.audio", "audio.pause": "media.audio", "audio.resume": "media.audio", "audio.setSpeed": "media.audio", "audio.stop": "media.audio", "audio.state": "media.audio",
+  "audio.volumeState": "media.audio", "audio.setVolumeIndex": "media.audio",
   "tts.init": "media.tts", "tts.speak": "media.tts", "tts.stop": "media.tts", "tts.state": "media.tts",
   "video.prepare": "media.video", "video.play": "media.video", "video.pause": "media.video", "video.seek": "media.video", "video.stop": "media.video", "video.setBounds": "media.video", "video.state": "media.video",
   "video.captureBackdrop": "media.video", "video.setTransform": "media.video", "video.setVolume": "media.video",
-  "image.decode": "data.images", "browser.authorize": "system.browser.auth",
+  "image.surface.open":"data.images", "image.surface.update":"data.images", "image.surface.state":"data.images", "image.surface.close":"data.images",
+  "video.surface.open":"media.video", "video.surface.update":"media.video", "video.surface.state":"media.video", "video.surface.close":"media.video",
+  "share.environment": "system.share", "share.text": "system.share",
+  "image.decode": "data.images", "image.decodeRegion": "data.images", "image.release": "data.images", "browser.authorize": "system.browser.auth",
   "sql.query": "data.sqlite", "sql.execute": "data.sqlite", "sql.transaction": "data.sqlite",
   "input.text": "input.text", "secure.get": "data.secure", "secure.set": "data.secure", "secure.delete": "data.secure",
-  "crypto.rsaOaepSha256": "crypto.basic", "crypto.random": "crypto.basic", "crypto.hash": "crypto.basic", "crypto.encrypt": "crypto.basic", "crypto.decrypt": "crypto.basic",
-  "file.read": "data.files.chunks", "file.write": "data.files.chunks", "file.stat": "data.files.chunks", "file.delete": "data.files.chunks",
+  "input.inline.open": "input.text", "input.inline.close": "input.text", "input.inline.set": "input.text",
+  "text.layout": "text.layout", "text.layoutBatch": "text.layout", "text.measure": "text.layout", "text.raster": "text.raster", "text.environment": "text.environment",
+  "input.time": "input.time",
+  "location.current": "device.location",
+  "crypto.rsaOaepSha256": "crypto.basic", "crypto.random": "crypto.basic", "crypto.hash": "crypto.basic", "crypto.hmacSha256": "crypto.basic", "crypto.aesGcmEncrypt": "crypto.basic", "crypto.aesGcmDecrypt": "crypto.basic", "crypto.encrypt": "crypto.basic", "crypto.decrypt": "crypto.basic",
+  "uri.parse": "data.uri", "file.htmlText": "data.files.chunks", "file.gzip": "data.files.chunks", "file.gzipBytes": "data.files.chunks", "file.gunzip": "data.files.chunks", "file.openText": "data.files.chunks", "file.readTextChunk": "data.files.chunks", "file.closeText": "data.files.chunks", "file.createTemp": "data.files.chunks", "file.hash": "data.files.chunks", "file.commit": "data.files.chunks", "file.read": "data.files.chunks", "file.write": "data.files.chunks", "file.list": "data.files.chunks", "file.touch": "data.files.chunks", "file.stat": "data.files.chunks", "file.delete": "data.files.chunks",
 };
+export interface ActivityState { saved:Record<string,unknown>; retained:Record<string,unknown> }
+/** Android Activity lifecycle operations. Saved state follows the system Bundle;
+ * retained state survives configuration recreation only. Neither is app KV. */
+export const application = Object.freeze({
+  finishTask: (): Promise<void> => hostOperation<void>("app.finishTask", {}).result,
+  activityState: Object.freeze({
+    read: ():Promise<ActivityState> => hostOperation<ActivityState>("app.activityState.read",{}).result,
+    write: (state:ActivityState):Promise<void> => hostOperation<void>("app.activityState.write",{saved:state.saved,retained:state.retained}).result,
+  }),
+});
 function emit(value: unknown): void {
   const host = (globalThis as unknown as { pod?: { emit(line: string): void } }).pod;
   if (!host) throw new HostServiceError("unavailable", "PodJS host is unavailable");
@@ -57,6 +95,19 @@ export function hostOperation<T>(method: string, args: Record<string, unknown>):
     emit({ t: "service.cancel", version: 1, id });
   } };
 }
+export interface DisplayPowerState {interactive:boolean;resumed:boolean;applied:boolean;windowKeepScreenOn:boolean;owners:string[]}
+export const displayPower={
+  state:()=>hostOperation<DisplayPowerState>("display.state",{}).result,
+  keepAwake:(owner:string,active:boolean)=>hostOperation<DisplayPowerState>("display.keepAwake",{owner,active}).result,
+  onChange:(listener:(state:DisplayPowerState)=>void)=>__onHostEvent(event=>{if(hasCapability("display.power")&&event.t==='display.state'&&event.value&&typeof event.value==='object')listener(event.value as DisplayPowerState);}),
+};
+export interface SilenceState {enabled:boolean;playing:boolean;owners:string[]}
+export const silencePlayback={
+  state:()=>hostOperation<SilenceState>("audio.silenceState",{}).result,
+  setEnabled:(enabled:boolean)=>hostOperation<SilenceState>("audio.silenceEnabled",{enabled}).result,
+  lease:(owner:string,active:boolean)=>hostOperation<SilenceState>("audio.silenceLease",{owner,active}).result,
+};
+
 export const sqlite = {
   query(sql: string, params: readonly SqlValue[] = []): Promise<Record<string, unknown>[]> {
     return hostOperation<Record<string, unknown>[]>("sql.query", { sql, params }).result;
@@ -67,11 +118,51 @@ export const sqlite = {
   async transaction(statements: readonly SqlStatement[]): Promise<void> {
     await hostOperation("sql.transaction", { statements }).result;
   },
+  /** SQLite changes() after each statement, returned only after commit. */
+  transactionChanges(statements: readonly SqlStatement[]): Promise<number[]> {
+    return hostOperation<number[]>("sql.transaction", { statements, reportChanges: true }).result;
+  },
 };
 export const textInput = {
   prompt(title: string, value = ""): HostOperation<string | null> {
     return hostOperation("input.text", { title, value });
   },
+  async openInline(value:string,bounds:{x:number;y:number;width:number;height:number},onChange:(value:string)=>void,onSubmit?:()=>void,options:{hint?:string;fontSizeSp?:number;fontAsset?:string;fontWeight?:number;includeFontPadding?:boolean;inputType?:"text"|"uri";multiline?:boolean;keepExisting?:boolean;selectionStart?:number;textAlign?:"start"|"center"|"end";horizontalPaddingDp?:number;verticalPaddingDp?:number;autoFocus?:boolean;document?:{id:string;role:"title"|"body";viewportHeight:number;viewportOverhangDp?:number;metadata?:string;unfocusedCaretColor?:string}}={}):Promise<{close():Promise<void>;setValue(value:string):Promise<void>}> {
+    let session:number|undefined,closed=false;
+    const early:Record<string,unknown>[]=[];
+    const deliver=(event:Record<string,unknown>)=>{
+      if(closed||event.session!==session)return;
+      if(event.t==="input.inline.change"&&typeof event.value==="string")onChange(event.value);
+      if(event.t==="input.inline.submit")onSubmit?.();
+    };
+    const unsubscribe=__onHostEvent(event=>{
+      if(session===undefined){if(early.length<32&&event.t?.toString().startsWith("input.inline."))early.push(event);return;}
+      deliver(event);
+    });
+    try{session=await hostOperation<number>("input.inline.open",{...bounds,value,hint:options.hint??"搜索",fontSizeSp:options.fontSizeSp??17,...(options.fontAsset===undefined?{}:{fontAsset:options.fontAsset}),...(options.fontWeight===undefined?{}:{fontWeight:Math.max(100,Math.min(900,Math.trunc(options.fontWeight)))}),...(options.includeFontPadding===undefined?{}:{includeFontPadding:options.includeFontPadding}),inputType:options.inputType??"text",multiline:options.multiline??false,keepExisting:options.keepExisting??false,...(options.selectionStart===undefined?{}:{selectionStart:Math.max(0,Math.min(value.length,Math.trunc(options.selectionStart)))}),...(options.textAlign===undefined?{}:{textAlign:options.textAlign}),...(options.horizontalPaddingDp===undefined?{}:{horizontalPaddingDp:Math.max(0,Math.min(64,options.horizontalPaddingDp))}),...(options.verticalPaddingDp===undefined?{}:{verticalPaddingDp:Math.max(0,Math.min(64,options.verticalPaddingDp))}),...(options.autoFocus===undefined?{}:{autoFocus:options.autoFocus}),...(options.document===undefined?{}:{document:options.document})}).result;}
+    catch(error){closed=true;unsubscribe();throw error;}
+    for(const event of early)deliver(event);
+    return {async setValue(value:string){
+      if(closed)return;
+      await hostOperation<void>("input.inline.set",{session,value}).result;
+    },async close(){
+      if(closed)return;
+      closed=true;unsubscribe();
+      await hostOperation<void>("input.inline.close",{session}).result;
+    }};
+  },
+};
+/** A local wall-clock time in minutes after midnight; dismissing returns null. */
+export const timeInput = {
+  prompt(minutes: number): HostOperation<number | null> {
+    if (!Number.isInteger(minutes) || minutes < 0 || minutes > 1439) throw new HostServiceError("invalid_argument", "Time must be integer minutes from 0 to 1439");
+    return hostOperation("input.time", { minutes });
+  },
+};
+export interface LocationFix { latitude: number; longitude: number; timestamp: number }
+export const location = {
+  /** Requests foreground permission when needed. No background tracking is started. */
+  current(): HostOperation<LocationFix | null> { return hostOperation("location.current", {}); },
 };
 
 export const secureStorage = {
@@ -79,15 +170,41 @@ export const secureStorage = {
   async set(key: string,value: string): Promise<void> { await hostOperation("secure.set",{key,value}).result; },
   async delete(key: string): Promise<void> { await hostOperation("secure.delete",{key}).result; },
 };
+/** Android STREAM_MUSIC indices, shared by audio, video and speech playback. */
+export interface MediaVolumeState { ok:boolean; min:number; max:number; current:number; fixed:boolean }
+export const mediaVolume = {
+  state(): Promise<MediaVolumeState> { return hostOperation<MediaVolumeState>("audio.volumeState", {}).result; },
+  setIndex(index:number): Promise<MediaVolumeState> {
+    if (!Number.isInteger(index) || index < 0) throw new HostServiceError("invalid_argument", "Volume index must be a nonnegative integer");
+    return hostOperation<MediaVolumeState>("audio.setVolumeIndex", {index}).result;
+  },
+};
 export const audio = {
   play(url: string): HostOperation<unknown> { return hostOperation("audio.start",{url}); },
   pause(): Promise<unknown> { return hostOperation("audio.pause",{}).result; },
   resume(): Promise<unknown> { return hostOperation("audio.resume",{}).result; },
+  setSpeed(speed:number): Promise<unknown> { if(!Number.isFinite(speed)||speed<.5||speed>2)throw new HostServiceError("invalid_argument","Audio speed must be between 0.5 and 2");return hostOperation("audio.setSpeed",{speed}).result; },
   stop(): Promise<unknown> { return hostOperation("audio.stop",{}).result; },
   state(): Promise<{state:string;positionMs:number;durationMs:number}> { return hostOperation<{state:string;positionMs:number;durationMs:number}>("audio.state",{}).result; },
 };
+export interface SpeechState { ok:boolean; initialized:boolean; state:string; language?:string; voice?:string; engine?:string; utteranceId?:string }
+export interface SpeechProgressEvent { type: "start" | "range" | "done" | "error" | "stop"; utteranceId:string; start?:number; end?:number; elapsedMs:number }
 export const speech = {
-  speak(text: string,language="zh-CN"): HostOperation<unknown> { return hostOperation("tts.speak",{text,language}); },
+  onProgress(listener:(event:SpeechProgressEvent)=>void):()=>void {
+    return __onHostEvent(event=>{
+      if(event.t!=="speech.progress"||typeof event.utteranceId!=="string"||typeof event.type!=="string"||!["start","range","done","error","stop"].includes(event.type))return;
+      if(event.type==="range"&&(!Number.isInteger(event.start)||!Number.isInteger(event.end)))return;
+      listener({type:event.type as SpeechProgressEvent["type"],utteranceId:event.utteranceId,start:event.start as number|undefined,end:event.end as number|undefined,elapsedMs:typeof event.elapsedMs==="number"&&Number.isFinite(event.elapsedMs)?Math.max(0,event.elapsedMs):0});
+    });
+  },
+  initialize(language="zh-CN"): Promise<SpeechState> { return hostOperation<SpeechState>("tts.init",{language}).result; },
+  /** Prefer installed offline voices in order, then a supported language. An empty speak language preserves the selected voice. */
+  initializeLocal(preferredLanguages:readonly string[]=["zh-CN","zh","en"]): Promise<SpeechState> {
+    if(!preferredLanguages.length||preferredLanguages.some(language=>typeof language!=="string"||!language.trim()))throw new HostServiceError("invalid_argument","At least one nonempty language is required");
+    return hostOperation<SpeechState>("tts.init",{preferredOfflineLanguages:preferredLanguages}).result;
+  },
+  state(): Promise<SpeechState> { return hostOperation<SpeechState>("tts.state",{}).result; },
+  speak(text: string,language="zh-CN",rate=1,utteranceId?:string): HostOperation<SpeechState> { return hostOperation("tts.speak",{text,language,rate,...(utteranceId?{utteranceId}:{})}); },
   stop(): Promise<unknown> { return hostOperation("tts.stop",{}).result; },
 };
 export interface VideoBounds { x:number; y:number; width:number; height:number; translateX?:number; visible?:boolean; roundClip?:{cx:number;cy:number;radius:number} }
@@ -129,16 +246,190 @@ export const images = {
     return hostOperation<{path:string;width:number;height:number}>("image.decode", {path, maxDimension}).result;
   },
 };
+export const uri = {
+  /** java.net.URI components on Android; this parses without URL normalization. */
+  parse(value:string,syntax?:"java"|"android"):Promise<{valid:boolean;scheme:string|null;host:string|null;rawPath:string|null;rawQuery:string|null}> {
+    return hostOperation<{valid:boolean;scheme:string|null;host:string|null;rawPath:string|null;rawQuery:string|null}>("uri.parse",{value,...(syntax?{syntax}:{})}).result;
+  },
+};
+export const sharing = {
+  environment():Promise<{sdkInt:number;wearOs:boolean}> {return hostOperation<{sdkInt:number;wearOs:boolean}>("share.environment",{}).result;},
+  /** Opens the chooser only. Selecting a recipient belongs to the user. */
+  text(text:string,chooserTitle?:string):HostOperation<void>{return hostOperation<void>("share.text",{text,...(chooserTitle===undefined?{}:{chooserTitle})});},
+};
+
 export const fileChunks = {
+  /** Extract visible HTML text into a temporary UTF-8 file; caller removes it. */
+  htmlText(path:string,maxOutputBytes=32*1024*1024):Promise<{path:string;size:number;sha256:string}> {
+    return hostOperation<{path:string;size:number;sha256:string}>("file.htmlText",{path,maxOutputBytes}).result;
+  },
+  gzip(path:string,maxOutputBytes=32*1024*1024):Promise<{path:string;size:number;sha256:string}> {
+    return hostOperation<{path:string;size:number;sha256:string}>("file.gzip",{path,maxOutputBytes}).result;
+  },
+  /** Bounded in-memory path for sync bodies up to 64 KiB. */
+  gzipBytes(dataBase64:string):Promise<{dataBase64:string}> {
+    return hostOperation<{dataBase64:string}>("file.gzipBytes",{dataBase64}).result;
+  },
+  gunzip(path:string,maxOutputBytes=32*1024*1024,allowPlain=false):Promise<{path:string;size:number;sha256:string}> {
+    return hostOperation<{path:string;size:number;sha256:string}>("file.gunzip",{path,maxOutputBytes,allowPlain}).result;
+  },
+  openText(path:string):Promise<{id:string}> {return hostOperation<{id:string}>("file.openText",{path}).result;},
+  readTextChunk(id:string,maxChars=16384):Promise<{text:string;eof:boolean}> {return hostOperation<{text:string;eof:boolean}>("file.readTextChunk",{id,maxChars}).result;},
+  closeText(id:string):Promise<{closed:boolean}> {return hostOperation<{closed:boolean}>("file.closeText",{id}).result;},
+  createTemp(directory:string):Promise<{path:string}> {
+    return hostOperation<{path:string}>("file.createTemp",{directory}).result;
+  },
+  write(path:string,dataBase64:string):Promise<{size:number}> {
+    return hostOperation<{size:number}>("file.write",{path,dataBase64,atomicReplace:true}).result;
+  },
+  append(path:string,dataBase64:string,expectedOffset:number):Promise<{size:number}> {
+    return hostOperation<{size:number}>("file.write",{path,dataBase64,append:true,expectedOffset}).result;
+  },
+  hash(path:string):Promise<{size:number;sha256:string}> {
+    return hostOperation<{size:number;sha256:string}>("file.hash",{path}).result;
+  },
+  commit(path:string,target:string,expectedSize:number,expectedSha256:string):Promise<{path:string;size:number;sha256:string;reused:boolean}> {
+    return hostOperation<{path:string;size:number;sha256:string;reused:boolean}>("file.commit",{path,target,expectedSize,expectedSha256}).result;
+  },
+  /** Enumerate one directory inside the app file root. Links and oversized directories fail closed. */
+  list(path:string):Promise<{entries:{path:string;file:boolean;directory:boolean;size:number;modified:number}[]}> {
+    return hostOperation<{entries:{path:string;file:boolean;directory:boolean;size:number;modified:number}[]}>("file.list",{path}).result;
+  },
+  touch(path:string):Promise<{modified:number}> {return hostOperation<{modified:number}>("file.touch",{path}).result;},
+  stat(path:string): Promise<{exists:boolean;file:boolean;directory:boolean;size:number;modified:number}> {
+    return hostOperation<{exists:boolean;file:boolean;directory:boolean;size:number;modified:number}>("file.stat",{path}).result;
+  },
+  /** Decode a byte range using Android's replacement behavior for malformed UTF-8. */
+  readText(path:string,offset=0,maxBytes=65536): Promise<{text:string;bytesRead:number;offset:number;size:number;eof:boolean}> {
+    return hostOperation<{text:string;bytesRead:number;offset:number;size:number;eof:boolean}>("file.read",{path,offset,maxBytes,encoding:"utf8"}).result;
+  },
   read(path:string,offset=0,maxBytes=65536): Promise<{dataBase64:string;offset:number;size:number;eof:boolean}> {
     return hostOperation<{dataBase64:string;offset:number;size:number;eof:boolean}>("file.read",{path,offset,maxBytes}).result;
   },
   async remove(path:string): Promise<void> { await hostOperation("file.delete",{path}).result; },
 };
-export { bytesToBase64, base64ToBytes, utf8ToString } from "../../../vendor/pocketjs/framework/src/bytes.ts";
+export { base64ToBytes, utf8ToString, stringToUtf8 } from "../../../vendor/pocketjs/framework/src/bytes.ts";
 
 /** Wall-clock delay driven by the host, independent of UI frame cadence. */
 export function delay(milliseconds:number):HostOperation<void> { return hostOperation<void>("runtime.delay",{milliseconds}); }
 
 /** Public-key RSA OAEP with SHA-256, MGF1 SHA-256 and an empty label. */
 export function rsaOaepSha256(publicKeyPem:string,inputBase64:string):HostOperation<{ciphertextBase64:string}>{return hostOperation("crypto.rsaOaepSha256",{publicKeyPem,inputBase64});}
+
+export interface TextLayoutLine { start:number; end:number; visibleEnd:number; topPx:number; bottomPx:number; baselinePx:number }
+export interface TextFontOptions {
+  /** Relative to application files; missing or unreadable font files use system fallback. */
+  fontPath?:string;
+  /** Logical resources.assets name; packaged under pod-assets/. Mutually exclusive with fontPath. */
+  fontAsset?:string; fontFaceIndex?:number; variationSettings?:string;
+}
+export interface TextLayoutOptions extends TextFontOptions {
+  text:string; widthPx:number; fontSizePx:number; lineHeightPx?:number;
+  fontWeight?:number; italic?:boolean; letterSpacingEm?:number;
+  lineBreak?:"simple"|"paragraph"|"balanced";
+  lineHeightMode?:"span"|"spacing"; fallbackLineSpacing?:boolean;
+  hyphenation?:"none"|"full"; justify?:boolean; align?:"left"|"center"|"right";
+  textMotion?:"subpixel"|"static"|"animated"; colorArgb?:number; underline?:boolean; strikethrough?:boolean;
+}
+export interface TextParagraphLine extends TextLayoutOptions {lineIndex:number}
+export interface TextEnvironment {
+  /** Physical pixels per dp in the current host Activity context. */
+  density:number;
+  /** System setting, not a universal SP multiplier: Android may scale SP nonlinearly. */
+  fontScale:number;
+  /** Platform SP conversions in request order, including duplicates; empty when omitted. */
+  spValuesPx:number[];
+}
+/** System or local-file font, with optional paragraph shaping. Dimensions are physical pixels; offsets are UTF-16. */
+export const textLayout = {
+  /** Fresh Activity Resources snapshot. At most 128 finite SP values in 0..8192.
+   * Uses platform TypedValue SP conversion; not a promise of Compose version parity. */
+  environment(options:{spValues?:readonly number[]}={}):Promise<TextEnvironment> {
+    return hostOperation<TextEnvironment>("text.environment",{...options}).result;
+  },
+  measure(options:TextFontOptions & {text:string;fontSizePx:number;fontWeight?:number;italic?:boolean;letterSpacingEm?:number;textMotion?:"subpixel"|"static"|"animated"}):HostOperation<{widthPx:number}>{return hostOperation("text.measure",{...options});},
+  layout(options:TextLayoutOptions):HostOperation<{lines:TextLayoutLine[]}> {
+    return hostOperation("text.layout", {...options});
+  },
+  /** At most 32 paragraphs and 262,144 UTF-16 units per request. */
+  layoutBatch(paragraphs:readonly TextLayoutOptions[]):HostOperation<{results:({lines:TextLayoutLine[]}|{error:string})[]}> {
+    return hostOperation("text.layoutBatch", {paragraphs});
+  },
+};
+
+/** System text shaping and color-font fallback for one physical-pixel text line. */
+export const textRaster = {
+  line(options:TextFontOptions & {text:string;widthPx:number;heightPx:number;baselinePx:number;fontSizePx:number;fontWeight?:number;italic?:boolean;underline?:boolean;strikethrough?:boolean;letterSpacingEm?:number;colorArgb?:number;align?:"left"|"center"|"right";textMotion?:"subpixel"|"static"|"animated";paragraph?:TextParagraphLine}):HostOperation<{path:string;width:number;height:number;contentWidth:number;contentHeight:number;carets:number[]}> { return hostOperation("text.raster",{...options}); },
+};
+
+/** Classic Bluetooth byte streams. Availability is gated by the host capability;
+ * opening a listener does not discover, pair with, or trust a remote peer. */
+export const rfcomm = {
+  requestPermission: () => hostOperation<"granted"|"required">("rfcomm.requestPermission",{}),
+  status: () => hostOperation<{available:boolean;permission:"granted"|"required";enabled:boolean}>("rfcomm.status",{}).result,
+  listen: (name:string,uuid:string) => hostOperation<{id:string}>("rfcomm.listen",{name,uuid}),
+  accept: (id:string,timeoutMs=120000) => hostOperation<{id:string;remoteAddress:string;remoteName:string|null}>("rfcomm.accept",{id,timeoutMs}),
+  close: (id:string) => hostOperation<{closed:boolean}>("rfcomm.close",{id}).result,
+};
+/** Guest-owned TCP listeners. Closing/cancelling accept releases the listening socket.
+ * Accepted connections use byteStreams; addresses reports the active Wi-Fi IPv4 route. */
+export const tcp = {
+ listen:(port=0,address:"0.0.0.0"|"127.0.0.1"="0.0.0.0")=>hostOperation<{id:string;port:number}>("tcp.listen",{port,address}),
+ accept:(id:string,timeoutMs=120000)=>hostOperation<{id:string;remoteAddress:string}>("tcp.accept",{id,timeoutMs}),
+ close:(id:string)=>hostOperation<{closed:boolean}>("tcp.close",{id}).result,
+ addresses:()=>hostOperation<{addresses:string[]}>("tcp.addresses",{}).result,
+};
+export const byteStreams = {
+  read: (id:string,maxBytes:number,timeoutMs:number) => hostOperation<{eof:boolean;dataBase64:string}>("stream.read",{id,maxBytes,timeoutMs}),
+  write: (id:string,bytes:Uint8Array,timeoutMs=120000) => hostOperation<{written:number}>("stream.write",{id,dataBase64:bytesToBase64(bytes),timeoutMs}),
+  close: (id:string) => hostOperation<{closed:boolean}>("stream.close",{id}).result,
+};
+
+/** Text messages for negotiation; binary messages use byteStreams with the same id.
+ * initialTextHandshake drops binary messages before the first text message and
+ * ignores later text messages. The guest must validate that first message. */
+export const webSockets = {
+ connect:(url:string,options:{headers?:Record<string,string>;timeoutMs?:number;bindLocalWifi?:boolean;initialTextHandshake?:boolean}={})=>hostOperation<{id:string}>("websocket.connect",{url,...options,timeoutMs:options.timeoutMs??4000}),
+ readText:(id:string,timeoutMs=4000)=>hostOperation<{text:string}>("websocket.readText",{id,timeoutMs}),
+ writeText:(id:string,text:string)=>hostOperation<{sent:boolean}>("websocket.writeText",{id,text}),
+ close:(id:string)=>hostOperation<{closed:boolean}>("websocket.close",{id}).result,
+};
+
+/** Bounded IPv4 mDNS lookup; callers authenticate any discovered endpoint. */
+export interface NetworkSnapshot {active:boolean;internet:boolean;validated:boolean;wifi:boolean;cellular:boolean;bluetooth:boolean}
+export const discovery = {
+ networkSnapshot:()=>hostOperation<NetworkSnapshot>("discovery.networkSnapshot",{}).result,
+ requestPermission:()=>hostOperation<"granted"|"required">("discovery.requestPermission",{}).result,
+ status:()=>hostOperation<{available:boolean;enabled:boolean;permission:"granted"|"required"}>("discovery.status",{}).result,
+ bleReadCharacteristic:(options:{advertisedServiceUuid:string;manufacturerId:number;manufacturerDataBase64:string;serviceUuid:string;characteristicUuid:string;bondedOnly?:boolean;scanTimeoutMs?:number;readTimeoutMs?:number})=>hostOperation<{address:string;bonded:boolean;dataBase64:string}>("discovery.bleReadCharacteristic",{...options,bondedOnly:options.bondedOnly??true,scanTimeoutMs:options.scanTimeoutMs??8000,readTimeoutMs:options.readTimeoutMs??12000}),
+ mdns:(options:{serviceType:string;namePrefix?:string;expectedPort:number;windowMs?:number})=>hostOperation<{endpoints:Array<{address:string;port:number;name:string}>}>("discovery.mdns",{...options,windowMs:options.windowMs??1500}),
+};
+
+export interface NetworkChange {source:"default"|"wifi";reason:"available"|"lost"|"capabilities"}
+let nextNetworkSubscription=1;
+/** Returns a disposer immediately, including while native registration is pending. */
+export function onNetworkChange(listener:(event:NetworkChange)=>void,onError?:(error:unknown)=>void):()=>void {
+ const subscriptionId="network-"+nextNetworkSubscription++;let stopped=false;
+ const off=__onHostEvent(event=>{
+  if(stopped||!hasCapability("net.discovery")||event.t!=="network.changed"||event.subscriptionId!==subscriptionId)return;
+  const value=event.value as Partial<NetworkChange>|undefined;
+  if(value&&(value.source==="default"||value.source==="wifi")&&(value.reason==="available"||value.reason==="lost"||value.reason==="capabilities"))listener(value as NetworkChange);
+ });
+ const pending=hostOperation<{subscriptionId:string}>("discovery.networkSubscribe",{subscriptionId});
+ void pending.result.catch(error=>{if(!stopped){stopped=true;off();onError?.(error);}});
+ return ()=>{if(stopped)return;stopped=true;off();try{pending.cancel();}finally{void hostOperation("discovery.networkUnsubscribe",{subscriptionId}).result.catch(()=>{});}};
+}
+
+/** Native-owned scene texture; controls do not take audio focus or change system volume. */
+export interface MediaSurfacePresentationFrame {leftPx:number;topPx:number;widthPx:number;heightPx:number;scale:number;opacity:number}
+export interface MediaSurfaceStyle {fit?:"crop"|"fit"|"fill";zoom?:number;focusX?:number;focusY?:number;rotationDegrees?:number;blurPx?:number;blurEdgeMode?:"decal"|"clamp";brightness?:number;/** Additive RGB offset in [-1, 1], after brightness/saturation; alpha is unchanged. Default: 0. */brightnessBias?:number;saturation?:number;colorArgb?:number;overlayColorArgb?:number;overlayOpacity?:number;speed?:number;loop?:boolean;active?:boolean;/** Native placement inside the fixed output viewport; omitted resets to the full viewport. */presentationFrame?:MediaSurfacePresentationFrame}
+export type MediaSurfaceTextureSampling="nearest"|"linear";
+export interface MediaSurfaceOpen extends MediaSurfaceStyle {id:string;path?:string;posterPath?:string;widthPx:number;heightPx:number;/** Creation-only scene texture sampling. Omitted preserves nearest. */textureSampling?:MediaSurfaceTextureSampling}
+export interface MediaSurfaceState {id:string;texture:number;width:number;height:number;contentWidth:number;contentHeight:number;state:string;error:string|null;frames:number;playerGeneration:number;positionMs:number;speed:number;loop:boolean;muted:boolean;/** Older hosts omit this field; an explicit linear request requires confirmation. */textureSampling?:MediaSurfaceTextureSampling;/** Effective native frame, or null/omitted for the full viewport default. */presentationFrame?:MediaSurfacePresentationFrame|null}
+export type MediaSurfaceKind="image"|"video";
+export const mediaSurfaces={
+ open(kind:MediaSurfaceKind,options:MediaSurfaceOpen):Promise<MediaSurfaceState>{return hostOperation<MediaSurfaceState>(kind+".surface.open",options as unknown as Record<string,unknown>).result;},
+ update(kind:MediaSurfaceKind,id:string,style:MediaSurfaceStyle):Promise<MediaSurfaceState>{return hostOperation<MediaSurfaceState>(kind+".surface.update",{id,...style}).result;},
+ state(kind:MediaSurfaceKind,id:string):Promise<MediaSurfaceState>{return hostOperation<MediaSurfaceState>(kind+".surface.state",{id}).result;},
+ close(kind:MediaSurfaceKind,id:string):Promise<{closed:boolean}>{return hostOperation<{closed:boolean}>(kind+".surface.close",{id}).result;},
+};

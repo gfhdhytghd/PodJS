@@ -30,19 +30,27 @@ android {
     compileSdk = 36
     defaultConfig {
         minSdk = 30
+        consumerProguardFiles("consumer-rules.pro")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") }
+        ndk {
+            val requested = providers.gradleProperty("podAbis").orElse("armeabi-v7a,arm64-v8a").get().split(",").map { it.trim() }
+            require(requested.isNotEmpty() && requested.all { it in setOf("armeabi-v7a", "arm64-v8a", "x86_64") }) { "Unsupported podAbis" }
+            abiFilters += requested
+        }
         externalNativeBuild { cmake { cppFlags += listOf("-std=c++20", "-fno-exceptions", "-fno-rtti") } }
     }
     externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
     buildFeatures { prefab = true }
     sourceSets.getByName("androidTest").assets.srcDir(semanticTestAssets)
+    providers.gradleProperty("podRuntimeTestSourceDir").orNull?.let { sourceSets.getByName("androidTest").java.srcDir(it) }
 }
 
 dependencies {
+    implementation("org.jsoup:jsoup:1.17.2")
     implementation("androidx.work:work-runtime:2.11.2")
     implementation("com.google.zxing:core:3.5.2")
     implementation("androidx.media3:media3-exoplayer:1.5.1")
+    implementation("androidx.media3:media3-effect:1.5.1")
     implementation("androidx.media3:media3-exoplayer-dash:1.5.1")
     implementation("androidx.media3:media3-exoplayer-hls:1.5.1")
     implementation("androidx.media3:media3-ui:1.5.1")

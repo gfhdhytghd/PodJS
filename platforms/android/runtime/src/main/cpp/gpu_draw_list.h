@@ -34,6 +34,9 @@ struct GpuPrimitive {
   uint32_t width{}, height{}, textureSlot{};
   uint64_t textureKey{};
   uint32_t glyphSlot{};
+  bool linearCoverage{};
+  bool subpixelCoverage{};
+  float floatCoordinates[6]{};
   uint32_t roundedClipOffset{}, roundedClipCount{};
   std::vector<uint16_t> glyphs;
   uint32_t from{}, to{}, gradientDirection{};
@@ -59,6 +62,7 @@ bool gpuRoundedClipContainsPixel(const GpuRoundedClip& clip, float pixelX,
 
 class GpuDecodeCache {
 public:
+  void pruneStale(PodRuntime *runtime);
   bool get(PodRuntime *runtime, uint32_t slot, GpuImage *out,
            std::string *error);
   bool getGlyph(PodRuntime *runtime, uint32_t slot, uint32_t glyph,

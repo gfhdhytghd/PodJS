@@ -9,7 +9,7 @@ export type RelativeAxisId = (typeof RelativeAxis)[keyof typeof RelativeAxis];
 export type LifecycleState = "active" | "inactive" | "background";
 export type SystemTheme = "light" | "dark";
 export type HapticKind = "click" | "success" | "warning" | "error";
-export type NavigationState = Readonly<{ canGoBack: boolean }>;
+export type NavigationState = Readonly<{ canGoBack: boolean; rootSwipeEnabled?: boolean }>;
 export type RelativeAxisStep = -1 | 0 | 1;
 
 export interface DisplayMetrics {
@@ -27,6 +27,7 @@ interface PodHost {
   emit(line: string): void;
   displayMetrics(): string;
   capabilities(): string;
+  fontMetrics?(slot:number):string|undefined;
   kvGet(key: string): string | undefined;
   kvSet(key: string, value: string): number;
   kvDelete(key: string): number;
@@ -47,6 +48,17 @@ const hostEventHandlers = new Set<(event: Record<string, unknown>) => void>();
 /** Internal shared event fanout; services must not drain the host queue themselves. */
 export function __onHostEvent(handler: (event: Record<string, unknown>) => void): () => void {
   return subscribe(hostEventHandlers, handler);
+}
+export interface RawScrollInput { vertical:number; uptimeMs:number; source:number }
+/** Android scroll units before mouse scaling or axis-direction conversion. Positive is upward.
+ * Delivered in addition to RelativeAxis. Consumers must avoid handling both for the same control.
+ */
+export function onRawScrollInput(handler:(event:RawScrollInput)=>void):()=>void {
+  return __onHostEvent(event=>{
+    if (!hasCapability("input.rotary") || event.t !== "input.scroll" || typeof event.vertical !== "number" || !Number.isFinite(event.vertical) || event.vertical === 0
+      || typeof event.uptimeMs !== "number" || !Number.isFinite(event.uptimeMs) || event.uptimeMs < 0 || !Number.isInteger(event.source)) return;
+    handler({vertical:event.vertical, uptimeMs:event.uptimeMs, source:event.source as number});
+  });
 }
 let lifecycleState: LifecycleState = "active";
 let themeState: SystemTheme = "dark";
@@ -122,13 +134,17 @@ export function onSystemBack(handler: BackHandler): () => void {
   };
 }
 
-/** Publish the current app depth so native hosts can leave the app at root. */
+/** Publish app depth and optional root swipe policy. Omitting rootSwipeEnabled
+ * restores normal swipe dismissal; this never changes hardware-back routing. */
 export function setNavigationState(state: NavigationState): void {
   if (typeof state?.canGoBack !== "boolean") {
     throw new Error("PodJS: navigation state requires boolean canGoBack");
   }
-  navigationState = Object.freeze({ canGoBack: state.canGoBack });
-  host()?.emit(JSON.stringify({ t: "navigation", canGoBack: state.canGoBack }));
+  if (state.rootSwipeEnabled !== undefined && typeof state.rootSwipeEnabled !== "boolean") {
+    throw new Error("PodJS: rootSwipeEnabled must be boolean");
+  }
+  navigationState = Object.freeze({ canGoBack: state.canGoBack, ...(state.rootSwipeEnabled === undefined ? {} : { rootSwipeEnabled: state.rootSwipeEnabled }) });
+  host()?.emit(JSON.stringify({ t: "navigation", ...navigationState }));
 }
 
 export function navigationStateSnapshot(): NavigationState { return navigationState; }
@@ -180,6 +196,7 @@ export const kv = Object.freeze({
 });
 
 type PodEvent =
+  | ({t:"input.scroll"} & RawScrollInput)
   | { t: "axis"; axis: RelativeAxisId; delta: number }
   | { t: "lifecycle"; state: LifecycleState }
   | { t: "theme"; theme: SystemTheme }
@@ -217,3 +234,18 @@ export function __pumpPodEvents(): void {
 // is created; service pumps deliberately survive that reset and run at the
 // start of every mounted frame.
 registerServicePump(__pumpPodEvents);
+
+export interface FontMetrics {
+  readonly cellWidth:number; readonly cellHeight:number; readonly baseline:number;
+  readonly lineHeight:number; readonly rasterDensity:number;
+}
+/** Loaded atlas geometry in logical pixels; rasterDensity describes coverage resolution only. */
+export function getFontMetrics(slot:number):FontMetrics|undefined {
+  if(!Number.isInteger(slot)||slot<0||slot>255)return undefined;
+  const raw=host()?.fontMetrics?.(slot);if(!raw)return undefined;
+  try {
+    const value=JSON.parse(raw) as FontMetrics;
+    if(![value.cellWidth,value.cellHeight,value.baseline,value.lineHeight,value.rasterDensity].every(Number.isFinite)||value.cellWidth<=0||value.cellHeight<=0||value.lineHeight<=0||value.rasterDensity<=0||value.baseline<0)return undefined;
+    return value;
+  }catch{return undefined;}
+}

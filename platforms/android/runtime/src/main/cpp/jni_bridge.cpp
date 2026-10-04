@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <memory>
+#include <new>
 #include <string>
 #include <vector>
 #include <cstring>
@@ -13,6 +14,7 @@
 #include <sys/syscall.h>
 #include <linux/fs.h>
 #include "podjs_runtime.h"
+#include "touch_snapshot_queue.h"
 #include "vulkan_renderer.h"
 
 static double monoMs() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
@@ -21,8 +23,10 @@ struct Host {
   unsigned ticks = 0, draws = 0, gpuDraws = 0, cpuDraws = 0;
   PodRuntime* runtime{};
   std::unique_ptr<VulkanRenderer> renderer;
-  std::vector<PodTouch> touches;
+  TouchSnapshotQueue touches;
   std::vector<uint8_t> framebuffer;
+  std::vector<uint8_t> mediaPixels;
+  std::vector<jint> mediaArgb;
   uint32_t width{};
   uint32_t height{};
   uint32_t logicalWidth{};
@@ -33,6 +37,7 @@ struct Host {
   bool canGoBack = false;
   bool navigationKnown = false;
   bool frameFailed = false;
+  uint64_t diagnosticFrameSequence = 0;
 };
 static void fail(JNIEnv* env, const char* message) { jclass c = env->FindClass("java/lang/IllegalStateException"); env->ThrowNew(c, message); }
 
@@ -186,7 +191,7 @@ extern "C" JNIEXPORT jlong JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeC
   const char* t = env->GetStringUTFChars(target, nullptr); const char* d = env->GetStringUTFChars(dataDir, nullptr);
   if (std::string(t) != "android-watch" && std::string(t) != "wearos-watch") { fail(env, "PodJS target mismatch"); return 0; }
   ANativeWindow* window = ANativeWindow_fromSurface(env, surface);
-const char* capabilities = "[\"input.touch\",\"input.rotary\",\"data.kv\",\"device.haptics\",\"host.lifecycle\",\"host.theme\",\"display.round\",\"input.back\",\"net.http\",\"data.fs\",\"data.sqlite\",\"input.text\",\"data.secure\",\"crypto.basic\",\"data.files.chunks\",\"media.audio\",\"media.tts\",\"media.video\",\"runtime.timer\",\"data.images\",\"system.browser.auth\",\"net.download\",\"system.browser\",\"background.scheduled\",\"notification.local\",\"companion.sync.state\",\"companion.sync.message\",\"companion.sync.file\"]";
+const char* capabilities = "[\"input.touch\",\"input.rotary\",\"data.kv\",\"device.haptics\",\"host.lifecycle\",\"host.theme\",\"display.round\",\"input.back\",\"net.http\",\"data.fs\",\"data.sqlite\",\"text.layout\",\"text.raster\",\"text.environment\",\"input.text\",\"input.time\",\"device.location\",\"data.secure\",\"crypto.basic\",\"data.files.chunks\",\"data.uri\",\"media.audio\",\"media.tts\",\"media.video\",\"runtime.timer\",\"display.power\",\"system.toast\",\"data.images\",\"system.browser.auth\",\"net.download\",\"net.rfcomm\",\"net.tcp\",\"net.stream\",\"net.websocket\",\"net.discovery\",\"system.browser\",\"system.share\",\"background.scheduled\",\"notification.local\",\"companion.sync.state\",\"companion.sync.message\",\"companion.sync.file\"]";
   PodRuntimeConfig config{sizeof(config), t, PODJS_RUNTIME_ABI_VERSION, 2, (uint32_t)width, (uint32_t)height,
       density, POD_DISPLAY_ROUND, 0, 0, 0, 0, d, capabilities};
   auto host = std::make_unique<Host>(); host->runtime = pod_runtime_create(&config);
@@ -203,7 +208,10 @@ const char* capabilities = "[\"input.touch\",\"input.rotary\",\"data.kv\",\"devi
   host->renderer = std::make_unique<VulkanRenderer>(window, width, height, rasterWidth, rasterHeight); ANativeWindow_release(window);
   host->framebuffer.resize(host->renderer->rasterBytes());
   env->ReleaseStringUTFChars(target, t); env->ReleaseStringUTFChars(dataDir, d);
-  if (!host->renderer->valid()) { fail(env, "PodJS Vulkan renderer initialization failed"); return 0; }
+  if (!host->renderer->valid()) {
+    pod_runtime_destroy(host->runtime); host->runtime=nullptr;
+    fail(env, "PodJS Vulkan renderer initialization failed"); return 0;
+  }
   return reinterpret_cast<jlong>(host.release());
 }
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeBoot(JNIEnv* env, jclass, jlong p, jbyteArray pak, jbyteArray js, jbyteArray manifest) {
@@ -222,50 +230,147 @@ extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeBo
   if(result) fail(env,pod_runtime_last_error());
   else __android_log_print(ANDROID_LOG_INFO,"PodJS","%s",pod_runtime_receipt(h->runtime));
 }
-// Stored APK assets are mapped by AssetManager; no Java byte[] or zero-filled
-// native staging vector is needed. The runtime consumes/copies before close.
-extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeBootAssets(JNIEnv* env,jclass,jlong p,jobject assets) {
+// AAssetManager_open maps the entire stored ZIP entry even in STREAMING mode.
+// Read the pak through ZipFile instead, reusing one bounded JNI byte buffer.
+struct PakSource {
+  JNIEnv* env;
+  jobject reader;
+  jmethodID readAt;
+  jbyteArray buffer;
+};
+static int64_t readPakAt(void* context,uint64_t offset,uint8_t* out,size_t length) {
+  auto* source=static_cast<PakSource*>(context);
+  if(length>64*1024||offset>INT64_MAX||source->env->ExceptionCheck())return -1;
+  const jint count=source->env->CallIntMethod(source->reader,source->readAt,
+      static_cast<jlong>(offset),source->buffer,static_cast<jint>(length));
+  if(source->env->ExceptionCheck()||count<0||static_cast<size_t>(count)>length)return -1;
+  if(count)source->env->GetByteArrayRegion(source->buffer,0,count,reinterpret_cast<jbyte*>(out));
+  return source->env->ExceptionCheck()?-1:count;
+}
+extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeBootAssets(JNIEnv* env,jclass,jlong p,jobject assets,jobject pak,jlong pakLength) {
   auto* h=reinterpret_cast<Host*>(p); if(!h)return;
-  auto* manager=AAssetManager_fromJava(env,assets);
-  using Asset=std::unique_ptr<AAsset,decltype(&AAsset_close)>;
+  if(!pak||pakLength<=0||static_cast<uint64_t>(pakLength)>SIZE_MAX){fail(env,"PodJS main.pak has invalid length");return;}
+  const auto readerClass=env->GetObjectClass(pak);
+  if(!readerClass)return;
+  const auto readAt=env->GetMethodID(readerClass,"readAt","(J[BI)I");
+  env->DeleteLocalRef(readerClass);
+  if(!readAt)return;
+  const auto buffer=env->NewByteArray(64*1024);
+  if(!buffer)return;
+  PakSource source{env,pak,readAt,buffer};
   const double began=monoMs();
-  Asset pak(AAssetManager_open(manager,"main.pak",AASSET_MODE_BUFFER),AAsset_close);
-  Asset js(AAssetManager_open(manager,"main.js",AASSET_MODE_BUFFER),AAsset_close);
-  Asset manifest(AAssetManager_open(manager,"pod.manifest.json",AASSET_MODE_BUFFER),AAsset_close);
-  if(!pak||!js||!manifest){fail(env,"PodJS package assets are missing");return;}
-  const auto* pb=static_cast<const uint8_t*>(AAsset_getBuffer(pak.get()));
+  int result=pod_runtime_load_pak_reader(h->runtime,static_cast<size_t>(pakLength),readPakAt,&source);
+  env->DeleteLocalRef(buffer);
+  const double loaded=monoMs();
+  if(env->ExceptionCheck())return;
+  if(result){fail(env,pod_runtime_last_error());return;}
+  auto* manager=AAssetManager_fromJava(env,assets);
+  if(!manager){if(!env->ExceptionCheck())fail(env,"PodJS AssetManager is unavailable");return;}
+  using Asset=std::unique_ptr<AAsset,decltype(&AAsset_close)>;
+  auto openAsset=[&](const char* name) {
+    errno=0;
+    Asset asset(AAssetManager_open(manager,name,AASSET_MODE_BUFFER),AAsset_close);
+    const int error=errno;
+    if(!asset) {
+      const std::string message=std::string("PodJS cannot open asset ")+name+
+          (error?std::string(": ")+std::strerror(error):": missing or unreadable");
+      fail(env,message.c_str());
+    }
+    return asset;
+  };
+  Asset js=openAsset("main.js"); if(!js)return;
+  Asset manifest=openAsset("pod.manifest.json"); if(!manifest)return;
   const auto* jb=static_cast<const uint8_t*>(AAsset_getBuffer(js.get()));
+  if(!jb){fail(env,"PodJS cannot map asset main.js");return;}
   const auto* mb=static_cast<const char*>(AAsset_getBuffer(manifest.get()));
-  if(!pb||!jb||!mb){fail(env,"PodJS package asset mapping failed");return;}
-  const size_t pn=AAsset_getLength64(pak.get()),jn=AAsset_getLength64(js.get());
+  if(!mb){fail(env,"PodJS cannot map asset pod.manifest.json");return;}
+  const size_t jn=AAsset_getLength64(js.get());
   const std::string json(mb,AAsset_getLength64(manifest.get()));
-  const double mapped=monoMs();
-  int result=pod_runtime_load_pak(h->runtime,pb,pn); const double loaded=monoMs();
-  if(!result) result=pod_runtime_validate_package(h->runtime,json.c_str());
+  manifest.reset();
+  result=pod_runtime_validate_package(h->runtime,json.c_str());
   const double validated=monoMs();
   if(!result) result=pod_runtime_eval_bundle(h->runtime,jb,jn,"app:///main.js");
-  __android_log_print(ANDROID_LOG_INFO,"PodJSPerf","boot mapMs=%.1f pakMs=%.1f validateMs=%.1f evalMs=%.1f",mapped-began,loaded-mapped,validated-loaded,monoMs()-validated);
+  __android_log_print(ANDROID_LOG_INFO,"PodJSPerf","boot pakReadMs=%.1f validateMs=%.1f evalMs=%.1f",loaded-began,validated-loaded,monoMs()-validated);
   if(result)fail(env,pod_runtime_last_error());
   else __android_log_print(ANDROID_LOG_INFO,"PodJS","%s",pod_runtime_receipt(h->runtime));
 }
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeResize(JNIEnv* env,jclass,jlong p,jobject s,jint w,jint ht){auto*h=reinterpret_cast<Host*>(p);if(!h)return;h->width=static_cast<uint32_t>(w);h->height=static_cast<uint32_t>(ht);auto*n=ANativeWindow_fromSurface(env,s);h->renderer->replaceWindow(n,w,ht);ANativeWindow_release(n);}
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeDetachSurface(JNIEnv*,jclass,jlong p){auto*h=reinterpret_cast<Host*>(p);if(h)h->renderer->replaceWindow(nullptr,0,0);}
-extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeInput(JNIEnv* env,jclass,jlong p,jintArray ids,jfloatArray xy,jint count,jint rotary){auto*h=reinterpret_cast<Host*>(p);if(!h)return;std::vector<jint> id(count);std::vector<jfloat> pos(count*2);if(count){env->GetIntArrayRegion(ids,0,count,id.data());env->GetFloatArrayRegion(xy,0,count*2,pos.data());}h->touches.resize(count);for(int i=0;i<count;i++)h->touches[i]={(uint32_t)id[i],pos[i*2]*h->logicalWidth/std::max(1u,h->width),pos[i*2+1]*h->logicalHeight/std::max(1u,h->height)};h->rotary+=rotary;}
+extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeInput(JNIEnv* env,jclass,jlong p,jintArray ids,jfloatArray xy,jint count,jint rotary){auto*h=reinterpret_cast<Host*>(p);if(!h)return;std::vector<jint> id(count);std::vector<jfloat> pos(count*2);if(count){env->GetIntArrayRegion(ids,0,count,id.data());env->GetFloatArrayRegion(xy,0,count*2,pos.data());}std::vector<PodTouch> next(count);for(int i=0;i<count;i++)next[i]={(uint32_t)id[i],pos[i*2]*h->logicalWidth/std::max(1u,h->width),pos[i*2+1]*h->logicalHeight/std::max(1u,h->height)};h->touches.submit(std::move(next));h->rotary+=rotary;}
+extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePumpServices(JNIEnv*,jclass,jlong p) {
+  auto* h = reinterpret_cast<Host*>(p); if (!h) return;
+  if (pod_runtime_pump_services(h->runtime) < 0) __android_log_print(ANDROID_LOG_ERROR,"PodJS","Service pump failed: %s",pod_runtime_last_error());
+}
+extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePumpServiceResults(JNIEnv*,jclass,jlong p) {
+  auto* h = reinterpret_cast<Host*>(p); if (!h) return;
+  if (pod_runtime_pump_service_results(h->runtime) < 0) __android_log_print(ANDROID_LOG_ERROR,"PodJS","Service result pump failed: %s",pod_runtime_last_error());
+}
+extern "C" JNIEXPORT jint JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeMediaTexture(JNIEnv* env,jclass,jlong p,jint handle,jintArray pixels,jint width,jint height,jboolean linear) {
+  auto* h=reinterpret_cast<Host*>(p); if(!h||!pixels||width<1||height<1||width>1024||height>1024)return -1;
+  const size_t count=static_cast<size_t>(width)*height;
+  if(env->GetArrayLength(pixels)!=static_cast<jsize>(count))return -1;
+  h->mediaArgb.resize(count);h->mediaPixels.resize(count*4);
+  env->GetIntArrayRegion(pixels,0,static_cast<jsize>(count),h->mediaArgb.data());if(env->ExceptionCheck())return -1;
+  for(size_t i=0;i<count;i++){const uint32_t v=static_cast<uint32_t>(h->mediaArgb[i]);h->mediaPixels[i*4]=v>>16;h->mediaPixels[i*4+1]=v>>8;h->mediaPixels[i*4+2]=v;h->mediaPixels[i*4+3]=v>>24;}
+  if(handle<0)return pod_runtime_upload_rgba_sampled(h->runtime,h->mediaPixels.data(),h->mediaPixels.size(),width,height,linear?POD_TEXTURE_SAMPLING_LINEAR:POD_TEXTURE_SAMPLING_NEAREST);
+  return pod_runtime_update_rgba(h->runtime,handle,h->mediaPixels.data(),h->mediaPixels.size())==0?handle:-1;
+}
+extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeFreeMediaTexture(JNIEnv*,jclass,jlong p,jint handle) {
+  auto* h=reinterpret_cast<Host*>(p);if(h)pod_runtime_free_texture(h->runtime,handle);
+}
+extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeBeginRendererTiming(JNIEnv*,jclass,jlong p,jint capacity) {
+  auto* h = reinterpret_cast<Host*>(p);
+  if (!h || !h->renderer || capacity < 1 || capacity > 4096) return JNI_FALSE;
+  if (!h->renderer->beginRendererTiming(static_cast<uint32_t>(capacity))) return JNI_FALSE;
+  h->diagnosticFrameSequence = 0;
+  return JNI_TRUE;
+}
+extern "C" JNIEXPORT jlongArray JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeEndRendererTiming(JNIEnv* env,jclass,jlong p) {
+  auto* h = reinterpret_cast<Host*>(p);
+  if (!h || !h->renderer) return nullptr;
+  // Detach first. Every subsequent return, including either allocation failure,
+  // leaves native recording disabled and releases the former fixed buffer.
+  auto trace = h->renderer->endRendererTiming();
+  if (!trace) return nullptr;
+  const size_t count = static_cast<size_t>(trace->header[3]);
+  constexpr size_t headerSize = 7, fieldCount = 15;
+  if (trace->header[1] != fieldCount || count > 4096) {
+    fail(env,"Invalid renderer timing snapshot"); return nullptr;
+  }
+  const size_t length = headerSize + count * fieldCount;
+  std::unique_ptr<jlong[]> values(new(std::nothrow) jlong[length]);
+  if (!values) { fail(env,"Unable to allocate renderer timing snapshot"); return nullptr; }
+  for (size_t i=0;i<headerSize;++i) values[i]=static_cast<jlong>(trace->header[i]);
+  for (size_t i=0;i<count*fieldCount;++i) values[headerSize+i]=static_cast<jlong>(trace->data()[i]);
+  jlongArray result=env->NewLongArray(static_cast<jsize>(length));
+  if (!result) return nullptr;
+  env->SetLongArrayRegion(result,0,static_cast<jsize>(length),values.get());
+  return env->ExceptionCheck()?nullptr:result;
+}
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeFrame(JNIEnv*,jclass,jlong p) {
   auto* h = reinterpret_cast<Host*>(p); if (!h) return;
+  auto hostTiming = h->renderer->beginHostFrame(++h->diagnosticFrameSequence);
   const double start = monoMs();
-  PodInputFrame in{sizeof(in),0,0,h->touches.data(),(uint32_t)h->touches.size(),h->rotary,0}; h->rotary=0;
+  const auto& touches = h->touches.nextFrame();
+  PodInputFrame in{sizeof(in),0,0,touches.data(),(uint32_t)touches.size(),h->rotary,0}; h->rotary=0;
+  auto guestTiming = h->renderer->diagnosticScope(podjs_gpu::RendererTimingStage::Guest);
   const int result = pod_runtime_frame(h->runtime,&in);
+  guestTiming.finish(result==0,result);
   if (result != 0 && !h->frameFailed) __android_log_print(ANDROID_LOG_ERROR,"PodJS","Frame failed: %s",pod_runtime_last_error());
   h->frameFailed = result != 0;
   const double afterJs = monoMs();
   h->jsMs += afterJs-start; h->ticks++;
+  int64_t submittedFlags = 0;
   if (result == 0) {
     PodDrawList list{};
-    if (!pod_runtime_snapshot(h->runtime,&list) && (list.changed || h->renderer->needsRedraw(list.content_hash))) {
+    auto snapshotTiming = h->renderer->diagnosticScope(podjs_gpu::RendererTimingStage::Snapshot);
+    const int snapshotResult = pod_runtime_snapshot(h->runtime,&list);
+    snapshotTiming.finish(snapshotResult==0,snapshotResult);
+    if (!snapshotResult && (list.changed || h->renderer->needsRedraw(list.content_hash))) {
       const double beforeRaster = monoMs();
       bool submitted = h->renderer->submitDrawList(h->runtime, list);
       if (submitted) {
+        submittedFlags |= int64_t{1} << 16;
         h->gpuDraws++;
         h->presentMs += monoMs()-beforeRaster;
       } else if (h->renderer->valid()) {
@@ -275,6 +380,7 @@ extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeFr
         h->rasterMs += afterRaster-beforeRaster;
         h->presentMs += monoMs()-afterRaster;
         h->cpuDraws += submitted;
+        if (submitted) submittedFlags |= int64_t{1} << 17;
       }
       h->draws += submitted;
     }
@@ -284,6 +390,8 @@ extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeFr
     if(h->reportAt != 0) __android_log_print(ANDROID_LOG_INFO,"PodJSPerf","windowMs=%.1f ticks=%u draws=%u jsMs=%.2f rasterMs=%.2f presentMs=%.2f maxMs=%.2f gpuDraws=%u cpuDraws=%u",now-h->reportAt,h->ticks,h->draws,h->jsMs/h->ticks,h->draws?h->rasterMs/h->draws:0,h->draws?h->presentMs/h->draws:0,h->maxMs,h->gpuDraws,h->cpuDraws);
     h->reportAt=now; h->jsMs=h->rasterMs=h->presentMs=h->maxMs=0; h->ticks=h->draws=h->gpuDraws=h->cpuDraws=0;
   }
+  hostTiming.setFlags(submittedFlags);
+  hostTiming.finish(result==0,result);
 }
 extern "C" JNIEXPORT jstring JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePollEffect(JNIEnv* env,jclass,jlong p){auto*h=reinterpret_cast<Host*>(p);if(!h)return nullptr;const char* line=pod_runtime_poll_effect(h->runtime);return line?env->NewStringUTF(line):nullptr;}
 extern "C" JNIEXPORT jstring JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePollNet(JNIEnv* env,jclass,jlong p){auto*h=reinterpret_cast<Host*>(p);if(!h)return nullptr;const char* line=pod_runtime_poll_net_command(h->runtime);return line?env->NewStringUTF(line):nullptr;}

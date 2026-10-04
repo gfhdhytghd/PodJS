@@ -30,4 +30,27 @@ public class PodInstalledSyncTest {
         try(java.io.FileOutputStream output=new java.io.FileOutputStream(identity)) { output.write(new byte[]{'x'}); }
         try { PodInstalledSync.localIdentity(isolated); fail("Corrupt identity rotated"); } catch(java.io.IOException expected) { }
     }
+    @Test public void replacementWaitsForPriorPairingOwnerWithoutRemovingItsLock() throws Exception {
+        Context base=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        File root=new File(base.getCacheDir(),"handoff-test-"+UUID.randomUUID());
+        Context isolated=new ContextWrapper(base){@Override public File getNoBackupFilesDir(){return root;}};
+        PodSyncPairingStore first=new PodSyncPairingStore(isolated,"handoff.test");
+        java.util.concurrent.ExecutorService worker=java.util.concurrent.Executors.newSingleThreadExecutor();
+        java.util.concurrent.CountDownLatch attempted=new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.Future<PodSyncPairingStore> replacement=worker.submit(()->PodInstalledSync.afterOwnerRelease(()->{attempted.countDown();return new PodSyncPairingStore(isolated,"handoff.test");},()->false));
+        try {
+            assertTrue(attempted.await(2,java.util.concurrent.TimeUnit.SECONDS));Thread.sleep(80);
+            assertFalse("replacement bypassed active owner's lock",replacement.isDone());
+            first.close();
+            try(PodSyncPairingStore next=replacement.get(3,java.util.concurrent.TimeUnit.SECONDS)){assertEquals("handoff.test",next.applicationId());}
+        } finally {first.close();worker.shutdownNow();}
+    }
+    @Test public void cancellationAndUnrelatedErrorsAreNotRetried() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger calls=new java.util.concurrent.atomic.AtomicInteger();
+        try {PodInstalledSync.afterOwnerRelease(()->{calls.incrementAndGet();return null;},()->true);fail("cancelled open ran");}catch(java.io.IOException expected){}
+        assertEquals(0,calls.get());
+        java.io.IOException original=new java.io.IOException("invalid manifest");
+        try {PodInstalledSync.afterOwnerRelease(()->{calls.incrementAndGet();throw original;},()->false);fail("error hidden");}catch(java.io.IOException expected){assertSame(original,expected);}
+        assertEquals(1,calls.get());
+    }
 }

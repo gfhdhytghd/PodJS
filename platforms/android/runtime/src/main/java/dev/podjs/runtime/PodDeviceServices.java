@@ -21,8 +21,10 @@ import java.security.SecureRandom;
 import java.util.Arrays;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
+import javax.crypto.Mac;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 
 /**
  * Small, synchronous native services used by the PodJS bridge.
@@ -52,6 +54,9 @@ public final class PodDeviceServices implements AutoCloseable {
     private final File secureFile;
     private final SecureRandom random = new SecureRandom();
     private boolean closed;
+    private long nextTextReader;
+    private final java.util.Map<String,java.io.BufferedReader> textReaders = new java.util.HashMap<>();
+    private final java.util.Set<File> temporaryFiles = new java.util.HashSet<>();
 
     public PodDeviceServices(Context context) {
         if (context == null) throw new IllegalArgumentException("context_required");
@@ -70,18 +75,50 @@ public final class PodDeviceServices implements AutoCloseable {
             case "secure.delete": return secureDelete(args);
             case "crypto.random": return cryptoRandom(args);
             case "crypto.hash": return cryptoHash(args);
+            case "crypto.hmacSha256": return cryptoHmacSha256(args);
+            case "crypto.aesGcmEncrypt": return cryptoAesGcmEncrypt(args);
+            case "crypto.aesGcmDecrypt": return cryptoAesGcmDecrypt(args);
             case "crypto.encrypt": return cryptoEncrypt(args);
             case "crypto.decrypt": return cryptoDecrypt(args);
             case "crypto.rsaOaepSha256": return cryptoRsaOaepSha256(args);
             case "file.read": return fileRead(args);
             case "file.write": return fileWrite(args);
+            case "file.hash": return fileHash(args);
+            case "uri.parse": return uriParse(args);
+            case "file.htmlText": return fileHtmlText(args);
+            case "file.gzip": return fileTranscode(args, false);
+            case "file.gzipBytes": return fileGzipBytes(args);
+            case "file.gunzip": return fileTranscode(args, true);
+            case "file.openText": return fileOpenText(args);
+            case "file.readTextChunk": return fileReadTextChunk(args);
+            case "file.closeText": return fileCloseText(args);
+            case "file.createTemp": return fileCreateTemp(args);
+            case "file.commit": return fileCommit(args);
+            case "file.list": return fileList(args);
+            case "file.touch": return fileTouch(args);
             case "file.stat": return fileStat(args);
             case "file.delete": return fileDelete(args);
             default: throw new IllegalArgumentException("unsupported_method:" + method);
         }
     }
 
-    @Override public synchronized void close() { closed = true; }
+    @Override public synchronized void close() {
+        closed = true;
+        for (File file : temporaryFiles) file.delete();
+        temporaryFiles.clear();
+        for (java.io.Reader reader : textReaders.values()) try { reader.close(); } catch (IOException ignored) { }
+        textReaders.clear();
+    }
+    synchronized void discardTextReader(JSONObject value) {
+        java.io.Reader reader = textReaders.remove(value.optString("id"));
+        if (reader != null) try { reader.close(); } catch (IOException ignored) { }
+    }
+    synchronized void discardTemporary(JSONObject value) {
+        try {
+            File file = safeFile(value.getString("path"));
+            if (temporaryFiles.remove(file)) file.delete();
+        } catch (Exception ignored) { }
+    }
 
     private JSONObject secureGet(JSONObject a) throws Exception {
         JSONObject values = readSecure(); String key = required(a, "key");
@@ -118,6 +155,38 @@ public final class PodDeviceServices implements AutoCloseable {
         if (!"SHA-256".equalsIgnoreCase(algorithm)) throw new IllegalArgumentException("unsupported_hash");
         return new JSONObject().put("algorithm", "SHA-256").put("digestBase64", enc(MessageDigest.getInstance("SHA-256").digest(data)));
     }
+    private static SecretKeySpec rawAesKey(JSONObject a) {
+        byte[] key = decode(a, "keyBase64");
+        if (key.length != 32) throw new IllegalArgumentException("invalid_aes_key");
+        return new SecretKeySpec(key, "AES");
+    }
+    private JSONObject cryptoHmacSha256(JSONObject a) throws Exception {
+        byte[] key = decode(a, "keyBase64");
+        if (key.length != 32) throw new IllegalArgumentException("invalid_hmac_key");
+        Mac mac = Mac.getInstance("HmacSHA256");
+        mac.init(new SecretKeySpec(key, "HmacSHA256"));
+        return new JSONObject().put("digestBase64", enc(mac.doFinal(decode(a, "dataBase64"))));
+    }
+    private JSONObject cryptoAesGcmEncrypt(JSONObject a) throws Exception {
+        SecretKeySpec key = rawAesKey(a);
+        byte[] aad = decode(a, "aadBase64"), input = decode(a, "dataBase64");
+        byte[] nonce = new byte[12]; random.nextBytes(nonce);
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(128, nonce));
+        cipher.updateAAD(aad);
+        return new JSONObject().put("nonceBase64", enc(nonce)).put("ciphertextBase64", enc(cipher.doFinal(input)));
+    }
+    private JSONObject cryptoAesGcmDecrypt(JSONObject a) throws Exception {
+        SecretKeySpec key = rawAesKey(a);
+        byte[] nonce = decode(a, "nonceBase64");
+        if (nonce.length != 12) throw new IllegalArgumentException("invalid_nonce");
+        byte[] aad = decode(a, "aadBase64"), ciphertext = decode(a, "ciphertextBase64");
+        if (ciphertext.length < 16) throw new IllegalArgumentException("invalid_ciphertext");
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(128, nonce));
+        cipher.updateAAD(aad);
+        return new JSONObject().put("dataBase64", enc(cipher.doFinal(ciphertext)));
+    }
     private JSONObject cryptoRsaOaepSha256(JSONObject args) throws Exception {
         String pem=args.optString("publicKeyPem", "");
         if(pem.length()>8192 || !pem.startsWith("-----BEGIN PUBLIC KEY-----"))throw new IllegalArgumentException("invalid_public_key");
@@ -145,18 +214,220 @@ public final class PodDeviceServices implements AutoCloseable {
         long offset = a.optLong("offset", 0); if (offset < 0 || offset > f.length()) throw new IllegalArgumentException("invalid_offset");
         int max = bounded(a.optInt("maxBytes", MAX_CHUNK_BYTES)); byte[] out = new byte[max]; int n;
         try (FileInputStream in = new FileInputStream(f)) { if (offset > 0 && in.skip(offset) != offset) throw new IOException("seek_failed"); n = in.read(out); }
-        if (n < 0) n = 0; return new JSONObject().put("dataBase64", enc(Arrays.copyOf(out, n))).put("offset", offset).put("size", f.length()).put("eof", offset + n >= f.length());
+        if (n < 0) n = 0;
+        JSONObject result = new JSONObject().put("offset", offset).put("size", f.length()).put("bytesRead", n).put("eof", offset + n >= f.length());
+        String encoding = a.optString("encoding", "base64");
+        if ("utf8".equals(encoding)) return result.put("text", new String(out, 0, n, StandardCharsets.UTF_8));
+        if (!"base64".equals(encoding)) throw new IllegalArgumentException("invalid_encoding");
+        return result.put("dataBase64", enc(Arrays.copyOf(out, n)));
     }
     private JSONObject fileWrite(JSONObject a) throws Exception {
         File f = safeFile(required(a, "path")); byte[] data = decode(a, "dataBase64"); if (data.length > MAX_CHUNK_BYTES) throw new IllegalArgumentException("chunk_too_large");
         File parent = f.getParentFile(); if (!parent.exists() && !parent.mkdirs()) throw new IOException("parent_unavailable");
-        if (a.optBoolean("atomicReplace", true)) atomicWrite(f, data); else try (FileOutputStream out = new FileOutputStream(f)) { out.write(data); out.getFD().sync(); }
+        if (a.optBoolean("append", false)) {
+            if (a.has("atomicReplace") && a.getBoolean("atomicReplace")) throw new IllegalArgumentException("append_cannot_replace");
+            long offset = exactFileSize(a, "expectedOffset");
+            if (!f.isFile() || f.length() != offset) throw new IOException("append_offset_mismatch");
+            try (FileOutputStream out = new FileOutputStream(f, true)) { out.write(data); out.getFD().sync(); }
+        } else if (a.optBoolean("atomicReplace", true)) atomicWrite(f, data);
+        else try (FileOutputStream out = new FileOutputStream(f)) { out.write(data); out.getFD().sync(); }
         return new JSONObject().put("size", f.length());
+    }
+    private JSONObject fileOpenText(JSONObject a) throws Exception {
+        if (textReaders.size() >= 8) throw new IllegalStateException("too_many_text_readers");
+        File file = safeFile(required(a,"path"));
+        if (!file.isFile()) throw new IOException("file_not_found");
+        String id = "text-" + (++nextTextReader);
+        textReaders.put(id,new java.io.BufferedReader(new java.io.InputStreamReader(new FileInputStream(file),StandardCharsets.UTF_8)));
+        return new JSONObject().put("id",id);
+    }
+    private JSONObject fileReadTextChunk(JSONObject a) throws Exception {
+        String id = required(a,"id");
+        java.io.BufferedReader reader = textReaders.get(id);
+        if (reader == null) throw new IllegalArgumentException("unknown_text_reader");
+        long requested = a.has("maxChars") ? exactFileSize(a,"maxChars") : 16384;
+        if (requested < 1 || requested > 32768) throw new IllegalArgumentException("invalid_max_chars");
+        int max=(int)requested;
+        char[] buffer = new char[max+1];int count = reader.read(buffer,0,max);
+        if (count < 0) { reader.close();textReaders.remove(id);return new JSONObject().put("text","").put("eof",true); }
+        // InputStreamReader produces valid pairs; keep a pair in one bridge reply.
+        if (count > 0 && Character.isHighSurrogate(buffer[count-1])) {
+            int next = reader.read();if (next >= 0) buffer[count++]=(char)next;
+        }
+        return new JSONObject().put("text",new String(buffer,0,count)).put("eof",false);
+    }
+    private JSONObject fileCloseText(JSONObject a) throws Exception {
+        java.io.Reader reader = textReaders.remove(required(a,"id"));
+        if (reader != null) reader.close();
+        return new JSONObject().put("closed",reader != null);
+    }
+    private JSONObject uriParse(JSONObject a) throws Exception {
+        String syntax = a.optString("syntax", "java");
+        if ("android".equals(syntax)) {
+            android.net.Uri uri = android.net.Uri.parse(a.getString("value"));
+            return new JSONObject().put("valid",true)
+                .put("scheme",uri.getScheme() == null ? JSONObject.NULL : uri.getScheme())
+                .put("host",uri.getHost() == null ? JSONObject.NULL : uri.getHost())
+                .put("rawPath",uri.getEncodedPath() == null ? JSONObject.NULL : uri.getEncodedPath())
+                .put("rawQuery",uri.getEncodedQuery() == null ? JSONObject.NULL : uri.getEncodedQuery());
+        }
+        if (!"java".equals(syntax)) throw new IllegalArgumentException("Unknown URI syntax");
+        java.net.URI uri;
+        try {uri = new java.net.URI(a.getString("value"));}
+        catch (java.net.URISyntaxException error) {return new JSONObject().put("valid",false).put("scheme",JSONObject.NULL).put("host",JSONObject.NULL).put("rawPath",JSONObject.NULL).put("rawQuery",JSONObject.NULL);}
+        return new JSONObject().put("valid",true).put("scheme", uri.getScheme() == null ? JSONObject.NULL : uri.getScheme())
+            .put("host", uri.getHost() == null ? JSONObject.NULL : uri.getHost())
+            .put("rawPath", uri.getRawPath() == null ? JSONObject.NULL : uri.getRawPath())
+            .put("rawQuery", uri.getRawQuery() == null ? JSONObject.NULL : uri.getRawQuery());
+    }
+    private JSONObject fileHtmlText(JSONObject a) throws Exception {
+        File source=safeFile(required(a,"path"));
+        if (!source.isFile()) throw new IOException("file_not_found");
+        long maximum=exactFileSize(a,"maxOutputBytes");
+        if (maximum > 32L*1024*1024 || source.length() > 32L*1024*1024) throw new IllegalArgumentException("invalid_content_size");
+        String text=org.jsoup.Jsoup.parse(source,"UTF-8").text().trim();
+        byte[] bytes=text.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        if (bytes.length > maximum) throw new IOException("content_too_large");
+        JSONObject temporary=fileCreateTemp(new JSONObject().put("directory","html_text"));
+        try {
+            try (FileOutputStream output=new FileOutputStream(safeFile(temporary.getString("path")))) {output.write(bytes);}
+            return hashFile(safeFile(temporary.getString("path"))).put("path",temporary.getString("path"));
+        } catch (Exception error) {discardTemporary(temporary);throw error;}
+    }
+    private JSONObject fileTranscode(JSONObject a,boolean decompress) throws Exception {
+        File source=safeFile(required(a,"path"));
+        if (!source.isFile()) throw new IOException("file_not_found");
+        long maximum=exactFileSize(a,"maxOutputBytes");
+        if (maximum > 32L*1024*1024) throw new IllegalArgumentException("invalid_max_output_bytes");
+        String directory=root.toPath().relativize(source.getParentFile().toPath()).toString();
+        if (directory.isEmpty()) directory="transcode";
+        JSONObject temporary=fileCreateTemp(new JSONObject().put("directory",directory));
+        File target=safeFile(temporary.getString("path"));
+        try {
+            java.io.InputStream input=new FileInputStream(source);
+            if (decompress) {
+                try { input=new java.util.zip.GZIPInputStream(input); }
+                catch (IOException error) {
+                    input.close();
+                    if (!a.optBoolean("allowPlain",false)) throw error;
+                    input=new FileInputStream(source);
+                }
+            }
+            final java.io.InputStream selected=input;
+            try (java.io.InputStream in=selected;FileOutputStream raw=new FileOutputStream(target)) {
+                java.io.OutputStream bounded=new java.io.FilterOutputStream(raw) {
+                    long count;
+                    @Override public void write(int value) throws IOException { check(1);out.write(value); }
+                    @Override public void write(byte[] bytes,int offset,int length) throws IOException { check(length);out.write(bytes,offset,length); }
+                    private void check(int length) throws IOException { if (length > maximum-count) throw new IOException("decompressed_content_too_large");count+=length; }
+                };
+                java.io.OutputStream output=decompress?bounded:new java.util.zip.GZIPOutputStream(bounded);
+                try (java.io.OutputStream out=output) {
+                    byte[] bytes=new byte[65536];int count;
+                    while ((count=in.read(bytes)) != -1) out.write(bytes,0,count);
+                }
+            }
+            return hashFile(target).put("path",temporary.getString("path"));
+        } catch (Exception error) {discardTemporary(temporary);throw error;}
+    }
+    /** Small sync bodies avoid two temporary files and several bridge round trips. */
+    private JSONObject fileGzipBytes(JSONObject a) throws Exception {
+        byte[] input=decode(a,"dataBase64");
+        if(input.length>64*1024)throw new IllegalArgumentException("gzip_input_too_large");
+        ByteArrayOutputStream sink=new ByteArrayOutputStream();
+        try(java.util.zip.GZIPOutputStream output=new java.util.zip.GZIPOutputStream(sink)){output.write(input);}
+        byte[] zipped=sink.toByteArray();
+        if(zipped.length>MAX_CHUNK_BYTES)throw new IOException("gzip_output_too_large");
+        return new JSONObject().put("dataBase64",Base64.encodeToString(zipped,Base64.NO_WRAP));
+    }
+    private JSONObject fileCreateTemp(JSONObject a) throws Exception {
+        if (temporaryFiles.size() >= 8) throw new IllegalStateException("too_many_temporary_files");
+        File directory = safeFile(required(a, "directory"));
+        if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("parent_unavailable");
+        File file = Files.createTempFile(directory.toPath(), ".pod-write-", ".part").toFile();
+        temporaryFiles.add(file);
+        return new JSONObject().put("path", root.toPath().relativize(file.toPath()).toString());
+    }
+    /** Hash files on the host with bounded memory; file contents never cross the bridge. */
+    private JSONObject fileHash(JSONObject a) throws Exception {
+        File source = safeFile(required(a, "path"));
+        return hashFile(source);
+    }
+    private static JSONObject hashFile(File source) throws Exception {
+        if (!source.isFile()) throw new IOException("file_not_found");
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        long size = 0; byte[] chunk = new byte[65536];
+        try (FileInputStream input = new FileInputStream(source)) {
+            int count; while ((count = input.read(chunk)) != -1) { digest.update(chunk, 0, count); size += count; }
+        }
+        StringBuilder hash = new StringBuilder(64);
+        for (byte value : digest.digest()) hash.append(String.format(java.util.Locale.ROOT, "%02x", value & 255));
+        return new JSONObject().put("size", size).put("sha256", hash.toString());
+    }
+    /** Verify the complete staged file before atomically publishing its final path. */
+    private JSONObject fileCommit(JSONObject a) throws Exception {
+        File source = safeFile(required(a, "path")), target = safeFile(required(a, "target"));
+        if (source.equals(target)) throw new IllegalArgumentException("same_commit_path");
+        long expectedSize = exactFileSize(a, "expectedSize");
+        String expectedHash = required(a, "expectedSha256");
+        if (!expectedHash.matches("[0-9a-fA-F]{64}")) throw new IllegalArgumentException("invalid_expected_hash");
+        JSONObject actual = hashFile(source);
+        if (actual.getLong("size") != expectedSize || !actual.getString("sha256").equalsIgnoreCase(expectedHash)) throw new IOException("commit_checksum_mismatch");
+        // This also flushes a staged file supplied by a caller other than file.write.
+        try (java.io.RandomAccessFile file = new java.io.RandomAccessFile(source, "rw")) { file.getFD().sync(); }
+        boolean reused = false;
+        if (target.isFile() && target.length() == expectedSize) {
+            reused = hashFile(target).getString("sha256").equalsIgnoreCase(expectedHash);
+        }
+        if (reused) {
+            if (!source.delete()) throw new IOException("staged_file_cleanup_failed");
+        } else {
+            File parent = target.getParentFile();
+            if (!parent.isDirectory() && !parent.mkdirs()) throw new IOException("parent_unavailable");
+            // Do not replace a valid old file using a non-atomic fallback.
+            Files.move(source.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        }
+        temporaryFiles.remove(source);
+        return actual.put("path", required(a, "target")).put("reused", reused);
+    }
+    private static long exactFileSize(JSONObject a, String field) {
+        Object value = a.opt(field);
+        if (!(value instanceof Number)) throw new IllegalArgumentException("invalid_" + field);
+        double size = ((Number)value).doubleValue();
+        if (!Double.isFinite(size) || size < 0 || size > 9007199254740991d || size != Math.rint(size)) throw new IllegalArgumentException("invalid_" + field);
+        return (long)size;
+    }
+    private JSONObject fileList(JSONObject a) throws Exception {
+        File directory = safeFile(required(a, "path"));
+        org.json.JSONArray entries = new org.json.JSONArray();
+        if (!directory.exists()) return new JSONObject().put("entries", entries);
+        if (!directory.isDirectory()) throw new IOException("not_directory");
+        java.util.ArrayList<File> files = new java.util.ArrayList<>();
+        try (java.nio.file.DirectoryStream<java.nio.file.Path> stream = Files.newDirectoryStream(directory.toPath())) {
+            for (java.nio.file.Path path : stream) {
+                if (Files.isSymbolicLink(path)) throw new SecurityException("directory_contains_symlink");
+                if (files.size() >= 10000) throw new IOException("directory_too_large");
+                File file = path.toFile().getCanonicalFile();
+                if (!file.getParentFile().equals(directory)) throw new SecurityException("path_outside_directory");
+                files.add(file);
+            }
+        }
+        files.sort(java.util.Comparator.comparing(File::getName));
+        for (File file : files) entries.put(new JSONObject()
+            .put("path", root.toPath().relativize(file.toPath()).toString())
+            .put("file", file.isFile()).put("directory", file.isDirectory())
+            .put("size", file.isFile() ? file.length() : 0).put("modified", file.lastModified()));
+        return new JSONObject().put("entries", entries);
+    }
+    private JSONObject fileTouch(JSONObject a) throws Exception {
+        File file = safeFile(required(a, "path"));
+        if (!file.isFile() || !file.setLastModified(System.currentTimeMillis())) throw new IOException("touch_failed");
+        return new JSONObject().put("modified", file.lastModified());
     }
     private JSONObject fileStat(JSONObject a) throws Exception {
         File f = safeFile(required(a, "path")); return new JSONObject().put("exists", f.exists()).put("file", f.isFile()).put("directory", f.isDirectory()).put("size", f.isFile() ? f.length() : 0).put("modified", f.exists() ? f.lastModified() : 0);
     }
-    private JSONObject fileDelete(JSONObject a) throws Exception { File f = safeFile(required(a, "path")); return new JSONObject().put("deleted", f.isFile() && f.delete()); }
+    private JSONObject fileDelete(JSONObject a) throws Exception { File f = safeFile(required(a, "path")); boolean deleted = f.isFile() && f.delete(); if (deleted || !f.exists()) temporaryFiles.remove(f); return new JSONObject().put("deleted", deleted); }
 
     private File safeFile(String path) throws IOException {
         if (path.isEmpty() || path.startsWith("/") || path.indexOf('\0') >= 0) throw new IllegalArgumentException("invalid_path");
@@ -172,5 +443,23 @@ public final class PodDeviceServices implements AutoCloseable {
     private byte[] encryptWithKey(SecretKey key, byte[] input) throws Exception { Cipher c = Cipher.getInstance("AES/GCM/NoPadding"); c.init(Cipher.ENCRYPT_MODE, key); c.updateAAD(AAD); byte[] body = c.doFinal(input); byte[] nonce = c.getIV(); if (nonce == null || nonce.length != 12) throw new IOException("invalid_keystore_iv"); byte[] all = new byte[nonce.length + body.length]; System.arraycopy(nonce, 0, all, 0, nonce.length); System.arraycopy(body, 0, all, nonce.length, body.length); return all; }
     private static byte[] decryptWithKey(SecretKey key, byte[] all) throws Exception { Cipher c = Cipher.getInstance("AES/GCM/NoPadding"); c.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(128, Arrays.copyOf(all, 12))); c.updateAAD(AAD); return c.doFinal(Arrays.copyOfRange(all, 12, all.length)); }
     private static byte[] readAll(File f, int limit) throws IOException { try (FileInputStream in = new FileInputStream(f); ByteArrayOutputStream out = new ByteArrayOutputStream()) { byte[] b = new byte[8192]; int n, total = 0; while ((n = in.read(b)) >= 0) { total += n; if (total > limit) throw new IOException("secure_store_too_large"); out.write(b, 0, n); } return out.toByteArray(); } }
-    private static void atomicWrite(File target, byte[] data) throws IOException { File tmp = new File(target.getParentFile(), target.getName() + ".tmp-" + System.nanoTime()); try (FileOutputStream out = new FileOutputStream(tmp)) { out.write(data); out.getFD().sync(); } try { Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE); } catch (java.nio.file.AtomicMoveNotSupportedException e) { Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING); } finally { if (tmp.exists()) tmp.delete(); } }
+    @FunctionalInterface interface AtomicWriteOutputFactory { FileOutputStream open(File temporary) throws IOException; }
+    private static void atomicWrite(File target, byte[] data) throws IOException { atomicWrite(target,data,FileOutputStream::new); }
+    static void atomicWrite(File target,byte[] data,AtomicWriteOutputFactory outputFactory)throws IOException {
+        java.nio.file.Path temporary=Files.createTempFile(target.getParentFile().toPath(),".tmp-",".pod-write");
+        Throwable failure=null;
+        try {
+            try(FileOutputStream output=outputFactory.open(temporary.toFile())){
+                output.write(data);output.flush();output.getFD().sync();
+            }
+            try { Files.move(temporary,target.toPath(),StandardCopyOption.REPLACE_EXISTING,StandardCopyOption.ATOMIC_MOVE); }
+            catch(java.nio.file.AtomicMoveNotSupportedException unsupported){Files.move(temporary,target.toPath(),StandardCopyOption.REPLACE_EXISTING);}
+        }catch(IOException|RuntimeException|Error error){failure=error;throw error;}
+        finally {
+            // Only this call's atomically allocated path belongs to us. Cover
+            // open/write/flush/sync/close failures as well as publication errors.
+            try{Files.deleteIfExists(temporary);}
+            catch(IOException|RuntimeException|Error cleanup){if(failure!=null){if(cleanup!=failure)failure.addSuppressed(cleanup);}else throw cleanup;}
+        }
+    }
 }

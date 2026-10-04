@@ -20,17 +20,19 @@ pub mod background;
 pub mod background_ffi;
 pub mod kv;
 pub mod accessibility_ffi;
+mod pak_reader;
+pub use pak_reader::PodPakReadAt;
 use kv::KvStore;
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{CStr, CString, c_char};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::slice;
 
 use base64::Engine as _;
 use pocket_fs::{FsModule, Storage};
 use pocket_mod::Guest;
-use pocket_mod::qjs::Function;
+use pocket_mod::qjs::{Function, Ctx, TypedArray};
 use pocket_net::{HttpRequest, HttpTransport, NetFailure, NetSurface, TransportCompletion};
 use pocket_ui_surface::UiSurface;
 use pocketjs_core::damage::{DEFAULT_DAMAGE_REGIONS, DamagePolicy, DamageTracker};
@@ -139,6 +141,7 @@ pub struct PodFontView {
 #[derive(Default)]
 struct PodBridge {
     events: VecDeque<String>,
+    service_results_only: bool,
     effects: VecDeque<String>,
     metrics: String,
     capabilities: String,
@@ -194,6 +197,7 @@ pub struct PodRuntime {
     transport: HostTransport,
     bridge: Rc<RefCell<PodBridge>>,
     kv: Rc<RefCell<KvStore>>,
+    decoded_image_root: Option<PathBuf>,
     target_id: String,
     host_abi: u32,
     package_abi: u32,
@@ -218,12 +222,63 @@ pub struct PodRuntime {
     receipt: CString,
 }
 
+// Fast path for large file-service payloads. Invalid/noncanonical input falls
+// back to the SDK codec, retaining its existing permissive semantics.
+fn decode_base64<'js>(ctx: Ctx<'js>, input: String) -> rquickjs::Result<Option<TypedArray<'js, u8>>> {
+    let decoded = base64::engine::general_purpose::STANDARD.decode(&input)
+        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(&input));
+    match decoded {
+        Ok(bytes) => TypedArray::new(ctx, bytes).map(Some),
+        Err(_) => Ok(None),
+    }
+}
+
+// Read the typed-array view, including its offset, synchronously. The result
+// owns its storage and does not retain or mutate the guest buffer.
+fn encode_base64(input: TypedArray<'_, u8>) -> Option<String> {
+    input.as_bytes().map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+// Only the image decoder's bounded RGBA outputs may bypass the JSON/Base64
+// service lane. The guest still receives an owned typed array, never a path to
+// arbitrary application files.
+fn read_decoded_rgba(root: &Path, relative: &str) -> Option<Vec<u8>> {
+    let digits = relative.strip_prefix("images/decoded-")?.strip_suffix(".rgba")?;
+    if digits.is_empty() || digits.len() > 20 || !digits.bytes().all(|digit| digit.is_ascii_digit()) { return None; }
+    let file = root.join(format!("decoded-{digits}.rgba"));
+    let metadata = std::fs::symlink_metadata(&file).ok()?;
+    if !metadata.file_type().is_file() || metadata.len() == 0 || metadata.len() > 512 * 512 * 4 || metadata.len() % 4 != 0 { return None; }
+    if file.canonicalize().ok()?.parent()? != root.canonicalize().ok()? { return None; }
+    let bytes = std::fs::read(&file).ok()?;
+    (bytes.len() as u64 == metadata.len()).then_some(bytes)
+}
+
 fn mount_pod(
     guest: &Guest,
     bridge: Rc<RefCell<PodBridge>>,
     kv: Rc<RefCell<KvStore>>,
+    surface: UiSurface,
+    decoded_image_root: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     guest.mount("pod", |ctx, ns| {
+        ns.set("decodeBase64", Function::new(ctx.clone(), decode_base64)?)?;
+        ns.set("encodeBase64", Function::new(ctx.clone(), encode_base64)?)?;
+        if let Some(root) = decoded_image_root {
+            ns.set("readDecodedRgba", Function::new(ctx.clone(), move |ctx, relative: String| {
+                match read_decoded_rgba(&root, &relative) {
+                    Some(bytes) => TypedArray::new(ctx, bytes).map(Some),
+                    None => Ok(None),
+                }
+            })?)?;
+        }
+        ns.set("fontMetrics", Function::new(ctx.clone(), move |slot: f64| {
+            if !slot.is_finite() || slot.fract() != 0.0 || !(0.0..=255.0).contains(&slot) { return None; }
+            surface.with_ui(|ui| ui.font_atlas(slot as u8).map(|font| json!({
+                "cellWidth": font.cell_w, "cellHeight": font.cell_h,
+                "baseline": font.baseline, "lineHeight": font.line_height,
+                "rasterDensity": font.raster_density,
+            }).to_string()))
+        })?)?;
         let b = bridge.clone();
         ns.set(
             "takeEvents",
@@ -232,7 +287,27 @@ fn mount_pod(
                 if b.events.is_empty() {
                     return None;
                 };
-                let raw = format!("[{}]", b.events.drain(..).collect::<Vec<_>>().join(","));
+                let events = if b.service_results_only {
+                    let mut results = Vec::new();
+                    let mut retained = VecDeque::new();
+                    for event in b.events.drain(..) {
+                        if serde_json::from_str::<Value>(&event)
+                            .is_ok_and(|value| value.get("t").and_then(Value::as_str) == Some("service.result"))
+                        {
+                            results.push(event);
+                        } else {
+                            retained.push_back(event);
+                        }
+                    }
+                    b.events = retained;
+                    results
+                } else {
+                    b.events.drain(..).collect::<Vec<_>>()
+                };
+                if events.is_empty() {
+                    return None;
+                }
+                let raw = format!("[{}]", events.join(","));
                 Some(raw)
             })?,
         )?;
@@ -305,13 +380,18 @@ fn mount_pod(
     })
 }
 
-fn hash_bytes(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
+const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+
+fn hash_extend(mut hash: u64, bytes: &[u8]) -> u64 {
     for byte in bytes {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
+}
+
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    hash_extend(FNV_OFFSET, bytes)
 }
 
 fn hash_words(words: &[u32]) -> u64 {
@@ -397,7 +477,12 @@ pub extern "C" fn pod_runtime_create(config: *const PodRuntimeConfig) -> *mut Po
     // DrawList command; other watch hosts retain legacy AABB scissors until
     // their fixed-function decoders implement it.
     if matches!(target_id, "android-watch" | "wearos-watch") {
-        surface.with_ui(|ui| ui.set_rounded_clip_supported(true));
+        surface.with_ui(|ui| {
+            ui.set_rounded_clip_supported(true);
+            ui.set_subpixel_glyphs_supported(true);
+            ui.set_subpixel_images_supported(true);
+            ui.set_fractional_layout(true);
+        });
     }
     if !surface.set_tick_rate(60) {
         set_error("failed to pin the PocketJS clock to 60 Hz");
@@ -417,6 +502,7 @@ pub extern "C" fn pod_runtime_create(config: *const PodRuntimeConfig) -> *mut Po
     }));
     let bridge = Rc::new(RefCell::new(PodBridge {
         events: VecDeque::new(),
+        service_results_only: false,
         effects: VecDeque::new(),
         metrics: json!({
             "logicalWidth": logical_width,
@@ -443,6 +529,7 @@ pub extern "C" fn pod_runtime_create(config: *const PodRuntimeConfig) -> *mut Po
         transport,
         bridge,
         kv: Rc::new(RefCell::new(KvStore::open(data_dir))),
+        decoded_image_root: data_dir.map(|root| PathBuf::from(root).join("files").join("images")),
         target_id: target_id.to_owned(),
         host_abi: config.host_abi,
         package_abi: config.host_abi,
@@ -502,6 +589,43 @@ pub extern "C" fn pod_runtime_load_pak(
     runtime.pak_hash = hash_bytes(bytes);
     runtime.surface.feed_pak(bytes);
     OK
+}
+
+/// Load an immutable host source without requiring a contiguous whole-pak buffer.
+/// The callback is synchronous and must not re-enter this runtime.
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_load_pak_reader(
+    runtime: *mut PodRuntime,
+    length: usize,
+    read_at: Option<PodPakReadAt>,
+    context: *mut std::ffi::c_void,
+) -> i32 {
+    let Ok(runtime) = runtime_mut(runtime) else { return ERR_ARGUMENT; };
+    if runtime.mounted || length == 0 {
+        set_error("pak reader requires an unmounted runtime and a nonempty source");
+        return ERR_STATE;
+    }
+    let Some(read_at) = read_at else {
+        set_error("pak read callback is required");
+        return ERR_ARGUMENT;
+    };
+    if length > isize::MAX as usize {
+        set_error("pak source is too large for this host");
+        return ERR_ARGUMENT;
+    }
+    // Failed/partial loads cannot retain a previous package's authority.
+    runtime.pak_hash = 0;
+    runtime.package_validated = false;
+    runtime.expected_bundle_hash = None;
+    let mut reader = pak_reader::PakReader { length, read_at, context };
+    let result = reader.checksum().and_then(|hash| {
+        runtime.surface.feed_pak_reader(length, |offset, bytes| reader.read_exact_at(offset, bytes))?;
+        Ok(hash)
+    });
+    match result {
+        Ok(hash) => { runtime.pak_hash = hash; OK }
+        Err(error) => { set_error(format!("pak reader: {error}")); ERR_STATE }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -599,7 +723,7 @@ pub extern "C" fn pod_runtime_eval_bundle(
         .mount(&runtime.guest)
         .and_then(|_| pocket_fs::mount(&runtime.guest, runtime.fs.clone()))
         .and_then(|_| runtime.net.mount(&runtime.guest))
-        .and_then(|_| mount_pod(&runtime.guest, runtime.bridge.clone(), runtime.kv.clone()))
+        .and_then(|_| mount_pod(&runtime.guest, runtime.bridge.clone(), runtime.kv.clone(), runtime.surface.clone(), runtime.decoded_image_root.clone()))
     {
         set_error(format!("surface mount failed: {error}"));
         return ERR_GUEST;
@@ -706,6 +830,56 @@ pub extern "C" fn pod_runtime_has_capability(runtime: *mut PodRuntime, name: *co
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_pump_services(runtime: *mut PodRuntime) -> i32 {
+    let Ok(runtime) = runtime_mut(runtime) else {
+        return ERR_ARGUMENT;
+    };
+    if !runtime.mounted {
+        return ERR_STATE;
+    }
+    // Unlike frame(), this does not tick the UI surface or advance its committed
+    // draw snapshot. Hosts call it for lifecycle/IO completion, never as a timer.
+    runtime.net.begin_tick();
+    if let Err(error) = runtime.guest.eval(
+        "pod-service-completion",
+        "if (typeof globalThis.__pocketPumpServices === 'function') globalThis.__pocketPumpServices();",
+    ) {
+        set_error(format!("guest service pump failed: {error}"));
+        return ERR_GUEST;
+    }
+    OK
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_pump_service_results(runtime: *mut PodRuntime) -> i32 {
+    let Ok(runtime) = runtime_mut(runtime) else {
+        return ERR_ARGUMENT;
+    };
+    if !runtime.mounted {
+        return ERR_STATE;
+    }
+    // begin_tick only promotes completed transport requests; it does not reset
+    // a per-frame request budget. Legacy NET completions can also settle here.
+    runtime.net.begin_tick();
+    let previous_mode = {
+        let mut bridge = runtime.bridge.borrow_mut();
+        std::mem::replace(&mut bridge.service_results_only, true)
+    };
+    // Keep the mode active through eval's Promise-job drain, without retaining
+    // a RefCell borrow while guest code can call pod.takeEvents().
+    let result = runtime.guest.eval(
+        "pod-service-results",
+        "if (typeof globalThis.__pocketPumpServices === 'function') globalThis.__pocketPumpServices();",
+    );
+    runtime.bridge.borrow_mut().service_results_only = previous_mode;
+    if let Err(error) = result {
+        set_error(format!("guest service result pump failed: {error}"));
+        return ERR_GUEST;
+    }
+    OK
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn pod_runtime_frame(runtime: *mut PodRuntime, input: *const PodInputFrame) -> i32 {
     let Ok(runtime) = runtime_mut(runtime) else {
         return ERR_ARGUMENT;
@@ -786,7 +960,10 @@ pub extern "C" fn pod_runtime_snapshot(runtime: *mut PodRuntime, out: *mut PodDr
     runtime.surface.with_ui(|ui| {
         for slot in 0..ui.texture_slot_count() as u32 {
             if let Some((handle, revision, _)) = ui.texture_at_versioned(slot) {
-                hash ^= (handle as u32 as u64).rotate_left(slot % 63) ^ revision;
+                // Mix ordered identities and versions: XOR alone cancels simultaneous
+                // updates when two media textures acquire the same revision.
+                hash = (hash ^ handle as u32 as u64).wrapping_mul(0x100000001b3);
+                hash = (hash ^ revision).wrapping_mul(0x100000001b3);
             }
         }
     });
@@ -957,6 +1134,38 @@ pub extern "C" fn pod_runtime_render_rgba_transparent_incremental(
         });
         runtime.damage_tracker.invalidate();
     }
+    OK
+}
+
+/// Native-owned RGBA media textures. The host serializes these calls with frames.
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_upload_rgba(runtime: *mut PodRuntime, pixels: *const u8, length: usize, width: u32, height: u32) -> i32 {
+    pod_runtime_upload_rgba_sampled(runtime, pixels, length, width, height, 0)
+}
+/// Additive upload API: sampling is 0 for nearest, 1 for linear, and immutable.
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_upload_rgba_sampled(runtime: *mut PodRuntime, pixels: *const u8, length: usize, width: u32, height: u32, sampling: i32) -> i32 {
+    let Ok(runtime) = runtime_mut(runtime) else { return ERR_ARGUMENT; };
+    let flags = match sampling {
+        0 => 0,
+        1 => pocketjs_core::spec::img::FLAG_LINEAR,
+        _ => return ERR_ARGUMENT,
+    };
+    if pixels.is_null() || width == 0 || height == 0 || width > 1024 || height > 1024 || length != width as usize * height as usize * 4 { return ERR_ARGUMENT; }
+    let bytes = unsafe { std::slice::from_raw_parts(pixels, length) };
+    runtime.surface.with_ui(|ui| ui.upload_texture_flags(bytes, width, height, 3, flags))
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_update_rgba(runtime: *mut PodRuntime, handle: i32, pixels: *const u8, length: usize) -> i32 {
+    let Ok(runtime) = runtime_mut(runtime) else { return ERR_ARGUMENT; };
+    if pixels.is_null() || length == 0 || length > 1024 * 1024 * 4 { return ERR_ARGUMENT; }
+    let bytes = unsafe { std::slice::from_raw_parts(pixels, length) };
+    if runtime.surface.with_ui(|ui| ui.update_texture_rgba(handle, bytes)) { OK } else { ERR_ARGUMENT }
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_free_texture(runtime: *mut PodRuntime, handle: i32) -> i32 {
+    let Ok(runtime) = runtime_mut(runtime) else { return ERR_ARGUMENT; };
+    runtime.surface.with_ui(|ui| ui.free_texture(handle));
     OK
 }
 
@@ -1202,6 +1411,26 @@ mod tests {
     }
 
     #[test]
+    fn decoded_rgba_fast_path_reads_only_bounded_decoder_outputs() {
+        let root = std::env::temp_dir().join(format!("podjs-image-read-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&root).unwrap();
+        let valid = root.join("decoded-123.rgba");
+        std::fs::write(&valid, [1, 2, 3, 4]).unwrap();
+        assert_eq!(read_decoded_rgba(&root, "images/decoded-123.rgba"), Some(vec![1, 2, 3, 4]));
+        assert_eq!(read_decoded_rgba(&root, "../decoded-123.rgba"), None);
+        assert_eq!(read_decoded_rgba(&root, "images/decoded-123.rgba/../../secret"), None);
+        assert_eq!(read_decoded_rgba(&root, "images/decoded-abc.rgba"), None);
+        #[cfg(unix)] {
+            let link = root.join("decoded-124.rgba");
+            std::os::unix::fs::symlink(&valid, &link).unwrap();
+            assert_eq!(read_decoded_rgba(&root, "images/decoded-124.rgba"), None);
+        }
+        std::fs::write(&valid, vec![0; 512 * 512 * 4 + 4]).unwrap();
+        assert_eq!(read_decoded_rgba(&root, "images/decoded-123.rgba"), None);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn external_event_admission_is_bounded_and_retry_preserves_fifo() {
         let target = CString::new("watchos-watch").unwrap();
         let caps = CString::new("[]").unwrap();
@@ -1249,6 +1478,71 @@ mod tests {
         assert!(!pod_runtime_has_capability(runtime, other.as_ptr()));
         assert_eq!(pod_runtime_validate_package(runtime, std::ptr::null()), ERR_STATE);
         assert!(pod_runtime_has_capability(runtime, name.as_ptr()));
+        pod_runtime_destroy(runtime);
+    }
+
+    #[test]
+    fn rgba_sampling_is_opt_in_validated_and_preserved_by_pixel_updates() {
+        let target = CString::new("android-watch").unwrap();
+        let caps = CString::new("[]").unwrap();
+        let runtime = pod_runtime_create(&valid_config(&target, &caps));
+        assert!(!runtime.is_null());
+        let first = [1, 2, 3, 255, 4, 5, 6, 128];
+        let next = [9, 8, 7, 64, 6, 5, 4, 255];
+        let legacy = pod_runtime_upload_rgba(runtime, first.as_ptr(), first.len(), 2, 1);
+        let nearest = pod_runtime_upload_rgba_sampled(runtime, first.as_ptr(), first.len(), 2, 1, 0);
+        let linear = pod_runtime_upload_rgba_sampled(runtime, first.as_ptr(), first.len(), 2, 1, 1);
+        assert!(legacy >= 0 && nearest >= 0 && linear >= 0);
+        assert_ne!(legacy, nearest);
+        assert_ne!(nearest, linear);
+        let read = |handle| {
+            let mut view = std::mem::MaybeUninit::<PodTextureView>::uninit();
+            assert_eq!(pod_runtime_texture_for_handle(runtime, handle, view.as_mut_ptr()), OK);
+            unsafe { view.assume_init() }
+        };
+        for (handle, expected_linear) in [(legacy, 0), (nearest, 0), (linear, 1)] {
+            let before = read(handle);
+            assert_eq!(before.handle, handle);
+            assert_eq!((before.width, before.height, before.pixel_format), (2, 1, 3));
+            assert_eq!(before.linear, expected_linear);
+            assert_eq!(unsafe { slice::from_raw_parts(before.pixels, before.byte_length) }, first);
+            assert_eq!(pod_runtime_update_rgba(runtime, handle, next.as_ptr(), next.len()), OK);
+            let after = read(handle);
+            assert_eq!(after.handle, handle);
+            assert_eq!(after.linear, expected_linear);
+            assert!(after.revision > before.revision);
+            assert_eq!(unsafe { slice::from_raw_parts(after.pixels, after.byte_length) }, next);
+        }
+        // Public sampling modes are not the engine's texture flag bitmask.
+        for invalid in [-1, 2, i32::MAX] {
+            assert_eq!(pod_runtime_upload_rgba_sampled(runtime, first.as_ptr(), first.len(), 2, 1, invalid), ERR_ARGUMENT);
+        }
+        assert_eq!(pod_runtime_upload_rgba_sampled(runtime, std::ptr::null(), first.len(), 2, 1, 1), ERR_ARGUMENT);
+        assert_eq!(pod_runtime_upload_rgba_sampled(runtime, first.as_ptr(), first.len() - 1, 2, 1, 1), ERR_ARGUMENT);
+        assert_eq!(read(legacy).linear, 0);
+        assert_eq!(read(linear).linear, 1);
+        for handle in [legacy, nearest, linear] {
+            assert_eq!(pod_runtime_free_texture(runtime, handle), OK);
+        }
+        pod_runtime_destroy(runtime);
+    }
+
+    #[test]
+    fn concurrent_rgba_frame_updates_invalidate_the_draw_snapshot() {
+        let target=CString::new("android-watch").unwrap();let caps=CString::new("[]").unwrap();
+        let runtime=pod_runtime_create(&valid_config(&target,&caps));assert!(!runtime.is_null());
+        let source=b"globalThis.frame = function() {}";
+        validate(runtime,"android-watch",b"pak",source,&[]);
+        assert_eq!(pod_runtime_eval_bundle(runtime,source.as_ptr(),source.len(),std::ptr::null()),OK);
+        let first=[1,2,3,255];let next=[9,8,7,255];
+        let a=pod_runtime_upload_rgba(runtime,first.as_ptr(),4,1,1);let b=pod_runtime_upload_rgba(runtime,first.as_ptr(),4,1,1);assert!(a>=0&&b>=0);
+        let mut draw=PodDrawList{words:std::ptr::null(),word_count:0,content_hash:0,frame_number:0,changed:0};
+        assert_eq!(pod_runtime_snapshot(runtime,&mut draw),OK);let before=draw.content_hash;
+        assert_eq!(pod_runtime_update_rgba(runtime,a,next.as_ptr(),4),OK);assert_eq!(pod_runtime_update_rgba(runtime,b,next.as_ptr(),4),OK);
+        assert_eq!(pod_runtime_snapshot(runtime,&mut draw),OK);assert_eq!(draw.changed,1);assert_ne!(draw.content_hash,before);
+        assert_eq!(pod_runtime_snapshot(runtime,&mut draw),OK);assert_eq!(draw.changed,0);
+        assert_eq!(pod_runtime_update_rgba(runtime,a,next.as_ptr(),3),ERR_ARGUMENT);
+        assert_eq!(pod_runtime_free_texture(runtime,a),OK);assert_eq!(pod_runtime_update_rgba(runtime,a,next.as_ptr(),4),ERR_ARGUMENT);
         pod_runtime_destroy(runtime);
     }
 
@@ -1409,6 +1703,75 @@ mod tests {
     }
 
     #[test]
+    fn native_base64_returns_owned_typed_arrays_and_preserves_fallback_boundary() {
+        let target = CString::new("android-watch").unwrap();
+        let caps = CString::new("[]").unwrap();
+        let runtime = pod_runtime_create(&valid_config(&target, &caps));
+        assert!(!runtime.is_null());
+        let bytes: Vec<u8> = (0..262144).map(|i| i as u8).collect();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let source = format!(r#"
+            globalThis.frame=()=>{{}};
+            const bytes=pod.decodeBase64({encoded:?});
+            if(!(bytes instanceof Uint8Array)||bytes.length!==262144)throw new Error('typed byte result');
+            for(let i=0;i<bytes.length;i++)if(bytes[i]!==i%256)throw new Error('byte corruption');
+            for(const text of ['', 'AA==', 'AA', 'AQID', '/w==']){{
+                const value=pod.decodeBase64(text);if(!(value instanceof Uint8Array))throw new Error('valid input rejected');
+            }}
+            if(pod.decodeBase64('invalid!')!=null||pod.decodeBase64('AB==')!=null)throw new Error('fallback boundary');
+            bytes[0]=99;if(pod.decodeBase64({encoded:?})[0]!==0)throw new Error('shared buffer');
+        "#);
+        validate(runtime, "android-watch", b"pak", source.as_bytes(), &[]);
+        assert_eq!(pod_runtime_eval_bundle(runtime, source.as_ptr(), source.len(), std::ptr::null()), OK, "{}", unsafe { CStr::from_ptr(pod_runtime_last_error()) }.to_string_lossy());
+        pod_runtime_destroy(runtime);
+    }
+
+    #[test]
+    fn native_base64_encoder_preserves_views_padding_and_input() {
+        let target = CString::new("android-watch").unwrap();
+        let caps = CString::new("[]").unwrap();
+        let runtime = pod_runtime_create(&valid_config(&target, &caps));
+        assert!(!runtime.is_null());
+        let mut source = String::from("globalThis.frame=()=>{};const backing=new Uint8Array(262160);for(let i=0;i<backing.length;i++)backing[i]=i&255;\n");
+        for offset in [0, 1, 7] {
+            for length in [0, 1, 2, 3, 255, 256, 65536, 262144] {
+                let bytes: Vec<u8> = (offset..offset+length).map(|i| i as u8).collect();
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                source.push_str(&format!("if(pod.encodeBase64(backing.subarray({offset},{}))!=={encoded:?})throw new Error('encode view {offset}/{length}');\n",offset+length));
+            }
+        }
+        source.push_str("for(let i=0;i<backing.length;i++)if(backing[i]!==(i&255))throw new Error('mutated input');");
+        validate(runtime, "android-watch", b"pak", source.as_bytes(), &[]);
+        assert_eq!(pod_runtime_eval_bundle(runtime, source.as_ptr(), source.len(), std::ptr::null()), OK, "{}", unsafe { CStr::from_ptr(pod_runtime_last_error()) }.to_string_lossy());
+        pod_runtime_destroy(runtime);
+    }
+
+    #[test]
+    fn guest_font_metrics_read_the_loaded_atlas_without_density_scaling() {
+        let target = CString::new("android-watch").unwrap();
+        let caps = CString::new("[]").unwrap();
+        let runtime = pod_runtime_create(&valid_config(&target, &caps));
+        let mut atlas = Vec::new();
+        atlas.extend_from_slice(&spec::font_atlas::MAGIC.to_le_bytes());
+        atlas.extend_from_slice(&spec::font_atlas::VERSION.to_le_bytes());
+        atlas.extend_from_slice(&1u16.to_le_bytes());
+        atlas.extend_from_slice(&[8, 10, 7, 12, 0, 0, 2, 0]);
+        atlas.extend_from_slice(&('A' as u32).to_le_bytes());
+        atlas.extend_from_slice(&[0, 0, 8, 0]);
+        atlas.extend_from_slice(&vec![255u8; 8 * 10 * 4]);
+        assert!(unsafe { &*runtime }.surface.with_ui(|ui| ui.load_font_atlas(&atlas)));
+        let source = br#"
+            globalThis.frame=()=>{};
+            const metrics=JSON.parse(pod.fontMetrics(0));
+            if(metrics.cellWidth!==8||metrics.cellHeight!==10||metrics.baseline!==7||metrics.lineHeight!==12||metrics.rasterDensity!==2)throw new Error('atlas metrics changed units');
+            for(const slot of [1,-1,256,0.5,NaN])if(pod.fontMetrics(slot)!=null)throw new Error('invalid or missing slot');
+        "#;
+        validate(runtime, "android-watch", b"pak", source, &[]);
+        assert_eq!(pod_runtime_eval_bundle(runtime, source.as_ptr(), source.len(), std::ptr::null()), OK, "{}", unsafe { CStr::from_ptr(pod_runtime_last_error()) }.to_string_lossy());
+        pod_runtime_destroy(runtime);
+    }
+
+    #[test]
     fn rejects_unknown_target_and_host_abi() {
         let unknown = CString::new("phone").unwrap();
         let caps = CString::new("[]").unwrap();
@@ -1527,6 +1890,245 @@ mod tests {
         );
         assert_eq!(pod_runtime_set_lifecycle(runtime, 2), 0);
         assert_eq!(pod_runtime_frame(runtime, std::ptr::null()), IDLE);
+        pod_runtime_destroy(runtime);
+    }
+
+    #[test]
+    fn background_service_completion_drains_promises_without_committing_a_frame() {
+        assert_eq!(pod_runtime_pump_services(std::ptr::null_mut()), ERR_ARGUMENT);
+        let target = CString::new("android-watch").unwrap();
+        let caps = CString::new("[]").unwrap();
+        let runtime = pod_runtime_create(&valid_config(&target, &caps));
+        assert_eq!(pod_runtime_pump_services(runtime), ERR_STATE);
+        let source = br#"
+            globalThis.frames = 0;
+            globalThis.frame = () => { frames++; };
+            globalThis.__pocketPumpServices = () => {
+                const events = JSON.parse(pod.takeEvents() || '[]');
+                Promise.resolve().then(() => pod.emit(JSON.stringify({frames, events})));
+            };
+        "#;
+        validate(runtime, "android-watch", b"pak", source, &[]);
+        assert_eq!(pod_runtime_eval_bundle(runtime, source.as_ptr(), source.len(), std::ptr::null()), OK);
+        assert_eq!(pod_runtime_frame(runtime, std::ptr::null()), OK);
+        assert_eq!(pod_runtime_set_lifecycle(runtime, 2), OK);
+        let event = CString::new(r#"{"t":"service.result","id":1,"ok":true,"value":7}"#).unwrap();
+        assert_eq!(pod_runtime_post_event(runtime, event.as_ptr()), OK);
+        assert_eq!(pod_runtime_frame(runtime, std::ptr::null()), IDLE);
+        assert_eq!(pod_runtime_pump_services(runtime), OK);
+        let effect: Value = serde_json::from_str(unsafe { CStr::from_ptr(pod_runtime_poll_effect(runtime)) }.to_str().unwrap()).unwrap();
+        assert_eq!(effect["frames"], 1);
+        assert!(effect["events"].as_array().unwrap().iter().any(|e| e["t"] == "lifecycle" && e["state"] == "background"));
+        assert!(effect["events"].as_array().unwrap().iter().any(|e| e["id"] == 1 && e["value"] == 7));
+        assert_eq!(runtime_mut(runtime).unwrap().frame_number, 1);
+        assert_eq!(pod_runtime_set_lifecycle(runtime, 0), OK);
+        assert_eq!(pod_runtime_frame(runtime, std::ptr::null()), OK);
+        assert_eq!(runtime_mut(runtime).unwrap().frame_number, 2);
+        pod_runtime_destroy(runtime);
+    }
+
+    #[test]
+    fn service_results_pump_retains_other_events_through_promise_jobs_until_frame() {
+        assert_eq!(pod_runtime_pump_service_results(std::ptr::null_mut()), ERR_ARGUMENT);
+        let target = CString::new("android-watch").unwrap();
+        let caps = CString::new("[]").unwrap();
+        let runtime = pod_runtime_create(&valid_config(&target, &caps));
+        assert!(!runtime.is_null());
+        assert_eq!(pod_runtime_pump_service_results(runtime), ERR_STATE);
+        let source = br#"
+            globalThis.frames = 0;
+            const readEvents = () => JSON.parse(pod.takeEvents() || '[]');
+            globalThis.frame = () => {
+                frames++;
+                pod.emit(JSON.stringify({phase: 'frame', frames, events: readEvents()}));
+            };
+            globalThis.__pocketPumpServices = () => {
+                const events = readEvents();
+                Promise.resolve().then(() => {
+                    pod.emit(JSON.stringify({phase: 'results', frames, events, jobs: readEvents()}));
+                });
+            };
+        "#;
+        validate(runtime, "android-watch", b"pak", source, &[]);
+        assert_eq!(pod_runtime_eval_bundle(runtime, source.as_ptr(), source.len(), std::ptr::null()), OK);
+        let retained = vec![
+            json!({"t":"back"}),
+            json!({"t":"lifecycle","state":"inactive"}),
+            json!({"t":"axis","axis":0,"delta":9}),
+            json!({"t":"input.scroll","vertical":1}),
+            json!({"t":"accessibility.action","nodeId":1,"action":"activate"}),
+            json!({"t":"touchCancel"}),
+            json!({"t":"theme","theme":"dark"}),
+            json!({"t":"display.state","value":{}}),
+            json!({"t":"notification.action","eventId":"action"}),
+            json!({"t":"future.event"}),
+            json!({"t":7}),
+        ];
+        let results = vec![
+            json!({"t":"service.result","id":1,"ok":true,"value":11}),
+            json!({"t":"service.result","id":2,"ok":false,"code":"test"}),
+        ];
+        for (index, event) in retained.iter().enumerate() {
+            let raw = CString::new(event.to_string()).unwrap();
+            assert_eq!(pod_runtime_post_event(runtime, raw.as_ptr()), OK);
+            if index < results.len() {
+                let raw = CString::new(results[index].to_string()).unwrap();
+                assert_eq!(pod_runtime_post_event(runtime, raw.as_ptr()), OK);
+            }
+        }
+        let effect = || serde_json::from_str::<Value>(cstr(pod_runtime_poll_effect(runtime)).unwrap()).unwrap();
+        assert_eq!(pod_runtime_pump_service_results(runtime), OK);
+        assert_eq!(effect(), json!({"phase":"results","frames":0,"events":results,"jobs":[]}));
+        assert_eq!(runtime_mut(runtime).unwrap().frame_number, 0);
+        assert_eq!(pod_runtime_pump_service_results(runtime), OK);
+        assert_eq!(effect(), json!({"phase":"results","frames":0,"events":[],"jobs":[]}));
+        assert_eq!(pod_runtime_frame(runtime, std::ptr::null()), OK);
+        assert_eq!(effect(), json!({"phase":"frame","frames":1,"events":retained}));
+        assert_eq!(pod_runtime_frame(runtime, std::ptr::null()), OK);
+        assert_eq!(effect(), json!({"phase":"frame","frames":2,"events":[]}));
+        assert!(pod_runtime_poll_effect(runtime).is_null());
+        pod_runtime_destroy(runtime);
+    }
+
+    #[test]
+    fn service_results_pump_restores_event_mode_after_guest_error() {
+        for consume_before_error in [false, true] {
+            let target = CString::new("android-watch").unwrap();
+            let caps = CString::new("[]").unwrap();
+            let runtime = pod_runtime_create(&valid_config(&target, &caps));
+            let source = format!(r#"
+                let failOnce = true;
+                globalThis.frame = () => {{}};
+                globalThis.__pocketPumpServices = () => {{
+                    if (failOnce) {{
+                        failOnce = false;
+                        if ({consume_before_error}) pod.takeEvents();
+                        throw new Error('expected service pump failure');
+                    }}
+                    pod.emit(pod.takeEvents() || '[]');
+                }};
+            "#);
+            validate(runtime, "android-watch", b"pak", source.as_bytes(), &[]);
+            assert_eq!(pod_runtime_eval_bundle(runtime, source.as_ptr(), source.len(), std::ptr::null()), OK);
+            let events = vec![
+                json!({"t":"back"}),
+                json!({"t":"service.result","id":1,"ok":true,"value":7}),
+                json!({"t":"lifecycle","state":"inactive"}),
+            ];
+            for event in &events {
+                let raw = CString::new(event.to_string()).unwrap();
+                assert_eq!(pod_runtime_post_event(runtime, raw.as_ptr()), OK);
+            }
+            assert_eq!(pod_runtime_pump_service_results(runtime), ERR_GUEST);
+            assert!(cstr(pod_runtime_last_error()).unwrap().contains("expected service pump failure"));
+            assert_eq!(pod_runtime_pump_services(runtime), OK);
+            let effect: Value = serde_json::from_str(cstr(pod_runtime_poll_effect(runtime)).unwrap()).unwrap();
+            assert_eq!(effect, if consume_before_error {
+                json!([events[0], events[2]])
+            } else {
+                json!(events)
+            });
+            assert_eq!(runtime_mut(runtime).unwrap().frame_number, 0);
+            pod_runtime_destroy(runtime);
+        }
+    }
+
+    #[test]
+    fn service_results_pump_advances_dependent_requests_without_committing_draws() {
+        use crate::accessibility_ffi::pod_runtime_set_accessibility_enabled;
+        let target = CString::new("android-watch").unwrap();
+        let caps = CString::new("[]").unwrap();
+        let runtime = pod_runtime_create(&valid_config(&target, &caps));
+        assert_eq!(pod_runtime_set_accessibility_enabled(runtime, 1), OK);
+        let source = format!(r#"
+            const node = ui.createNode(1);
+            ui.setText(node, 'Before');
+            ui.setProp(node, {}, 80);
+            ui.setProp(node, {}, 20);
+            ui.insertBefore(1, node, 0);
+            globalThis.frame = () => {{}};
+            const pending = new Map();
+            const request = id => new Promise(resolve => {{
+                pending.set(id, resolve);
+                pod.emit(JSON.stringify({{t:'service.request',id}}));
+            }});
+            request(1).then(() => request(2)).then(() => request(3)).then(() => {{
+                ui.setText(node, 'After');
+                pod.emit(JSON.stringify({{t:'chain.done'}}));
+            }});
+            globalThis.__pocketPumpServices = () => {{
+                for (const event of JSON.parse(pod.takeEvents() || '[]')) {{
+                    const resolve = pending.get(event.id);
+                    if (resolve) {{ pending.delete(event.id); resolve(event.value); }}
+                }}
+            }};
+        "#, spec::prop::WIDTH, spec::prop::HEIGHT);
+        validate(runtime, "android-watch", b"pak", source.as_bytes(), &[]);
+        assert_eq!(pod_runtime_eval_bundle(runtime, source.as_ptr(), source.len(), std::ptr::null()), OK);
+        assert_eq!(pod_runtime_frame(runtime, std::ptr::null()), OK);
+        let mut draw = PodDrawList { words: std::ptr::null(), word_count: 0, content_hash: 0, frame_number: 0, changed: 0 };
+        assert_eq!(pod_runtime_snapshot(runtime, &mut draw), OK);
+        let (frame_number, draw_words, draw_hash, semantics) = {
+            let state = runtime_mut(runtime).unwrap();
+            (state.frame_number, state.draw_words.clone(), state.draw_hash,
+                state.surface.with_ui(|ui| ui.current_accessibility().clone()))
+        };
+        assert_eq!(semantics.nodes[0].label, "Before");
+        let effect = || serde_json::from_str::<Value>(cstr(pod_runtime_poll_effect(runtime)).unwrap()).unwrap();
+        for id in 1..=3 {
+            assert_eq!(effect(), json!({"t":"service.request","id":id}));
+            let result = CString::new(json!({"t":"service.result","id":id,"ok":true}).to_string()).unwrap();
+            assert_eq!(pod_runtime_post_event(runtime, result.as_ptr()), OK);
+            assert_eq!(pod_runtime_pump_service_results(runtime), OK);
+            let state = runtime_mut(runtime).unwrap();
+            assert_eq!(state.frame_number, frame_number);
+            assert_eq!(state.draw_words, draw_words);
+            assert_eq!(state.draw_hash, draw_hash);
+            state.surface.with_ui(|ui| assert_eq!(ui.current_accessibility(), &semantics));
+        }
+        assert_eq!(effect(), json!({"t":"chain.done"}));
+        assert_eq!(pod_runtime_frame(runtime, std::ptr::null()), OK);
+        assert_eq!(pod_runtime_snapshot(runtime, &mut draw), OK);
+        let state = runtime_mut(runtime).unwrap();
+        assert_eq!(state.frame_number, frame_number + 1);
+        state.surface.with_ui(|ui| {
+            assert_ne!(ui.current_accessibility().content_hash, semantics.content_hash);
+            assert_eq!(ui.current_accessibility().nodes[0].label, "After");
+        });
+        pod_runtime_destroy(runtime);
+    }
+
+    #[test]
+    fn service_results_pump_promotes_legacy_net_completions_without_host_events() {
+        let target = CString::new("android-watch").unwrap();
+        let caps = CString::new("[]").unwrap();
+        let runtime = pod_runtime_create(&valid_config(&target, &caps));
+        let source = br#"
+            globalThis.frame = () => {};
+            net.start(JSON.stringify({url:'https://example.test/a',method:'GET',headers:{},timeoutMs:30000,maxBytes:16}), new ArrayBuffer(0));
+            globalThis.__pocketPumpServices = () => {
+                const events = JSON.parse(net.poll() || '[]');
+                for (const event of events) {
+                    const body = new ArrayBuffer(event.bytes);
+                    const bytes = net.take(event.h, body);
+                    Promise.resolve().then(() => pod.emit(JSON.stringify({event,bytes,body:Array.from(new Uint8Array(body))})));
+                }
+            };
+        "#;
+        validate(runtime, "android-watch", b"pak", source, &[]);
+        assert_eq!(pod_runtime_eval_bundle(runtime, source.as_ptr(), source.len(), std::ptr::null()), OK);
+        let command: Value = serde_json::from_str(cstr(pod_runtime_poll_net_command(runtime)).unwrap()).unwrap();
+        let handle = command["handle"].as_i64().unwrap() as i32;
+        let url = CString::new("https://example.test/a").unwrap();
+        let headers = CString::new("{}").unwrap();
+        assert_eq!(pod_runtime_complete_http(runtime, handle, 200, url.as_ptr(), headers.as_ptr(), b"ok".as_ptr(), 2), OK);
+        assert!(runtime_mut(runtime).unwrap().bridge.borrow().events.is_empty());
+        assert_eq!(pod_runtime_pump_service_results(runtime), OK);
+        let effect: Value = serde_json::from_str(cstr(pod_runtime_poll_effect(runtime)).unwrap()).unwrap();
+        assert_eq!(effect, json!({"event":{"t":"done","h":handle,"status":200,"url":"https://example.test/a","headers":{},"bytes":2},"bytes":2,"body":[111,107]}));
+        assert_eq!(runtime_mut(runtime).unwrap().frame_number, 0);
+        assert_eq!(pod_runtime_pump_service_results(runtime), OK);
+        assert!(pod_runtime_poll_effect(runtime).is_null());
         pod_runtime_destroy(runtime);
     }
 

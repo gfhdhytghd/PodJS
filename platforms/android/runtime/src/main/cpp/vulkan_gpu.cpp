@@ -1,4 +1,5 @@
 #include "vulkan_gpu.h"
+#include <bit>
 namespace podjs_gpu {
 RoundedClipData makeRoundedClipData(const GpuRoundedClip& clip) {
   RoundedClipData out{};
@@ -39,6 +40,12 @@ PrimitivePush makePrimitivePush(const GpuPrimitive& p, uint32_t rasterWidth,
     out.xy01[2] = p.vertex[0].x + static_cast<int32_t>(p.width);
     out.xy01[3] = p.vertex[0].y + static_cast<int32_t>(p.height);
   }
+  if (p.subpixelCoverage) {
+    mode = 6;
+    for (int i = 0; i < 4; ++i) out.xy01[i] = std::bit_cast<int32_t>(p.floatCoordinates[i]);
+    out.xy2Mode[0] = std::bit_cast<int32_t>(p.floatCoordinates[4]);
+    out.xy2Mode[1] = std::bit_cast<int32_t>(p.floatCoordinates[5]);
+  }
   out.xy2Mode[2] = mode;
   out.xy2Mode[3] = static_cast<int32_t>(p.gradientDirection);
   if (p.type == GpuPrimitiveType::GradientRect) {
@@ -67,10 +74,10 @@ PrimitivePush makePrimitivePush(const GpuPrimitive& p, uint32_t rasterWidth,
     out.uv2Extra[2] = p.width ? 1.0f / static_cast<float>(p.width) : 0.0f;
     out.uv2Extra[3] = p.height ? 1.0f / static_cast<float>(p.height) : 0.0f;
   }
-  out.texInfo[0] = linear ? 1 : 0;
+  out.texInfo[0] = (linear || p.linearCoverage) ? 1 : 0;
   out.texInfo[1] = static_cast<int32_t>(p.roundedClipOffset);
   out.texInfo[2] = static_cast<int32_t>(p.roundedClipCount);
-  out.texInfo[3] = 0;
+  out.texInfo[3] = p.linearCoverage ? 1 : 0;
   out.screen[0] = static_cast<float>(rasterWidth);
   out.screen[1] = static_cast<float>(rasterHeight);
   return out;

@@ -23,3 +23,12 @@ describe("PodJS target profiles", () => {
     expect(POD_TARGETS["watchos-watch"].capabilities).not.toContain("input.back");
   });
 });
+
+test("Android package capability order matches the JNI boot contract",async()=>{
+  const source=await Bun.file(new URL("../platforms/android/runtime/src/main/cpp/jni_bridge.cpp",import.meta.url)).text();
+  const literal=source.match(/const char\* capabilities = ("[^\n]+");/);
+  expect(literal).not.toBeNull();
+  const capabilities=JSON.parse(JSON.parse(literal![1]));
+  expect(capabilities).toEqual(POD_TARGETS["android-watch"].capabilities);
+  expect(capabilities).toEqual(POD_TARGETS["wearos-watch"].capabilities);
+});

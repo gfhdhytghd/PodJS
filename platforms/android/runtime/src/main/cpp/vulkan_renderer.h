@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "gpu_draw_list.h"
+#include "renderer_diagnostics.h"
 
 class VulkanRenderer {
  public:
@@ -34,6 +35,21 @@ class VulkanRenderer {
 
   // Canonical path: decode and rasterize the DrawList directly on the GPU.
   bool submitDrawList(PodRuntime* runtime, const PodDrawList& list);
+
+  // Private host diagnostics; disabled by default and never exposed to guests.
+  using DiagnosticsScope = podjs_gpu::RendererTimingRecorder::Scope;
+  bool beginRendererTiming(uint32_t capacity) { return diagnostics_.begin(capacity); }
+  std::unique_ptr<podjs_gpu::RendererTimingTrace> endRendererTiming() {
+    return diagnostics_.end();
+  }
+  DiagnosticsScope beginHostFrame(uint64_t hostFrameSequence) {
+    return diagnostics_.beginHostFrame(hostFrameSequence, frameSerial_);
+  }
+  DiagnosticsScope diagnosticScope(podjs_gpu::RendererTimingStage stage,
+                                   podjs_gpu::RendererTimingFields fields = {}) {
+    diagnostics_.setRendererFrameSerial(frameSerial_);
+    return diagnostics_.scope(stage, fields);
+  }
 
  private:
   struct TextureResource {
@@ -131,4 +147,5 @@ class VulkanRenderer {
   GpuDecodeCache decodeCache_;
   std::unordered_map<uint64_t, TextureResource> textureCache_;
   std::unordered_set<std::string> loggedGpuFailures_;
+  podjs_gpu::RendererTimingRecorder diagnostics_;
 };

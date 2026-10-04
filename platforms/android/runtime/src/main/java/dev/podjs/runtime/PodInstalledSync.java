@@ -24,6 +24,20 @@ final class PodInstalledSync implements AutoCloseable {
         android.os.Handler main=new android.os.Handler(android.os.Looper.getMainLooper());
         connection=new PodSyncHostConnection(client,services,main::post);
     }
+    /** Wait only for the previous in-process owner during Activity replacement. */
+    static <T> T afterOwnerRelease(java.util.concurrent.Callable<T> open,java.util.function.BooleanSupplier cancelled) throws Exception {
+        long deadline=android.os.SystemClock.elapsedRealtime()+2000;
+        while(true) {
+            if(cancelled.getAsBoolean())throw new java.io.IOException("Sync owner initialization cancelled");
+            try { return open.call(); }
+            catch(java.io.IOException error) {
+                Throwable cause=error;boolean overlapping=false;
+                while(cause!=null){if(cause instanceof java.nio.channels.OverlappingFileLockException){overlapping=true;break;}cause=cause.getCause();}
+                if(!overlapping || android.os.SystemClock.elapsedRealtime()>=deadline)throw error;
+                Thread.sleep(25);
+            }
+        }
+    }
     static PodInstalledSync open(Context context,String target) throws Exception {
         ByteArrayOutputStream bytes=new ByteArrayOutputStream();
         try(InputStream input=context.getAssets().open("pod.manifest.json")) {

@@ -31,6 +31,7 @@ public final class PodHttpServices implements AutoCloseable {
     private final Map<Integer, AtomicBoolean> cancellations = new ConcurrentHashMap<>();
     private final Map<Integer, HttpURLConnection> connections = new ConcurrentHashMap<>();
     private final Object cancellationLock = new Object();
+    private final java.util.Set<File> temporaryFiles = new java.util.HashSet<>();
     private volatile boolean closed;
 
     public PodHttpServices(Context context) {
@@ -63,7 +64,14 @@ public final class PodHttpServices implements AutoCloseable {
         return changed;
     }
 
-    @Override public void close() { synchronized (cancellationLock) { closed = true; for (Map.Entry<Integer, AtomicBoolean> entry : cancellations.entrySet()) { entry.getValue().set(true); HttpURLConnection connection = connections.get(entry.getKey()); if (connection != null) connection.disconnect(); } } }
+    @Override public void close() { synchronized (cancellationLock) { closed = true; for (File file : temporaryFiles) file.delete(); temporaryFiles.clear(); for (Map.Entry<Integer, AtomicBoolean> entry : cancellations.entrySet()) { entry.getValue().set(true); HttpURLConnection connection = connections.get(entry.getKey()); if (connection != null) connection.disconnect(); } } }
+
+    void discard(JSONObject result) {
+        synchronized (cancellationLock) {
+            try { File file=safeFile(result.getString("path")); if(temporaryFiles.remove(file))file.delete(); }
+            catch(Exception ignored) { }
+        }
+    }
 
     private JSONObject download(JSONObject args, AtomicBoolean cancelled) throws Exception {
         String method = args.optString("method", "GET").toUpperCase(Locale.US);
@@ -78,6 +86,8 @@ public final class PodHttpServices implements AutoCloseable {
         if (maxBytes < 1 || maxBytes > MAX_BYTES) throw new IllegalArgumentException("invalid_max_bytes");
         int timeout = args.optInt("timeoutMs", DEFAULT_TIMEOUT_MS);
         if (timeout < 1 || timeout > 120_000) throw new IllegalArgumentException("invalid_timeout_ms");
+        int readTimeout = args.optInt("readTimeoutMs", timeout);
+        if (readTimeout < 1 || readTimeout > 600_000) throw new IllegalArgumentException("invalid_read_timeout_ms");
         Map<String, String> headers = requestHeaders(args.optJSONObject("headers"));
         File parent = target.getParentFile();
         if (!parent.exists() && !parent.mkdirs()) throw new IOException("parent_unavailable");
@@ -87,33 +97,42 @@ public final class PodHttpServices implements AutoCloseable {
             URL current = checkedUrl(rawUrl);
             int redirects = 0;
             while (true) {
-                if (cancelled.get()) throw new IOException("download_cancelled");
+                if (closed || cancelled.get()) throw new IOException("download_cancelled");
                 connection = (HttpURLConnection) current.openConnection();
                 int requestId = args.optInt("requestId", 0);
                 if (requestId != 0) connections.put(requestId, connection);
                 connection.setInstanceFollowRedirects(false);
-                connection.setConnectTimeout(timeout); connection.setReadTimeout(timeout);
+                connection.setConnectTimeout(timeout); connection.setReadTimeout(readTimeout);
                 connection.setRequestMethod(method);
                 for (Map.Entry<String, String> header : headers.entrySet()) connection.setRequestProperty(header.getKey(), header.getValue());
                 if("POST".equals(method)){connection.setDoOutput(true);connection.setFixedLengthStreamingMode(requestBody.length);try(java.io.OutputStream request=connection.getOutputStream()){request.write(requestBody);}}
                 int status = connection.getResponseCode();
                 if (status < 300 || status > 399) {
-                    if (status < 200 || status >= 300) throw new IOException("http_status:" + status);
+                    boolean success = status >= 200 && status < 300;
+                    if (!success && !args.optBoolean("acceptHttpErrors", false)) throw new IOException("http_status:" + status);
                     long length = 0;
                     if (!"HEAD".equals(method)) {
-                        try (java.io.InputStream in = connection.getInputStream()) {
+                        java.io.InputStream responseStream = success ? connection.getInputStream() : connection.getErrorStream();
+                        try (java.io.InputStream in = responseStream == null ? new java.io.ByteArrayInputStream(new byte[0]) : responseStream) {
+                            if(args.optBoolean("text",false)) length=copyText(in,out,connection.getContentType(),maxBytes,cancelled);
+                            else {
                             byte[] buffer = new byte[BUFFER_SIZE]; int n;
                             while ((n = in.read(buffer)) != -1) {
-                                if (cancelled.get()) throw new IOException("download_cancelled");
+                                if (closed || cancelled.get()) throw new IOException("download_cancelled");
                                 length += n; if (length > maxBytes) throw new IOException("download_too_large");
                                 out.write(buffer, 0, n);
+                            }
                             }
                         }
                     }
                     synchronized (cancellationLock) {
-                        if (cancelled.get()) throw new IOException("download_cancelled");
+                        if (closed || cancelled.get()) throw new IOException("download_cancelled");
+                        boolean temporary=args.optBoolean("temporary",false);
+                        if(temporary && target.exists())throw new IOException("temporary_target_exists");
                         out.getFD().sync();
                         Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                        temporaryFiles.removeIf(file -> !file.exists());
+                        if(temporary)temporaryFiles.add(target);else temporaryFiles.remove(target);
                     }
                     return result(status, connection, current, target, length);
                 }
@@ -129,6 +148,35 @@ public final class PodHttpServices implements AutoCloseable {
                 connection.disconnect(); connection = null;
             }
         } finally { if (connection != null) connection.disconnect(); if (tmp.exists()) tmp.delete(); }
+    }
+
+    /** Decode response text using its BOM/declared charset and store bounded UTF-8 bytes. */
+    private long copyText(java.io.InputStream input,FileOutputStream output,String contentType,long maximum,AtomicBoolean cancelled) throws Exception {
+        java.io.PushbackInputStream stream=new java.io.PushbackInputStream(new java.io.FilterInputStream(input){
+            long read=0;
+            private void check(int n)throws IOException{if(closed||cancelled.get())throw new IOException("download_cancelled");if(n>0&&(read+=n)>maximum)throw new IOException("download_too_large");}
+            @Override public int read()throws IOException{int b=super.read();check(b<0?0:1);return b;}
+            @Override public int read(byte[] b,int off,int len)throws IOException{int n=in.read(b,off,len);check(n);return n;}
+        },4);
+        java.nio.charset.Charset charset=java.nio.charset.StandardCharsets.UTF_8;
+        if(contentType!=null){java.util.regex.Matcher match=java.util.regex.Pattern.compile("(?i)charset\\s*=\\s*[\"']?([^;\\s\"']+)").matcher(contentType);if(match.find())try{charset=java.nio.charset.Charset.forName(match.group(1));}catch(IllegalArgumentException ignored){}}
+        byte[] prefix=new byte[4];int count=0;while(count<4){int n=stream.read(prefix,count,4-count);if(n<0)break;count+=n;}
+        int skip=0;
+        if(count>=4&&prefix[0]==0&&prefix[1]==0&&(prefix[2]&255)==254&&(prefix[3]&255)==255){charset=java.nio.charset.Charset.forName("UTF-32BE");skip=4;}
+        else if(count>=4&&(prefix[0]&255)==255&&(prefix[1]&255)==254&&prefix[2]==0&&prefix[3]==0){charset=java.nio.charset.Charset.forName("UTF-32LE");skip=4;}
+        else if(count>=3&&(prefix[0]&255)==239&&(prefix[1]&255)==187&&(prefix[2]&255)==191){charset=java.nio.charset.StandardCharsets.UTF_8;skip=3;}
+        else if(count>=2&&(prefix[0]&255)==254&&(prefix[1]&255)==255){charset=java.nio.charset.StandardCharsets.UTF_16BE;skip=2;}
+        else if(count>=2&&(prefix[0]&255)==255&&(prefix[1]&255)==254){charset=java.nio.charset.StandardCharsets.UTF_16LE;skip=2;}
+        if(count>skip)stream.unread(prefix,skip,count-skip);
+        final long[] written={0};
+        java.io.OutputStream bounded=new java.io.OutputStream(){
+            @Override public void write(int b)throws IOException{write(new byte[]{(byte)b},0,1);}
+            @Override public void write(byte[] b,int off,int len)throws IOException{if(closed||cancelled.get())throw new IOException("download_cancelled");if((written[0]+=len)>maximum)throw new IOException("download_too_large");output.write(b,off,len);}
+        };
+        try(java.io.Reader reader=new java.io.InputStreamReader(stream,charset);java.io.Writer writer=new java.io.OutputStreamWriter(bounded,java.nio.charset.StandardCharsets.UTF_8)){
+            char[] chars=new char[8192];int n;while((n=reader.read(chars))!=-1)writer.write(chars,0,n);
+        }
+        return written[0];
     }
 
     private JSONObject result(int status, HttpURLConnection c, URL url, File target, long size) throws Exception {

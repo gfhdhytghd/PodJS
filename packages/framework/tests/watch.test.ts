@@ -25,6 +25,20 @@ const services = await import("@pocketjs/framework/services");
 afterEach(() => { events.length = 0; effects.length = 0; values.clear(); });
 
 describe("watch API", () => {
+  test("raw Android scroll retains source and physical delta independently of normalized axis", () => {
+    const host=(globalThis as any).pod,prior=host.capabilities;
+    const seen:unknown[]=[];const remove=api.onRawScrollInput(event=>seen.push(event));
+    try {
+      events.push({t:"input.scroll",vertical:-400,uptimeMs:100,source:8194});api.__pumpPodEvents();expect(seen).toEqual([]);
+      host.capabilities=()=>JSON.stringify(["input.rotary"]);
+      events.push({t:"input.scroll",vertical:-400,uptimeMs:100,source:8194},{t:"axis",axis:0,delta:125000},
+        {t:"input.scroll",vertical:0,uptimeMs:100,source:8194},{t:"input.scroll",vertical:null,uptimeMs:100,source:8194},
+        {t:"input.scroll",vertical:1,uptimeMs:-1,source:8194},{t:"input.scroll",vertical:1,uptimeMs:100,source:1.5});
+      api.__pumpPodEvents();expect(seen).toEqual([{vertical:-400,uptimeMs:100,source:8194}]);
+      remove();events.push({t:"input.scroll",vertical:1,uptimeMs:200,source:4194304});api.__pumpPodEvents();expect(seen).toHaveLength(1);
+    } finally {remove();host.capabilities=prior;}
+  });
+
   test("normalizes display metrics", () => {
     expect(api.getDisplayMetrics()).toMatchObject({ physicalWidth: 466, shape: "round" });
   });
@@ -71,6 +85,18 @@ describe("watch API", () => {
     expect(seen).toEqual([12_000]);
   });
 
+  test("host service-only entry delivers lifecycle without calling a UI frame", () => {
+    const seen: string[] = [];
+    const stop = api.onLifecycleChange(state => seen.push(state));
+    events.push({ t: "lifecycle", state: "background" });
+    (globalThis as unknown as { __pocketPumpServices: () => void }).__pocketPumpServices();
+    stop();
+    expect(seen).toEqual(["background"]);
+    expect(api.lifecycle()).toBe("background");
+    events.push({ t: "lifecycle", state: "active" });
+    services.runServicePumps();
+  });
+
   test("emits typed haptics and persists JSON KV values", () => {
     api.haptics.perform("success");
     api.kv.set("counter", { n: 3 });
@@ -88,6 +114,23 @@ describe("watch API", () => {
     expect(JSON.parse(effects.pop()!)).toEqual({ t: "navigation", canGoBack: false });
   });
 
+  test("swipe dismissal policy is independent of back callbacks and resets when omitted", () => {
+    let backCalls = 0;
+    const stop = api.onSystemBack(() => { backCalls++; return true; });
+    try {
+      api.setNavigationState({ canGoBack: false, rootSwipeEnabled: false });
+      expect(JSON.parse(effects.pop()!)).toEqual({ t: "navigation", canGoBack: false, rootSwipeEnabled: false });
+      events.push({ t: "back" }); api.__pumpPodEvents();
+      expect(backCalls).toBe(1);
+      expect(() => api.setNavigationState({ canGoBack: false, rootSwipeEnabled: "false" as any })).toThrow("must be boolean");
+      expect(api.navigationStateSnapshot()).toEqual({ canGoBack: false, rootSwipeEnabled: false });
+      expect(effects).toHaveLength(0);
+      api.setNavigationState({ canGoBack: false });
+      expect(JSON.parse(effects.pop()!)).toEqual({ t: "navigation", canGoBack: false });
+      expect(api.navigationStateSnapshot()).toEqual({ canGoBack: false });
+    } finally { stop(); }
+  });
+
   test("validates UTF-8 KV key length without browser encoding globals", () => {
     const encoder = globalThis.TextEncoder;
     try {
@@ -98,4 +141,15 @@ describe("watch API", () => {
       Object.defineProperty(globalThis, "TextEncoder", { value: encoder, configurable: true });
     }
   });
+});
+
+test("font metrics preserve atlas units and tolerate older hosts",()=>{
+  const host=(globalThis as unknown as {pod:unknown}).pod as {fontMetrics?:(slot:number)=>string|undefined};
+  expect(api.getFontMetrics(0)).toBeUndefined();
+  try {
+    host.fontMetrics=slot=>slot===1?JSON.stringify({cellWidth:18,cellHeight:20,baseline:15,lineHeight:21,rasterDensity:2}):undefined;
+    expect(api.getFontMetrics(1)).toEqual({cellWidth:18,cellHeight:20,baseline:15,lineHeight:21,rasterDensity:2});
+    expect(api.getFontMetrics(.5)).toBeUndefined();expect(api.getFontMetrics(2)).toBeUndefined();
+    host.fontMetrics=()=>"{}";expect(api.getFontMetrics(1)).toBeUndefined();
+  }finally{delete host.fontMetrics;}
 });

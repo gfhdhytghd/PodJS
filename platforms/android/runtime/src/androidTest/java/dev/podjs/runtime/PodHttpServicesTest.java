@@ -28,6 +28,28 @@ public class PodHttpServicesTest {
     private String url(ServerSocket socket) { return "http://127.0.0.1:" + socket.getLocalPort(); }
     private File file(String name) { File root = new File(context.getFilesDir(), "podjs/files"); assertTrue(root.exists() || root.mkdirs()); return new File(root, name); }
 
+    @Test public void errorResponsesAreOptInAndRetainStatusAndBody() throws Exception {
+        for(boolean accept:new boolean[]{false,true})try(ServerSocket socket=new ServerSocket(0);PodHttpServices services=new PodHttpServices(context)){
+            String body="{\"detail\":\"refresh required\"}";
+            Thread worker=server(socket,"HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: "+body.length()+"\r\n\r\n"+body,new CountDownLatch(1),null);
+            File output=file("http-error-response.json");output.delete();
+            try{
+                JSONObject args=new JSONObject().put("url",url(socket)).put("path",output.getName()).put("acceptHttpErrors",accept).put("readTimeoutMs",600000).put("timeoutMs",15000);
+                if(accept){JSONObject result=services.execute("http.download",args);assertEquals(401,result.getInt("status"));assertEquals(body,new String(Files.readAllBytes(output.toPath()),StandardCharsets.UTF_8));}
+                else{try{services.execute("http.download",args);fail("default download accepted HTTP error");}catch(java.io.IOException expected){assertTrue(expected.getMessage().contains("http_status:401"));}assertFalse(output.exists());}
+            }finally{output.delete();worker.join(1000);}
+        }
+    }
+
+    @Test public void errorDownloadsRemainBoundedAndReadTimeoutIsValidated() throws Exception {
+        try(ServerSocket socket=new ServerSocket(0);PodHttpServices services=new PodHttpServices(context)){
+            Thread worker=server(socket,"HTTP/1.1 402 Payment Required\r\nContent-Length: 8\r\n\r\n12345678",new CountDownLatch(1),null);
+            File output=file("http-error-bound.json");output.delete();
+            try{services.execute("http.download",new JSONObject().put("url",url(socket)).put("path",output.getName()).put("acceptHttpErrors",true).put("maxBytes",4));fail("unbounded error response");}catch(java.io.IOException expected){assertTrue(expected.getMessage().contains("download_too_large"));}finally{worker.join(1000);assertFalse(output.exists());}
+            for(int timeout:new int[]{0,600001})try{services.execute("http.download",new JSONObject().put("url",url(socket)).put("path",output.getName()).put("readTimeoutMs",timeout));fail("invalid read timeout accepted");}catch(IllegalArgumentException expected){assertTrue(expected.getMessage().contains("invalid_read_timeout_ms"));}
+        }
+    }
+
     @Test public void streamsPayloadLargerThanLegacyChunkLimit() throws Exception {
         byte[] payload = new byte[320 * 1024]; for (int i = 0; i < payload.length; i++) payload[i] = (byte) i;
         final ServerSocket socket = new ServerSocket(0); final CountDownLatch accepted = new CountDownLatch(1);
@@ -35,6 +57,41 @@ public class PodHttpServicesTest {
         PodHttpServices services = new PodHttpServices(context); File target = file("http-large.bin");
         services.execute("http.download", new JSONObject().put("url", url(socket)).put("path", "http-large.bin"));
         assertArrayEquals(payload, Files.readAllBytes(target.toPath())); services.close(); socket.close();
+    }
+
+    @Test public void temporaryDownloadsAreDiscardedOrReleasedOnClose() throws Exception {
+        PodHttpServices services=new PodHttpServices(context);
+        File[] files={file("http-temporary-a.bin"),file("http-temporary-b.bin"),file("http-persistent.bin")};
+        for(File file:files)file.delete();
+        try {
+            for(int i=0;i<files.length;i++)try(ServerSocket socket=new ServerSocket(0)){
+                Thread worker=server(socket,"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",new CountDownLatch(1),null);
+                JSONObject result=services.execute("http.download",new JSONObject().put("url",url(socket)).put("path",files[i].getName()).put("temporary",i<2));
+                assertTrue(files[i].exists());if(i==0){services.discard(result);assertFalse(files[i].exists());}if(i==2){services.discard(result);assertTrue(files[i].exists());}worker.join(1000);
+            }
+            services.close();assertFalse(files[1].exists());assertTrue(files[2].exists());
+        }finally{services.close();for(File file:files)file.delete();}
+    }
+
+    @Test public void textDownloadsHonorCharsetBomAndUtf8OutputLimit() throws Exception {
+        String html="<article>中文原文 😀</article>";
+        for(String encoding:new String[]{"GB18030","UTF-16","UTF-8"}){
+            byte[] payload=html.getBytes(java.nio.charset.Charset.forName(encoding));
+            try(ServerSocket socket=new ServerSocket(0);PodHttpServices services=new PodHttpServices(context)){
+                String declared=encoding.equals("UTF-16")?"ISO-8859-1":encoding;
+                Thread worker=server(socket,"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=\""+declared+"\"\r\nContent-Length: "+payload.length+"\r\n\r\n"+new String(payload,StandardCharsets.ISO_8859_1),new CountDownLatch(1),null);
+                File target=file("http-charset-"+encoding+".html");target.delete();
+                JSONObject result=services.execute("http.download",new JSONObject().put("url",url(socket)).put("path",target.getName()).put("text",true).put("temporary",true));
+                assertEquals(html,new String(Files.readAllBytes(target.toPath()),StandardCharsets.UTF_8));assertEquals(html.getBytes(StandardCharsets.UTF_8).length,result.getLong("size"));worker.join(1000);
+            }
+        }
+        try(ServerSocket socket=new ServerSocket(0);PodHttpServices services=new PodHttpServices(context)){
+            byte[] body="汉汉汉汉".getBytes(java.nio.charset.Charset.forName("GBK"));
+            Thread worker=server(socket,"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=GBK\r\nContent-Length: "+body.length+"\r\n\r\n"+new String(body,StandardCharsets.ISO_8859_1),new CountDownLatch(1),null);
+            File target=file("http-text-limit.html");Files.write(target.toPath(),new byte[]{42});
+            try{services.execute("http.download",new JSONObject().put("url",url(socket)).put("path",target.getName()).put("text",true).put("maxBytes",8));fail("expanded UTF-8 exceeded limit");}catch(java.io.IOException expected){assertTrue(expected.getMessage().contains("download_too_large"));}
+            assertArrayEquals(new byte[]{42},Files.readAllBytes(target.toPath()));target.delete();worker.join(1000);
+        }
     }
 
     @Test public void failedResponseLeavesExistingFile() throws Exception {

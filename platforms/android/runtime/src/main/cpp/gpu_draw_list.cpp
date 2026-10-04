@@ -1,5 +1,6 @@
 #include "gpu_draw_list.h"
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstring>
 extern "C" int32_t pod_runtime_texture_for_handle(PodRuntime *, int32_t,
@@ -8,7 +9,7 @@ extern "C" int32_t pod_runtime_texture_for_handle(PodRuntime *, int32_t,
 namespace {
 constexpr uint32_t RECT = 1, GRAD_RECT = 2, GLYPH_RUN = 3, TEX_QUAD = 4,
                    SCISSOR = 5, SCISSOR_POP = 6, TRI = 7, TEX_TRI = 8,
-                   ROUNDED_CLIP = 11, GLYPH_RUN_XFORM = 12;
+                   ROUNDED_CLIP = 11, GLYPH_RUN_XFORM = 12, GLYPH_RUN_F32 = 13, TEX_QUAD_F32 = 14;
 constexpr size_t kMaxFlattenedRoundedClips = 65536;
 GpuClip intersect(GpuClip a, GpuClip b) {
   return {std::max(a.x0, b.x0), std::max(a.y0, b.y0), std::min(a.x1, b.x1),
@@ -109,6 +110,17 @@ bool gpuRoundedClipContainsPixel(const GpuRoundedClip &c, float x, float y) {
   return dx * dx + dy * dy <= 1.0f;
 }
 
+void GpuDecodeCache::pruneStale(PodRuntime *runtime) {
+  entries_.erase(std::remove_if(entries_.begin(), entries_.end(),
+                                [runtime](const GpuImage &entry) {
+    if ((entry.stableKey & (1ull << 63)) == 0) return false;
+    PodTextureView current{};
+    const auto handle = static_cast<int32_t>(static_cast<uint32_t>(entry.stableKey));
+    return pod_runtime_texture_for_handle(runtime, handle, &current) != 0 ||
+           current.revision != entry.revision;
+  }), entries_.end());
+}
+
 bool GpuDecodeCache::get(PodRuntime *runtime, uint32_t slot, GpuImage *out,
                          std::string *error) {
   PodTextureView v{};
@@ -203,6 +215,7 @@ bool decodeGpuDrawList(PodRuntime *runtime, const PodDrawList &list,
   out->primitives.clear();
   out->images.clear();
   out->roundedClips.clear();
+  if (cache) cache->pruneStale(runtime);
   GpuClip screen{0, 0, 0x7fffffff, 0x7fffffff};
   struct ClipState {
     GpuClip screen;
@@ -266,6 +279,28 @@ bool decodeGpuDrawList(PodRuntime *runtime, const PodDrawList &list,
       i += 6;
       if (!appendPrimitive(std::move(p)))
         return bad(out, error, "rounded clip table capacity exceeded");
+    } else if (op == TEX_QUAD_F32) {
+      if (i + 10 > list.word_count) return bad(out, error, "truncated TEX_QUAD_F32");
+      p.textureSlot = w[i];
+      float x0=std::bit_cast<float>(w[i+1])*scale, y0=std::bit_cast<float>(w[i+2])*scale;
+      float x1=std::bit_cast<float>(w[i+3])*scale, y1=std::bit_cast<float>(w[i+4])*scale;
+      float u0=std::bit_cast<float>(w[i+5]), v0=std::bit_cast<float>(w[i+6]);
+      float u1=std::bit_cast<float>(w[i+7]), v1=std::bit_cast<float>(w[i+8]);
+      for(float value:{x0,y0,x1,y1,u0,v0,u1,v1})
+        if(!std::isfinite(value)||std::abs(value)>16777216.0f) return bad(out,error,"invalid TEX_QUAD_F32 coordinate");
+      if(x1<=x0||y1<=y0) return bad(out,error,"empty TEX_QUAD_F32");
+      const uint32_t color=w[i+9];i+=10;
+      // Shader mode 6 evaluates a fractional parallelogram, with ordinary RGBA
+      // sampling here (glyphs opt separately into monochrome coverage filtering).
+      p.type=GpuPrimitiveType::TexTri;p.subpixelCoverage=true;
+      p.vertex[0]={int32_t(x0),int32_t(y0),color,u0,v0};
+      p.vertex[1]={int32_t(x1),int32_t(y0),color,u1,v0};
+      p.vertex[2]={int32_t(x0),int32_t(y1),color,u0,v1};
+      const float points[]={x0,y0,x1,y0,x0,y1};std::copy(points,points+6,p.floatCoordinates);
+      p.clip=intersect(screen,{int32_t(std::floor(x0)),int32_t(std::floor(y0)),int32_t(std::ceil(x1)),int32_t(std::ceil(y1))});
+      GpuImage image{};if(!cache->get(runtime,p.textureSlot,&image,error))return false;
+      p.textureKey=image.stableKey;out->images.push_back(std::move(image));
+      if(!appendPrimitive(std::move(p)))return bad(out,error,"rounded clip table capacity exceeded");
     } else if (op == TEX_QUAD) {
       if (i + 8 > list.word_count)
         return bad(out, error, "truncated TEX_QUAD");
@@ -311,22 +346,36 @@ bool decodeGpuDrawList(PodRuntime *runtime, const PodDrawList &list,
       i += 11;
       if (!appendPrimitive(std::move(p)))
         return bad(out, error, "rounded clip table capacity exceeded");
-    } else if (op == GLYPH_RUN_XFORM) {
-      if (i + 4 > list.word_count)
+    } else if (op == GLYPH_RUN_XFORM || op == GLYPH_RUN_F32) {
+      const bool precise = op == GLYPH_RUN_F32;
+      if (i + (precise ? 6 : 4) > list.word_count)
         return bad(out, error, "truncated GLYPH_RUN_XFORM");
       uint32_t packed = w[i++], n = packed >> 16;
       uint32_t slot = packed & 255, color = w[i++];
-      const GpuVertex axisX = vertex(w[i++], scale);
-      const GpuVertex axisY = vertex(w[i++], scale);
-      if (i + 2 * n > list.word_count)
+      struct FloatVertex { float x, y; uint32_t color; float u, v; };
+      auto readVertex = [&](size_t offset, uint32_t tint = 0) {
+        if (!precise) { auto v = vertex(w[offset], scale, tint);
+          return FloatVertex{float(v.x), float(v.y), tint, 0, 0}; }
+        return FloatVertex{std::bit_cast<float>(w[offset]) * scale,
+                         std::bit_cast<float>(w[offset+1]) * scale, tint, 0, 0};
+      };
+      const FloatVertex axisX = readVertex(i); i += precise ? 2 : 1;
+      const FloatVertex axisY = readVertex(i); i += precise ? 2 : 1;
+      const size_t stride = precise ? 3 : 2;
+      if (!std::isfinite(axisX.x) || !std::isfinite(axisX.y) ||
+          !std::isfinite(axisY.x) || !std::isfinite(axisY.y))
+        return bad(out, error, "nonfinite glyph axes");
+      if (i + stride * n > list.word_count)
         return bad(out, error, "truncated GLYPH_RUN_XFORM glyphs");
       for (uint32_t g = 0; g < n; g++) {
-        const uint32_t gid = w[i + g * 2 + 1] & 65535;
+        const uint32_t gid = w[i + g * stride + stride - 1] & 65535;
         GpuImage image{};
         if (!cache->getGlyph(runtime, slot, gid, &image, error))
           return false;
-        const GpuVertex anchor = vertex(w[i + g * 2], scale, color);
-        GpuVertex corner[4] = {
+        const FloatVertex anchor = readVertex(i + g * stride, color);
+        if (!std::isfinite(anchor.x) || !std::isfinite(anchor.y))
+          return bad(out, error, "nonfinite glyph anchor");
+        FloatVertex corner[4] = {
             anchor,
             {anchor.x + axisX.x, anchor.y + axisX.y, color, 1.0f, 0.0f},
             {anchor.x + axisX.x + axisY.x, anchor.y + axisX.y + axisY.y, color,
@@ -340,23 +389,39 @@ bool decodeGpuDrawList(PodRuntime *runtime, const PodDrawList &list,
           tri.type = GpuPrimitiveType::TexTri;
           tri.textureSlot = slot;
           tri.glyphSlot = slot;
+          tri.linearCoverage = true;
           tri.textureKey = image.stableKey;
-          tri.vertex[0] = corner[a];
-          tri.vertex[1] = corner[b];
-          tri.vertex[2] = corner[c];
+          const FloatVertex chosen[3] = {corner[a], corner[b], corner[c]};
+          tri.subpixelCoverage = precise;
+          for (int j = 0; j < 3; ++j) {
+            if (!std::isfinite(chosen[j].x) || !std::isfinite(chosen[j].y) ||
+                std::abs(chosen[j].x) > 16777216 || std::abs(chosen[j].y) > 16777216) return false;
+            tri.vertex[j] = {int32_t(chosen[j].x), int32_t(chosen[j].y),
+                             chosen[j].color, chosen[j].u, chosen[j].v};
+            tri.floatCoordinates[j*2] = chosen[j].x;
+            tri.floatCoordinates[j*2+1] = chosen[j].y;
+          }
           tri.clip = intersect(
               screen,
-              {std::min({tri.vertex[0].x, tri.vertex[1].x, tri.vertex[2].x}),
-               std::min({tri.vertex[0].y, tri.vertex[1].y, tri.vertex[2].y}),
-               std::max({tri.vertex[0].x, tri.vertex[1].x, tri.vertex[2].x}),
-               std::max({tri.vertex[0].y, tri.vertex[1].y, tri.vertex[2].y})});
+              {int32_t(std::floor(std::min({chosen[0].x, chosen[1].x, chosen[2].x}))),
+               int32_t(std::floor(std::min({chosen[0].y, chosen[1].y, chosen[2].y}))),
+               int32_t(std::ceil(std::max({chosen[0].x, chosen[1].x, chosen[2].x}))),
+               int32_t(std::ceil(std::max({chosen[0].y, chosen[1].y, chosen[2].y})))});
+          if (precise) {
+            tri.clip = intersect(screen, {
+              int32_t(std::floor(std::min({corner[0].x, corner[1].x, corner[2].x, corner[3].x}))),
+              int32_t(std::floor(std::min({corner[0].y, corner[1].y, corner[2].y, corner[3].y}))),
+              int32_t(std::ceil(std::max({corner[0].x, corner[1].x, corner[2].x, corner[3].x}))),
+              int32_t(std::ceil(std::max({corner[0].y, corner[1].y, corner[2].y, corner[3].y})))});
+          }
           return appendPrimitive(std::move(tri));
         };
         out->images.push_back(std::move(image));
-        if (!appendGlyphTriangle(0, 1, 2) || !appendGlyphTriangle(0, 2, 3))
+        if (precise ? !appendGlyphTriangle(0, 1, 3)
+                    : (!appendGlyphTriangle(0, 1, 2) || !appendGlyphTriangle(0, 2, 3)))
           return bad(out, error, "rounded clip table capacity exceeded");
       }
-      i += 2 * n;
+      i += stride * n;
     } else if (op == GLYPH_RUN) {
       if (i + 2 > list.word_count)
         return bad(out, error, "truncated GLYPH_RUN");

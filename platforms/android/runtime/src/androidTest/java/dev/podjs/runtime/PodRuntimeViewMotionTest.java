@@ -21,6 +21,21 @@ public final class PodRuntimeViewMotionTest {
         );
     }
 
+    @Test public void rawScrollPreservesUnscaledMouseAndRotaryValues() {
+        for (int source : new int[]{InputDevice.SOURCE_MOUSE,InputDevice.SOURCE_ROTARY_ENCODER}) {
+            MotionEvent event=scrollEvent(source,MotionEvent.AXIS_VSCROLL,-400f);
+            try {assertEquals(-400f,PodRuntimeView.rawScrollDelta(event),0f);} finally {event.recycle();}
+        }
+        MotionEvent fallback=scrollEvent(InputDevice.SOURCE_ROTARY_ENCODER,MotionEvent.AXIS_SCROLL,.125f);
+        try {assertEquals(.125f,PodRuntimeView.rawScrollDelta(fallback),0f);} finally {fallback.recycle();}
+    }
+    @Test public void rawScrollRejectsZeroAndNonfiniteValues() {
+        for(float value:new float[]{0f,Float.NaN,Float.POSITIVE_INFINITY,Float.NEGATIVE_INFINITY}) {
+            MotionEvent event=scrollEvent(InputDevice.SOURCE_MOUSE,MotionEvent.AXIS_VSCROLL,value);
+            try {assertTrue(Float.isNaN(PodRuntimeView.rawScrollDelta(event)));assertTrue(Float.isNaN(PodRuntimeView.scrollDegrees(event)));} finally {event.recycle();}
+        }
+    }
+
     @Test
     public void testMouseWheelUsesVerticalScrollAxis() {
         MotionEvent event = scrollEvent(InputDevice.SOURCE_MOUSE, MotionEvent.AXIS_VSCROLL, -1f);

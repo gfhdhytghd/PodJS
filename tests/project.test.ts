@@ -62,3 +62,28 @@ describe("external project config", () => {
     expect(() => resolvePodProject(missing, POD_TARGETS, defaults)).toThrow("extraCharsFile");
   });
 });
+
+
+test("application font resources retain relative config and resolve build paths", () => {
+  const font = {slot:33,px:14,path:"font.ttf",rasterAdvances:true};
+  const root = fixture({...base,resources:{fontSlots:[font]}});
+  const resolved = resolvePodProject(root,POD_TARGETS,defaults);
+  expect(resolved.config.resources?.fontSlots).toEqual([font]);
+  expect(resolved.fontSlots).toEqual([{...font,path:join(root,"font.ttf")}]);
+  for (const fontSlots of [[{...font,slot:1}],[font,font],[{...font,slot:64}],[{...font,px:0}],[{...font,bold:1}],[{...font,path:"missing.ttf"}]]) {
+    const bad = fixture({...base,resources:{fontSlots}});
+    expect(() => resolvePodProject(bad,POD_TARGETS,defaults)).toThrow("fontSlots");
+  }
+});
+
+test("packaged assets retain logical names and resolve source paths separately from font atlases", () => {
+  const root = fixture({...base,resources:{assets:{"fonts/body.ttf":"font.ttf","legal/notice.txt":"chars.txt"}}});
+  const resolved = resolvePodProject(root,POD_TARGETS,defaults);
+  expect(resolved.config.resources?.assets).toEqual({"fonts/body.ttf":"font.ttf","legal/notice.txt":"chars.txt"});
+  expect(resolved.assets).toEqual({"fonts/body.ttf":join(root,"font.ttf"),"legal/notice.txt":join(root,"chars.txt")});
+  expect(resolved.fontSlots).toEqual([]);
+  expect(resolvePodProject(fixture(base),POD_TARGETS,defaults).assets).toEqual({});
+  for (const assets of [{"../body.ttf":"font.ttf"},{"fonts/missing.ttf":"absent.ttf"},[],null]) {
+    expect(() => resolvePodProject(fixture({...base,resources:{assets}}),POD_TARGETS,defaults)).toThrow("assets");
+  }
+});

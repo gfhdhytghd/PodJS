@@ -5,6 +5,7 @@ import { cac } from "cac";
 import { POD_TARGETS, type PodTargetProfile } from "../../framework/src/targets.ts";
 import { resolvePodProject, type ResolvedPodProject } from "./project.ts";
 import { buildBackground } from "./background-build.ts";
+import { syncProjectAssets } from "./project-assets.ts";
 
 const ROOT = resolve(import.meta.dir, "../../..");
 type Target = PodTargetProfile["id"];
@@ -81,6 +82,7 @@ async function build(target: Target, project?: ResolvedPodProject): Promise<Reso
   run([
     "bun", "vendor/pocketjs/tools/build.ts", app,
     "--framework=solid", `--density=${density}`, "--hz=60",
+    ...(project?.fontSlots.length ? [`--font-slots-json=${JSON.stringify(project.fontSlots)}`] : []),
     ...(project?.extraChars ? [`--extra-chars=${project.extraChars}`] : []),
     `--font-regular=${project?.fontRegular ?? join(ROOT, "assets/fonts/NotoSansCJKSC-Regular-subset.ttf")}`,
     `--font-bold=${project?.fontBold ?? join(ROOT, "assets/fonts/NotoSansCJKSC-Bold-subset.ttf")}`,
@@ -94,6 +96,8 @@ async function build(target: Target, project?: ResolvedPodProject): Promise<Reso
     copyFileSync(js, join(out, "main.js"));
     copyFileSync(pak, join(out, "main.pak"));
   }
+  const background = await buildBackground(project?.background ?? {}, out);
+  const assets = syncProjectAssets(out, project?.assets ?? {});
   const manifest = {
     schema: 1,
     target: profile.id,
@@ -104,8 +108,9 @@ async function build(target: Target, project?: ResolvedPodProject): Promise<Reso
     pocketjsRevision: capture(["git", "-C", join(ROOT, "vendor/pocketjs"), "rev-parse", "HEAD"]) ?? fail("cannot resolve PocketJS revision"),
     bundleHash: fnv1a64(readFileSync(js)),
     pakHash: fnv1a64(readFileSync(pak)),
-    background: await buildBackground(project?.background ?? {}, out),
+    background,
     backgroundServices: project?.config.backgroundServices ?? [],
+    ...(Object.keys(assets).length ? { assets } : {}),
   };
   writeFileSync(join(out, "pod.manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   console.log(`pod: built ${profile.id} -> ${out}`);

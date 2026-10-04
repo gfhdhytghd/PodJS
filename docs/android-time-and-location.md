@@ -1,0 +1,10 @@
+# Android time input and foreground location
+
+The framework exposes two cancellable HostOperation services on Android and Android Watch. Applications must declare their capabilities. Other targets do not advertise them.
+
+- `timeInput.prompt(minutes)` requires `input.time`. The input is an integer 0–1439; confirmation resolves minutes after midnight, dismissal resolves null. Android uses the system 24-hour TimePickerDialog on an active Activity. Concurrent dialogs reject as busy. Cancelling the operation dismisses its dialog and suppresses late completion.
+- `location.current()` requires `device.location`. It resolves `{ latitude, longitude, timestamp }` or null. Timestamp is Unix milliseconds. The Android implementation requests coarse and fine permissions together, uses enabled GPS/network/passive providers in that order, prefers a last known fix younger than six hours, then requests the first enabled provider and falls back to a last known fix. Permission denial reports `permission_denied`; missing Activity reports `unavailable`; overlapping lookup or permission requests report `busy`.
+
+Location is an explicit foreground request. Cancelling suppresses callbacks and cancels an active provider request; an already presented Android permission prompt remains under Android control. Permission-result forwarding shares the existing host entry point with notification permission and routes by distinct request codes. Both location permissions are declared in the runtime manifest for supported SDK levels.
+
+Validation: framework service capability/cancel tests are part of 45 passing tests. Two PodTimeInputTest device tests cover midnight/end-of-day confirmation, dismissal, invalid inputs, concurrent request rejection and cancellation without an extra event. WatchRSS additionally tests time confirmation/cancel through its actual preset page. Actual location permission UI, fixes, provider fallback and physical solar switching are not device-accepted; no mock location or permission grant was used. App-level solar calculations separately match 348 native Kotlin reference cases.

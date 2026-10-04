@@ -19,6 +19,8 @@ uvec4 sampleImage(vec2 uv) {
     if(p.texInfo.x==0) return fetch(ivec2(uv*dim));
     // Match the software sampler's 8-bit fixed point bilinear interpolation.
     ivec2 fixedAt=ivec2(uv*dim*256.0)-128;
+    // Coverage resampling clamps the half-texel fringe before interpolation.
+    if(p.texInfo.w!=0) fixedAt=max(fixedAt,ivec2(0));
     ivec2 base=clamp(fixedAt>>8,ivec2(0),textureSize(image,0)-1); uvec2 frac=uvec2(fixedAt&255);
     uvec4 top=(fetch(base)*(256u-frac.x)+fetch(base+ivec2(1,0))*frac.x)>>8;
     uvec4 bot=(fetch(base+ivec2(0,1))*(256u-frac.x)+fetch(base+ivec2(1,1))*frac.x)>>8;
@@ -56,6 +58,17 @@ void main() {
             precise vec3 f=vec3(w)*p.uv2Extra.z;
             uv=p.uv01.xy*f.x+p.uv01.zw*f.y+p.uv2Extra.xy*f.z;
         }
+    } else if(mode==6) {
+        vec2 a=intBitsToFloat(p.xy01.xy), b=intBitsToFloat(p.xy01.zw);
+        vec2 d=intBitsToFloat(p.xy2Mode.xy), q=gl_FragCoord.xy;
+        vec2 ab=b-a, ad=d-a, aq=q-a;
+        float area=ab.x*ad.y-ab.y*ad.x;
+        if(area==0.0) discard;
+        float wb=(aq.x*ad.y-aq.y*ad.x)/area;
+        float wd=(ab.x*aq.y-ab.y*aq.x)/area;
+        float wa=1.0-wb-wd;
+        if(wb<0.0 || wb>=1.0 || wd<0.0 || wd>=1.0) discard;
+        uv=p.uv01.xy*wa+p.uv01.zw*wb+p.uv2Extra.xy*wd;
     } else if(mode==2) {
         bool horizontal=p.xy2Mode.w>=2;
         precise float f=horizontal ? (gl_FragCoord.x-float(p.xy01.x))*p.uv2Extra.z
@@ -70,7 +83,7 @@ void main() {
         uv=sampledUv;
     }
     if(mode==3) c.a=(c.a*sampleImage(uv).a+127u)/255u;
-    if(mode==4 || mode==5) c=(c*sampleImage(uv)+127u)/255u;
+    if(mode==4 || mode==5 || mode==6) c=(c*sampleImage(uv)+127u)/255u;
     if(c.a==0u) discard;
     outColor=vec4(c)/255.0;
 }

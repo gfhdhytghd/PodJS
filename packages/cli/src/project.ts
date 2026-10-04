@@ -1,9 +1,21 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import type { PodTargetProfile } from "../../framework/src/targets.ts";
+import { resolveProjectAssets } from "./project-assets.ts";
+
+export interface PodFontSlot {
+  slot: number;
+  px: number;
+  path: string;
+  bold?: boolean;
+  rasterAdvances?: boolean;
+}
 
 export interface PodProjectResources {
+  /** Logical packaged asset name to a source path, relative to the project. */
+  assets?: Record<string, string>;
   fontRegular?: string;
+  fontSlots?: PodFontSlot[];
   fontBold?: string;
   extraCharsFile?: string;
 }
@@ -27,9 +39,11 @@ export interface ResolvedPodProject {
   entry: string;
   output: string;
   fontRegular: string;
+  fontSlots: PodFontSlot[];
   fontBold: string;
   extraChars: string;
   background: Record<string, string>;
+  assets: Record<string, string>;
 }
 
 const APP_ID = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/;
@@ -69,12 +83,32 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
   const unknown = capabilities.filter(cap => !known.has(cap));
   if (unknown.length) invalid(`unknown capability(s): ${unknown.join(", ")}`);
   let resources: PodProjectResources | undefined;
+  let assets: Record<string, string> = Object.create(null);
   if (value.resources !== undefined) {
     if (!value.resources || typeof value.resources !== "object" || Array.isArray(value.resources)) invalid("resources must be an object");
     const r = value.resources as Record<string, unknown>;
     resources = {};
+    if (r.assets !== undefined) {
+      const resolvedAssets = resolveProjectAssets(r.assets, root);
+      resources.assets = resolvedAssets.config;
+      assets = resolvedAssets.resolved;
+    }
     if (r.fontRegular !== undefined) resources.fontRegular = stringField(r.fontRegular, "resources.fontRegular");
     if (r.fontBold !== undefined) resources.fontBold = stringField(r.fontBold, "resources.fontBold");
+    if (r.fontSlots !== undefined) {
+      if (!Array.isArray(r.fontSlots)) invalid("resources.fontSlots must be an array");
+      const used = new Set<number>();
+      resources.fontSlots = r.fontSlots.map((item: unknown) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) invalid("fontSlots entry must be an object");
+        const f = item as Record<string, unknown>;
+        if (!Number.isInteger(f.slot) || (f.slot as number) < 33 || (f.slot as number) > 63 || used.has(f.slot as number)) invalid("fontSlots require unique slots 33..63");
+        if (typeof f.px !== "number" || !Number.isFinite(f.px) || f.px < 1 || f.px > 128) invalid("fontSlots px must be in 1..128");
+        if ((f.bold !== undefined && typeof f.bold !== "boolean") || (f.rasterAdvances !== undefined && typeof f.rasterAdvances !== "boolean")) invalid("fontSlots bold/rasterAdvances must be booleans");
+        used.add(f.slot as number);
+        return {slot:f.slot as number, px:f.px, path:stringField(f.path, "fontSlots.path"),
+          ...(f.bold === undefined ? {} : {bold:f.bold as boolean}), ...(f.rasterAdvances === undefined ? {} : {rasterAdvances:f.rasterAdvances as boolean})};
+      });
+    }
     if (r.extraCharsFile !== undefined) resources.extraCharsFile = stringField(r.extraCharsFile, "resources.extraCharsFile");
   }
   const entry = resolve(root, entryValue);
@@ -97,10 +131,15 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
   const fontRegular = resolve(root, resources?.fontRegular ?? defaults.fontRegular);
   const fontBold = resolve(root, resources?.fontBold ?? defaults.fontBold);
   if (!existsSync(fontRegular) || !existsSync(fontBold)) invalid("configured font resource not found");
+  const fontSlots = (resources?.fontSlots ?? []).map(resource => {
+    const path = resolve(root, resource.path);
+    if (!existsSync(path) || !statSync(path).isFile()) invalid(`fontSlots file not found: ${path}`);
+    return {...resource, path};
+  });
   const extraChars = resources?.extraCharsFile === undefined ? "" : (() => {
     const path = resolve(root, resources.extraCharsFile!);
     if (!existsSync(path) || !statSync(path).isFile()) invalid(`extraCharsFile not found: ${path}`);
     try { return readFileSync(path, "utf8"); } catch { invalid(`cannot read extraCharsFile: ${path}`); }
   })();
-  return { config: { entry: entryValue, appId, versionName, versionCode: value.versionCode as number, name, capabilities, resources, background: backgroundConfig, backgroundServices }, root, configPath, entry, output: join(defaults.outputRoot, appId), fontRegular, fontBold, extraChars, background };
+  return { config: { entry: entryValue, appId, versionName, versionCode: value.versionCode as number, name, capabilities, resources, background: backgroundConfig, backgroundServices }, root, configPath, entry, output: join(defaults.outputRoot, appId), fontRegular, fontBold, fontSlots, extraChars, background, assets };
 }

@@ -9,6 +9,7 @@ android {
     namespace = "dev.podjs.androidwatch"; compileSdk = 36
     defaultConfig { applicationId = podAppId; minSdk = 30; targetSdk = 36; versionCode = podVersionCode; versionName = podVersionName; manifestPlaceholders["podAppName"] = podAppName; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     sourceSets["main"].assets.srcDir(podDistDir)
+    providers.gradleProperty("podTestAssetsDir").orNull?.let { sourceSets["androidTest"].assets.srcDir(it) }
     providers.gradleProperty("podTestSourceDir").orNull?.let { sourceSets["androidTest"].java.srcDir(it) }
 }
 dependencies {
