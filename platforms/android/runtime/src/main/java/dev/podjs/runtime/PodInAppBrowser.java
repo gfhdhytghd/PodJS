@@ -39,10 +39,14 @@ final class PodInAppBrowser extends Dialog implements Application.ActivityLifecy
     static final String OFFLINE = "未连接网络";
     static final class Options {
         final String url, scale, font;
-        final boolean dark;
+        final boolean dark, restoreActivity;
+        final JSONObject source;
         final int background, textZoom;
         Options(JSONObject args) {
-            keys(args, "url", "mode", "scaleMode", "theme");
+            keys(args, "url", "mode", "scaleMode", "theme", "restoreActivity");
+            if (args.has("restoreActivity") && !(args.opt("restoreActivity") instanceof Boolean)) throw new IllegalArgumentException("restoreActivity must be boolean");
+            restoreActivity = args.optBoolean("restoreActivity",false);
+            source = copy(args);
             if (!"inApp".equals(args.opt("mode"))) throw new IllegalArgumentException("mode must be inApp");
             url = resolveUrl(args.opt("url"));
             scale = string(args, "scaleMode", "standard");
@@ -107,6 +111,9 @@ final class PodInAppBrowser extends Dialog implements Application.ActivityLifecy
             throw new PodBrowserServices.BrowserFailure("webview_unavailable", UNAVAILABLE);
         }
     }
+    private static JSONObject copy(JSONObject value) {
+        try { return new JSONObject(value.toString()); } catch (Exception error) { throw new IllegalArgumentException("Invalid browser options"); }
+    }
     private final Activity owner;
     private final Options options;
     WebView web;
@@ -114,6 +121,13 @@ final class PodInAppBrowser extends Dialog implements Application.ActivityLifecy
     private ProgressRing ring;
     private ScaleControl toggle;
     private String scale;
+    private JSONObject restoration;
+    private boolean restoreScroll, canRestore = true;
+    private int restoreX, restoreY;
+    private float restoreZoom = 1f;
+    private long restoreDeadline;
+    private final Runnable restoreTimeout=this::applyRestoredScroll;
+    private final android.view.ViewTreeObserver.OnPreDrawListener restoreLayout=()->{applyRestoredScroll();return true;};
     private boolean registered, disposed;
     private ValueAnimator progressAnimator;
     private android.window.OnBackInvokedCallback backCallback;
@@ -124,12 +138,45 @@ final class PodInAppBrowser extends Dialog implements Application.ActivityLifecy
         setOwnerActivity(owner);
         setOnDismissListener(dialog -> dispose());
     }
+    void restore(JSONObject state) {
+        restoration = state;
+        scale = state.optString("scale",options.scale);
+        restoreX = state.optInt("x",0); restoreY = state.optInt("y",0);
+        restoreZoom = (float)state.optDouble("zoom",1);
+        restoreScroll = true;
+    }
+    @SuppressWarnings("deprecation")
+    String snapshot() {
+        if (!options.restoreActivity || disposed || web == null || !isShowing() || !canRestore) return null;
+        try {
+            String url = web.getUrl();
+            if (url == null) url = restoration==null?options.url:restoration.optString("url",options.url);
+            url = resolveUrl(url);
+            // Reload this URL as GET; never replay forms or serialize history/DOM.
+            JSONObject state = new JSONObject().put("v",1).put("options",options.source).put("url",url)
+                .put("scale",scale).put("x",restoreScroll?restoreX:Math.max(0,web.getScrollX())).put("y",restoreScroll?restoreY:Math.max(0,web.getScrollY()))
+                .put("zoom",restoreScroll?restoreZoom:Math.max(.01f,web.getScale()));
+            return PodModalState.encode(state);
+        } catch (Exception invalid) { return null; }
+    }
+    private void applyRestoredScroll() {
+        if (!restoreScroll || disposed || web == null) return;
+        if(restoration==null || !restoration.optString("url").equals(web.getUrl())){restoreScroll=false;return;}
+        if(restoreDeadline==0)return; // Wait until main document load completed.
+        int maxY=Math.max(0,Math.round(web.getContentHeight()*web.getScale())-web.getHeight());
+        if(restoreY>maxY && android.os.SystemClock.uptimeMillis()<restoreDeadline)return;
+        web.scrollTo(restoreX,restoreY); restoreScroll = false;
+    }
     void open() {
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         root = new FrameLayout(owner);
         root.setBackgroundColor(options.background);
         web = new WebView(owner);
         configure();
+        if (restoration != null) web.setInitialScale(Math.max(1,Math.round(restoreZoom * 100)));
+        web.addOnLayoutChangeListener((v,l,t,r,b,ol,ot,or,ob) -> applyRestoredScroll());
+        web.getViewTreeObserver().addOnPreDrawListener(restoreLayout);
+        web.setOnTouchListener((v,event) -> { if (event.getActionMasked() == android.view.MotionEvent.ACTION_DOWN) restoreScroll=false; return false; });
         root.addView(web, new FrameLayout.LayoutParams(1, 1, Gravity.CENTER));
         ring = new ProgressRing(owner);
         root.addView(ring, new FrameLayout.LayoutParams(-1, -1));
@@ -143,7 +190,7 @@ final class PodInAppBrowser extends Dialog implements Application.ActivityLifecy
         control.topMargin = verticalPadding();
         toolbar.addView(toggle, control);
         root.addView(toolbar, new FrameLayout.LayoutParams(-1, dp(48) + verticalPadding() * 2, Gravity.TOP));
-        toggle.setOnClickListener(v -> { scale = nextScale(scale); updateViewport(); });
+        toggle.setOnClickListener(v -> { restoreScroll=false; scale = nextScale(scale); updateViewport(); });
         root.addOnLayoutChangeListener((v,l,t,r,b,ol,ot,or,ob) -> { if (r-l != or-ol || b-t != ob-ot) updateViewport(); });
         setContentView(root);
         setCanceledOnTouchOutside(false);
@@ -156,7 +203,7 @@ final class PodInAppBrowser extends Dialog implements Application.ActivityLifecy
         }
         owner.getApplication().registerActivityLifecycleCallbacks(this); registered = true;
         updateViewport();
-        web.loadUrl(options.url);
+        web.loadUrl(restoration == null ? options.url : restoration.optString("url",options.url));
     }
     @SuppressWarnings("deprecation")
     private void configure() {
@@ -178,11 +225,12 @@ final class PodInAppBrowser extends Dialog implements Application.ActivityLifecy
                 String scheme = request.getUrl().getScheme();
                 boolean allowed = needsInternet(request.getUrl().toString()) || ("file".equalsIgnoreCase(Uri.parse(options.url).getScheme()) && "file".equalsIgnoreCase(scheme));
                 if (!allowed) return true;
+                if (request.isForMainFrame()) { canRestore = "GET".equalsIgnoreCase(request.getMethod()); restoreScroll=false; }
                 if (request.isForMainFrame() && needsInternet(request.getUrl().toString()) && !online(owner)) { Toast.makeText(owner, OFFLINE, Toast.LENGTH_LONG).show(); return true; }
                 return false;
             }
             @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) { setProgress(0, false); }
-            @Override public void onPageFinished(WebView view, String url) { setProgress(1, true); }
+            @Override public void onPageFinished(WebView view, String url) { setProgress(1, true); if(restoreScroll){restoreDeadline=android.os.SystemClock.uptimeMillis()+5000; view.removeCallbacks(restoreTimeout);view.post(restoreTimeout);view.postDelayed(restoreTimeout,5000);} }
             @Override public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
                 if (request.isForMainFrame()) {
                     if (!online(owner) && needsInternet(request.getUrl().toString())) Toast.makeText(owner, OFFLINE, Toast.LENGTH_LONG).show();
@@ -255,6 +303,10 @@ final class PodInAppBrowser extends Dialog implements Application.ActivityLifecy
         }
         return super.dispatchTouchEvent(event);
     }
+    @Override public boolean dispatchGenericMotionEvent(android.view.MotionEvent event) {
+        if(event.getActionMasked()==android.view.MotionEvent.ACTION_SCROLL)restoreScroll=false;
+        return super.dispatchGenericMotionEvent(event);
+    }
     private int pendingStem = -1;
     @Override public boolean dispatchKeyEvent(android.view.KeyEvent event) {
         int key = event.getKeyCode();
@@ -276,6 +328,7 @@ final class PodInAppBrowser extends Dialog implements Application.ActivityLifecy
         if (progressAnimator != null) { progressAnimator.cancel(); progressAnimator.removeAllUpdateListeners(); progressAnimator = null; }
         if (web != null) {
             WebView old = web; web = null;
+            old.removeCallbacks(restoreTimeout);if(old.getViewTreeObserver().isAlive())old.getViewTreeObserver().removeOnPreDrawListener(restoreLayout);
             old.stopLoading(); old.setWebChromeClient(null); old.setWebViewClient(new WebViewClient());
             if (old.getParent() instanceof ViewGroup) ((ViewGroup)old.getParent()).removeView(old);
             old.destroy();

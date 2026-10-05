@@ -11,11 +11,35 @@ import org.json.JSONObject;
 final class PodBrowserServices {
     private final Context context;
     private PodInAppBrowser session;
+    private JSONObject pendingRestoration;
+    String savedState() { return session == null ? (pendingRestoration == null ? null : PodModalState.encode(pendingRestoration)) : session.snapshot(); }
+    void restoreState(String saved) {
+        pendingRestoration = null;
+        try {
+            JSONObject state = PodBrowserPageState.decode(saved);
+            if (state == null) return;
+            PodInAppBrowser.Options options = new PodInAppBrowser.Options(state.getJSONObject("options"));
+            if (!options.restoreActivity) return;
+            String url = PodInAppBrowser.resolveUrl(state.opt("url"));
+            if (!PodInAppBrowser.needsInternet(url) && !("file".equalsIgnoreCase(Uri.parse(options.url).getScheme()) && "file".equalsIgnoreCase(Uri.parse(url).getScheme()))) return;
+            pendingRestoration = state;
+        } catch (Exception invalid) { pendingRestoration = null; }
+    }
+    void resumeRestored() {
+        JSONObject state = pendingRestoration; pendingRestoration = null;
+        if (state == null || session != null || !(context instanceof Activity)) return;
+        try {
+            PodInAppBrowser.Options options = new PodInAppBrowser.Options(state.getJSONObject("options"));
+            PodInAppBrowser.checkAvailable(context,state.getString("url"));
+            session = new PodInAppBrowser((Activity)context,options); session.restore(state); session.open();
+        } catch (Exception | LinkageError unavailable) { close(); }
+    }
     static final class BrowserFailure extends IllegalStateException {
         final String code;
         BrowserFailure(String code, String message) { super(message); this.code = code; }
     }
     void openInApp(JSONObject args) {
+        pendingRestoration = null;
         PodInAppBrowser.Options options = new PodInAppBrowser.Options(args);
         if (!(context instanceof Activity)) throw new BrowserFailure("unavailable", "Browser opening requires an Activity");
         if (session != null && session.isShowing()) throw new BrowserFailure("busy", "An embedded browser is already open");
@@ -29,7 +53,7 @@ final class PodBrowserServices {
             throw new BrowserFailure("webview_unavailable", message);
         }
     }
-    void close() { if (session != null) { session.dismiss(); session = null; } }
+    void close() { pendingRestoration = null; if (session != null) { session.dismiss(); session = null; } }
     PodBrowserServices(Context context) { this.context = context; }
 
     void open(JSONObject args) {
