@@ -46,6 +46,7 @@ android {
 }
 
 dependencies {
+    implementation("androidx.metrics:metrics-performance:1.0.0-beta01")
     implementation("com.github.wendykierp:JTransforms:3.2")
     implementation("androidx.webkit:webkit:1.8.0")
     implementation("org.jsoup:jsoup:1.17.2")

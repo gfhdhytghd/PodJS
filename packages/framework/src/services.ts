@@ -23,6 +23,7 @@ const methods: Record<string, PodCapabilityId> = {
   ...platformMethods,
   "app.finishTask": "host.lifecycle",
   "app.buildInfo": "host.lifecycle",
+  "debug.performance.start": "host.lifecycle", "debug.performance.read": "host.lifecycle", "debug.performance.stop": "host.lifecycle",
   "app.activityState.read": "host.lifecycle", "app.activityState.write": "host.lifecycle",
   "rfcomm.requestPermission": "net.rfcomm", "rfcomm.status": "net.rfcomm", "rfcomm.listen": "net.rfcomm", "rfcomm.accept": "net.rfcomm", "rfcomm.close": "net.rfcomm",
   "tcp.listen":"net.tcp", "tcp.accept":"net.tcp", "tcp.close":"net.tcp", "tcp.addresses":"net.tcp",
@@ -617,4 +618,15 @@ export const mediaSurfaces={
  update(kind:MediaSurfaceKind,id:string,style:MediaSurfaceStyle):Promise<MediaSurfaceState>{return hostOperation<MediaSurfaceState>(kind+".surface.update",{id,...style}).result;},
  state(kind:MediaSurfaceKind,id:string):Promise<MediaSurfaceState>{return hostOperation<MediaSurfaceState>(kind+".surface.state",{id}).result;},
  close(kind:MediaSurfaceKind,id:string):Promise<{closed:boolean}>{return hostOperation<{closed:boolean}>(kind+".surface.close",{id}).result;},
+};
+
+/** Android debug-build-only native frame metrics; unsupported hosts reject. */
+export interface DebugPerformanceSnapshot {
+ sessionId:number;source:string;scenario:string;frames:number;jank:number;jankPct:number;avgMs:number;maxMs:number;drop:number;
+ lastFrame:Record<string,number>;
+}
+export const debugPerformance={
+ start:(scenario:string)=>hostOperation<DebugPerformanceSnapshot>('debug.performance.start',{scenario}).result,
+ read:(sessionId:number)=>hostOperation<DebugPerformanceSnapshot>('debug.performance.read',{sessionId}).result,
+ stop:(sessionId:number)=>hostOperation<DebugPerformanceSnapshot>('debug.performance.stop',{sessionId}).result,
 };

@@ -10,7 +10,7 @@ const emitted: Record<string, unknown>[] = [];
 };
 
 const api = await import("../src/watch.ts");
-const { application, sharing, displayPower, silencePlayback, HostServiceError, hostOperation, sqlite, browser, mediaVolume, speech, timeInput, textInput, textLayout, fileChunks, uri, rfcomm, tcp, byteStreams, webSockets, discovery, onNetworkChange } = await import("../src/services.ts");
+const { debugPerformance, application, sharing, displayPower, silencePlayback, HostServiceError, hostOperation, sqlite, browser, mediaVolume, speech, timeInput, textInput, textLayout, fileChunks, uri, rfcomm, tcp, byteStreams, webSockets, discovery, onNetworkChange } = await import("../src/services.ts");
 const host = (globalThis as unknown as { pod: { capabilities: () => string } }).pod;
 
 beforeEach(() => {
@@ -56,6 +56,17 @@ describe("host services", () => {
       events.push({t:"service.result",id:request.id,ok:true,value:{debugBuild}});api.__pumpPodEvents();
       await expect(result).resolves.toEqual({debugBuild});
     }
+  });
+  test("native debug performance forwards ownership tokens and propagates release rejection",async()=>{
+    await expect(debugPerformance.start("perf_large_list")).rejects.toMatchObject({code:"unsupported"});
+    host.capabilities=()=>JSON.stringify(["host.lifecycle"]);
+    const start=debugPerformance.start("perf_large_list"),open=emitted.at(-1)!;
+    expect(open).toMatchObject({method:"debug.performance.start",args:{scenario:"perf_large_list"}});
+    events.push({t:"service.result",id:open.id,ok:true,value:{sessionId:7,scenario:"perf_large_list",frames:0}});api.__pumpPodEvents();expect((await start).sessionId).toBe(7);
+    const read=debugPerformance.read(7),request=emitted.at(-1)!;expect(request.args).toEqual({sessionId:7});
+    events.push({t:"service.result",id:request.id,ok:true,value:{sessionId:7,frames:12,jank:2}});api.__pumpPodEvents();expect((await read).frames).toBe(12);
+    const stop=debugPerformance.stop(7),close=emitted.at(-1)!;expect(close).toMatchObject({method:"debug.performance.stop",args:{sessionId:7}});
+    events.push({t:"service.result",id:close.id,ok:false,error:{code:"permission_denied",message:"debug only"}});api.__pumpPodEvents();await expect(stop).rejects.toThrow();
   });
   test("activity state has separate saved and retained channels behind lifecycle capability",async()=>{
     await expect(application.activityState.read()).rejects.toMatchObject({code:"unsupported"});expect(emitted).toHaveLength(0);

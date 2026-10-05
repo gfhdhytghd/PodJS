@@ -31,8 +31,9 @@ final class PodServices implements Closeable {
     private final PodDeviceServices device;
     private final PodMediaServices media;
     private PodScreenServices screen;
+    private final PodDebugPerformance debugPerformance = new PodDebugPerformance();
     private boolean displayResumed=true;
-    void screenLifecycle(boolean resumed){displayResumed=resumed;mediaSurfaces.lifecycle(resumed);videoSessions.lifecycle(resumed);main.post(()->{if(!closed&&screen!=null)screen.lifecycle(resumed);});}
+    void screenLifecycle(boolean resumed){displayResumed=resumed;mediaSurfaces.lifecycle(resumed);videoSessions.lifecycle(resumed);main.post(()->{if(!closed){debugPerformance.lifecycle(resumed);if(screen!=null)screen.lifecycle(resumed);}});}
     private final PodVideoDecoderBudget videoDecoderBudget;
     private final PodVideoServices video;
     private final PodVideoSessionServices videoSessions;
@@ -318,6 +319,14 @@ final class PodServices implements Closeable {
         }
         if (method.startsWith("image.")) {
             request.future = imageWorkers.submit(() -> { try { JSONObject value=images.execute(method,args); if(requests.remove(id,request)) reply(id,true,value,null,null); else images.discard(value); } catch(Exception error) { if(requests.remove(id,request)) failure(id,error instanceof SecurityException?"permission_denied":error instanceof IllegalArgumentException?"invalid_argument":"image_error",error.getMessage()); } });
+            return;
+        }
+        if (method.startsWith("debug.performance.")) {
+            main.post(() -> {
+                if (closed || !requests.remove(id, request)) return;
+                try { request.cancellation.throwIfCanceled();reply(id,true,debugPerformance.execute(context,method,args),null,null); }
+                catch(Exception error){failure(id,error instanceof SecurityException?"permission_denied":"performance_error",error.getMessage());}
+            });
             return;
         }
         if ("app.buildInfo".equals(method)) {
@@ -626,7 +635,7 @@ final class PodServices implements Closeable {
         main.post(discoveryPermission::cancel);
         for(Integer id:requests.keySet()) cancel(id);
         main.post(inlineText::closeAll);
-        main.post(()->{if(screen!=null){screen.close();screen=null;}});
+        main.post(()->{debugPerformance.close();if(screen!=null){screen.close();screen=null;}});
         media.close();
         video.close();
         videoSessions.close();
