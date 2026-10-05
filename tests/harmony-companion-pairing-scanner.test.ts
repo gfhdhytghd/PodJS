@@ -20,7 +20,7 @@ test('actual system scanner adapter restricts live QR, sanitizes failures and ig
       return result;
     } }
   };
-  const build = await Bun.build({ entrypoints: [resolve('platforms/harmony/companion/src/main/ets/NativeCompanionPairingScanner.ets')], target: 'bun', write: false,
+  const build = await Bun.build({ entrypoints: [resolve('platforms/harmony/companion/src/main/ets/NativeCompanionPairingScanner.ets')], target: 'bun',
     plugins: [{ name: 'scan-os', setup(builder) {
       builder.onResolve({ filter: /^@kit\.ScanKit$/ }, () => ({ path: 'scan', namespace: 'scan-os' }));
       builder.onLoad({ filter: /.*/, namespace: 'scan-os' }, () => ({ contents: 'export const scanCore = globalThis.__podjsPairingScanner.scanCore; export const scanBarcode = globalThis.__podjsPairingScanner.scanBarcode;', loader: 'js' }));

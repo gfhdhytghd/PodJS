@@ -16,7 +16,7 @@ for (const adapter of [
       grant = nextGrant; return { permissions: [permission], authResults: [auth] };
     }
   }; } };
-  const build = await Bun.build({ entrypoints: [resolve(`platforms/harmony/companion/src/main/ets/NativeCompanion${adapter.name}Permission.ets`)], target: 'bun', write: false,
+  const build = await Bun.build({ entrypoints: [resolve(`platforms/harmony/companion/src/main/ets/NativeCompanion${adapter.name}Permission.ets`)], target: 'bun',
     plugins: [{ name: 'permission-os', setup(builder) {
       builder.onResolve({ filter: /^@kit\.AbilityKit$/ }, () => ({ path: 'permission', namespace: 'permission-os' }));
       builder.onLoad({ filter: /.*/, namespace: 'permission-os' }, () => ({ contents: 'export const abilityAccessCtrl = globalThis.__podjsDistributedPermission;', loader: 'js' }));

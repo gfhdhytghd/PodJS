@@ -244,7 +244,7 @@ test("multi-session video preserves ids and atomically describes prewarm promoti
   try {
     const capabilities=videoSessions.capabilities();
     expect(commands.at(-1)).toMatchObject({method:"video.session.capabilities",args:{}});
-    const capabilityValue={capability:"media.video.sessions",maxSessions:2,decoderLimit:2,decoderInUse:0,targetBufferBytesPerSession:6291456,targetBufferBytesTotal:12582912,prewarmMode:"hidden_first_frame",surfacePromotion:true,verticalTransition:true,surfaceComposition:"android_texture_view",backgroundPlayback:false};
+    const capabilityValue={capability:"media.video.sessions",maxSessions:2,decoderLimit:2,decoderInUse:0,targetBufferBytesPerSession:6291456,targetBufferBytesTotal:12582912,prewarmMode:"hidden_first_frame",surfacePromotion:true,verticalTransition:true,surfaceComposition:"android_texture_view",backgroundPlayback:false} as const;
     reply(capabilityValue);await expect(capabilities).resolves.toEqual(capabilityValue);
 
     const bounds={x:0,y:0,width:240,height:240,translateY:0,roundClip:{cx:120,cy:120,radius:120}};
@@ -255,7 +255,7 @@ test("multi-session video preserves ids and atomically describes prewarm promoti
 
     const drag=videoSessions.transition({fromSessionId:"current",toSessionId:"next",progress:.375,direction:"up",bounds});
     expect(commands.at(-1)).toMatchObject({method:"video.session.transition",args:{fromSessionId:"current",toSessionId:"next",progress:.375,direction:"up",bounds}});
-    const dragged={fromSessionId:"current",toSessionId:"next",progress:.375,direction:"up",fromOffsetYPx:-90,toOffsetYPx:150,composited:true};
+    const dragged={fromSessionId:"current",toSessionId:"next",progress:.375,direction:"up",fromOffsetYPx:-90,toOffsetYPx:150,composited:true} as const;
     reply(dragged);await expect(drag).resolves.toEqual(dragged);
 
     const promote=videoSessions.promote("next",{replaceSessionId:"current",bounds,autoplay:true});
@@ -284,4 +284,19 @@ test("takeover status is read-only and fails closed on old hosts", async () => {
     expect(await result).toEqual({protocol:1,phase:"ACTIVE"});
     expect(Object.keys(takeover)).toEqual(["status"]);
   } finally {(globalThis as {pod?:unknown}).pod=previous;}
+});
+
+test('cloud crypto bridge keeps private keys behind the host boundary and gates capabilities',async()=>{
+ const {deviceAgreement,hostOperation}=await import('../src/services.ts');
+ const previous=(globalThis as {pod?:unknown}).pod;const commands:any[]=[];let batch:string|undefined;
+ (globalThis as {pod?:unknown}).pod={capabilities:()=> '["crypto.basic"]',emit:(line:string)=>commands.push(JSON.parse(line)),takeEvents:()=>{const value=batch;batch=undefined;return value;}};
+ const reply=(value:unknown)=>{batch=JSON.stringify([{t:'service.result',id:commands.at(-1).id,ok:true,value}]);__pumpPodEvents();};
+ try {
+  const publicKey=deviceAgreement.publicKey('account/device');expect(commands.at(-1)).toMatchObject({method:'crypto.ecdhPublicKey',args:{keyId:'account/device'}});reply({publicKeySpki:'public-only'});expect(await publicKey).toEqual({publicKeySpki:'public-only'});
+  const args={keyId:'account/device',publicKeySpki:'ephemeral',saltBase64:'salt',infoBase64:'info',nonceBase64:'nonce',ciphertextBase64:'wrapped',aadBase64:'aad'};
+  const unwrap=deviceAgreement.unwrap(args);expect(commands.at(-1)).toMatchObject({method:'crypto.ecdhUnwrap',args});reply({dataBase64:'account-symmetric-key'});expect(await unwrap).toEqual({dataBase64:'account-symmetric-key'});
+  for(const method of ['crypto.hkdfSha256','crypto.largeAesGcmEncrypt','crypto.largeAesGcmDecrypt','crypto.gzip','crypto.gunzip']){const op=hostOperation(method,{});expect(commands.at(-1).method).toBe(method);reply({});await op.result;}
+  await expect(hostOperation('crypto.exportPrivateKey',{}).result).rejects.toMatchObject({code:'unsupported'});
+  (globalThis as any).pod.capabilities=()=> '[]';await expect(deviceAgreement.publicKey('blocked')).rejects.toMatchObject({code:'unsupported'});
+ }finally{(globalThis as {pod?:unknown}).pod=previous;}
 });

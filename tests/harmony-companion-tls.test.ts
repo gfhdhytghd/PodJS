@@ -9,7 +9,7 @@ class Port {
   sent: Uint8Array[] = []; closed = false; rejectTrust = false; connectCalls = 0;
   async connect(_host: string, _port: number, _ca: string, _timeout: number) { this.connectCalls++; if (this.rejectTrust) throw Error('CA rejected'); }
   listen() {}
-  async certificateDer() { return new Uint8Array([48, 1, 2, 3]); }
+  async certificateDer(): Promise<Uint8Array> { return new Uint8Array([48, 1, 2, 3]); }
   async send(bytes: Uint8Array) { this.sent.push(bytes.slice()); }
   close() { this.closed = true; }
 }
@@ -76,11 +76,11 @@ test('real TLS loopback verifies CA plus leaf pin and refuses wrong trust before
           const socket = connectTls({ host, port, ca, servername: 'localhost', rejectUnauthorized: true, minVersion: 'TLSv1.2', maxVersion: 'TLSv1.3' }, resolve);
           this.socket = socket;
           socket.setTimeout(timeout, () => socket.destroy(new Error('TLS timeout')));
-          socket.on('data', bytes => this.receive(bytes)); socket.on('end', () => this.end());
+          socket.on('data', bytes => this.receive(typeof bytes === 'string' ? Buffer.from(bytes) : bytes)); socket.on('end', () => this.end());
           socket.on('error', error => { reject(error); this.error(error); });
         });
       }
-      async certificateDer() { return new Uint8Array(this.socket!.getPeerCertificate().raw); }
+      async certificateDer(): Promise<Uint8Array> { return new Uint8Array(this.socket!.getPeerCertificate().raw); }
       async send(bytes: Uint8Array) { this.sent++; await new Promise<void>((resolve, reject) => this.socket!.write(bytes, error => error ? reject(error) : resolve())); }
       close() { this.socket?.destroy(); }
     }

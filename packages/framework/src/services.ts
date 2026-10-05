@@ -58,6 +58,8 @@ const methods: Record<string, PodCapabilityId> = {
   "text.layout": "text.layout", "text.layoutBatch": "text.layout", "text.measure": "text.layout", "text.raster": "text.raster", "text.environment": "text.environment",
   "input.time": "input.time",
   "location.current": "device.location",
+  "crypto.ecdhPublicKey": "crypto.basic", "crypto.ecdhUnwrap": "crypto.basic", "crypto.hkdfSha256": "crypto.basic",
+  "crypto.largeAesGcmEncrypt": "crypto.basic", "crypto.largeAesGcmDecrypt": "crypto.basic", "crypto.gzip": "crypto.basic", "crypto.gunzip": "crypto.basic",
   "crypto.rsaOaepSha256": "crypto.basic", "crypto.random": "crypto.basic", "crypto.hash": "crypto.basic", "crypto.hmacSha256": "crypto.basic", "crypto.aesGcmEncrypt": "crypto.basic", "crypto.aesGcmDecrypt": "crypto.basic", "crypto.encrypt": "crypto.basic", "crypto.decrypt": "crypto.basic",
   "uri.parse": "data.uri", "file.htmlText": "data.files.chunks", "file.gzip": "data.files.chunks", "file.gzipBytes": "data.files.chunks", "file.gunzip": "data.files.chunks", "file.openText": "data.files.chunks", "file.readTextChunk": "data.files.chunks", "file.closeText": "data.files.chunks", "file.createTemp": "data.files.chunks", "file.hash": "data.files.chunks", "file.commit": "data.files.chunks", "file.read": "data.files.chunks", "file.write": "data.files.chunks", "file.list": "data.files.chunks", "file.touch": "data.files.chunks", "file.stat": "data.files.chunks", "file.delete": "data.files.chunks",
 };
@@ -644,3 +646,20 @@ export interface TakeoverStatus {
 export const takeover = Object.freeze({
   status: (): Promise<TakeoverStatus> => hostOperation<TakeoverStatus>("takeover.status", {}).result,
 });
+
+/** Android 12+ non-exportable P-256 key. keyId is scoped to this host application. */
+export const deviceAgreement = {
+  publicKey(keyId:string):Promise<{publicKeySpki:string}> {return hostOperation<{publicKeySpki:string}>("crypto.ecdhPublicKey",{keyId}).result;},
+  /** Authenticated 32-byte key unwrap; neither the private key nor ECDH secret is returned. */
+  unwrap(args:{keyId:string;publicKeySpki:string;saltBase64:string;infoBase64:string;nonceBase64:string;ciphertextBase64:string;aadBase64:string}):Promise<{dataBase64:string}> {return hostOperation<{dataBase64:string}>("crypto.ecdhUnwrap",args).result;},
+};
+
+/** Large crypto/compression results use private temporary files, avoiding the 1 MiB
+ * host event limit. Caller must remove the returned file after consuming it. */
+export interface CryptoFileResult {path:string;size:number;sha256:string}
+export const cryptoFiles = {
+  encrypt(args:{inputPath:string;keyBase64:string;aadBase64:string}):Promise<CryptoFileResult & {nonceBase64:string}> {return hostOperation<CryptoFileResult & {nonceBase64:string}>("crypto.largeAesGcmEncrypt",args).result;},
+  decrypt(args:{inputPath:string;keyBase64:string;aadBase64:string;nonceBase64:string}):Promise<CryptoFileResult> {return hostOperation<CryptoFileResult>("crypto.largeAesGcmDecrypt",args).result;},
+  gzip(inputPath:string):Promise<CryptoFileResult> {return hostOperation<CryptoFileResult>("crypto.gzip",{inputPath}).result;},
+  gunzip(inputPath:string,maxBytes:number):Promise<CryptoFileResult> {return hostOperation<CryptoFileResult>("crypto.gunzip",{inputPath,maxBytes}).result;},
+};

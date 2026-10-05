@@ -18,7 +18,7 @@ test('actual QR generator uses complete byte payload beyond 512 chars and releas
       if (wait) await wait; if (fail) throw Error('sensitive contents'); return bitmap;
     } }
   };
-  const build = await Bun.build({ entrypoints: [resolve('platforms/harmony/companion/src/main/ets/NativeCompanionPairingQr.ets')], target: 'bun', write: false,
+  const build = await Bun.build({ entrypoints: [resolve('platforms/harmony/companion/src/main/ets/NativeCompanionPairingQr.ets')], target: 'bun',
     plugins: [{ name: 'qr-os', setup(builder) {
       builder.onResolve({ filter: /^@kit\.ScanKit$/ }, () => ({ path: 'qr', namespace: 'qr-os' }));
       builder.onLoad({ filter: /.*/, namespace: 'qr-os' }, () => ({ contents: 'export const scanCore = globalThis.__podjsPairingQr.scanCore; export const generateBarcode = globalThis.__podjsPairingQr.generateBarcode;', loader: 'js' }));

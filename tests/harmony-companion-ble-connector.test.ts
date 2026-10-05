@@ -25,7 +25,7 @@ test('actual GATT client validates service, negotiates MTU, acknowledges writes 
   } };
   (globalThis as any).canIUse = () => true; (globalThis as any).__podjsGatt = native;
   try {
-    const build = await Bun.build({ entrypoints: [resolve('platforms/harmony/companion/src/main/ets/NativeCompanionBleConnector.ets')], target: 'bun', write: false,
+    const build = await Bun.build({ entrypoints: [resolve('platforms/harmony/companion/src/main/ets/NativeCompanionBleConnector.ets')], target: 'bun',
       plugins: [{ name: 'gatt-os', setup(builder) {
         builder.onResolve({ filter: /^\.\/NativeCompanion/ }, args => ({ path: resolve(args.resolveDir, args.path + '.ets') }));
         builder.onResolve({ filter: /^@ohos\.bluetooth\./ }, args => ({ path: args.path, namespace: 'gatt-os' }));

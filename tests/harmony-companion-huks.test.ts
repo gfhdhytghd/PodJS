@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 test('actual HUKS adapter imports privately, streams HMAC, aborts errors and never replaces keys', async () => {
   const keys = new Map<string, Uint8Array>();
   let imported: Uint8Array | undefined, aborts = 0, failUpdate = false, badOutput = false;
-  let chunks: Uint8Array[] = [], activeKey = new Uint8Array();
+  let chunks: Uint8Array[] = [], activeKey: Uint8Array = new Uint8Array();
   const tags = { HUKS_TAG_ALGORITHM: 1, HUKS_TAG_PURPOSE: 2, HUKS_TAG_KEY_SIZE: 3, HUKS_TAG_DIGEST: 4 };
   function check(options: any) { expect(options.properties).toEqual([
     { tag: 1, value: 50 }, { tag: 2, value: 128 }, { tag: 3, value: 256 }, { tag: 4, value: 12 }
@@ -21,7 +21,7 @@ test('actual HUKS adapter imports privately, streams HMAC, aborts errors and nev
     async abortSession(handle: number) { expect(handle).toBe(42); aborts++; }
   };
   (globalThis as any).__podjsHuksTest = huks;
-  const build = await Bun.build({ entrypoints: [resolve('platforms/harmony/companion/src/main/ets/NativeCompanionHuks.ets')], target: 'bun', write: false,
+  const build = await Bun.build({ entrypoints: [resolve('platforms/harmony/companion/src/main/ets/NativeCompanionHuks.ets')], target: 'bun',
     plugins: [{ name: 'huks-os', setup(builder) {
       builder.onResolve({ filter: /^@ohos\.security\.huks$/ }, () => ({ path: 'huks', namespace: 'huks-os' }));
       builder.onLoad({ filter: /.*/, namespace: 'huks-os' }, () => ({ contents: 'export default globalThis.__podjsHuksTest;', loader: 'js' }));

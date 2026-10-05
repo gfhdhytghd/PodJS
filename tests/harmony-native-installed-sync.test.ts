@@ -7,7 +7,7 @@ test('installed channels share one lazy SDK owner and retain per-channel gates',
   (globalThis as any).__installedSyncOwnerTest = control;
   try {
     const build = await Bun.build({
-      entrypoints: [resolve('platforms/harmony/entry/src/main/ets/NativeInstalledSync.ets')], target: 'bun', write: false,
+      entrypoints: [resolve('platforms/harmony/entry/src/main/ets/NativeInstalledSync.ets')], target: 'bun',
       plugins: [{ name: 'installed-owner-stubs', setup(builder) {
         builder.onResolve({ filter: /^(@podjs\/companion$|libpodjs_harmony\.so$|@kit\.|@ohos\.)/ }, args => ({ path: args.path, namespace: 'installed-system' }));
         builder.onLoad({ filter: /.*/, namespace: 'installed-system' }, args => {

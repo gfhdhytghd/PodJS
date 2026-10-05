@@ -10,7 +10,7 @@ test('1024-byte system submissions reconstruct a full 2 MiB framed payload', asy
     async yieldTurn() { yields++; }, close() {}
   });
   await writer.send(encodeSyncPacket(payload)); decoder.finish();
-  expect(delivered).toEqual(payload); expect(sends).toBe(2049); expect(yields).toBe(257);
+  expect(delivered as Uint8Array | null).toEqual(payload); expect(sends).toBe(2049); expect(yields).toBe(257);
 });
 test('caller mutation and a concurrent writer cannot change an in-flight frame', async () => {
   const chunks: Uint8Array[] = []; let finish!: () => void;

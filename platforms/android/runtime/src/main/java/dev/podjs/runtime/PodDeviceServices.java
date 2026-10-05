@@ -73,6 +73,13 @@ public final class PodDeviceServices implements AutoCloseable {
             case "secure.get": return secureGet(args);
             case "secure.set": return secureSet(args);
             case "secure.delete": return secureDelete(args);
+            case "crypto.ecdhPublicKey": return ecdhPublicKey(args);
+            case "crypto.ecdhUnwrap": return ecdhUnwrap(args);
+            case "crypto.hkdfSha256": return new JSONObject().put("keyBase64", enc(PodCloudCrypto.hkdf(decode(args,"inputBase64"),decode(args,"saltBase64"),decode(args,"infoBase64"))));
+            case "crypto.largeAesGcmEncrypt": return largeAes(args,true);
+            case "crypto.largeAesGcmDecrypt": return largeAes(args,false);
+            case "crypto.gzip": return cryptoOutput(PodCloudCrypto.gzip(cryptoInput(args)));
+            case "crypto.gunzip": return cryptoOutput(PodCloudCrypto.gunzip(cryptoInput(args),args.getInt("maxBytes")));
             case "crypto.random": return cryptoRandom(args);
             case "crypto.hash": return cryptoHash(args);
             case "crypto.hmacSha256": return cryptoHmacSha256(args);
@@ -146,6 +153,57 @@ public final class PodDeviceServices implements AutoCloseable {
         atomicWrite(secureFile, encrypted);
     }
 
+    // Only the SPKI public key and authenticated plaintext cross the bridge. There is
+    // deliberately no private-key export or raw ECDH-secret operation.
+    private String ecdhAlias(JSONObject args) throws Exception {
+        String id = required(args,"keyId");
+        if(id.length()>1024) throw new IllegalArgumentException("key_id_too_long");
+        return "podjs.ecdh.v1." + enc(MessageDigest.getInstance("SHA-256").digest(id.getBytes(StandardCharsets.UTF_8)));
+    }
+    private KeyStore ecdhStore() throws Exception {
+        if(android.os.Build.VERSION.SDK_INT < 31) throw new UnsupportedOperationException("ecdh_requires_android_12");
+        KeyStore store=KeyStore.getInstance(KEYSTORE); store.load(null); return store;
+    }
+    private JSONObject ecdhPublicKey(JSONObject args) throws Exception {
+        KeyStore store=ecdhStore(); String alias=ecdhAlias(args);
+        if(!store.containsAlias(alias)) {
+            java.security.KeyPairGenerator generator=java.security.KeyPairGenerator.getInstance("EC",KEYSTORE);
+            generator.initialize(new KeyGenParameterSpec.Builder(alias,KeyProperties.PURPOSE_AGREE_KEY)
+                .setAlgorithmParameterSpec(new java.security.spec.ECGenParameterSpec("secp256r1"))
+                .setDigests(KeyProperties.DIGEST_SHA256).build());
+            generator.generateKeyPair();
+        }
+        return new JSONObject().put("publicKeySpki",enc(store.getCertificate(alias).getPublicKey().getEncoded()));
+    }
+    private JSONObject ecdhUnwrap(JSONObject args) throws Exception {
+        java.security.PrivateKey privateKey=(java.security.PrivateKey)ecdhStore().getKey(ecdhAlias(args),null);
+        if(privateKey==null) throw new IllegalStateException("device_private_key_missing");
+        byte[] value=PodCloudCrypto.unwrap(privateKey,decode(args,"publicKeySpki"),decode(args,"saltBase64"),decode(args,"infoBase64"),decode(args,"nonceBase64"),decode(args,"ciphertextBase64"),decode(args,"aadBase64"));
+        try { if(value.length!=32) throw new IllegalArgumentException("invalid_account_key"); return new JSONObject().put("dataBase64",enc(value)); }
+        finally { Arrays.fill(value,(byte)0); }
+    }
+    // 4 MiB cloud chunks must use files: the guest event lane admits only 1 MiB
+    // JSON events. Return a small owned file descriptor, never multi-MiB Base64.
+    private byte[] cryptoInput(JSONObject args) throws Exception {
+        File input=safeFile(required(args,"inputPath"));
+        if(!input.isFile() || input.length()>PodCloudCrypto.MAX_BYTES) throw new IllegalArgumentException("invalid_crypto_file");
+        return readAll(input,PodCloudCrypto.MAX_BYTES);
+    }
+    private JSONObject cryptoOutput(byte[] bytes) throws Exception {
+        JSONObject temporary=fileCreateTemp(new JSONObject().put("directory","cloud-crypto"));
+        try {
+            File output=safeFile(temporary.getString("path")); atomicWrite(output,bytes);
+            return hashFile(output).put("path",temporary.getString("path"));
+        }catch(Exception error){discardTemporary(temporary);throw error;}
+        finally{Arrays.fill(bytes,(byte)0);}
+    }
+    private JSONObject largeAes(JSONObject args,boolean encrypt) throws Exception {
+        byte[] nonce;
+        if(encrypt) { nonce=new byte[12]; random.nextBytes(nonce); }
+        else nonce=decode(args,"nonceBase64");
+        byte[] output=PodCloudCrypto.aes(encrypt,decode(args,"keyBase64"),nonce,cryptoInput(args),decode(args,"aadBase64"));
+        JSONObject result=cryptoOutput(output); if(encrypt) result.put("nonceBase64",enc(nonce)); return result;
+    }
     private JSONObject cryptoRandom(JSONObject a) throws Exception {
         int n = a.optInt("bytes", 32); if (n < 0 || n > MAX_CHUNK_BYTES) throw new IllegalArgumentException("invalid_bytes");
         byte[] out = new byte[n]; random.nextBytes(out); return new JSONObject().put("bytesBase64", enc(out));

@@ -15,7 +15,7 @@ test('actual BLE discovery isolates scanner lifetime, bounds candidates and reje
   (globalThis as any).canIUse = () => true;
   (globalThis as any).__podjsBleDiscovery = native;
   try {
-    const build = await Bun.build({ entrypoints: [resolve('platforms/harmony/companion/src/main/ets/NativeCompanionBleDiscovery.ets')], target: 'bun', write: false,
+    const build = await Bun.build({ entrypoints: [resolve('platforms/harmony/companion/src/main/ets/NativeCompanionBleDiscovery.ets')], target: 'bun',
       plugins: [{ name: 'ble-discovery-os', setup(builder) {
         builder.onResolve({ filter: /^@ohos\.bluetooth\.ble$/ }, () => ({ path: 'ble', namespace: 'discovery' }));
         builder.onLoad({ filter: /.*/, namespace: 'discovery' }, () => ({ contents: 'export default globalThis.__podjsBleDiscovery;', loader: 'js' }));

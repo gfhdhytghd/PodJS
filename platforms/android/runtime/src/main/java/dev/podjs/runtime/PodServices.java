@@ -453,7 +453,7 @@ final class PodServices implements Closeable {
                 else if ("websocket.connect".equals(method) && value instanceof JSONObject) webSockets.discard((JSONObject)value);
                 else if (("rfcomm.listen".equals(method) || "rfcomm.accept".equals(method) || "tcp.listen".equals(method) || "tcp.accept".equals(method)) && value instanceof JSONObject) byteStreams.discard((JSONObject)value);
                 else if ("file.openText".equals(method) && value instanceof JSONObject) device.discardTextReader((JSONObject)value);
-                else if (("file.htmlText".equals(method) || "file.createTemp".equals(method) || "file.gzip".equals(method) || "file.gunzip".equals(method)) && value instanceof JSONObject) device.discardTemporary((JSONObject)value);
+                else if (("crypto.largeAesGcmEncrypt".equals(method) || "crypto.largeAesGcmDecrypt".equals(method) || "crypto.gzip".equals(method) || "crypto.gunzip".equals(method) || "file.htmlText".equals(method) || "file.createTemp".equals(method) || "file.gzip".equals(method) || "file.gunzip".equals(method)) && value instanceof JSONObject) device.discardTemporary((JSONObject)value);
                 else if ("text.raster".equals(method)) PodTextRasterServices.discard(context,value);
                 else if ("http.download".equals(method) && value instanceof JSONObject) http.discard((JSONObject)value);
             } catch (Exception error) {

@@ -4,7 +4,7 @@ import { BackgroundPackage } from '../platforms/harmony/entry/src/main/ets/Backg
 const encode = (value: string) => new TextEncoder().encode(value);
 const hash = (value: Uint8Array) => createHash('sha256').update(value).digest('hex');
 function fixture() {
-  let source = encode("globalThis.backgroundHandler = () => 'success'; // 后台😀");
+  let source: Uint8Array = encode("globalThis.backgroundHandler = () => 'success'; // 后台😀");
   const file = 'background/' + 'a'.repeat(64) + '.js';
   const manifest = { schema: 1, target: 'harmonyos-watch', background: {
     refresh: { file, bytes: source.length, sha256: hash(source) }
