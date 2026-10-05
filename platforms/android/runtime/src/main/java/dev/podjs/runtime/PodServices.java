@@ -360,7 +360,7 @@ final class PodServices implements Closeable {
             });
             return;
         }
-        if ("browser.open".equals(method)) { openBrowser(id, request, args); return; }
+        if ("browser.open".equals(method) || "browser.openInApp".equals(method)) { openBrowser(id, request, args); return; }
         if ("share.environment".equals(method) || "share.text".equals(method)) {
             main.post(() -> {
                 if (closed || !requests.containsKey(id)) return;
@@ -422,8 +422,8 @@ final class PodServices implements Closeable {
     private void openBrowser(int id, Request request, JSONObject args) {
         main.post(() -> {
             if (closed || !requests.containsKey(id)) return;
-            try { request.cancellation.throwIfCanceled(); browser.open(args); if (requests.remove(id, request)) reply(id, true, JSONObject.NULL, null, null); }
-            catch (Exception error) { if (requests.remove(id, request)) failure(id, error instanceof IllegalArgumentException ? "invalid_argument" : error instanceof IllegalStateException && "no_browser_handler".equals(error.getMessage()) ? "no_browser_handler" : "unavailable", error.getMessage()); }
+            try { request.cancellation.throwIfCanceled(); if ("browser.openInApp".equals(request.method)) browser.openInApp(args); else browser.open(args); if (requests.remove(id, request)) reply(id, true, JSONObject.NULL, null, null); }
+            catch (Exception error) { if (requests.remove(id, request)) failure(id, error instanceof PodBrowserServices.BrowserFailure ? ((PodBrowserServices.BrowserFailure)error).code : error instanceof IllegalArgumentException ? "invalid_argument" : error instanceof IllegalStateException && "no_browser_handler".equals(error.getMessage()) ? "no_browser_handler" : "unavailable", error.getMessage()); }
         });
     }
     private void promptTime(int id, Request request, JSONObject args) {
@@ -601,6 +601,7 @@ final class PodServices implements Closeable {
         imageWorkers.shutdownNow();
         images.close();
         browserAuth.close();
+        main.post(browser::close);
         http.close();
         networks.close(); bleDiscovery.close(); discovery.close(); webSockets.close(); byteStreams.close();
         streamWorkers.shutdownNow();

@@ -35,6 +35,7 @@ const methods: Record<string, PodCapabilityId> = {
   "ui.toast": "system.toast",
   "http.download": "net.download",
   "browser.open": "system.browser",
+  "browser.openInApp": "system.browser.inApp",
   "browser.clearSiteData": "system.browser.siteData",
   "browser.availability": "system.browser.availability",
   "audio.start": "media.audio", "audio.pause": "media.audio", "audio.resume": "media.audio", "audio.setSpeed": "media.audio", "audio.stop": "media.audio", "audio.state": "media.audio",
@@ -258,6 +259,31 @@ function browserUrl(url: string): string {
   if (!match || /[\u0000-\u0020]/.test(url)) throw new HostServiceError("invalid_argument", "Browser URL must be a valid HTTP or HTTPS URL");
   return url;
 }
+/** Opt-in embedded browser. The promise resolves after opening, not after closing.
+ * Omit options to retain the external-browser contract. Theme is a snapshot;
+ * omitted font settings preserve site fonts, as in native WatchRSS.
+ */
+export interface BrowserOpenOptions {
+  mode: "inApp";
+  scaleMode?: "standard" | "expanded" | "shrunk";
+  theme?: { dark: boolean; backgroundColor?: string; textZoom?: number; fontFamily?: "sans-serif" | "serif" | "monospace" };
+}
+function inAppBrowserArgs(url: string, options: BrowserOpenOptions): Record<string, unknown> {
+  const invalid = () => { throw new HostServiceError("invalid_argument", "Invalid embedded browser URL or options"); };
+  if (typeof url !== "string" || !url.trim() || url.length > 8192 || /[\u0000-\u001f\u007f]/.test(url)) invalid();
+  url = url.trim();
+  if (!url.startsWith("/") && !/^file:\/\/\//i.test(url)) browserUrl(url);
+  if (!options || options.mode !== "inApp" || Object.keys(options).some(k => !["mode", "scaleMode", "theme"].includes(k))) invalid();
+  if (options.scaleMode !== undefined && !["standard", "expanded", "shrunk"].includes(options.scaleMode)) invalid();
+  const theme = options.theme;
+  if (theme !== undefined) {
+    if (!theme || typeof theme !== "object" || typeof theme.dark !== "boolean" || Object.keys(theme).some(k => !["dark", "backgroundColor", "textZoom", "fontFamily"].includes(k))) invalid();
+    if (theme.backgroundColor !== undefined && !/^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(theme.backgroundColor)) invalid();
+    if (theme.textZoom !== undefined && (!Number.isInteger(theme.textZoom) || theme.textZoom < 50 || theme.textZoom > 200)) invalid();
+    if (theme.fontFamily !== undefined && !["sans-serif", "serif", "monospace"].includes(theme.fontFamily)) invalid();
+  }
+  return {url, ...options};
+}
 export interface BrowserAvailability {
   status: "available" | "no_provider" | "initialization_failed";
   provider?: string;
@@ -279,7 +305,11 @@ export const browser = {
   clearSiteData(args: { origins: readonly string[] }): HostOperation<BrowserSiteDataResult[]> {
     return hostOperation("browser.clearSiteData", { origins: args.origins });
   },
-  open(url: string): HostOperation<void> { return hostOperation<void>("browser.open", { url: browserUrl(url) }); },
+  open(url: string, options?: BrowserOpenOptions): HostOperation<void> {
+    return options === undefined
+      ? hostOperation<void>("browser.open", {url: browserUrl(url)})
+      : hostOperation<void>("browser.openInApp", inAppBrowserArgs(url, options));
+  },
 };
 export const browserAuth = {
   authorize(args: {url:string; cookieOrigin:string; requiredCookieNames:readonly string[]; userAgent?:string}): HostOperation<{cookie:string;origin:string}> {

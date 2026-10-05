@@ -10,6 +10,26 @@ import org.json.JSONObject;
 /** Opens user-requested HTTP(S) URLs in the system browser. */
 final class PodBrowserServices {
     private final Context context;
+    private PodInAppBrowser session;
+    static final class BrowserFailure extends IllegalStateException {
+        final String code;
+        BrowserFailure(String code, String message) { super(message); this.code = code; }
+    }
+    void openInApp(JSONObject args) {
+        PodInAppBrowser.Options options = new PodInAppBrowser.Options(args);
+        if (!(context instanceof Activity)) throw new BrowserFailure("unavailable", "Browser opening requires an Activity");
+        if (session != null && session.isShowing()) throw new BrowserFailure("busy", "An embedded browser is already open");
+        PodInAppBrowser.checkAvailable(context, options.url);
+        session = new PodInAppBrowser((Activity)context, options);
+        try { session.open(); }
+        catch (RuntimeException | LinkageError error) {
+            close();
+            String message = PodInAppBrowser.UNAVAILABLE;
+            android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show();
+            throw new BrowserFailure("webview_unavailable", message);
+        }
+    }
+    void close() { if (session != null) { session.dismiss(); session = null; } }
     PodBrowserServices(Context context) { this.context = context; }
 
     void open(JSONObject args) {
