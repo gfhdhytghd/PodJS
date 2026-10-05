@@ -47,6 +47,8 @@ public final class PodVideoServices implements AutoCloseable {
     private final Context context;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final File mediaRoot;
+    private final PodVideoDecoderBudget decoderBudget;
+    private boolean decoderLease;
     private ExoPlayer player;
     private TextureView videoView;
     private View videoBackground;
@@ -67,8 +69,13 @@ public final class PodVideoServices implements AutoCloseable {
     private float density;
 
     public PodVideoServices(Context context) {
+        this(context, new PodVideoDecoderBudget(PodVideoSessionServices.MAX_SESSIONS));
+    }
+
+    PodVideoServices(Context context, PodVideoDecoderBudget decoderBudget) {
         if (context == null) throw new IllegalArgumentException("context_required");
         this.context = context.getApplicationContext();
+        this.decoderBudget = decoderBudget;
         try { mediaRoot = new File(this.context.getFilesDir(), "podjs/files").getCanonicalFile(); }
         catch (IOException e) { throw new IllegalStateException("service_root_unavailable", e); }
         density = this.context.getResources().getDisplayMetrics().density;
@@ -132,7 +139,10 @@ public final class PodVideoServices implements AutoCloseable {
         if (!audioUrl.isEmpty()) audioUrl = sourceValue(audioUrl);
         if (!videoUrl.isEmpty()) videoUrl = sourceValue(videoUrl);
         if (prepareCallback != null) { prepareCallback.fail("cancelled", "Video preparation replaced"); prepareCallback=null; }
-        releasePlayer(); applyBounds(a.optJSONObject("bounds")); autoplay=a.optBoolean("autoplay", true); backgroundPlayback=a.optBoolean("backgroundPlayback",false); lifecyclePaused=false; density=context.getResources().getDisplayMetrics().density;
+        releasePlayer();
+        if(!decoderBudget.acquire())throw new IllegalStateException("video_decoder_limit");
+        decoderLease=true;
+        applyBounds(a.optJSONObject("bounds")); autoplay=a.optBoolean("autoplay", true); backgroundPlayback=a.optBoolean("backgroundPlayback",false); lifecyclePaused=false; density=context.getResources().getDisplayMetrics().density;
         Map<String,String> headers = headers(a.optJSONObject("headers"));
         DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory(); if (!headers.isEmpty()) http.setDefaultRequestProperties(headers);
         DefaultDataSource.Factory data = new DefaultDataSource.Factory(context, http);
@@ -214,12 +224,12 @@ public final class PodVideoServices implements AutoCloseable {
         playerListener=null;
         ServiceConnection previousConnection=connection;connection=null;
         if(previousConnection!=null){try{context.unbindService(previousConnection);}catch(IllegalArgumentException ignored){}}
-        if(!keepPlaying)context.stopService(new Intent(context,PodVideoPlaybackService.class));
+        if(!keepPlaying){context.stopService(new Intent(context,PodVideoPlaybackService.class));if(decoderLease){decoderLease=false;decoderBudget.release();}}
         if(videoView!=null)videoView.setVisibility(View.GONE);
         if(videoBackground!=null)videoBackground.setVisibility(View.GONE);
         if(prepareCallback!=null){Callback pending=prepareCallback;prepareCallback=null;pending.fail("cancelled","Video preparation cancelled");}
     }
     private void releasePlayer(){detachPlayer(false);if(videoView!=null)videoView.setKeepScreenOn(false);}
     @Override public void close(){closed=true;main.post(()->{detachPlayer(backgroundPlayback&&player!=null&&prepareCallback==null&&player.getPlayWhenReady());if(videoView!=null&&videoView.getParent() instanceof ViewGroup)((ViewGroup)videoView.getParent()).removeView(videoView);if(videoView!=null)videoView.setKeepScreenOn(false);videoView=null;if(videoBackground!=null&&videoBackground.getParent() instanceof ViewGroup)((ViewGroup)videoBackground.getParent()).removeView(videoBackground);videoBackground=null;clearBackdrop();if(backdrop!=null&&backdrop.getParent() instanceof ViewGroup)((ViewGroup)backdrop.getParent()).removeView(backdrop);backdrop=null;parent=null;state="idle";});}
-    private static String errorCode(Exception e){return e instanceof SecurityException?"permission_denied":e instanceof IllegalArgumentException?"invalid_argument":"video_error";}
+    private static String errorCode(Exception e){return e instanceof SecurityException?"permission_denied":e instanceof IllegalArgumentException?"invalid_argument":"video_decoder_limit".equals(e.getMessage())?"resource_exhausted":"video_error";}
 }
