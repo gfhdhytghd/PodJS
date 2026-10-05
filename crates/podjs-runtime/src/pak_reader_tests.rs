@@ -110,6 +110,14 @@ fn mapped_pak_indexes_without_loading_fonts_or_images_then_faults_each_on_demand
     ]).into_boxed_slice());
     let runtime = runtime();
     assert_eq!(unsafe { pod_runtime_load_pak_mapped(runtime, bytes.as_ptr(), bytes.len()) }, OK);
+    let manifest = CString::new(json!({
+        "target": "android-watch", "hostAbi": ABI_VERSION,
+        "pocketjsRevision": option_env!("PODJS_POCKETJS_REVISION")
+            .unwrap_or("0a90bf904d835210e52a11ed275a86d0040b5086"),
+        "pakHash": format!("{:016x}", hash_bytes(bytes)),
+        "bundleHash": "0000000000000000", "capabilities": [],
+    }).to_string()).unwrap();
+    assert_eq!(pod_runtime_validate_package(runtime, manifest.as_ptr()), OK);
     assert!(resources(runtime)["fonts"].as_array().unwrap().is_empty());
     // Sprite tables are immutable at mount, so their atlas stays eager while
     // ordinary images and font slots remain lazy.

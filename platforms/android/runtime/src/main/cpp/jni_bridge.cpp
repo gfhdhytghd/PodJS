@@ -327,8 +327,11 @@ extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeBo
   double firstFramePrepareMs=0;
   if(!result) {const double frameBegan=monoMs();renderFrame(h);firstFramePrepareMs=monoMs()-frameBegan;}
   PodPakStats stats{};stats.struct_size=sizeof(stats);pod_runtime_pak_stats(h->runtime,&stats);
-  __android_log_print(ANDROID_LOG_INFO,"PodJSPerf","boot mmapMs=%.1f dirParseMs=%.3f pakHashMs=%.1f validateMs=%.1f evalMs=%.1f evalMode=%s firstSlotLoadMs=%.3f loadedSlots=%u firstFramePrepareMs=%.1f",
-      mapped-began,stats.directory_parse_micros/1000.0,stats.pak_hash_micros/1000.0,validated-loaded,evaluated-validated,
+  const char* pakIntegrity=stats.pak_integrity_mode==2?"entry-sha256":(stats.pak_integrity_mode==1?"legacy-fnv":"none");
+  __android_log_print(ANDROID_LOG_INFO,"PodJSPerf","boot mmapMs=%.1f dirParseMs=%.3f pakHashMs=%.1f dirHashMs=%.3f eagerHashMs=%.3f entryHashMs=%.3f pakIntegrity=%s verifiedEntries=%u integrityFailures=%u validateMs=%.1f evalMs=%.1f evalMode=%s firstSlotLoadMs=%.3f loadedSlots=%u firstFramePrepareMs=%.1f",
+      mapped-began,stats.directory_parse_micros/1000.0,stats.pak_hash_micros/1000.0,
+      stats.directory_hash_micros/1000.0,stats.eager_hash_micros/1000.0,stats.integrity_hash_micros/1000.0,
+      pakIntegrity,stats.verified_entries,stats.integrity_failures,validated-loaded,evaluated-validated,
       evalMode,stats.first_font_load_micros/1000.0,stats.loaded_font_slots,firstFramePrepareMs);
   if(result)fail(env,pod_runtime_last_error());
   else __android_log_print(ANDROID_LOG_INFO,"PodJS","%s",pod_runtime_receipt(h->runtime));
