@@ -12,7 +12,8 @@ public final class PodTakeover {
     private PodTakeover() {}
     private static PodTakeoverCoordinator coordinator(Context c) {
         return new PodTakeoverCoordinator(new File(c.getFilesDir(),"package-takeover"),
-                () -> detect(c),PodTakeoverCoordinator.EMPTY);
+                () -> detect(c),new PodRoomV18Converter(c.getDatabasePath("watchrss.db"),
+                    PodRoomAndroidDb::new,() -> c.getSharedPreferences("watch_device_identity",Context.MODE_PRIVATE).getString("device_id",null)));
     }
     // Keyed by Android's in-memory sandbox path, not Activity identity. Distinct
     // fixture/storage contexts must not accidentally share an admitted generation.
@@ -77,14 +78,10 @@ public final class PodTakeover {
             present |= new File(c.getFilesDir(),name).exists();
         if(!present)return new PodTakeoverCoordinator.Source(false,null,0,0,0);
         int schema=-1; String block=null;
-        // Header-only read cannot checkpoint or create WAL/SHM. P2b must recover a
-        // complete DB+WAL snapshot and validate Room metadata/schema there.
-        if(db.isFile())try(RandomAccessFile in=new RandomAccessFile(db,"r")) {
-            byte[] magic=new byte[16];in.readFully(magic);
-            if(!java.util.Arrays.equals(magic,"SQLite format 3\000".getBytes(java.nio.charset.StandardCharsets.US_ASCII)))block="source_corrupt";
-            else {in.seek(60);schema=in.readInt();if(schema!=18)block="source_schema_unsupported";}
-        } catch(IOException bad){block="source_corrupt";}
-        else block="source_database_missing";
+        // Version and Room identity/columns are checked on the recovered private
+        // snapshot, including uncheckpointed WAL. Never inspect a stale header.
+        if(!db.isFile())block="source_database_missing";
+        else schema=18; // expected contract; converter proves it before COPYING
         if(c.getDatabasePath("podjs.sqlite").exists() || nonempty(new File(c.getFilesDir(),"podjs")))block="target_conflict";
         File[] auxiliary=c.getNoBackupFilesDir().listFiles();
         if(auxiliary==null)throw new IOException("target_unreadable");

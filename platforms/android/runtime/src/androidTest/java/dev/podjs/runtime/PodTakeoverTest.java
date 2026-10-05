@@ -16,6 +16,7 @@ public final class PodTakeoverTest {
         Context base=InstrumentationRegistry.getInstrumentation().getTargetContext();
         File root=Files.createTempDirectory(base.getCacheDir().toPath(),"takeover-fixture").toFile();
         return new ContextWrapper(base) {
+            @Override public android.content.SharedPreferences getSharedPreferences(String name,int mode){return base.getSharedPreferences(root.getName()+"-"+name,mode);}
             @Override public File getFilesDir(){File f=new File(root,"files");f.mkdirs();return f;}
             @Override public File getDatabasePath(String name){File dir=new File(root,"databases");dir.mkdirs();return new File(dir,name);}
             @Override public File getNoBackupFilesDir(){File f=new File(root,"no_backup");f.mkdirs();return f;}
@@ -43,8 +44,9 @@ public final class PodTakeoverTest {
         assertArrayEquals(before,Files.readAllBytes(c.getDatabasePath("watchrss.db").toPath()));
     }
     @Test public void unsupportedCorruptAndStoreOnlyFailClosed()throws Exception {
-        Context c=fixture();header(c,19);assertEquals("source_schema_unsupported",PodTakeover.detect(c).block);
-        c=fixture();Files.write(c.getDatabasePath("watchrss.db").toPath(),new byte[]{1,2});assertEquals("source_corrupt",PodTakeover.detect(c).block);
+        // Detection no longer trusts main-file version bytes; WAL-aware Room validation is in the converter.
+        Context c=fixture();header(c,19);assertNull(PodTakeover.detect(c).block);assertFalse(PodTakeover.ready(c));
+        c=fixture();Files.write(c.getDatabasePath("watchrss.db").toPath(),new byte[]{1,2});assertNull(PodTakeover.detect(c).block);assertFalse(PodTakeover.ready(c));
         c=fixture();File store=new File(c.getFilesDir(),"datastore/settings.preferences_pb.preferences_pb");store.getParentFile().mkdirs();Files.write(store.toPath(),new byte[]{1});
         assertTrue(PodTakeover.detect(c).present);assertEquals("source_database_missing",PodTakeover.detect(c).block);assertFalse(PodTakeover.ready(c));
     }

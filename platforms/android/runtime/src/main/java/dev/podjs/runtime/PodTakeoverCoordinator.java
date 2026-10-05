@@ -12,6 +12,7 @@ public final class PodTakeoverCoordinator {
     public enum Phase { DETECTED, SNAPSHOTTED, COPYING, VERIFYING, READY, ACTIVATING, ACTIVE, PAUSED, BLOCKED }
     public interface Converter {
         String version();
+        default boolean complete() { return true; }
         void snapshot(File generation) throws Exception;
         void copy(File generation) throws Exception;
         /** Recheck fixed snapshot identity, converter version, cursors and batch receipts. */
@@ -104,6 +105,11 @@ public final class PodTakeoverCoordinator {
                             case VERIFYING:
                                 String receipt=converter.verify(generation);
                                 if (receipt==null || !receipt.matches("[a-f0-9]{64}")) throw new IOException("receipt_invalid");
+                                if (!converter.complete()) {
+                                    p.setProperty("reason","converters_incomplete");
+                                    p.setProperty("resumePhase",Phase.VERIFYING.name());
+                                    save(p,Phase.PAUSED); return p;
+                                }
                                 p.setProperty("receipt",receipt); phase=Phase.READY; break;
                             case READY: phase=Phase.ACTIVATING; break;
                             case ACTIVATING:

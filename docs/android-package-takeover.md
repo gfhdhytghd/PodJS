@@ -39,3 +39,65 @@ These host transport/OS bookkeeping stores are gated but remain in `no_backup`: 
 `bun run test` includes the device-free JVM harness (`scripts/test-takeover.sh`) and cargo. The harness additionally checks repeated NONE/ACTIVE cached resolution, fault immunity after admission, one resolution/detect across 16 simultaneous first callers, uncached admission failures, and zero writes with absent/empty takeover roots. The harness exercises restart after each phase, PAUSED retry, BLOCKED/corrupt cases, missing converter, converter version change, invalid receipt, pointer-before-ACTIVE recovery, preservation of post-activation writes, no-source filesystem invariance, concurrent pointer reads, a torn uncommitted temporary pointer, and threads/separate-process lock contention.
 
 `PodTakeoverTest` androidTest uses synthetic Context roots for source detection, no-source paths, blocked production storage constructors and all four active roots. P2a only compiles it. Real Android filesystem durability, OS termination, Keystore continuity and installed-package upgrade/physical acceptance remain PENDING. No device is operated and no source/user data is deleted.
+
+## P2b: WatchRSS Room v18 candidate converter
+
+`PodRoomV18Converter` is wired to the Android gate. It validates the generated
+Room identity (`b44b41535bfc1462c5b15f3a2a561595`), all 15 table names,
+column names/types/nullability/primary-key positions, `quick_check`, and foreign
+keys on a recovered private copy. Unknown business tables/columns fail closed.
+The source is never opened by SQLite. Native writers must be stopped by the
+existing admission policy. A read-only POSIX lock over the main DB locking
+range and all eight WAL SHM lock bytes excludes writers/checkpointers while
+copying DB+WAL. Hashing/copying uses the same descriptors to preserve POSIX
+locks. SHM is not copied. WAL recovery/checkpoint happens on the private copy
+only; absent SHM for a nonempty WAL or unavailable locks pauses conversion.
+
+The target schema resource is exported directly from WatchRSS `SCHEMA` and its
+memo schema. Refresh/check it with:
+
+```sh
+bun scripts/export-takeover-schema.ts /path/to/PodJS_WatchRSS
+bun scripts/export-takeover-schema.ts /path/to/PodJS_WatchRSS --check
+```
+
+The Room contract resource was extracted from native Room v18's generated
+`WatchRssDatabase_Impl.createAllTables` (source code, not a user database).
+`room-progress.sqlite` is attached to `podjs.sqlite`. Both use DELETE journals
+and FULL synchronization, so batch rows, composite keyset cursor, catalog rows,
+body-reference manifest and receipt commit through SQLite's super-journal.
+No migration tables are added to the application schema. Each batch seals a
+bounded-read digest; resume checks snapshot/schema/converter identity and the
+sealed target, catalogs, references and cursor before any next batch. Verification
+reconstructs an independent expected candidate, compares every target table and
+catalog/reference row by key and value, and records counts/digests and orphan
+counts. Verification scratch is removed only after successful validation.
+Full-candidate sealing is conservative and can be expensive on large libraries;
+watch-scale performance has not been measured.
+
+Four reader tables become `reader-catalog.json` (records plus assets), preserving
+undecodable payloads, nullable poster normalization and tombstones. Selection,
+schedule, final KV merge/quota, secure stores and actual file copying belong to
+P2c/P2d. Body markers remain unchanged in application rows and are parsed into a
+safe `migration.content_reference` manifest for P2d; source sync/body metadata
+is retained in the fixed Room snapshot. Derived article sync caches remain empty,
+as with the offline oracle, until actual bodies/files can be resolved and rebuilt.
+No download/file success is inferred from a database row. The local device ID is
+read lazily after unlocked admission and snapshotted before default identity can
+be created. Journal/status never exposes its value or content digests.
+
+`complete()` returns false. Even a verified database ALWAYS ends at
+`PAUSED`, `resumePhase=VERIFYING`, `reason=converters_incomplete`; no READY,
+active pointer or guest startup is permitted. This is not end-to-end takeover
+acceptance. No device or real-user snapshot is used by the tests.
+
+`bash scripts/test-room-v18.sh` (also in `bun run test`) generates a synthetic
+v18 source with uncheckpointed WAL, body references/large original text,
+NULL/zero token fields, tombstones and orphan sync/note references. It compares
+all target schemas and business tables against WatchRSS's two Python staging
+oracles (derived revision count is intentionally excluded), checks all four
+reader catalogs and the next autoincrement sequence, interrupts before/after
+every batch both with exceptions and actual JVM termination, checks source
+byte preservation/locking, and rejects schema/identity/tamper cases.
+`WATCHRSS_APP_SOURCE`, `SQLITE_JDBC_JAR`, `JSON_JAR`, `SLF4J_JAR` allow explicit
+CI inputs; defaults use the local source checkout and resolved Gradle jars.
