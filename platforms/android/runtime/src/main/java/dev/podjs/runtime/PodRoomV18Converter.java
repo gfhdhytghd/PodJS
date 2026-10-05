@@ -23,7 +23,8 @@ public final class PodRoomV18Converter implements PodTakeoverCoordinator.Convert
     private final File source;
     private final Factory factory;
     public interface IdentitySource { String read() throws Exception; }
-    private final IdentitySource identity;
+    public interface SnapshotIdentitySource { String read(File generation) throws Exception; }
+    private final SnapshotIdentitySource identity;
     private final int batchSize;
     private final BatchHook hook;
     private static final String[] TABLES={"rss_channels","rss_items","saved_sync_states","saved_entries","offline_media","rss_source_sync_states","sync_change_log","sync_peer_state","watch_note_folders","watch_notes","llm_token_usage","reader_presets","reader_font_assets","reader_background_assets","reader_deletions"};
@@ -34,7 +35,10 @@ public final class PodRoomV18Converter implements PodTakeoverCoordinator.Convert
     }
     private PodRoomV18Converter(File source, Factory factory, IdentitySource identity,int batchSize,BatchHook hook) {
         if(batchSize<1)throw new IllegalArgumentException();
-        this.source=source;this.factory=factory;this.identity=identity;this.batchSize=batchSize;this.hook=hook;
+        this.source=source;this.factory=factory;this.identity=g -> identity.read();this.batchSize=batchSize;this.hook=hook;
+    }
+    public PodRoomV18Converter(File source, Factory factory, SnapshotIdentitySource identity) {
+        this.source=source;this.factory=factory;this.identity=identity;this.batchSize=128;this.hook=c -> {};
     }
     public String version(){return "watchrss-room-v18-1";}
     public boolean complete(){return false;}
@@ -99,7 +103,7 @@ public final class PodRoomV18Converter implements PodTakeoverCoordinator.Convert
     public void snapshot(File g) throws Exception {
         File receipt=new File(g,"snapshot.properties");
         if(receipt.exists()){resume(g,PodTakeoverCoordinator.Phase.SNAPSHOTTED);return;}
-        String localIdentity=identity.read();
+        String localIdentity=identity.read(g);
         if(localIdentity==null || localIdentity.trim().isEmpty())throw new IOException("identity_missing");
         // New scratch directory per attempt; interrupted candidates remain private.
         File scratch=new File(g,"capture-"+UUID.randomUUID());Files.createDirectories(scratch.toPath());
