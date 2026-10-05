@@ -30,6 +30,9 @@ export interface PodProjectConfig {
   background?: Record<string, string>;
   backgroundServices?: string[];
   resources?: PodProjectResources;
+  /** Omit duplicate function source strings, retaining error locations.
+   * Opt in only if Function.toString source introspection is unused. */
+  bytecode?: { stripSource: boolean };
   android?: { resources: string; theme: string };
 }
 
@@ -85,6 +88,12 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
   const known = new Set<string>(Object.values(targets).flatMap(profile => [...profile.capabilities]));
   const unknown = capabilities.filter(cap => !known.has(cap));
   if (unknown.length) invalid(`unknown capability(s): ${unknown.join(", ")}`);
+  let bytecode: PodProjectConfig["bytecode"];
+  if (value.bytecode !== undefined) {
+    if (!value.bytecode || typeof value.bytecode !== "object" || Array.isArray(value.bytecode) ||
+        typeof (value.bytecode as Record<string, unknown>).stripSource !== "boolean") invalid("bytecode.stripSource must be a boolean");
+    bytecode = { stripSource: (value.bytecode as { stripSource: boolean }).stripSource };
+  }
   let resources: PodProjectResources | undefined;
   let assets: Record<string, string> = Object.create(null);
   if (value.resources !== undefined) {
@@ -157,5 +166,5 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
     if (!existsSync(androidResources) || !statSync(androidResources).isDirectory()) invalid(`android resources directory not found: ${androidResources}`);
     android = {resources: resourcesPath, theme: androidTheme};
   }
-  return { config: { entry: entryValue, appId, versionName, versionCode: value.versionCode as number, name, capabilities, resources, android, background: backgroundConfig, backgroundServices }, root, configPath, entry, output: join(defaults.outputRoot, appId), fontRegular, fontBold, fontSlots, extraChars, background, assets, androidResources, androidTheme };
+  return { config: { entry: entryValue, appId, versionName, versionCode: value.versionCode as number, name, capabilities, resources, android, background: backgroundConfig, backgroundServices, bytecode }, root, configPath, entry, output: join(defaults.outputRoot, appId), fontRegular, fontBold, fontSlots, extraChars, background, assets, androidResources, androidTheme };
 }

@@ -99,3 +99,12 @@ test("packaged assets retain logical names and resolve source paths separately f
     expect(() => resolvePodProject(fixture({...base,resources:{assets}}),POD_TARGETS,defaults)).toThrow("assets");
   }
 });
+
+
+test("bytecode source stripping is an explicit boolean opt-in", () => {
+  expect(resolvePodProject(fixture(base),POD_TARGETS,defaults).config.bytecode).toBeUndefined();
+  for (const stripSource of [true,false])
+    expect(resolvePodProject(fixture({...base,bytecode:{stripSource}}),POD_TARGETS,defaults).config.bytecode).toEqual({stripSource});
+  for (const bytecode of [true,[],null,{}, {stripSource:"true"}])
+    expect(() => resolvePodProject(fixture({...base,bytecode}),POD_TARGETS,defaults)).toThrow("bytecode.stripSource");
+});

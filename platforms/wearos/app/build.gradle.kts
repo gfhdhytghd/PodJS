@@ -5,7 +5,8 @@ val podVersionName = providers.gradleProperty("podVersionName").orElse("0.1.0").
 val podVersionCode = providers.gradleProperty("podVersionCode").map(String::toInt).orElse(1).get()
 val podDistDir = providers.gradleProperty("podDistDir").orElse("../../../dist/wearos-watch").get()
 android {
-    androidResources { noCompress += "pak" }
+    // Stored bytecode lets AAsset_getBuffer map it without inflate/copy at boot.
+    androidResources { noCompress += listOf("pak", "qbc") }
     namespace = "dev.podjs.wear"; compileSdk = 36
     defaultConfig { applicationId = podAppId; minSdk = 30; targetSdk = 36; versionCode = podVersionCode; versionName = podVersionName; manifestPlaceholders["podAppName"] = podAppName; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     sourceSets["main"].assets.srcDir(podDistDir)

@@ -105,6 +105,7 @@ async function build(target: Target, project?: ResolvedPodProject): Promise<Reso
     run([
       "cargo", "run", "--quiet", "--manifest-path", join(ROOT, "Cargo.toml"),
       "-p", "podjs-runtime", "--example", "compile-bytecode", "--", js, bytecodePath,
+      ...(project?.config.bytecode?.stripSource ? ["--strip-source"] : []),
     ]);
   }
   const background = await buildBackground(project?.background ?? {}, out);
@@ -129,6 +130,8 @@ async function build(target: Target, project?: ResolvedPodProject): Promise<Reso
       quickjsBytecodeVersion: 26,
       endianness: "little",
       sourceHash: bundleHash,
+      sourceIncluded: !project?.config.bytecode?.stripSource,
+      debugIncluded: true,
       sha256: createHash("sha256").update(readFileSync(bytecodePath)).digest("hex"),
       bytes: readFileSync(bytecodePath).byteLength,
     }} : {}),

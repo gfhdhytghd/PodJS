@@ -240,6 +240,19 @@ typedef struct PodPakStats {
   uint64_t integrity_hash_micros;
 } PodPakStats;
 int32_t pod_runtime_pak_stats(PodRuntime *runtime, PodPakStats *out);
+/* Last bytecode eval. execute includes global function instantiation; global
+ * IIFE bundles have no separate ES module link phase. */
+typedef struct PodEvalStats {
+  uint32_t struct_size;
+  uint64_t bytecode_bytes;
+  uint64_t hash_micros;
+  uint64_t mount_micros;
+  uint64_t read_object_micros;
+  uint64_t execute_micros;
+  uint64_t drain_jobs_micros;
+  uint64_t finish_micros;
+} PodEvalStats;
+int32_t pod_runtime_eval_stats(PodRuntime *runtime, PodEvalStats *out);
 typedef struct PodRuntimePerfStats {
   uint32_t struct_size;
   uint32_t loaded_font_slots;
