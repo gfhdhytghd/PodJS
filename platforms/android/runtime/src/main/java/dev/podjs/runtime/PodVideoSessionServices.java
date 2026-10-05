@@ -193,6 +193,7 @@ final class PodVideoSessionServices implements AutoCloseable {
         session.autoplay = args.optBoolean("autoplay", true);
         session.muted = args.optBoolean("muted", false);
         session.volume = session.muted ? 0f : 1f;
+        session.errorCode = null;
         session.state = "preparing";
         session.hasRenderedFirstFrame = false;
         session.presented = !session.prewarming && bounds.visible;
@@ -271,8 +272,14 @@ final class PodVideoSessionServices implements AutoCloseable {
                 boolean decoderFailure = error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED
                         || error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED
                         || error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED;
-                failPrepare(own, player, generation, "prepare_failed",
-                        error.getMessage() == null ? "Video playback failed" : error.getMessage(),
+                String code = PodPlaybackFailure.isNetwork(error) ? "network_error" : "prepare_failed";
+                if ("network_error".equals(code) && own.prepareCallback == null) {
+                    // Retain the terminal state for polling, but release decoder/player resources.
+                    own.errorCode = code; own.state = "error"; own.resetPlayer(); own.hideOffscreen();
+                    return;
+                }
+                failPrepare(own, player, generation, code,
+                        "Video playback failed",
                         own.prewarming && decoderFailure);
             }
         });
@@ -585,6 +592,7 @@ final class PodVideoSessionServices implements AutoCloseable {
         Runnable prewarmTimeout;
         PodVideoDecoderCapabilities.Profile profile;
         String state = "idle";
+        String errorCode;
         String scaleMode = "standard";
         float rotationDeg, panX, panY, volume = 1f;
         boolean decoderLease, prewarming, autoplay, muted, presented, hasRenderedFirstFrame, disposed;
@@ -719,7 +727,7 @@ final class PodVideoSessionServices implements AutoCloseable {
 
         JSONObject snapshot() throws Exception {
             return new JSONObject()
-                    .put("ok", true).put("sessionId", id).put("state", state)
+                    .put("ok", true).put("sessionId", id).put("state", state).put("errorCode", "error".equals(state) ? errorCode : null)
                     .put("positionMs", player == null ? 0 : player.getCurrentPosition())
                     .put("durationMs", player == null ? 0 : Math.max(0, player.getDuration()))
                     .put("width", player == null ? 0 : player.getVideoSize().width)

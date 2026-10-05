@@ -21,6 +21,7 @@ import android.view.WindowManager;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceError;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
@@ -73,6 +74,9 @@ public final class PodBrowserAuthServices implements AutoCloseable {
     private TextView statusLabel;
     private int qrGeneration;
     private int pageGeneration;
+    private PodBrowserLoginCompletion loginCompletion;
+    private Uri completionOrigin;
+    private Set<String> completionRequired;
     private volatile boolean closed;
 
     public PodBrowserAuthServices(Context context) {
@@ -105,6 +109,8 @@ public final class PodBrowserAuthServices implements AutoCloseable {
             if (!sameOrigin(initial, cookieOrigin)) throw new IllegalArgumentException("url_and_cookie_origin_must_match");
             required = requiredCookieNames(args.optJSONArray("requiredCookieNames"));
             qrExtractionScript = args.optString("qrExtractionScript", "");
+            if (args.optBoolean("completeOnLoginPanelHidden", false) && (!withStatus || qrExtractionScript.isEmpty()))
+                throw new IllegalArgumentException("login_panel_completion_requires_status_script");
             if (qrExtractionScript.length() > 16 * 1024) throw new IllegalArgumentException("qr_extraction_script_too_large");
         } catch (IllegalArgumentException error) {
             callback.fail("invalid_argument", message(error));
@@ -137,6 +143,12 @@ public final class PodBrowserAuthServices implements AutoCloseable {
                     page(true);
                 }
                 @Override public void onPageFinished(WebView v, String url) { page(false); }
+                @Override public void onReceivedError(WebView v, WebResourceRequest request, WebResourceError error) {
+                    if (webView != view || pending != callback || loginCompletion == null || request == null || !request.isForMainFrame()) return;
+                    // Numeric WebView code only: never forward URLs, page text or vendor descriptions.
+                    int code = error == null ? WebViewClient.ERROR_UNKNOWN : error.getErrorCode();
+                    finishFailure("webview_load_" + code, "WebView main frame failed");
+                }
                 @Override public boolean shouldOverrideUrlLoading(WebView ignored, WebResourceRequest request) {
                     Uri target = request == null ? null : request.getUrl();
                     if (target != null && sameOrigin(initial, target)) return false;
@@ -227,6 +239,9 @@ public final class PodBrowserAuthServices implements AutoCloseable {
                 if (dialog == created && pending == callback) finishFailure("cancelled", "Browser authorization dismissed");
             });
             pending = callback;
+            loginCompletion = args.optBoolean("completeOnLoginPanelHidden", false) ? new PodBrowserLoginCompletion() : null;
+            completionOrigin = cookieOrigin;
+            completionRequired = required;
             statusStream = withStatus ? new PodBrowserAuthStatus.Stream(callback::status) : null;
             statusLabel = status;
             dialog = created;
@@ -281,6 +296,9 @@ public final class PodBrowserAuthServices implements AutoCloseable {
     private void releaseWebView() {
         if (qrPoll != null) main.removeCallbacks(qrPoll);
         qrPoll = null;
+        loginCompletion = null;
+        completionOrigin = null;
+        completionRequired = null;
         qrGeneration++;
         displayedQrData = null;
         statusLabel = null;
@@ -317,6 +335,15 @@ public final class PodBrowserAuthServices implements AutoCloseable {
                 else {
                     PodBrowserAuthStatus snapshot = PodBrowserAuthStatus.parse(result);
                     statusStream.accept(snapshot);
+                    if (!isCurrentQrSession(view, overlay)) return;
+                    if (loginCompletion != null) {
+                        String raw = CookieManager.getInstance().getCookie(originString(completionOrigin));
+                        if (loginCompletion.accept(snapshot, containsRequiredCookies(raw, completionRequired))) {
+                            CookieManager.getInstance().flush();
+                            finishSuccess(new JSONObjectResult(raw == null ? "" : raw, originString(completionOrigin)).json);
+                            return;
+                        }
+                    }
                     if (statusLabel != null) statusLabel.setText(snapshot.verifying ? "请完成网页验证"
                             : snapshot.qr == null ? "登录后点完成"
                             : "secondVerify".equals(snapshot.qr.optString("kind")) ? "请扫码完成二步验证" : "请扫码登录");
@@ -330,7 +357,7 @@ public final class PodBrowserAuthServices implements AutoCloseable {
     }
 
     private boolean isCurrentQrSession(WebView view, ImageView overlay) {
-        return !closed && pending != null && webView == view && qrOverlay == overlay;
+        return !closed && pending != null && pending.isActive() && webView == view && qrOverlay == overlay;
     }
 
     private void scheduleQrPoll(Runnable task) {

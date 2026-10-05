@@ -275,7 +275,7 @@ export const speech = {
 };
 export interface VideoBounds { x:number; y:number; width:number; height:number; translateX?:number; translateY?:number; visible?:boolean; roundClip?:{cx:number;cy:number;radius:number} }
 export interface VideoPrepare { url?:string; videoUrl?:string; audioUrl?:string; type?:string; videoMime?:string; videoWidth?:number; videoHeight?:number; headers?:Record<string,string>; bounds:VideoBounds; autoplay?:boolean; muted?:boolean; loop?:boolean; backgroundPlayback?:boolean }
-export interface VideoState { ok:boolean; state:string; positionMs:number; durationMs:number; width:number; height:number; volume:number; volumeMax:number }
+export interface VideoState { hasRenderedFirstFrame?:boolean; errorCode?:string; ok:boolean; state:string; positionMs:number; durationMs:number; width:number; height:number; volume:number; volumeMax:number }
 export const video = {
   prepare(options: VideoPrepare): HostOperation<VideoState> { return hostOperation<VideoState>("video.prepare", options as unknown as Record<string,unknown>); },
   play(): Promise<VideoState> { return hostOperation<VideoState>("video.play", {}).result; },
@@ -303,6 +303,7 @@ export interface VideoSessionPrepare extends Omit<VideoPrepare,"backgroundPlayba
   prewarm?:boolean;
 }
 export interface VideoSessionState {
+  errorCode?:string;
   ok:boolean; sessionId:string; state:string; positionMs:number; durationMs:number;
   width:number; height:number; muted:boolean; volume:number; prewarming:boolean;
   presented:boolean; hasRenderedFirstFrame:boolean; targetBufferBytes:number;
@@ -409,6 +410,9 @@ export interface BrowserAuthOptions {
   /** Legacy: data-image string/null. With onStatus: also accepts an atomic status snapshot. */
   qrExtractionScript?:string;
   onStatus?:(status:BrowserAuthStatus)=>void;
+  /** Opt in to completion after an observed login panel disappears, verification ends,
+   * and required cookies exist. Older hosts retain their manual Done action. */
+  completeOnLoginPanelHidden?:boolean;
 }
 function isBrowserAuthStatus(value:unknown):value is BrowserAuthStatus {
   if (!value || typeof value!=="object") return false;

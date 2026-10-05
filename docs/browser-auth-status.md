@@ -70,3 +70,17 @@ that the user scanned it. No page text, cookies or navigation URLs enter events.
 Validation for F4 covers TS transport/script fixtures and compiled Android
 instrumentation tests. Live Douyin DOM, rendering, touch interaction and physical
 second-verification acceptance require device testing.
+
+
+## Optional native-style completion
+
+`completeOnLoginPanelHidden: true` (with `onStatus` and a status extraction script)
+opts into completion after an observed login panel disappears. Android waits until
+page loading, webpage verification and extracted QR are absent and all
+`requiredCookieNames` have non-empty values. A fresh authorization starts a fresh
+observation. Manual Done remains available; hosts predating the option ignore it.
+
+In this mode a main-frame WebView load failure rejects with `webview_load_<code>`
+(the Android numeric error code). Subresource errors do not reject. No URL,
+page text or vendor error description is forwarded. Other authorizations keep
+the existing manual completion and error behavior.

@@ -171,7 +171,8 @@ test("authorization statuses are request-scoped, validated and stop at cancellat
   const events:any[]=[]; const args={url:"https://www.douyin.com/chat",cookieOrigin:"https://www.douyin.com",requiredCookieNames:[]};
   const pump=(values:any[])=>{batch=JSON.stringify(values);__pumpPodEvents();};
   try {
-    const op=browserAuth.authorize({...args,onStatus:v=>events.push(v)});const id=commands.at(-1).id;
+    const op=browserAuth.authorize({...args,completeOnLoginPanelHidden:true,onStatus:v=>events.push(v)});const id=commands.at(-1).id;
+    expect(commands.at(-1).args.completeOnLoginPanelHidden).toBe(true);
     expect(commands.at(-1)).toMatchObject({method:"browser.authorizeWithStatus",args});
     expect(commands.at(-1).args).not.toHaveProperty("onStatus");
     const qr={type:"qr",kind:"login",mime:"image/png",imageBase64:"cXI="};
