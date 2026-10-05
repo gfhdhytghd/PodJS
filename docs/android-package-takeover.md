@@ -1,6 +1,6 @@
-# Android package takeover coordinator (P2a)
+# Android package takeover coordinator (P2a–P2d)
 
-This is framework infrastructure, not a working WatchRSS data converter or a production upgrade approval. The installed host uses `Converter.EMPTY`, which pauses at DETECTED without claiming a snapshot, creating target stores, or publishing an empty generation. P2b must supply the host-owned converter in `PodTakeover.coordinator`; guest code has no registration, resume, activation or cleanup API.
+The installed host uses the Room/store/file composite described in P2b–P2d below. Verified, unblocked synthetic migrations can publish a complete generation; unsupported data and user-required reauthorization stay blocked. This is not production upgrade approval. Guest code has no registration, resume, activation or cleanup API. Earlier phase sections below retain their implementation scope; P2d supersedes their incomplete-composite gate.
 
 ## Admission and publication
 
@@ -24,7 +24,7 @@ Generations above are relative to `files/package-takeover`. Media, video session
 - `snapshot`: create and validate an immutable recoverable snapshot before returning. The coordinator does not copy a live SQLite main file or touch source WAL/SHM.
 - `copy`: idempotently convert from that snapshot; own batch transactions and cursor receipts in the candidate. No tables or stores are converted in P2a.
 - `resume`: validate snapshot identity, converter version, cursors and completed-batch receipts after restart, before continuing. Version mismatch blocks and retains the old candidate; automatic replacement-candidate policy is deferred.
-- `verify`: read back through production consumers, return a 64-character hex receipt digest, and never mutate the candidate. Called again before publication, including recovery from a durable pointer with an ACTIVATING journal. No callbacks run after ACTIVE.
+- `verify`: read back through production consumers, return a 64-character hex receipt digest, and never mutate the candidate. Called again before publication, including recovery from a durable pointer with an ACTIVATING journal. Only the `active` current-store readback callback runs after ACTIVE; import callbacks never do.
 - P2a uses an opaque candidate UUID. P2b must persist snapshot-derived migration identity, full manifests/digests, target schema, counts, file/store receipts and checkpoints. The P2a journal already records protocol/converter/schema, presence-only store inventory, space estimates, generation, phase and final verification receipt.
 - Source probe reads SQLite header user_version without opening SQLite, inventories known native stores/assets, and conservatively estimates three times source bytes plus 32 MiB. This is not a Room table/identity-hash or recovered-WAL schema check. Those must happen on the consistent snapshot before SNAPSHOTTED. Unknown/corrupt header and store-only source block; insufficient space/unlocked-user requirement pause. Unknown source inventory and actual conversion-dependent space sizing remain P2b work.
 - The native fallback is intentional: ordinary app JS cannot run before migration admission. `takeover.status()` from `@podjs/framework/services`, capability `host.takeover`, is a read-only admitted-runtime API; old hosts reject with `unsupported` and emit no request. A richer pre-admission JS progress runtime would need a separately restricted, storage-free host and is not supplied here.
@@ -194,3 +194,81 @@ P2a+P2b+P2c together, verifies catalog/identity preservation and incomplete admi
 No real-user data is consumed. `PodStoreCryptoTest` creates uniquely named
 AndroidX/AndroidKeyStore fixtures, exercises the existing-key/cloud-binding path
 and production secure decoder; it is **compiled only**, not run in P2c.
+
+## P2d: files, blockers and activation
+
+The installed composite now requires Room, stores **and files**. Standalone
+Room/store/file converters still cannot publish. All three verification callbacks
+must succeed, the file completion receipts must cover every publishable asset,
+and every blocking report must be cleared before READY/ACTIVATING. The existing
+P2c `needs-reauth`, `retained-unsupported` and `failed` statuses are **BLOCKED**,
+not implicit user approval or an automatic logged-out fallback. Public reasons
+are fixed codes; private reports retain details for the lead's later recovery UI.
+A cloud cache is retained privately and blocked (`cloud_cache_binding_unverified`)
+until a runtime adapter can prove snapshot/chunk/key binding. This increment
+never advertises that retained cache as an available cloud snapshot.
+
+`PodFileConverter` snapshots all files/cache entries after native detection,
+excluding the owned PodJS/takeover roots and separately snapshotted DataStore.
+A versioned `files-snapshot.json` records size, SHA-256 and category. Copying uses
+64 KiB buffers, rejects symlinks/non-regular files/path traversal, writes a bounded
+hashed `.part` name, verifies length/digest, fsyncs and atomically renames. A matching
+existing target may be reused; different bytes are a conflict. There are no hard
+links, tar files or source writes. Each published file has a durable completion
+receipt in `files-completed`; recovery rechecks completed bytes and receipts.
+Even 255-byte source filenames do not grow when constructing a temporary name.
+
+Published roots are `article_content`, `offline/rss`, `reader_assets/fonts`,
+`reader_assets/backgrounds`, `reader_assets/variants`, and `notes/assets` under
+`generation/podjs/files`. P2b `content_reference` rows must resolve through the
+production text-marker grammar, valid UTF-8 and (for v2) the content digest.
+Reader catalog lengths/hashes, font faces (Android Typeface loader), presets and
+asset references are checked. A missing background master is explicitly degraded
+only when a verified watch variant exists. Missing offline media and note images
+remain missing, with explicit private failure/retry reports and unchanged DB/Markdown.
+Partial files, known refetchable previews/playback caches and `app_log.txt` stay in
+the private snapshot, never the guest's file root or automatic upload. Other user
+files are retained and block publication rather than being silently discarded.
+
+New-schema sync caches remain empty at activation by design. The application's
+existing `LocalArticleManifestStore` hydrates copied bodies, constructs the full
+manifest, checks the library revision and publishes derived cache records before
+returning the export result; no old derived cache is imported. The consumer oracle
+exercises this actual path, including rejection of a concurrent semantic edit.
+The fixture also verifies the existing native-hash-to-rebuilt-cache semantics;
+this task does not change the application's wire protocol or hash rules.
+
+Before pointer publication the coordinator re-verifies the bundle, writes and
+syncs an immutable `activation-receipt`, and syncs all candidate files/directories.
+It atomically replaces **one** `active` pointer, reads it and the receipt back,
+and records ACTIVE. Admission then checks the committed DB/KV/secure/file roots,
+SQLite integrity and current KV/secure decoding. On subsequent cold starts it
+checks current stores only, never old snapshot equality or source presence;
+new user writes survive. An invalid ACTIVE store fails admission without creating
+an empty replacement or re-entering import. A running admitted process retains
+its pinned generation. Temporary pointer files, journals and locks reject symlinks.
+
+### P2c no-source regression fix
+
+The reverted P2c probe treated `nonempty(shared_prefs)` as native evidence. A
+PodJS-only sandbox containing `WebViewChromiumPrefs.xml` therefore incorrectly
+entered DETECTED and wrote a journal/lock despite all known native flags being
+false. `PodTakeoverSource` now supplies the **same device-free probe** to Android
+and JVM tests: only known native DB/WAL, store names (including account backup)
+and asset roots establish source presence. PodJS files, platform WebView prefs,
+unknown host prefs and cache alone do not. Full unknown-store/file inventory is
+performed only after positive native evidence. The preflight uses raw sandbox
+paths instead of directory-creating Context getters. A store-only/corrupt native
+source still fails closed; it does not become a fresh install.
+
+Tests cover a PodJS/WebView-only sandbox returning NONE repeatedly without any
+new directory/lock/journal or changes to file bytes/directory mtimes, complete
+synthetic migration to ACTIVE, actual process termination at every phase and
+snapshot/copy part/rename/receipt/publication boundaries, atomic pointer reads,
+source-byte invariance, retained new writes, missing ACTIVE stores, long filenames,
+path traversal, live/dangling symlinks, tampering, explicit blockers and media
+failure states. A Bun consumer oracle loads reader records, streamed text,
+note asset paths and the derived sync manifest. Android instrumentation fixtures
+are updated and compiled only; no device, real source data or release package is
+used. Pre-admission UI/off-main-thread scheduling, reauthorization choices, cloud
+adapter completion and physical/real-upgrade acceptance remain lead follow-ups.
