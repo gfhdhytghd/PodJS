@@ -40,7 +40,7 @@ const keyHash = (key: string): number => {
   return hash >>> 0;
 };
 
-const fail = (message: string): never => {
+const fail: (message: string) => never = (message) => {
   throw new Error(`pak integrity: ${message}`);
 };
 
