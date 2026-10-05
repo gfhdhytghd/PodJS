@@ -209,9 +209,9 @@ PodRuntime *pod_runtime_create(const PodRuntimeConfig *config);
 uint32_t pod_runtime_logical_width(const PodRuntime *runtime);
 uint32_t pod_runtime_logical_height(const PodRuntime *runtime);
 int32_t pod_runtime_load_pak(PodRuntime *runtime, const uint8_t *bytes, size_t length);
-/* Stable read-only mapping. The bytes must outlive the runtime. Only the
- * directory and styles are touched at load; fonts/images/tiles load on use.
- * The full existing FNV package hash is still computed before validation. */
+/* Stable read-only mapping. The bytes must outlive the runtime. Loading only
+ * retains the mapping; validation either authenticates the canonical directory
+ * and installs per-entry SHA-256 checks, or uses the legacy full-pak FNV path. */
 int32_t pod_runtime_load_pak_mapped(PodRuntime *runtime, const uint8_t *bytes, size_t length);
 /* Synchronous immutable source. Return bytes read (0 means EOF, negative means
  * IO failure); positive short reads are retried. Each request is <= 64 KiB.
@@ -230,6 +230,14 @@ typedef struct PodPakStats {
   uint64_t pak_hash_micros;
   uint64_t first_font_load_micros;
   uint32_t loaded_font_slots;
+  /* 0=no validated pak, 1=legacy full FNV, 2=directory + entry SHA-256. */
+  uint32_t pak_integrity_mode;
+  uint32_t verified_entries;
+  uint32_t integrity_failures;
+  uint64_t verified_bytes;
+  uint64_t directory_hash_micros;
+  uint64_t eager_hash_micros;
+  uint64_t integrity_hash_micros;
 } PodPakStats;
 int32_t pod_runtime_pak_stats(PodRuntime *runtime, PodPakStats *out);
 typedef struct PodRuntimePerfStats {

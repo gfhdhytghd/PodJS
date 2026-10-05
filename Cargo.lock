@@ -338,6 +338,7 @@ dependencies = [
  "log",
  "pocket-mod",
  "pocketjs-core",
+ "sha2",
 ]
 
 [[package]]

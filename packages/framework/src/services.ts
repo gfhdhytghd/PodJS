@@ -11,6 +11,25 @@ export function bytesToBase64(bytes:Uint8Array):string {
   return typeof encoded==='string'?encoded:portableBytesToBase64(bytes);
 }
 
+type NativeTextureFileHost = {uploadTextureFile?:(path:string,width:number,height:number,psm:number)=>number};
+function nativeTextureFileHost():NativeTextureFileHost|undefined {
+  return (globalThis as {pod?:NativeTextureFileHost}).pod;
+}
+/** Whether this host can consume a bounded decoder/raster RGBA file without
+ * sending its pixels through JSON/Base64 and the JS heap. */
+export function hasTextureFileUpload():boolean {
+  return typeof nativeTextureFileHost()?.uploadTextureFile === "function";
+}
+/** Consume one host-generated RGBA file and return its native texture handle.
+ * `null` means the optional fast path is unavailable; negative means rejected.
+ * A supporting host owns cleanup as soon as this function is called. */
+export function uploadTextureFile(path:string,width:number,height:number,psm:number):number|null {
+  const upload=nativeTextureFileHost()?.uploadTextureFile;
+  if(typeof upload!=="function")return null;
+  const handle=upload(path,width,height,psm);
+  return typeof handle==="number"&&Number.isInteger(handle)?handle:-1;
+}
+
 export type SqlValue = string | number | null;
 export interface SqlStatement { sql: string; params?: readonly SqlValue[] }
 export class HostServiceError extends Error {

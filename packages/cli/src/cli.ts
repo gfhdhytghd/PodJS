@@ -7,6 +7,7 @@ import { POD_TARGETS, type PodTargetProfile } from "../../framework/src/targets.
 import { resolvePodProject, type ResolvedPodProject } from "./project.ts";
 import { buildBackground } from "./background-build.ts";
 import { syncProjectAssets } from "./project-assets.ts";
+import { buildPakIntegrity } from "./pak-integrity.ts";
 
 const ROOT = resolve(import.meta.dir, "../../..");
 type Target = PodTargetProfile["id"];
@@ -109,6 +110,7 @@ async function build(target: Target, project?: ResolvedPodProject): Promise<Reso
   const background = await buildBackground(project?.background ?? {}, out);
   const assets = syncProjectAssets(out, project?.assets ?? {});
   const bundleHash = fnv1a64(readFileSync(js));
+  const pakBytes = readFileSync(pak);
   const manifest = {
     schema: 1,
     target: profile.id,
@@ -118,7 +120,8 @@ async function build(target: Target, project?: ResolvedPodProject): Promise<Reso
     capabilities: profile.capabilities,
     pocketjsRevision: capture(["git", "-C", join(ROOT, "vendor/pocketjs"), "rev-parse", "HEAD"]) ?? fail("cannot resolve PocketJS revision"),
     bundleHash,
-    pakHash: fnv1a64(readFileSync(pak)),
+    pakHash: fnv1a64(pakBytes),
+    pakIntegrity: buildPakIntegrity(pakBytes),
     ...(bytecodeEnabled ? { bytecode: {
       file: "main.qbc",
       format: "quickjs-rquickjs-0.12.2-bc26-le-v1",

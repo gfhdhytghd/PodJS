@@ -19,6 +19,7 @@ final class PodTakeoverAdmission {
         }
     }
     private volatile Paths admitted;
+    Paths admitted() { return admitted; }
     Paths paths(Resolver resolver) throws Exception {
         Paths result=admitted;
         if(result!=null)return result;

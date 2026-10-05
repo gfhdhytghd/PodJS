@@ -21,15 +21,18 @@ pub mod background_ffi;
 pub mod kv;
 pub mod accessibility_ffi;
 mod pak_reader;
+mod pak_integrity;
 pub use pak_reader::PodPakReadAt;
 use kv::KvStore;
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{CStr, CString, c_char};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::slice;
 use std::time::Instant;
 
+use anyhow::Context as _;
 use base64::Engine as _;
 use pocket_fs::{FsModule, Storage};
 use pocket_mod::Guest;
@@ -52,6 +55,9 @@ const IDLE: i32 = 1;
 const ERR_ARGUMENT: i32 = -1;
 const ERR_STATE: i32 = -2;
 const ERR_GUEST: i32 = -3;
+const PAK_INTEGRITY_NONE: u32 = 0;
+const PAK_INTEGRITY_LEGACY_FULL_FNV: u32 = 1;
+const PAK_INTEGRITY_ENTRY_SHA256: u32 = 2;
 
 thread_local! {
     static LAST_ERROR: RefCell<CString> = RefCell::new(CString::default());
@@ -150,6 +156,13 @@ pub struct PodPakStats {
     pub pak_hash_micros: u64,
     pub first_font_load_micros: u64,
     pub loaded_font_slots: u32,
+    pub pak_integrity_mode: u32,
+    pub verified_entries: u32,
+    pub integrity_failures: u32,
+    pub verified_bytes: u64,
+    pub directory_hash_micros: u64,
+    pub eager_hash_micros: u64,
+    pub integrity_hash_micros: u64,
 }
 
 #[repr(C)]
@@ -230,7 +243,7 @@ pub struct PodRuntime {
     transport: HostTransport,
     bridge: Rc<RefCell<PodBridge>>,
     kv: Rc<RefCell<KvStore>>,
-    decoded_image_root: Option<PathBuf>,
+    guest_files_root: Option<PathBuf>,
     target_id: String,
     host_abi: u32,
     package_abi: u32,
@@ -243,8 +256,13 @@ pub struct PodRuntime {
     expected_bundle_hash: Option<String>,
     expected_bytecode_sha256: Option<String>,
     expected_bytecode_bytes: Option<usize>,
+    mapped_pak: Option<&'static [u8]>,
+    pak_loaded: bool,
     pak_hash: u64,
     pak_hash_micros: u64,
+    pak_directory_hash_micros: u64,
+    pak_eager_hash_micros: u64,
+    pak_integrity_mode: u32,
     bundle_hash: u64,
     draw_words: Vec<u32>,
     draw_hash: u64,
@@ -292,22 +310,82 @@ fn read_decoded_rgba(root: &Path, relative: &str) -> Option<Vec<u8>> {
     (bytes.len() as u64 == metadata.len()).then_some(bytes)
 }
 
+fn texture_file_path(root: &Path, relative: &str) -> Option<PathBuf> {
+    let (directory, name) = relative.split_once('/')?;
+    if name.contains('/') || name.contains('\\') || name.contains('\0') { return None; }
+    let token = match directory {
+        "text" => name.strip_prefix("line-")?.strip_suffix(".rgba")?,
+        "images" => name.strip_prefix("decoded-")?.strip_suffix(".rgba")?,
+        _ => return None,
+    };
+    if token.is_empty() || token.len() > 64
+        || !token.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return None;
+    }
+    Some(root.join(directory).join(name))
+}
+
+struct RemoveTextureFile(PathBuf);
+impl Drop for RemoveTextureFile {
+    fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
+}
+
+// Android image/text services publish bounded RGBA files under two private
+// guest directories. This synchronous bridge consumes exactly those outputs,
+// deletes them on every accepted-path outcome, and never exposes their bytes to
+// QuickJS or the JSON service lane.
+fn upload_texture_file(surface: &UiSurface, root: &Path, relative: &str, width: i32, height: i32, psm: i32) -> i32 {
+    let Some(path) = texture_file_path(root, relative) else { return -1; };
+    let _cleanup = RemoveTextureFile(path.clone());
+    let valid_dimension = |value: i32| value > 0 && value <= 512 && value & (value - 1) == 0;
+    if !valid_dimension(width) || !valid_dimension(height) || psm != spec::psm::PSM_8888 as i32 { return -1; }
+    let Some(expected) = (width as usize).checked_mul(height as usize).and_then(|pixels| pixels.checked_mul(4)) else { return -1; };
+
+    let Some(parent) = path.parent() else { return -1; };
+    let Ok(root_canonical) = root.canonicalize() else { return -1; };
+    let Ok(parent_metadata) = std::fs::symlink_metadata(parent) else { return -1; };
+    if !parent_metadata.file_type().is_dir() { return -1; }
+    let Ok(parent_canonical) = parent.canonicalize() else { return -1; };
+    if parent_canonical.parent() != Some(root_canonical.as_path()) { return -1; }
+    let Ok(canonical) = path.canonicalize() else { return -1; };
+    if canonical.parent() != Some(parent_canonical.as_path()) { return -1; }
+
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)] {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    let Ok(mut file) = options.open(&path) else { return -1; };
+    let Ok(metadata) = file.metadata() else { return -1; };
+    if !metadata.is_file() || metadata.len() != expected as u64 { return -1; }
+    let mut bytes = vec![0; expected];
+    if file.read_exact(&mut bytes).is_err() { return -1; }
+    surface.with_ui(|ui| ui.upload_texture(&bytes, width as u32, height as u32, psm as u32))
+}
+
 fn mount_pod(
     guest: &Guest,
     bridge: Rc<RefCell<PodBridge>>,
     kv: Rc<RefCell<KvStore>>,
     surface: UiSurface,
-    decoded_image_root: Option<PathBuf>,
+    guest_files_root: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     guest.mount("pod", |ctx, ns| {
         ns.set("decodeBase64", Function::new(ctx.clone(), decode_base64)?)?;
         ns.set("encodeBase64", Function::new(ctx.clone(), encode_base64)?)?;
-        if let Some(root) = decoded_image_root {
+        if let Some(root) = guest_files_root {
+            let image_root = root.join("images");
             ns.set("readDecodedRgba", Function::new(ctx.clone(), move |ctx, relative: String| {
-                match read_decoded_rgba(&root, &relative) {
+                match read_decoded_rgba(&image_root, &relative) {
                     Some(bytes) => TypedArray::new(ctx, bytes).map(Some),
                     None => Ok(None),
                 }
+            })?)?;
+            let upload_surface = surface.clone();
+            ns.set("uploadTextureFile", Function::new(ctx.clone(), move |relative: String, width: i32, height: i32, psm: i32| {
+                upload_texture_file(&upload_surface, &root, &relative, width, height, psm)
             })?)?;
         }
         ns.set("fontMetrics", Function::new(ctx.clone(), move |slot: f64| {
@@ -460,6 +538,24 @@ fn runtime_mut<'a>(ptr: *mut PodRuntime) -> Result<&'a mut PodRuntime, i32> {
     }
 }
 
+fn revoke_package_validation(runtime: &mut PodRuntime) {
+    runtime.package_validated = false;
+    runtime.expected_bundle_hash = None;
+    runtime.expected_bytecode_sha256 = None;
+    runtime.expected_bytecode_bytes = None;
+}
+
+fn reset_pak_authority(runtime: &mut PodRuntime) {
+    revoke_package_validation(runtime);
+    runtime.mapped_pak = None;
+    runtime.pak_loaded = false;
+    runtime.pak_hash = 0;
+    runtime.pak_hash_micros = 0;
+    runtime.pak_directory_hash_micros = 0;
+    runtime.pak_eager_hash_micros = 0;
+    runtime.pak_integrity_mode = PAK_INTEGRITY_NONE;
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn pod_runtime_abi_version() -> u32 {
     ABI_VERSION
@@ -575,7 +671,7 @@ pub extern "C" fn pod_runtime_create(config: *const PodRuntimeConfig) -> *mut Po
         transport,
         bridge,
         kv: Rc::new(RefCell::new(KvStore::open(data_dir))),
-        decoded_image_root: data_dir.map(|root| PathBuf::from(root).join("files").join("images")),
+        guest_files_root: data_dir.map(|root| PathBuf::from(root).join("files")),
         target_id: target_id.to_owned(),
         host_abi: config.host_abi,
         package_abi: config.host_abi,
@@ -588,8 +684,13 @@ pub extern "C" fn pod_runtime_create(config: *const PodRuntimeConfig) -> *mut Po
         expected_bundle_hash: None,
         expected_bytecode_sha256: None,
         expected_bytecode_bytes: None,
+        mapped_pak: None,
+        pak_loaded: false,
         pak_hash: 0,
         pak_hash_micros: 0,
+        pak_directory_hash_micros: 0,
+        pak_eager_hash_micros: 0,
+        pak_integrity_mode: 0,
         bundle_hash: 0,
         draw_words: Vec::new(),
         draw_hash: 0,
@@ -637,18 +738,22 @@ pub extern "C" fn pod_runtime_load_pak(
     if runtime.mounted || bytes.is_null() || length == 0 {
         return ERR_STATE;
     }
+    reset_pak_authority(runtime);
     let bytes = unsafe { slice::from_raw_parts(bytes, length) };
     let hash_began = Instant::now();
     runtime.pak_hash = hash_bytes(bytes);
     runtime.pak_hash_micros =
         hash_began.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+    runtime.pak_loaded = true;
+    runtime.pak_integrity_mode = PAK_INTEGRITY_LEGACY_FULL_FNV;
     runtime.surface.feed_pak(bytes);
     OK
 }
 
-/// Load a stable read-only mapping and retain only its directory plus the
-/// small styles entry. Font/image/tile payloads are faulted in on first use.
-/// The host must keep `bytes` mapped and immutable until runtime destruction.
+/// Load a stable read-only mapping and retain only the package bytes. Directory
+/// authentication and resource indexing are deferred until the manifest selects
+/// entry SHA-256 or the legacy full-FNV path. The host must keep `bytes` mapped
+/// and immutable until runtime destruction.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pod_runtime_load_pak_mapped(
     runtime: *mut PodRuntime,
@@ -660,17 +765,10 @@ pub unsafe extern "C" fn pod_runtime_load_pak_mapped(
         set_error("mapped pak requires an unmounted runtime and a valid nonempty mapping");
         return ERR_STATE;
     }
-    runtime.pak_hash = 0;
-    runtime.package_validated = false;
-    runtime.expected_bundle_hash = None;
-    runtime.expected_bytecode_sha256 = None;
-    runtime.expected_bytecode_bytes = None;
+    reset_pak_authority(runtime);
     let bytes: &'static [u8] = unsafe { slice::from_raw_parts(bytes, length) };
-    unsafe { runtime.surface.feed_pak_mapped(bytes) };
-    let hash_began = Instant::now();
-    runtime.pak_hash = hash_bytes(bytes);
-    runtime.pak_hash_micros =
-        hash_began.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+    runtime.mapped_pak = Some(bytes);
+    runtime.pak_loaded = true;
     OK
 }
 
@@ -697,12 +795,7 @@ pub extern "C" fn pod_runtime_load_pak_reader(
         return ERR_ARGUMENT;
     }
     // Failed/partial loads cannot retain a previous package's authority.
-    runtime.pak_hash = 0;
-    runtime.pak_hash_micros = 0;
-    runtime.package_validated = false;
-    runtime.expected_bundle_hash = None;
-    runtime.expected_bytecode_sha256 = None;
-    runtime.expected_bytecode_bytes = None;
+    reset_pak_authority(runtime);
     let mut reader = pak_reader::PakReader { length, read_at, context };
     let hash_began = Instant::now();
     let checksum = reader.checksum();
@@ -713,9 +806,65 @@ pub extern "C" fn pod_runtime_load_pak_reader(
         Ok(hash)
     });
     match result {
-        Ok(hash) => { runtime.pak_hash = hash; OK }
+        Ok(hash) => {
+            runtime.pak_hash = hash;
+            runtime.pak_loaded = true;
+            runtime.pak_integrity_mode = PAK_INTEGRITY_LEGACY_FULL_FNV;
+            OK
+        }
         Err(error) => { set_error(format!("pak reader: {error}")); ERR_STATE }
     }
+}
+
+fn validate_loaded_pak(runtime: &mut PodRuntime, manifest: &Value) -> anyhow::Result<()> {
+    let declared = manifest
+        .get("pakHash")
+        .and_then(Value::as_str)
+        .filter(|hash| hash.len() == 16 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .context("package manifest has no valid pakHash")?;
+    let declared_hash = u64::from_str_radix(declared, 16).context("invalid pakHash")?;
+    let Some(pak) = runtime.mapped_pak else {
+        if runtime.pak_hash != declared_hash {
+            anyhow::bail!("legacy full pak hash mismatch");
+        }
+        return Ok(());
+    };
+
+    runtime.pak_hash = 0;
+    runtime.pak_hash_micros = 0;
+    runtime.pak_directory_hash_micros = 0;
+    runtime.pak_eager_hash_micros = 0;
+    runtime.pak_integrity_mode = PAK_INTEGRITY_NONE;
+    if let Some(integrity) = manifest.get("pakIntegrity") {
+        let validated = pak_integrity::validate(pak, integrity)?;
+        unsafe {
+            runtime.surface.feed_pak_mapped_verified(
+                pak,
+                validated.entries,
+                validated.directory_parse_micros,
+            )?;
+        }
+        let stats = runtime.surface.lazy_pak_stats();
+        runtime.pak_hash = declared_hash;
+        runtime.pak_directory_hash_micros = validated.directory_hash_micros;
+        runtime.pak_eager_hash_micros = stats.integrity_hash_micros;
+        runtime.pak_hash_micros = runtime
+            .pak_directory_hash_micros
+            .saturating_add(runtime.pak_eager_hash_micros);
+        runtime.pak_integrity_mode = PAK_INTEGRITY_ENTRY_SHA256;
+        return Ok(());
+    }
+
+    let began = Instant::now();
+    let actual = hash_bytes(pak);
+    runtime.pak_hash_micros = began.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+    if actual != declared_hash {
+        anyhow::bail!("legacy full pak hash mismatch");
+    }
+    unsafe { runtime.surface.feed_pak_mapped(pak) };
+    runtime.pak_hash = actual;
+    runtime.pak_integrity_mode = PAK_INTEGRITY_LEGACY_FULL_FNV;
+    Ok(())
 }
 
 #[unsafe(no_mangle)]
@@ -726,15 +875,12 @@ pub extern "C" fn pod_runtime_validate_package(
     let Ok(runtime) = runtime_mut(runtime) else {
         return ERR_ARGUMENT;
     };
-    if runtime.mounted || runtime.pak_hash == 0 {
+    if runtime.mounted || !runtime.pak_loaded {
         set_error("pak must load before package validation");
         return ERR_STATE;
     }
     // A new validation attempt replaces the prior decision, including failures.
-    runtime.package_validated = false;
-    runtime.expected_bundle_hash = None;
-    runtime.expected_bytecode_sha256 = None;
-    runtime.expected_bytecode_bytes = None;
+    revoke_package_validation(runtime);
     let Some(raw) = cstr(manifest_json) else {
         set_error("package manifest is required");
         return ERR_ARGUMENT;
@@ -745,7 +891,6 @@ pub extern "C" fn pod_runtime_validate_package(
     };
     let revision = option_env!("PODJS_POCKETJS_REVISION")
         .unwrap_or("0a90bf904d835210e52a11ed275a86d0040b5086");
-    let expected_pak = format!("{:016x}", runtime.pak_hash);
     let manifest_bundle = value.get("bundleHash").and_then(Value::as_str);
     let manifest_bytecode = value.get("bytecode");
     let bytecode_absent = manifest_bytecode.is_none() || manifest_bytecode == Some(&Value::Null);
@@ -776,13 +921,18 @@ pub extern "C" fn pod_runtime_validate_package(
     let valid = value.get("target").and_then(Value::as_str) == Some(runtime.target_id.as_str())
         && package_abi.is_some_and(|abi| (MIN_ABI_VERSION as u64..=runtime.host_abi as u64).contains(&abi))
         && value.get("pocketjsRevision").and_then(Value::as_str) == Some(revision)
-        && value.get("pakHash").and_then(Value::as_str) == Some(expected_pak.as_str())
+        && value.get("pakHash").and_then(Value::as_str)
+            .is_some_and(|hash| hash.len() == 16 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
         && manifest_bundle
             .is_some_and(|hash| hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
         && valid_bytecode
         && capabilities_match;
     if !valid {
         set_error("package target, ABI, revision, pak hash, or capabilities mismatch");
+        return ERR_STATE;
+    }
+    if let Err(error) = validate_loaded_pak(runtime, &value) {
+        set_error(format!("package pak integrity validation failed: {error:#}"));
         return ERR_STATE;
     }
     runtime.package_validated = true;
@@ -804,7 +954,7 @@ fn mount_runtime(runtime: &mut PodRuntime) -> anyhow::Result<()> {
         .mount(&runtime.guest)
         .and_then(|_| pocket_fs::mount(&runtime.guest, runtime.fs.clone()))
         .and_then(|_| runtime.net.mount(&runtime.guest))
-        .and_then(|_| mount_pod(&runtime.guest, runtime.bridge.clone(), runtime.kv.clone(), runtime.surface.clone(), runtime.decoded_image_root.clone()))
+        .and_then(|_| mount_pod(&runtime.guest, runtime.bridge.clone(), runtime.kv.clone(), runtime.surface.clone(), runtime.guest_files_root.clone()))
 }
 
 fn finish_bundle_eval(runtime: &mut PodRuntime, bundle_hash: u64, bytecode_sha256: Option<&str>) -> i32 {
@@ -1496,16 +1646,32 @@ pub extern "C" fn pod_runtime_pak_stats(
     if out.is_null() {
         return ERR_ARGUMENT;
     }
+    let available = unsafe { (*out).struct_size as usize };
+    if available < std::mem::size_of::<u32>() {
+        return ERR_ARGUMENT;
+    }
     let stats = runtime.surface.lazy_pak_stats();
+    let value = PodPakStats {
+        struct_size: std::mem::size_of::<PodPakStats>() as u32,
+        directory_entries: stats.directory_entries.min(u32::MAX as usize) as u32,
+        directory_parse_micros: stats.directory_parse_micros,
+        pak_hash_micros: runtime.pak_hash_micros,
+        first_font_load_micros: stats.first_font_load_micros.unwrap_or(0),
+        loaded_font_slots: stats.loaded_fonts.min(u32::MAX as usize) as u32,
+        pak_integrity_mode: runtime.pak_integrity_mode,
+        verified_entries: stats.verified_entries.min(u32::MAX as usize) as u32,
+        integrity_failures: stats.integrity_failures.min(u32::MAX as usize) as u32,
+        verified_bytes: stats.verified_bytes,
+        directory_hash_micros: runtime.pak_directory_hash_micros,
+        eager_hash_micros: runtime.pak_eager_hash_micros,
+        integrity_hash_micros: stats.integrity_hash_micros,
+    };
     unsafe {
-        *out = PodPakStats {
-            struct_size: std::mem::size_of::<PodPakStats>() as u32,
-            directory_entries: stats.directory_entries.min(u32::MAX as usize) as u32,
-            directory_parse_micros: stats.directory_parse_micros,
-            pak_hash_micros: runtime.pak_hash_micros,
-            first_font_load_micros: stats.first_font_load_micros.unwrap_or(0),
-            loaded_font_slots: stats.loaded_fonts.min(u32::MAX as usize) as u32,
-        };
+        std::ptr::copy_nonoverlapping(
+            (&value as *const PodPakStats).cast::<u8>(),
+            out.cast::<u8>(),
+            available.min(std::mem::size_of::<PodPakStats>()),
+        );
     }
     OK
 }
@@ -1712,6 +1878,216 @@ mod tests {
         value
     }
 
+    fn put_u16(bytes: &mut [u8], offset: usize, value: u16) {
+        bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put_u32(bytes: &mut [u8], offset: usize, value: u32) {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn align_pak(value: usize) -> usize {
+        (value + pocketjs_core::spec::pak::ALIGN - 1) & !(pocketjs_core::spec::pak::ALIGN - 1)
+    }
+
+    fn integrity_pak(entries: &[(&str, &[u8])]) -> (Vec<u8>, Value, BTreeMap<String, std::ops::Range<usize>>) {
+        let header = pocketjs_core::spec::pak::HEADER_SIZE;
+        let record_bytes = entries.len() * pocketjs_core::spec::pak::ENTRY_SIZE;
+        let names_offset = header + record_bytes;
+        let names_bytes = entries.iter().map(|(key, _)| key.len()).sum::<usize>();
+        let directory_bytes = align_pak(names_offset + names_bytes);
+        let mut total = directory_bytes;
+        for (_, blob) in entries { total = align_pak(total + blob.len()); }
+        let mut pak = vec![0u8; total];
+        put_u32(&mut pak, 0, pocketjs_core::spec::pak::MAGIC);
+        put_u16(&mut pak, 4, pocketjs_core::spec::pak::VERSION);
+        put_u32(&mut pak, 8, entries.len() as u32);
+        put_u32(&mut pak, 12, header as u32);
+        put_u32(&mut pak, 16, names_offset as u32);
+        put_u32(&mut pak, 20, directory_bytes as u32);
+        put_u32(&mut pak, 24, total as u32);
+        let mut name_cursor = 0usize;
+        let mut blob_cursor = directory_bytes;
+        let mut manifest_entries = Vec::new();
+        let mut ranges = BTreeMap::new();
+        for (index, (key, blob)) in entries.iter().enumerate() {
+            let record = header + index * pocketjs_core::spec::pak::ENTRY_SIZE;
+            let key_hash = key.encode_utf16().fold(0x811c_9dc5u32, |hash, unit| {
+                (hash ^ u32::from(unit)).wrapping_mul(0x0100_0193)
+            });
+            put_u32(&mut pak, record, key_hash);
+            put_u32(&mut pak, record + 4, blob_cursor as u32);
+            put_u32(&mut pak, record + 8, blob.len() as u32);
+            put_u32(&mut pak, record + 12, name_cursor as u32);
+            put_u16(&mut pak, record + 16, key.len() as u16);
+            pak[names_offset + name_cursor..names_offset + name_cursor + key.len()]
+                .copy_from_slice(key.as_bytes());
+            let end = blob_cursor + blob.len();
+            pak[blob_cursor..end].copy_from_slice(blob);
+            ranges.insert((*key).to_owned(), blob_cursor..end);
+            manifest_entries.push(json!({
+                "key": key,
+                "offset": blob_cursor,
+                "bytes": blob.len(),
+                "sha256": format!("{:x}", Sha256::digest(blob)),
+            }));
+            name_cursor += key.len();
+            blob_cursor = align_pak(end);
+        }
+        let integrity = json!({
+            "format": pak_integrity::FORMAT,
+            "directoryBytes": directory_bytes,
+            "directorySha256": format!("{:x}", Sha256::digest(&pak[..directory_bytes])),
+            "entries": manifest_entries,
+        });
+        (pak, integrity, ranges)
+    }
+
+    fn package_manifest(pak: &[u8], integrity: Option<Value>, source: &[u8]) -> CString {
+        let mut value = json!({
+            "target": "android-watch",
+            "hostAbi": 1,
+            "pocketjsRevision": option_env!("PODJS_POCKETJS_REVISION")
+                .unwrap_or("0a90bf904d835210e52a11ed275a86d0040b5086"),
+            "pakHash": format!("{:016x}", hash_bytes(pak)),
+            "bundleHash": format!("{:016x}", hash_bytes(source)),
+            "capabilities": [],
+        });
+        if let Some(integrity) = integrity { value["pakIntegrity"] = integrity; }
+        CString::new(value.to_string()).unwrap()
+    }
+
+    fn pak_stats(runtime: *mut PodRuntime) -> PodPakStats {
+        let mut stats: PodPakStats = unsafe { std::mem::zeroed() };
+        stats.struct_size = std::mem::size_of::<PodPakStats>() as u32;
+        assert_eq!(pod_runtime_pak_stats(runtime, &mut stats), OK);
+        stats
+    }
+
+    #[test]
+    fn mapped_entry_integrity_defers_payload_hashes_and_rejects_font_image_tile_and_js_tamper() {
+        let font = b"font atlas payload";
+        let image = [1, 0, 1, 0, 3, 0, 0, 0, 255, 0, 0, 255];
+        let tile = b"tileset payload";
+        let (original, integrity, ranges) = integrity_pak(&[
+            ("ui:font.7", font),
+            ("ui:img.hero", &image),
+            ("ui:tile.map", tile),
+        ]);
+        let source = br#"
+            if (ui.loadPakImage('hero') !== -1) throw new Error('tampered image accepted');
+            if (ui.loadTileTexture('ui:tile.map', 0) !== -1) throw new Error('tampered tile accepted');
+            ui.measureText('font', 7);
+            globalThis.frame = function() {};
+        "#;
+        let manifest = package_manifest(&original, Some(integrity), source);
+        let mut damaged = original;
+        for key in ["ui:font.7", "ui:img.hero", "ui:tile.map"] {
+            damaged[ranges[key].start] ^= 1;
+        }
+        let mapped: &'static [u8] = Box::leak(damaged.into_boxed_slice());
+        let target = CString::new("android-watch").unwrap();
+        let capabilities = CString::new("[]").unwrap();
+        let runtime = pod_runtime_create(&valid_config(&target, &capabilities));
+        assert_eq!(unsafe { pod_runtime_load_pak_mapped(runtime, mapped.as_ptr(), mapped.len()) }, OK);
+        assert_eq!(pod_runtime_validate_package(runtime, manifest.as_ptr()), OK,
+            "{}", cstr(pod_runtime_last_error()).unwrap_or("unknown"));
+        let before = pak_stats(runtime);
+        assert_eq!(before.pak_integrity_mode, PAK_INTEGRITY_ENTRY_SHA256);
+        assert_eq!(before.directory_entries, 3);
+        assert_eq!(before.verified_entries, 0);
+        assert_eq!(before.integrity_failures, 0);
+
+        let mut source_tamper = source.to_vec();
+        source_tamper[0] ^= 1;
+        assert_eq!(pod_runtime_eval_bundle(runtime, source_tamper.as_ptr(), source_tamper.len(), std::ptr::null()), ERR_STATE);
+        assert_eq!(pod_runtime_eval_bundle(runtime, source.as_ptr(), source.len(), std::ptr::null()), OK,
+            "{}", cstr(pod_runtime_last_error()).unwrap_or("unknown"));
+        for _ in 0..200 {
+            unsafe { &*runtime }.surface.tick();
+            if pak_stats(runtime).integrity_failures == 3 { break; }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let after = pak_stats(runtime);
+        assert_eq!(after.integrity_failures, 3);
+        assert_eq!(after.verified_entries, 0);
+        pod_runtime_destroy(runtime);
+    }
+
+    #[test]
+    fn mapped_legacy_manifest_retains_full_pak_hash_fallback() {
+        let pak: &'static [u8] = Box::leak(b"legacy pak".to_vec().into_boxed_slice());
+        let source = b"globalThis.frame=function(){};";
+        let manifest = package_manifest(pak, None, source);
+        let target = CString::new("android-watch").unwrap();
+        let capabilities = CString::new("[]").unwrap();
+        let runtime = pod_runtime_create(&valid_config(&target, &capabilities));
+        assert_eq!(unsafe { pod_runtime_load_pak_mapped(runtime, pak.as_ptr(), pak.len()) }, OK);
+        assert_eq!(pod_runtime_validate_package(runtime, manifest.as_ptr()), OK);
+        assert_eq!(pak_stats(runtime).pak_integrity_mode, PAK_INTEGRITY_LEGACY_FULL_FNV);
+        assert_eq!(pod_runtime_eval_bundle(runtime, source.as_ptr(), source.len(), std::ptr::null()), OK);
+        pod_runtime_destroy(runtime);
+    }
+
+    #[test]
+    #[ignore = "set PODJS_BENCH_DIST to a CLI-built package directory"]
+    #[cfg(unix)]
+    fn benchmark_mapped_pak_legacy_full_hash_against_entry_startup_validation() {
+        use std::os::fd::AsRawFd;
+
+        struct Mapping { ptr: *mut libc::c_void, len: usize }
+        impl Drop for Mapping {
+            fn drop(&mut self) { unsafe { libc::munmap(self.ptr, self.len); } }
+        }
+
+        let dist = PathBuf::from(std::env::var("PODJS_BENCH_DIST").expect("PODJS_BENCH_DIST"));
+        let file = std::fs::File::open(dist.join("main.pak")).expect("open main.pak");
+        let len = file.metadata().expect("pak metadata").len() as usize;
+        let ptr = unsafe { libc::mmap(
+            std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_PRIVATE, file.as_raw_fd(), 0,
+        ) };
+        assert_ne!(ptr, libc::MAP_FAILED);
+        let mapping = Mapping { ptr, len };
+        let pak: &'static [u8] = unsafe { slice::from_raw_parts(mapping.ptr.cast(), mapping.len) };
+        let manifest_text = std::fs::read_to_string(dist.join("pod.manifest.json"))
+            .expect("read pod.manifest.json");
+        let entry_value: Value = serde_json::from_str(&manifest_text).expect("manifest JSON");
+        assert!(entry_value.get("pakIntegrity").is_some(), "benchmark requires a new manifest");
+        let mut legacy_value = entry_value.clone();
+        legacy_value.as_object_mut().unwrap().remove("pakIntegrity");
+        let manifests = [
+            ("entry-sha256", CString::new(entry_value.to_string()).unwrap()),
+            ("legacy-fnv", CString::new(legacy_value.to_string()).unwrap()),
+        ];
+        let target = CString::new(entry_value["target"].as_str().unwrap()).unwrap();
+        let capabilities = CString::new(entry_value["capabilities"].to_string()).unwrap();
+
+        for (mode, manifest) in manifests {
+            let mut wall_micros = Vec::new();
+            let mut reported_micros = Vec::new();
+            for _ in 0..11 {
+                let mut config = valid_config(&target, &capabilities);
+                config.host_abi = ABI_VERSION;
+                let runtime = pod_runtime_create(&config);
+                let began = Instant::now();
+                assert_eq!(unsafe { pod_runtime_load_pak_mapped(runtime, pak.as_ptr(), pak.len()) }, OK);
+                assert_eq!(pod_runtime_validate_package(runtime, manifest.as_ptr()), OK,
+                    "{mode}: {}", cstr(pod_runtime_last_error()).unwrap_or("unknown"));
+                wall_micros.push(began.elapsed().as_micros() as u64);
+                reported_micros.push(pak_stats(runtime).pak_hash_micros);
+                pod_runtime_destroy(runtime);
+            }
+            wall_micros.sort_unstable();
+            reported_micros.sort_unstable();
+            println!(
+                "K6_BENCH mode={mode} bytes={} wall_ms={:.3} pak_hash_ms={:.3}",
+                pak.len(), wall_micros[wall_micros.len() / 2] as f64 / 1000.0,
+                reported_micros[reported_micros.len() / 2] as f64 / 1000.0,
+            );
+        }
+        drop(mapping);
+    }
+
     fn compile_test_bytecode(source: &[u8]) -> Vec<u8> {
         use pocket_mod::qjs::{Context, Runtime, qjs as raw};
         let runtime = Runtime::new().unwrap();
@@ -1852,7 +2228,7 @@ mod tests {
             pocket_fs::mount(&runtime_ref.guest, runtime_ref.fs.clone()).expect("mount fs");
             runtime_ref.net.mount(&runtime_ref.guest).expect("mount net");
             mount_pod(&runtime_ref.guest, runtime_ref.bridge.clone(), runtime_ref.kv.clone(),
-                runtime_ref.surface.clone(), runtime_ref.decoded_image_root.clone()).expect("mount pod");
+                runtime_ref.surface.clone(), runtime_ref.guest_files_root.clone()).expect("mount pod");
             runtime_ref.mounted = true;
 
             let profile = Rc::new(RefCell::new(ModuleProfileState::default()));
@@ -1960,6 +2336,114 @@ mod tests {
         }
         std::fs::write(&valid, vec![0; 512 * 512 * 4 + 4]).unwrap();
         assert_eq!(read_decoded_rgba(&root, "images/decoded-123.rgba"), None);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn texture_file_upload_is_scoped_validated_consuming_and_releasable() {
+        let root = std::env::temp_dir().join(format!("podjs-texture-file-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let text = root.join("text");
+        let images = root.join("images");
+        std::fs::create_dir_all(&text).unwrap();
+        std::fs::create_dir_all(&images).unwrap();
+        let surface = UiSurface::new((32.0, 32.0));
+
+        let valid = text.join("line-valid_1.rgba");
+        std::fs::write(&valid, [1u8; 16]).unwrap();
+        let handle = upload_texture_file(&surface, &root, "text/line-valid_1.rgba", 2, 2, spec::psm::PSM_8888 as i32);
+        assert!(handle >= 0);
+        assert!(!valid.exists());
+        assert_eq!(surface.with_ui(|ui| ui.texture(handle).map(|texture| texture.pixels.to_vec())), Some(vec![1; 16]));
+        surface.with_ui(|ui| ui.free_texture(handle));
+        assert!(surface.with_ui(|ui| ui.texture(handle).is_none()));
+
+        let bad_size = images.join("decoded-size.rgba");
+        std::fs::write(&bad_size, [2u8; 16]).unwrap();
+        assert_eq!(upload_texture_file(&surface, &root, "images/decoded-size.rgba", 3, 2, spec::psm::PSM_8888 as i32), -1);
+        assert!(!bad_size.exists());
+
+        let bad_length = text.join("line-length.rgba");
+        std::fs::write(&bad_length, [3u8; 12]).unwrap();
+        assert_eq!(upload_texture_file(&surface, &root, "text/line-length.rgba", 2, 2, spec::psm::PSM_8888 as i32), -1);
+        assert!(!bad_length.exists());
+
+        let bad_format = images.join("decoded-format.rgba");
+        std::fs::write(&bad_format, [4u8; 16]).unwrap();
+        assert_eq!(upload_texture_file(&surface, &root, "images/decoded-format.rgba", 2, 2, spec::psm::PSM_5650 as i32), -1);
+        assert!(!bad_format.exists());
+
+        let rejected = root.join("secret.rgba");
+        std::fs::write(&rejected, [5u8; 16]).unwrap();
+        assert_eq!(upload_texture_file(&surface, &root, "../secret.rgba", 2, 2, spec::psm::PSM_8888 as i32), -1);
+        assert!(rejected.exists());
+        assert_eq!(upload_texture_file(&surface, &root, "text/not-a-line.rgba", 2, 2, spec::psm::PSM_8888 as i32), -1);
+
+        #[cfg(unix)] {
+            let target = root.join("target.rgba");
+            let link = text.join("line-link.rgba");
+            std::fs::write(&target, [6u8; 16]).unwrap();
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            assert_eq!(upload_texture_file(&surface, &root, "text/line-link.rgba", 2, 2, spec::psm::PSM_8888 as i32), -1);
+            assert!(!link.exists());
+            assert!(target.exists());
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn mounted_guest_can_upload_texture_file_without_js_bytes() {
+        let root = std::env::temp_dir().join(format!(
+            "podjs-texture-file-eval-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let text = root.join("files/text");
+        std::fs::create_dir_all(&text).unwrap();
+        std::fs::create_dir_all(root.join("tmp")).unwrap();
+        let texture = text.join("line-mounted_1.rgba");
+        let pixels = [
+            1u8, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255,
+        ];
+        std::fs::write(&texture, pixels).unwrap();
+
+        let target = CString::new("android-watch").unwrap();
+        let caps = CString::new("[]").unwrap();
+        let data_dir = CString::new(root.to_string_lossy().as_bytes()).unwrap();
+        let mut runtime_config = valid_config(&target, &caps);
+        runtime_config.data_dir = data_dir.as_ptr();
+        let runtime = pod_runtime_create(&runtime_config);
+        assert!(!runtime.is_null());
+        let source = br#"
+            globalThis.frame = () => {};
+            const handle = pod.uploadTextureFile('text/line-mounted_1.rgba', 2, 2, 3);
+            if (!Number.isInteger(handle) || handle < 0) throw new Error('native file upload failed');
+            pod.emit(JSON.stringify({handle}));
+        "#;
+        validate(runtime, "android-watch", b"pak", source, &[]);
+        assert_eq!(
+            pod_runtime_eval_bundle(runtime, source.as_ptr(), source.len(), std::ptr::null()),
+            OK,
+            "{}",
+            unsafe { CStr::from_ptr(pod_runtime_last_error()) }.to_string_lossy()
+        );
+        assert!(!texture.exists());
+        let effect: Value =
+            serde_json::from_str(cstr(pod_runtime_poll_effect(runtime)).unwrap()).unwrap();
+        let handle = effect["handle"].as_i64().unwrap() as i32;
+        assert_eq!(
+            unsafe { &*runtime }
+                .surface
+                .with_ui(|ui| ui.texture(handle).map(|value| value.pixels.to_vec())),
+            Some(pixels.to_vec())
+        );
+        assert_eq!(pod_runtime_free_texture(runtime, handle), OK);
+        assert!(unsafe { &*runtime }
+            .surface
+            .with_ui(|ui| ui.texture(handle).is_none()));
+        pod_runtime_destroy(runtime);
         std::fs::remove_dir_all(&root).unwrap();
     }
 
