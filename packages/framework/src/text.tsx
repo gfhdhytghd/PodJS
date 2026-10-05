@@ -1,7 +1,7 @@
 import {createEffect,createSignal,onCleanup,type JSX} from "solid-js";
 import {View,Image,type NodeMirror} from "@pocketjs/framework/components";
 import {getOps} from "@pocketjs/framework/host";
-import {textRaster,fileChunks,base64ToBytes,type TextParagraphLine,type TextFontOptions} from "./services.ts";
+import {textRaster,fileChunks,base64ToBytes,hasTextureFileUpload,uploadTextureFile,type TextParagraphLine,type TextFontOptions} from "./services.ts";
 
 export interface SystemTextLineOptions extends TextFontOptions {fontRevision?:string;text:string;widthPx:number;heightPx:number;baselinePx:number;fontSizePx:number;fontWeight?:number;italic?:boolean;underline?:boolean;strikethrough?:boolean;letterSpacingEm?:number;colorArgb?:number;align?:"left"|"center"|"right";textMotion?:"subpixel"|"static"|"animated";paragraph?:TextParagraphLine}
 export type SystemTextFailureStage="raster"|"read"|"upload"|"set-image"|"ready-callback";
@@ -63,17 +63,26 @@ async function load(entry:Entry){
   // At most two jobs run; their late results are drained and removed without upload.
   const operation=textRaster.line(entry.options);
   const result=await operation.result;entry.path=result.path;if(entry.cancelled)return;
-  if(!Number.isInteger(result.width)||!Number.isInteger(result.height)||result.width<1||result.width>1024||result.height<1||result.height>1024||(result.width&(result.width-1))||(result.height&(result.height-1)))throw new Error("Invalid system text texture size");
+  if(!Number.isInteger(result.width)||!Number.isInteger(result.height)||result.width<1||result.width>512||result.height<1||result.height>512||(result.width&(result.width-1))||(result.height&(result.height-1)))throw new Error("Invalid system text texture size");
   if(result.carets.length!==entry.options.text.length+1||!result.carets.every(Number.isFinite))throw new Error("Invalid system text caret positions");
-  entry.stage="read";stage="read";
-  const bytes=new Uint8Array(result.width*result.height*4);let offset=0;
-  while(offset<bytes.length){
-   const part=await fileChunks.read(result.path,offset,Math.min(262144,bytes.length-offset));if(entry.cancelled)return;
-   const chunk=base64ToBytes(part.dataBase64);if(!chunk.length||chunk.length>bytes.length-offset||part.size!==bytes.length)throw new Error("Incomplete system text pixels");bytes.set(chunk,offset);offset+=chunk.length;
+  let handle:number;
+  if(hasTextureFileUpload()){
+   entry.stage="upload";stage="upload";
+   // The supporting host consumes this exact temporary path on every outcome.
+   entry.path=undefined;
+   handle=uploadTextureFile(result.path,result.width,result.height,3)??-1;
+  }else{
+   entry.stage="read";stage="read";
+   const bytes=new Uint8Array(result.width*result.height*4);let offset=0;
+   while(offset<bytes.length){
+    const part=await fileChunks.read(result.path,offset,Math.min(262144,bytes.length-offset));if(entry.cancelled)return;
+    const chunk=base64ToBytes(part.dataBase64);if(!chunk.length||chunk.length>bytes.length-offset||part.size!==bytes.length)throw new Error("Incomplete system text pixels");bytes.set(chunk,offset);offset+=chunk.length;
+   }
+   if(entry.cancelled)return;
+   entry.stage="upload";stage="upload";
+   handle=getOps().uploadTexture(bytes,result.width,result.height,3);
   }
-  if(entry.cancelled)return;
-  entry.stage="upload";stage="upload";
-  const handle=getOps().uploadTexture(bytes,result.width,result.height,3);if(!Number.isInteger(handle)||handle<0)throw new Error("System text texture upload failed");
+  if(!Number.isInteger(handle)||handle<0)throw new Error("System text texture upload failed");
   // A synchronous host callback can release the last subscriber during upload.
   if(entry.cancelled){getOps().freeTexture?.(handle);return;}
   entry.handle=handle;entry.width=result.width;entry.height=result.height;entry.carets=result.carets;

@@ -81,6 +81,10 @@ class VulkanRenderer {
     VkImageView view{};
     VkDescriptorSet descriptor{};
   };
+  struct PendingTextureUpload {
+    uint64_t key{};
+    VkDeviceSize offset{};
+  };
 
   bool createDevice();
   bool createUploadResources();
@@ -88,10 +92,14 @@ class VulkanRenderer {
   bool createGraphicsResources();
   bool createSurfaceAndSwapchain();
   bool ensureStagingCapacity(VkDeviceSize required);
-  bool uploadImages(const std::vector<GpuImage>& images);
+  bool waitForFrameFence();
+  bool prepareImageUploads(const std::vector<GpuImage>& images,
+                           std::vector<PendingTextureUpload>* pendingUploads);
+  void recordImageUploads(VkCommandBuffer command,
+                          const std::vector<PendingTextureUpload>& uploads);
   bool createTextureResource(const GpuImage& image, uint64_t key,
                              TextureResource* out);
-  bool acquireFrame(uint32_t* imageIndex);
+  bool acquireFrame(uint32_t* imageIndex, bool waitForFence = true);
   bool submitAndPresent(uint32_t imageIndex, VkPipelineStageFlags waitStage);
   bool appendSwapchainBlit(VkCommandBuffer command, uint32_t imageIndex);
   bool recreateFrameFenceSignaled();
