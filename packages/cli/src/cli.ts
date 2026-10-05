@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { existsSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { createHash } from "node:crypto";
 import { cac } from "cac";
 import { POD_TARGETS, type PodTargetProfile } from "../../framework/src/targets.ts";
 import { resolvePodProject, type ResolvedPodProject } from "./project.ts";
@@ -97,8 +98,17 @@ async function build(target: Target, project?: ResolvedPodProject): Promise<Reso
     copyFileSync(js, join(out, "main.js"));
     copyFileSync(pak, join(out, "main.pak"));
   }
+  const bytecodePath = join(out, "main.qbc");
+  const bytecodeEnabled = target === "android-watch" || target === "wearos-watch";
+  if (bytecodeEnabled) {
+    run([
+      "cargo", "run", "--quiet", "--manifest-path", join(ROOT, "Cargo.toml"),
+      "-p", "podjs-runtime", "--example", "compile-bytecode", "--", js, bytecodePath,
+    ]);
+  }
   const background = await buildBackground(project?.background ?? {}, out);
   const assets = syncProjectAssets(out, project?.assets ?? {});
+  const bundleHash = fnv1a64(readFileSync(js));
   const manifest = {
     schema: 1,
     target: profile.id,
@@ -107,8 +117,18 @@ async function build(target: Target, project?: ResolvedPodProject): Promise<Reso
     renderer: profile.renderer,
     capabilities: profile.capabilities,
     pocketjsRevision: capture(["git", "-C", join(ROOT, "vendor/pocketjs"), "rev-parse", "HEAD"]) ?? fail("cannot resolve PocketJS revision"),
-    bundleHash: fnv1a64(readFileSync(js)),
+    bundleHash,
     pakHash: fnv1a64(readFileSync(pak)),
+    ...(bytecodeEnabled ? { bytecode: {
+      file: "main.qbc",
+      format: "quickjs-rquickjs-0.12.2-bc26-le-v1",
+      rquickjsVersion: "0.12.2",
+      quickjsBytecodeVersion: 26,
+      endianness: "little",
+      sourceHash: bundleHash,
+      sha256: createHash("sha256").update(readFileSync(bytecodePath)).digest("hex"),
+      bytes: readFileSync(bytecodePath).byteLength,
+    }} : {}),
     background,
     backgroundServices: project?.config.backgroundServices ?? [],
     ...(Object.keys(assets).length ? { assets } : {}),

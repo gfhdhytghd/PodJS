@@ -39,11 +39,14 @@ use pocket_ui_surface::UiSurface;
 use pocketjs_core::damage::{DEFAULT_DAMAGE_REGIONS, DamagePolicy, DamageTracker};
 use pocketjs_core::spec;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 pub const ABI_VERSION: u32 = 2;
 pub const MIN_ABI_VERSION: u32 = 1;
 pub const DEFAULT_LOGICAL_WIDTH: u32 = 240;
 pub const DEFAULT_LOGICAL_HEIGHT: u32 = 240;
+pub const QUICKJS_BYTECODE_FORMAT: &str = "quickjs-rquickjs-0.12.2-bc26-le-v1";
+pub const QUICKJS_BYTECODE_VERSION: u32 = 26;
 const OK: i32 = 0;
 const IDLE: i32 = 1;
 const ERR_ARGUMENT: i32 = -1;
@@ -238,6 +241,8 @@ pub struct PodRuntime {
     mounted: bool,
     package_validated: bool,
     expected_bundle_hash: Option<String>,
+    expected_bytecode_sha256: Option<String>,
+    expected_bytecode_bytes: Option<usize>,
     pak_hash: u64,
     pak_hash_micros: u64,
     bundle_hash: u64,
@@ -581,6 +586,8 @@ pub extern "C" fn pod_runtime_create(config: *const PodRuntimeConfig) -> *mut Po
         mounted: false,
         package_validated: false,
         expected_bundle_hash: None,
+        expected_bytecode_sha256: None,
+        expected_bytecode_bytes: None,
         pak_hash: 0,
         pak_hash_micros: 0,
         bundle_hash: 0,
@@ -656,6 +663,8 @@ pub unsafe extern "C" fn pod_runtime_load_pak_mapped(
     runtime.pak_hash = 0;
     runtime.package_validated = false;
     runtime.expected_bundle_hash = None;
+    runtime.expected_bytecode_sha256 = None;
+    runtime.expected_bytecode_bytes = None;
     let bytes: &'static [u8] = unsafe { slice::from_raw_parts(bytes, length) };
     unsafe { runtime.surface.feed_pak_mapped(bytes) };
     let hash_began = Instant::now();
@@ -692,6 +701,8 @@ pub extern "C" fn pod_runtime_load_pak_reader(
     runtime.pak_hash_micros = 0;
     runtime.package_validated = false;
     runtime.expected_bundle_hash = None;
+    runtime.expected_bytecode_sha256 = None;
+    runtime.expected_bytecode_bytes = None;
     let mut reader = pak_reader::PakReader { length, read_at, context };
     let hash_began = Instant::now();
     let checksum = reader.checksum();
@@ -722,6 +733,8 @@ pub extern "C" fn pod_runtime_validate_package(
     // A new validation attempt replaces the prior decision, including failures.
     runtime.package_validated = false;
     runtime.expected_bundle_hash = None;
+    runtime.expected_bytecode_sha256 = None;
+    runtime.expected_bytecode_bytes = None;
     let Some(raw) = cstr(manifest_json) else {
         set_error("package manifest is required");
         return ERR_ARGUMENT;
@@ -734,6 +747,20 @@ pub extern "C" fn pod_runtime_validate_package(
         .unwrap_or("0a90bf904d835210e52a11ed275a86d0040b5086");
     let expected_pak = format!("{:016x}", runtime.pak_hash);
     let manifest_bundle = value.get("bundleHash").and_then(Value::as_str);
+    let manifest_bytecode = value.get("bytecode");
+    let bytecode_absent = manifest_bytecode.is_none() || manifest_bytecode == Some(&Value::Null);
+    let valid_bytecode = bytecode_absent || manifest_bytecode.is_some_and(|bytecode| {
+        bytecode.get("file").and_then(Value::as_str) == Some("main.qbc")
+            && bytecode.get("format").and_then(Value::as_str) == Some(QUICKJS_BYTECODE_FORMAT)
+            && bytecode.get("rquickjsVersion").and_then(Value::as_str) == Some("0.12.2")
+            && bytecode.get("quickjsBytecodeVersion").and_then(Value::as_u64) == Some(QUICKJS_BYTECODE_VERSION as u64)
+            && bytecode.get("endianness").and_then(Value::as_str) == Some("little")
+            && bytecode.get("sourceHash").and_then(Value::as_str) == manifest_bundle
+            && bytecode.get("sha256").and_then(Value::as_str)
+                .is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            && bytecode.get("bytes").and_then(Value::as_u64)
+                .is_some_and(|bytes| bytes > 0 && bytes <= 16 * 1024 * 1024)
+    });
     let manifest_capabilities = value
         .get("capabilities")
         .and_then(Value::as_array)
@@ -752,6 +779,7 @@ pub extern "C" fn pod_runtime_validate_package(
         && value.get("pakHash").and_then(Value::as_str) == Some(expected_pak.as_str())
         && manifest_bundle
             .is_some_and(|hash| hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+        && valid_bytecode
         && capabilities_match;
     if !valid {
         set_error("package target, ABI, revision, pak hash, or capabilities mismatch");
@@ -763,6 +791,41 @@ pub extern "C" fn pod_runtime_validate_package(
     // preserving the old guest contract without overstating host capabilities.
     runtime.surface.set_identity(&runtime.target_id, runtime.package_abi);
     runtime.expected_bundle_hash = manifest_bundle.map(str::to_owned);
+    if let Some(bytecode) = manifest_bytecode.filter(|_| !bytecode_absent) {
+        runtime.expected_bytecode_sha256 = bytecode.get("sha256").and_then(Value::as_str).map(str::to_owned);
+        runtime.expected_bytecode_bytes = bytecode.get("bytes").and_then(Value::as_u64).map(|bytes| bytes as usize);
+    }
+    OK
+}
+
+fn mount_runtime(runtime: &mut PodRuntime) -> anyhow::Result<()> {
+    runtime
+        .surface
+        .mount(&runtime.guest)
+        .and_then(|_| pocket_fs::mount(&runtime.guest, runtime.fs.clone()))
+        .and_then(|_| runtime.net.mount(&runtime.guest))
+        .and_then(|_| mount_pod(&runtime.guest, runtime.bridge.clone(), runtime.kv.clone(), runtime.surface.clone(), runtime.decoded_image_root.clone()))
+}
+
+fn finish_bundle_eval(runtime: &mut PodRuntime, bundle_hash: u64, bytecode_sha256: Option<&str>) -> i32 {
+    if !runtime.guest.has_frame() {
+        set_error("bundle installed no global frame()");
+        return ERR_GUEST;
+    }
+    runtime.bundle_hash = bundle_hash;
+    let revision = option_env!("PODJS_POCKETJS_REVISION")
+        .unwrap_or("0a90bf904d835210e52a11ed275a86d0040b5086");
+    let mut receipt = json!({
+        "target": runtime.target_id,
+        "hostAbi": runtime.host_abi,
+        "packageAbi": runtime.package_abi,
+        "runtimeAbi": ABI_VERSION,
+        "pocketjsRevision": revision,
+        "pakHash": format!("{:016x}", runtime.pak_hash),
+        "bundleHash": format!("{:016x}", runtime.bundle_hash),
+    });
+    if let Some(hash) = bytecode_sha256 { receipt["bytecodeSha256"] = json!(hash); }
+    runtime.receipt = CString::new(receipt.to_string()).unwrap_or_default();
     OK
 }
 
@@ -797,13 +860,7 @@ pub extern "C" fn pod_runtime_eval_bundle(
         set_error("bundle is not UTF-8");
         return ERR_ARGUMENT;
     };
-    if let Err(error) = runtime
-        .surface
-        .mount(&runtime.guest)
-        .and_then(|_| pocket_fs::mount(&runtime.guest, runtime.fs.clone()))
-        .and_then(|_| runtime.net.mount(&runtime.guest))
-        .and_then(|_| mount_pod(&runtime.guest, runtime.bridge.clone(), runtime.kv.clone(), runtime.surface.clone(), runtime.decoded_image_root.clone()))
-    {
+    if let Err(error) = mount_runtime(runtime) {
         set_error(format!("surface mount failed: {error}"));
         return ERR_GUEST;
     }
@@ -813,27 +870,70 @@ pub extern "C" fn pod_runtime_eval_bundle(
         set_error(format!("bundle eval failed: {error}"));
         return ERR_GUEST;
     }
-    if !runtime.guest.has_frame() {
-        set_error("bundle installed no global frame()");
+    finish_bundle_eval(runtime, hash_bytes(bytes), None)
+}
+
+/// Evaluate CLI-produced QuickJS bytecode. The manifest pins the rquickjs release,
+/// QuickJS bytecode version, little-endian encoding, source hash, byte length and
+/// SHA-256 before the untrusted binary reader is entered. Source evaluation remains
+/// available for packages without this optional field and for older hosts.
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_eval_bundle_bytecode(
+    runtime: *mut PodRuntime,
+    bytecode: *const u8,
+    length: usize,
+) -> i32 {
+    use pocket_mod::qjs::qjs as raw;
+    let Ok(runtime) = runtime_mut(runtime) else { return ERR_ARGUMENT; };
+    if runtime.mounted {
+        set_error("bundle evaluation is one-shot");
+        return ERR_STATE;
+    }
+    if !runtime.package_validated {
+        set_error("package must validate before bundle evaluation");
+        return ERR_STATE;
+    }
+    if bytecode.is_null() || length == 0 { return ERR_ARGUMENT; }
+    let bytes = unsafe { slice::from_raw_parts(bytecode, length) };
+    if runtime.expected_bytecode_bytes != Some(length) {
+        set_error("bytecode length does not match package manifest");
+        return ERR_STATE;
+    }
+    let actual_sha256 = format!("{:x}", Sha256::digest(bytes));
+    if runtime.expected_bytecode_sha256.as_deref() != Some(actual_sha256.as_str()) {
+        set_error("bytecode hash does not match package manifest");
+        return ERR_STATE;
+    }
+    if let Err(error) = mount_runtime(runtime) {
+        set_error(format!("surface mount failed: {error}"));
         return ERR_GUEST;
     }
-    runtime.bundle_hash = hash_bytes(bytes);
-    let revision = option_env!("PODJS_POCKETJS_REVISION")
-        .unwrap_or("0a90bf904d835210e52a11ed275a86d0040b5086");
-    runtime.receipt = CString::new(
-        json!({
-            "target": runtime.target_id,
-            "hostAbi": runtime.host_abi,
-            "packageAbi": runtime.package_abi,
-            "runtimeAbi": ABI_VERSION,
-            "pocketjsRevision": revision,
-            "pakHash": format!("{:016x}", runtime.pak_hash),
-            "bundleHash": format!("{:016x}", runtime.bundle_hash),
-        })
-        .to_string(),
-    )
-    .unwrap_or_default();
-    OK
+    runtime.mounted = true;
+    let evaluation = runtime.guest.with(|ctx| {
+        let compiled = unsafe { raw::JS_ReadObject(
+            ctx.as_raw().as_ptr(), bytes.as_ptr(), bytes.len() as _, raw::JS_READ_OBJ_BYTECODE as i32,
+        ) };
+        if unsafe { raw::JS_IsException(compiled) } {
+            return Err(format!("{:?}", ctx.catch()));
+        }
+        let result = unsafe { raw::JS_EvalFunction(ctx.as_raw().as_ptr(), compiled) };
+        if unsafe { raw::JS_IsException(result) } {
+            return Err(format!("{:?}", ctx.catch()));
+        }
+        unsafe { raw::JS_FreeValue(ctx.as_raw().as_ptr(), result); }
+        Ok(())
+    });
+    if let Err(error) = evaluation {
+        set_error(format!("bundle bytecode eval failed: {error}"));
+        return ERR_GUEST;
+    }
+    runtime.guest.drain_jobs();
+    let Some(source_hash) = runtime.expected_bundle_hash.as_deref()
+        .and_then(|hash| u64::from_str_radix(hash, 16).ok()) else {
+        set_error("validated package lost source hash");
+        return ERR_STATE;
+    };
+    finish_bundle_eval(runtime, source_hash, Some(&actual_sha256))
 }
 
 /// Set before evaluating the guest. Values retain physical units in displayMetrics;
@@ -1610,6 +1710,237 @@ mod tests {
         let mut value = config(target);
         value.capabilities_json = capabilities.as_ptr();
         value
+    }
+
+    fn compile_test_bytecode(source: &[u8]) -> Vec<u8> {
+        use pocket_mod::qjs::{Context, Runtime, qjs as raw};
+        let runtime = Runtime::new().unwrap();
+        let context = Context::full(&runtime).unwrap();
+        let source_c = CString::new(source).unwrap();
+        context.with(|ctx| {
+            let compiled = unsafe { raw::JS_Eval(
+                ctx.as_raw().as_ptr(), source_c.as_ptr(), source.len() as _, c"test.js".as_ptr(),
+                (raw::JS_EVAL_TYPE_GLOBAL | raw::JS_EVAL_FLAG_STRICT | raw::JS_EVAL_FLAG_COMPILE_ONLY) as i32,
+            ) };
+            assert!(!unsafe { raw::JS_IsException(compiled) }, "{:?}", ctx.catch());
+            let mut length = 0;
+            let bytes = unsafe { raw::JS_WriteObject(
+                ctx.as_raw().as_ptr(), &mut length, compiled, raw::JS_WRITE_OBJ_BYTECODE as i32,
+            ) };
+            unsafe { raw::JS_FreeValue(ctx.as_raw().as_ptr(), compiled); }
+            assert!(!bytes.is_null());
+            let result = unsafe { slice::from_raw_parts(bytes, length as usize) }.to_vec();
+            unsafe { raw::js_free(ctx.as_raw().as_ptr(), bytes.cast()); }
+            result
+        })
+    }
+
+    #[test]
+    fn quickjs_bytecode_is_version_hash_and_source_bound_with_safe_source_fallback() {
+        let target = CString::new("android-watch").unwrap();
+        let capabilities = CString::new("[]").unwrap();
+        let source = b"globalThis.value='bytecode-ok';globalThis.frame=()=>{};";
+        let bytecode = compile_test_bytecode(source);
+        assert_eq!(bytecode[0], QUICKJS_BYTECODE_VERSION as u8);
+        let pak = b"pak";
+        let bytecode_sha256 = format!("{:x}", Sha256::digest(&bytecode));
+        let revision = option_env!("PODJS_POCKETJS_REVISION")
+            .unwrap_or("0a90bf904d835210e52a11ed275a86d0040b5086");
+        let manifest_value = json!({
+            "target":"android-watch", "hostAbi":1, "pocketjsRevision":revision,
+            "pakHash":format!("{:016x}",hash_bytes(pak)),
+            "bundleHash":format!("{:016x}",hash_bytes(source)), "capabilities":[],
+            "bytecode":{
+                "file":"main.qbc", "format":QUICKJS_BYTECODE_FORMAT,
+                "rquickjsVersion":"0.12.2", "quickjsBytecodeVersion":QUICKJS_BYTECODE_VERSION,
+                "endianness":"little", "sourceHash":format!("{:016x}",hash_bytes(source)),
+                "sha256":bytecode_sha256, "bytes":bytecode.len(),
+            }
+        });
+        let manifest = CString::new(manifest_value.to_string()).unwrap();
+
+        let runtime = pod_runtime_create(&valid_config(&target, &capabilities));
+        assert_eq!(pod_runtime_load_pak(runtime, pak.as_ptr(), pak.len()), OK);
+        assert_eq!(pod_runtime_validate_package(runtime, manifest.as_ptr()), OK);
+        assert_eq!(pod_runtime_eval_bundle_bytecode(runtime, bytecode.as_ptr(), bytecode.len()), OK,
+            "{}", cstr(pod_runtime_last_error()).unwrap_or("unknown"));
+        let receipt: Value = serde_json::from_str(cstr(pod_runtime_receipt(runtime)).unwrap()).unwrap();
+        assert_eq!(receipt["bundleHash"], format!("{:016x}", hash_bytes(source)));
+        assert_eq!(receipt["bytecodeSha256"], bytecode_sha256);
+        pod_runtime_destroy(runtime);
+
+        let runtime = pod_runtime_create(&valid_config(&target, &capabilities));
+        assert_eq!(pod_runtime_load_pak(runtime, pak.as_ptr(), pak.len()), OK);
+        assert_eq!(pod_runtime_validate_package(runtime, manifest.as_ptr()), OK);
+        let mut damaged = bytecode.clone(); let last = damaged.len() - 1; damaged[last] ^= 1;
+        assert_eq!(pod_runtime_eval_bundle_bytecode(runtime, damaged.as_ptr(), damaged.len()), ERR_STATE);
+        assert_eq!(pod_runtime_eval_bundle(runtime, source.as_ptr(), source.len(), std::ptr::null()), OK,
+            "source fallback: {}", cstr(pod_runtime_last_error()).unwrap_or("unknown"));
+        pod_runtime_destroy(runtime);
+
+        let mut wrong = manifest_value;
+        wrong["bytecode"]["quickjsBytecodeVersion"] = json!(QUICKJS_BYTECODE_VERSION + 1);
+        let wrong = CString::new(wrong.to_string()).unwrap();
+        let runtime = pod_runtime_create(&valid_config(&target, &capabilities));
+        assert_eq!(pod_runtime_load_pak(runtime, pak.as_ptr(), pak.len()), OK);
+        assert_eq!(pod_runtime_validate_package(runtime, wrong.as_ptr()), ERR_STATE);
+        pod_runtime_destroy(runtime);
+    }
+
+    #[derive(Default)]
+    struct ModuleProfileState {
+        stack: Vec<(String, Instant, std::time::Duration)>,
+        samples: BTreeMap<String, Vec<(u64, u64)>>,
+        errors: Vec<String>,
+    }
+
+    /// Diagnostic-only K5 harness. It is ignored in the normal suite and loads the exact
+    /// CLI-produced main.js/main.pak selected by PODJS_PROFILE_DIST. Keeping it here gives
+    /// the profiler access to the already-mounted production Guest without adding a release
+    /// ABI or changing the normal single-eval boot path.
+    #[test]
+    #[ignore = "set PODJS_PROFILE_DIST to a built android-watch distribution"]
+    fn profile_bundle_compile_execute_and_modules() {
+        use pocket_mod::qjs::{Function, qjs as raw};
+
+        let dist = PathBuf::from(std::env::var("PODJS_PROFILE_DIST")
+            .expect("PODJS_PROFILE_DIST must name the android-watch dist directory"));
+        let source = std::fs::read(dist.join("main.js")).expect("read main.js");
+        let pak = std::fs::read(dist.join("main.pak")).expect("read main.pak");
+        let manifest_text = std::fs::read_to_string(dist.join("pod.manifest.json"))
+            .expect("read pod.manifest.json");
+        let manifest: Value = serde_json::from_str(&manifest_text).expect("parse manifest");
+        let bytecode = (std::env::var("PODJS_PROFILE_BYTECODE").as_deref() == Ok("1"))
+            .then(|| std::fs::read(dist.join("main.qbc")).expect("read main.qbc"));
+        let capabilities = CString::new(manifest["capabilities"].to_string()).unwrap();
+        let target = CString::new(manifest["target"].as_str().unwrap()).unwrap();
+        let manifest_c = CString::new(manifest_text).unwrap();
+        let iterations = std::env::var("PODJS_PROFILE_ITERATIONS").ok()
+            .and_then(|value| value.parse::<usize>().ok()).unwrap_or(5).clamp(1, 25);
+        let expect_modules = std::env::var("PODJS_PROFILE_EXPECT_MODULES").as_deref() == Ok("1");
+        let mut compile_samples = Vec::with_capacity(iterations);
+        let mut execute_samples = Vec::with_capacity(iterations);
+        let mut module_samples: BTreeMap<String, Vec<(u64, u64)>> = BTreeMap::new();
+
+        for iteration in 0..iterations {
+            let mut runtime_config = valid_config(&target, &capabilities);
+            runtime_config.host_abi = manifest["hostAbi"].as_u64().unwrap() as u32;
+            runtime_config.raster_density = 2;
+            runtime_config.physical_width = 480;
+            runtime_config.physical_height = 480;
+            let runtime = pod_runtime_create(&runtime_config);
+            assert!(!runtime.is_null(), "runtime create: {}", cstr(pod_runtime_last_error()).unwrap_or("unknown"));
+            assert_eq!(pod_runtime_load_pak(runtime, pak.as_ptr(), pak.len()), OK,
+                "pak load: {}", cstr(pod_runtime_last_error()).unwrap_or("unknown"));
+            assert_eq!(pod_runtime_validate_package(runtime, manifest_c.as_ptr()), OK,
+                "manifest: {}", cstr(pod_runtime_last_error()).unwrap_or("unknown"));
+
+            if let Some(bytecode) = &bytecode {
+                let began = Instant::now();
+                assert_eq!(pod_runtime_eval_bundle_bytecode(runtime, bytecode.as_ptr(), bytecode.len()), OK,
+                    "bytecode eval: {}", cstr(pod_runtime_last_error()).unwrap_or("unknown"));
+                let elapsed = began.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+                compile_samples.push(0);
+                execute_samples.push(elapsed);
+                println!("K5_ITER {} bytecode_load_execute_ms={:.3}", iteration + 1, elapsed as f64 / 1000.0);
+                pod_runtime_destroy(runtime);
+                continue;
+            }
+
+            let runtime_ref = unsafe { &mut *runtime };
+            runtime_ref.surface.mount(&runtime_ref.guest).expect("mount ui surface");
+            pocket_fs::mount(&runtime_ref.guest, runtime_ref.fs.clone()).expect("mount fs");
+            runtime_ref.net.mount(&runtime_ref.guest).expect("mount net");
+            mount_pod(&runtime_ref.guest, runtime_ref.bridge.clone(), runtime_ref.kv.clone(),
+                runtime_ref.surface.clone(), runtime_ref.decoded_image_root.clone()).expect("mount pod");
+            runtime_ref.mounted = true;
+
+            let profile = Rc::new(RefCell::new(ModuleProfileState::default()));
+            let start_profile = profile.clone();
+            let end_profile = profile.clone();
+            let (compile_micros, execute_started) = runtime_ref.guest.with(|ctx| {
+                ctx.globals().set("__podProfileStart", Function::new(ctx.clone(), move |label: String| {
+                    start_profile.borrow_mut().stack.push((label, Instant::now(), std::time::Duration::ZERO));
+                }).unwrap()).unwrap();
+                ctx.globals().set("__podProfileEnd", Function::new(ctx.clone(), move |label: String| {
+                    let ended = Instant::now();
+                    let mut state = end_profile.borrow_mut();
+                    let Some((opened, began, child)) = state.stack.pop() else {
+                        state.errors.push(format!("end without start: {label}"));
+                        return;
+                    };
+                    if opened != label {
+                        state.errors.push(format!("module stack mismatch: opened {opened}, ended {label}"));
+                    }
+                    let inclusive = ended.duration_since(began);
+                    let exclusive = inclusive.saturating_sub(child);
+                    state.samples.entry(label).or_default().push((
+                        exclusive.as_micros().min(u128::from(u64::MAX)) as u64,
+                        inclusive.as_micros().min(u128::from(u64::MAX)) as u64,
+                    ));
+                    if let Some(parent) = state.stack.last_mut() { parent.2 += inclusive; }
+                }).unwrap()).unwrap();
+
+                let source_c = CString::new(source.clone()).expect("bundle contains NUL");
+                let label = c"main.js";
+                let compile_started = Instant::now();
+                let compiled = unsafe { raw::JS_Eval(
+                    ctx.as_raw().as_ptr(), source_c.as_ptr(), source.len() as _, label.as_ptr(),
+                    (raw::JS_EVAL_TYPE_GLOBAL | raw::JS_EVAL_FLAG_STRICT | raw::JS_EVAL_FLAG_COMPILE_ONLY) as i32,
+                ) };
+                let compile_micros = compile_started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+                if unsafe { raw::JS_IsException(compiled) } {
+                    panic!("QuickJS compile failed: {:?}", ctx.catch());
+                }
+                let execute_started = Instant::now();
+                let result = unsafe { raw::JS_EvalFunction(ctx.as_raw().as_ptr(), compiled) };
+                if unsafe { raw::JS_IsException(result) } {
+                    panic!("QuickJS execute failed: {:?}", ctx.catch());
+                }
+                unsafe { raw::JS_FreeValue(ctx.as_raw().as_ptr(), result); }
+                (compile_micros, execute_started)
+            });
+            runtime_ref.guest.drain_jobs();
+            let execute_micros = execute_started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+            assert!(runtime_ref.guest.has_frame(), "bundle installed no global frame()");
+            let profile = profile.borrow();
+            assert!(profile.stack.is_empty(), "unterminated module spans: {:?}", profile.stack.iter().map(|span| &span.0).collect::<Vec<_>>());
+            assert!(profile.errors.is_empty(), "module profile errors: {:?}", profile.errors);
+            for (label, samples) in &profile.samples {
+                let exclusive = samples.iter().map(|sample| sample.0).sum();
+                let inclusive = samples.iter().map(|sample| sample.1).sum();
+                module_samples.entry(label.clone()).or_default().push((exclusive, inclusive));
+            }
+            compile_samples.push(compile_micros);
+            execute_samples.push(execute_micros);
+            println!("K5_ITER {} compile_ms={:.3} execute_ms={:.3} modules={}",
+                iteration + 1, compile_micros as f64 / 1000.0, execute_micros as f64 / 1000.0, profile.samples.len());
+            drop(profile);
+            pod_runtime_destroy(runtime);
+        }
+
+        fn median(values: &mut [u64]) -> u64 {
+            values.sort_unstable();
+            values[values.len() / 2]
+        }
+        let compile_median = median(&mut compile_samples);
+        let execute_median = median(&mut execute_samples);
+        println!("K5_SUMMARY bundle_bytes={} iterations={} compile_median_ms={:.3} execute_median_ms={:.3} total_median_ms={:.3}",
+            source.len(), iterations, compile_median as f64 / 1000.0, execute_median as f64 / 1000.0,
+            (compile_median + execute_median) as f64 / 1000.0);
+
+        let mut rows: Vec<_> = module_samples.into_iter().map(|(label, samples)| {
+            let mut exclusive: Vec<_> = samples.iter().map(|sample| sample.0).collect();
+            let mut inclusive: Vec<_> = samples.iter().map(|sample| sample.1).collect();
+            (label, median(&mut exclusive), median(&mut inclusive), samples.len())
+        }).collect();
+        rows.sort_by_key(|row| std::cmp::Reverse(row.1));
+        if expect_modules { assert!(rows.len() >= 30, "expected at least 30 instrumented modules, got {}", rows.len()); }
+        println!("K5_MODULE_TOP count={} (median exclusive/inclusive milliseconds)", rows.len());
+        for (rank, (label, exclusive, inclusive, count)) in rows.iter().take(30).enumerate() {
+            println!("K5_MODULE {:02} exclusive_ms={:.3} inclusive_ms={:.3} runs={} {}",
+                rank + 1, *exclusive as f64 / 1000.0, *inclusive as f64 / 1000.0, count, label);
+        }
     }
 
     #[test]

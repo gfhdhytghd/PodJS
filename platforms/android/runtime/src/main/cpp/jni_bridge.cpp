@@ -297,25 +297,39 @@ extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeBo
   int result=pod_runtime_load_pak_mapped(h->runtime,h->pak.bytes,h->pak.length);
   const double loaded=monoMs();
   if(result){fail(env,pod_runtime_last_error());return;}
-  Asset js=openAsset("main.js"); if(!js)return;
   Asset manifest=openAsset("pod.manifest.json"); if(!manifest)return;
-  const auto* jb=static_cast<const uint8_t*>(AAsset_getBuffer(js.get()));
-  if(!jb){fail(env,"PodJS cannot map asset main.js");return;}
   const auto* mb=static_cast<const char*>(AAsset_getBuffer(manifest.get()));
   if(!mb){fail(env,"PodJS cannot map asset pod.manifest.json");return;}
-  const size_t jn=AAsset_getLength64(js.get());
   const std::string json(mb,AAsset_getLength64(manifest.get()));
   manifest.reset();
   result=pod_runtime_validate_package(h->runtime,json.c_str());
   const double validated=monoMs();
-  if(!result) result=pod_runtime_eval_bundle(h->runtime,jb,jn,"app:///main.js");
+  const char* evalMode="source";
+  Asset bytecode(AAssetManager_open(manager,"main.qbc",AASSET_MODE_BUFFER),AAsset_close);
+  bool evaluateSource=!result&&!bytecode;
+  if(!result&&bytecode) {
+    const auto* qb=static_cast<const uint8_t*>(AAsset_getBuffer(bytecode.get()));
+    if(!qb){fail(env,"PodJS cannot map asset main.qbc");return;}
+    result=pod_runtime_eval_bundle_bytecode(h->runtime,qb,AAsset_getLength64(bytecode.get()));
+    if(!result)evalMode="bytecode";
+    else if(result==-2){result=0;evaluateSource=true;}
+  }
+  // An older bundle can omit bytecode metadata or the qbc asset entirely.
+  // Only pre-mount state rejection is safe to fall back from; guest failures
+  // may already have installed surfaces or run side effects.
+  if(evaluateSource) {
+    Asset js=openAsset("main.js"); if(!js)return;
+    const auto* jb=static_cast<const uint8_t*>(AAsset_getBuffer(js.get()));
+    if(!jb){fail(env,"PodJS cannot map asset main.js");return;}
+    result=pod_runtime_eval_bundle(h->runtime,jb,AAsset_getLength64(js.get()),"app:///main.js");
+  }
   const double evaluated=monoMs();
   double firstFramePrepareMs=0;
   if(!result) {const double frameBegan=monoMs();renderFrame(h);firstFramePrepareMs=monoMs()-frameBegan;}
   PodPakStats stats{};stats.struct_size=sizeof(stats);pod_runtime_pak_stats(h->runtime,&stats);
-  __android_log_print(ANDROID_LOG_INFO,"PodJSPerf","boot mmapMs=%.1f dirParseMs=%.3f pakHashMs=%.1f validateMs=%.1f evalMs=%.1f firstSlotLoadMs=%.3f loadedSlots=%u firstFramePrepareMs=%.1f",
+  __android_log_print(ANDROID_LOG_INFO,"PodJSPerf","boot mmapMs=%.1f dirParseMs=%.3f pakHashMs=%.1f validateMs=%.1f evalMs=%.1f evalMode=%s firstSlotLoadMs=%.3f loadedSlots=%u firstFramePrepareMs=%.1f",
       mapped-began,stats.directory_parse_micros/1000.0,stats.pak_hash_micros/1000.0,validated-loaded,evaluated-validated,
-      stats.first_font_load_micros/1000.0,stats.loaded_font_slots,firstFramePrepareMs);
+      evalMode,stats.first_font_load_micros/1000.0,stats.loaded_font_slots,firstFramePrepareMs);
   if(result)fail(env,pod_runtime_last_error());
   else __android_log_print(ANDROID_LOG_INFO,"PodJS","%s",pod_runtime_receipt(h->runtime));
 }
