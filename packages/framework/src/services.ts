@@ -22,6 +22,7 @@ let nextId = 1;
 const methods: Record<string, PodCapabilityId> = {
   ...platformMethods,
   "app.finishTask": "host.lifecycle",
+  "app.buildInfo": "host.lifecycle",
   "app.activityState.read": "host.lifecycle", "app.activityState.write": "host.lifecycle",
   "rfcomm.requestPermission": "net.rfcomm", "rfcomm.status": "net.rfcomm", "rfcomm.listen": "net.rfcomm", "rfcomm.accept": "net.rfcomm", "rfcomm.close": "net.rfcomm",
   "tcp.listen":"net.tcp", "tcp.accept":"net.tcp", "tcp.close":"net.tcp", "tcp.addresses":"net.tcp",
@@ -62,6 +63,7 @@ export interface ActivityState { saved:Record<string,unknown>; retained:Record<s
 /** Android Activity lifecycle operations. Saved state follows the system Bundle;
  * retained state survives configuration recreation only. Neither is app KV. */
 export const application = Object.freeze({
+  buildInfo: ():Promise<{debugBuild:boolean}> => hostOperation<{debugBuild:boolean}>("app.buildInfo",{}).result,
   finishTask: (): Promise<void> => hostOperation<void>("app.finishTask", {}).result,
   activityState: Object.freeze({
     read: ():Promise<ActivityState> => hostOperation<ActivityState>("app.activityState.read",{}).result,

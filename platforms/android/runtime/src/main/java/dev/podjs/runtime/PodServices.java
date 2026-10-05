@@ -320,6 +320,15 @@ final class PodServices implements Closeable {
             request.future = imageWorkers.submit(() -> { try { JSONObject value=images.execute(method,args); if(requests.remove(id,request)) reply(id,true,value,null,null); else images.discard(value); } catch(Exception error) { if(requests.remove(id,request)) failure(id,error instanceof SecurityException?"permission_denied":error instanceof IllegalArgumentException?"invalid_argument":"image_error",error.getMessage()); } });
             return;
         }
+        if ("app.buildInfo".equals(method)) {
+            if (!requests.remove(id, request)) return;
+            try {
+                request.cancellation.throwIfCanceled();
+                boolean debug = (context.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+                reply(id, true, new JSONObject().put("debugBuild", debug), null, null);
+            } catch (Exception error) { failure(id, "lifecycle_error", error.getMessage()); }
+            return;
+        }
         if ("app.activityState.read".equals(method) || "app.activityState.write".equals(method)) {
             if (!requests.remove(id, request)) return;
             try {

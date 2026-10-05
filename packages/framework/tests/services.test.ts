@@ -47,6 +47,16 @@ describe("host services", () => {
     const closed=session.close(),close=emitted.at(-1)!;
     events.push({t:"service.result",id:close.id,ok:true,value:null});api.__pumpPodEvents();await closed;
   });
+  test("build information is lifecycle gated and reports the actual host debug flag",async()=>{
+    await expect(application.buildInfo()).rejects.toMatchObject({code:"unsupported"});expect(emitted).toHaveLength(0);
+    host.capabilities=()=>JSON.stringify(["host.lifecycle"]);
+    for(const debugBuild of [true,false]){
+      const result=application.buildInfo(),request=emitted.at(-1)!;
+      expect(request).toMatchObject({method:"app.buildInfo",args:{}});
+      events.push({t:"service.result",id:request.id,ok:true,value:{debugBuild}});api.__pumpPodEvents();
+      await expect(result).resolves.toEqual({debugBuild});
+    }
+  });
   test("activity state has separate saved and retained channels behind lifecycle capability",async()=>{
     await expect(application.activityState.read()).rejects.toMatchObject({code:"unsupported"});expect(emitted).toHaveLength(0);
     host.capabilities=()=>JSON.stringify(["host.lifecycle"]);
