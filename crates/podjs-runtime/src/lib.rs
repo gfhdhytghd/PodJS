@@ -25,6 +25,7 @@ pub use pak_reader::PodPakReadAt;
 use kv::KvStore;
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{CStr, CString, c_char};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::slice;
@@ -230,7 +231,7 @@ pub struct PodRuntime {
     transport: HostTransport,
     bridge: Rc<RefCell<PodBridge>>,
     kv: Rc<RefCell<KvStore>>,
-    decoded_image_root: Option<PathBuf>,
+    guest_files_root: Option<PathBuf>,
     target_id: String,
     host_abi: u32,
     package_abi: u32,
@@ -292,22 +293,82 @@ fn read_decoded_rgba(root: &Path, relative: &str) -> Option<Vec<u8>> {
     (bytes.len() as u64 == metadata.len()).then_some(bytes)
 }
 
+fn texture_file_path(root: &Path, relative: &str) -> Option<PathBuf> {
+    let (directory, name) = relative.split_once('/')?;
+    if name.contains('/') || name.contains('\\') || name.contains('\0') { return None; }
+    let token = match directory {
+        "text" => name.strip_prefix("line-")?.strip_suffix(".rgba")?,
+        "images" => name.strip_prefix("decoded-")?.strip_suffix(".rgba")?,
+        _ => return None,
+    };
+    if token.is_empty() || token.len() > 64
+        || !token.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return None;
+    }
+    Some(root.join(directory).join(name))
+}
+
+struct RemoveTextureFile(PathBuf);
+impl Drop for RemoveTextureFile {
+    fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
+}
+
+// Android image/text services publish bounded RGBA files under two private
+// guest directories. This synchronous bridge consumes exactly those outputs,
+// deletes them on every accepted-path outcome, and never exposes their bytes to
+// QuickJS or the JSON service lane.
+fn upload_texture_file(surface: &UiSurface, root: &Path, relative: &str, width: i32, height: i32, psm: i32) -> i32 {
+    let Some(path) = texture_file_path(root, relative) else { return -1; };
+    let _cleanup = RemoveTextureFile(path.clone());
+    let valid_dimension = |value: i32| value > 0 && value <= 512 && value & (value - 1) == 0;
+    if !valid_dimension(width) || !valid_dimension(height) || psm != spec::psm::PSM_8888 as i32 { return -1; }
+    let Some(expected) = (width as usize).checked_mul(height as usize).and_then(|pixels| pixels.checked_mul(4)) else { return -1; };
+
+    let Some(parent) = path.parent() else { return -1; };
+    let Ok(root_canonical) = root.canonicalize() else { return -1; };
+    let Ok(parent_metadata) = std::fs::symlink_metadata(parent) else { return -1; };
+    if !parent_metadata.file_type().is_dir() { return -1; }
+    let Ok(parent_canonical) = parent.canonicalize() else { return -1; };
+    if parent_canonical.parent() != Some(root_canonical.as_path()) { return -1; }
+    let Ok(canonical) = path.canonicalize() else { return -1; };
+    if canonical.parent() != Some(parent_canonical.as_path()) { return -1; }
+
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)] {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    let Ok(mut file) = options.open(&path) else { return -1; };
+    let Ok(metadata) = file.metadata() else { return -1; };
+    if !metadata.is_file() || metadata.len() != expected as u64 { return -1; }
+    let mut bytes = vec![0; expected];
+    if file.read_exact(&mut bytes).is_err() { return -1; }
+    surface.with_ui(|ui| ui.upload_texture(&bytes, width as u32, height as u32, psm as u32))
+}
+
 fn mount_pod(
     guest: &Guest,
     bridge: Rc<RefCell<PodBridge>>,
     kv: Rc<RefCell<KvStore>>,
     surface: UiSurface,
-    decoded_image_root: Option<PathBuf>,
+    guest_files_root: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     guest.mount("pod", |ctx, ns| {
         ns.set("decodeBase64", Function::new(ctx.clone(), decode_base64)?)?;
         ns.set("encodeBase64", Function::new(ctx.clone(), encode_base64)?)?;
-        if let Some(root) = decoded_image_root {
+        if let Some(root) = guest_files_root {
+            let image_root = root.join("images");
             ns.set("readDecodedRgba", Function::new(ctx.clone(), move |ctx, relative: String| {
-                match read_decoded_rgba(&root, &relative) {
+                match read_decoded_rgba(&image_root, &relative) {
                     Some(bytes) => TypedArray::new(ctx, bytes).map(Some),
                     None => Ok(None),
                 }
+            })?)?;
+            let upload_surface = surface.clone();
+            ns.set("uploadTextureFile", Function::new(ctx.clone(), move |relative: String, width: i32, height: i32, psm: i32| {
+                upload_texture_file(&upload_surface, &root, &relative, width, height, psm)
             })?)?;
         }
         ns.set("fontMetrics", Function::new(ctx.clone(), move |slot: f64| {
@@ -575,7 +636,7 @@ pub extern "C" fn pod_runtime_create(config: *const PodRuntimeConfig) -> *mut Po
         transport,
         bridge,
         kv: Rc::new(RefCell::new(KvStore::open(data_dir))),
-        decoded_image_root: data_dir.map(|root| PathBuf::from(root).join("files").join("images")),
+        guest_files_root: data_dir.map(|root| PathBuf::from(root).join("files")),
         target_id: target_id.to_owned(),
         host_abi: config.host_abi,
         package_abi: config.host_abi,
@@ -804,7 +865,7 @@ fn mount_runtime(runtime: &mut PodRuntime) -> anyhow::Result<()> {
         .mount(&runtime.guest)
         .and_then(|_| pocket_fs::mount(&runtime.guest, runtime.fs.clone()))
         .and_then(|_| runtime.net.mount(&runtime.guest))
-        .and_then(|_| mount_pod(&runtime.guest, runtime.bridge.clone(), runtime.kv.clone(), runtime.surface.clone(), runtime.decoded_image_root.clone()))
+        .and_then(|_| mount_pod(&runtime.guest, runtime.bridge.clone(), runtime.kv.clone(), runtime.surface.clone(), runtime.guest_files_root.clone()))
 }
 
 fn finish_bundle_eval(runtime: &mut PodRuntime, bundle_hash: u64, bytecode_sha256: Option<&str>) -> i32 {
@@ -1852,7 +1913,7 @@ mod tests {
             pocket_fs::mount(&runtime_ref.guest, runtime_ref.fs.clone()).expect("mount fs");
             runtime_ref.net.mount(&runtime_ref.guest).expect("mount net");
             mount_pod(&runtime_ref.guest, runtime_ref.bridge.clone(), runtime_ref.kv.clone(),
-                runtime_ref.surface.clone(), runtime_ref.decoded_image_root.clone()).expect("mount pod");
+                runtime_ref.surface.clone(), runtime_ref.guest_files_root.clone()).expect("mount pod");
             runtime_ref.mounted = true;
 
             let profile = Rc::new(RefCell::new(ModuleProfileState::default()));
@@ -1960,6 +2021,114 @@ mod tests {
         }
         std::fs::write(&valid, vec![0; 512 * 512 * 4 + 4]).unwrap();
         assert_eq!(read_decoded_rgba(&root, "images/decoded-123.rgba"), None);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn texture_file_upload_is_scoped_validated_consuming_and_releasable() {
+        let root = std::env::temp_dir().join(format!("podjs-texture-file-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let text = root.join("text");
+        let images = root.join("images");
+        std::fs::create_dir_all(&text).unwrap();
+        std::fs::create_dir_all(&images).unwrap();
+        let surface = UiSurface::new((32.0, 32.0));
+
+        let valid = text.join("line-valid_1.rgba");
+        std::fs::write(&valid, [1u8; 16]).unwrap();
+        let handle = upload_texture_file(&surface, &root, "text/line-valid_1.rgba", 2, 2, spec::psm::PSM_8888 as i32);
+        assert!(handle >= 0);
+        assert!(!valid.exists());
+        assert_eq!(surface.with_ui(|ui| ui.texture(handle).map(|texture| texture.pixels.to_vec())), Some(vec![1; 16]));
+        surface.with_ui(|ui| ui.free_texture(handle));
+        assert!(surface.with_ui(|ui| ui.texture(handle).is_none()));
+
+        let bad_size = images.join("decoded-size.rgba");
+        std::fs::write(&bad_size, [2u8; 16]).unwrap();
+        assert_eq!(upload_texture_file(&surface, &root, "images/decoded-size.rgba", 3, 2, spec::psm::PSM_8888 as i32), -1);
+        assert!(!bad_size.exists());
+
+        let bad_length = text.join("line-length.rgba");
+        std::fs::write(&bad_length, [3u8; 12]).unwrap();
+        assert_eq!(upload_texture_file(&surface, &root, "text/line-length.rgba", 2, 2, spec::psm::PSM_8888 as i32), -1);
+        assert!(!bad_length.exists());
+
+        let bad_format = images.join("decoded-format.rgba");
+        std::fs::write(&bad_format, [4u8; 16]).unwrap();
+        assert_eq!(upload_texture_file(&surface, &root, "images/decoded-format.rgba", 2, 2, spec::psm::PSM_5650 as i32), -1);
+        assert!(!bad_format.exists());
+
+        let rejected = root.join("secret.rgba");
+        std::fs::write(&rejected, [5u8; 16]).unwrap();
+        assert_eq!(upload_texture_file(&surface, &root, "../secret.rgba", 2, 2, spec::psm::PSM_8888 as i32), -1);
+        assert!(rejected.exists());
+        assert_eq!(upload_texture_file(&surface, &root, "text/not-a-line.rgba", 2, 2, spec::psm::PSM_8888 as i32), -1);
+
+        #[cfg(unix)] {
+            let target = root.join("target.rgba");
+            let link = text.join("line-link.rgba");
+            std::fs::write(&target, [6u8; 16]).unwrap();
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            assert_eq!(upload_texture_file(&surface, &root, "text/line-link.rgba", 2, 2, spec::psm::PSM_8888 as i32), -1);
+            assert!(!link.exists());
+            assert!(target.exists());
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn mounted_guest_can_upload_texture_file_without_js_bytes() {
+        let root = std::env::temp_dir().join(format!(
+            "podjs-texture-file-eval-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let text = root.join("files/text");
+        std::fs::create_dir_all(&text).unwrap();
+        std::fs::create_dir_all(root.join("tmp")).unwrap();
+        let texture = text.join("line-mounted_1.rgba");
+        let pixels = [
+            1u8, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255,
+        ];
+        std::fs::write(&texture, pixels).unwrap();
+
+        let target = CString::new("android-watch").unwrap();
+        let caps = CString::new("[]").unwrap();
+        let data_dir = CString::new(root.to_string_lossy().as_bytes()).unwrap();
+        let mut runtime_config = valid_config(&target, &caps);
+        runtime_config.data_dir = data_dir.as_ptr();
+        let runtime = pod_runtime_create(&runtime_config);
+        assert!(!runtime.is_null());
+        let source = br#"
+            globalThis.frame = () => {};
+            const handle = pod.uploadTextureFile('text/line-mounted_1.rgba', 2, 2, 3);
+            if (!Number.isInteger(handle) || handle < 0) throw new Error('native file upload failed');
+            pod.emit(JSON.stringify({handle}));
+        "#;
+        validate(runtime, "android-watch", b"pak", source, &[]);
+        assert_eq!(
+            pod_runtime_eval_bundle(runtime, source.as_ptr(), source.len(), std::ptr::null()),
+            OK,
+            "{}",
+            unsafe { CStr::from_ptr(pod_runtime_last_error()) }.to_string_lossy()
+        );
+        assert!(!texture.exists());
+        let effect: Value =
+            serde_json::from_str(cstr(pod_runtime_poll_effect(runtime)).unwrap()).unwrap();
+        let handle = effect["handle"].as_i64().unwrap() as i32;
+        assert_eq!(
+            unsafe { &*runtime }
+                .surface
+                .with_ui(|ui| ui.texture(handle).map(|value| value.pixels.to_vec())),
+            Some(pixels.to_vec())
+        );
+        assert_eq!(pod_runtime_free_texture(runtime, handle), OK);
+        assert!(unsafe { &*runtime }
+            .surface
+            .with_ui(|ui| ui.texture(handle).is_none()));
+        pod_runtime_destroy(runtime);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

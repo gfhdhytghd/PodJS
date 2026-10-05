@@ -21,6 +21,7 @@ let setImage: (node: number, texture: number) => void;
   },
   capabilities: () => JSON.stringify(["text.raster", "data.files.chunks"]),
 };
+const pod = (globalThis as any).pod;
 mock.module("@pocketjs/framework/components", () => ({View() {}, Image() {}}));
 mock.module("@pocketjs/framework/host", () => ({getOps: () => ({
   setImage(node: number, texture: number) { images.push([node, texture]); setImage(node, texture); },
@@ -99,6 +100,7 @@ beforeEach(() => {
   expect(pending.size).toBe(0);
   upload = () => ++textureId;
   setImage = () => {};
+  delete pod.uploadTextureFile;
 });
 afterEach(async () => {
   // Release through the public API and drain host work; never reset module state.
@@ -114,6 +116,37 @@ afterEach(async () => {
   expect(systemTextResourceCounts()).toEqual({active: 0, queued: 0, cached: 0});
   expect(systemTextResourceStatus()).toMatchObject({pending: 0, ready: 0, failed: 0, entries: []});
   expect(pending.size).toBe(0);
+  delete pod.uploadTextureFile;
+});
+
+test("native file upload skips Base64 reads and retains normal final-reference release", async () => {
+  const before = systemTextResourceStatus().totals, freeCount = freed.length;
+  const calls: unknown[][] = [];
+  pod.uploadTextureFile = (...args: unknown[]) => { calls.push(args); return 0; };
+  const binding = bind("native-file"), operation = request("text.raster");
+  await reply(operation, raster(operation, "text/line-123.rgba"));
+  expect(calls).toEqual([["text/line-123.rgba", 1, 1, 3]]);
+  expect([...pending.values()].filter(value => value.method === "file.read" || value.method === "file.delete")).toEqual([]);
+  expect(uploads).not.toContain(0);
+  expect(images).toContainEqual([binding.node, 0]);
+  expect(current()).toMatchObject({status: "ready", stage: "ready", uploaded: true});
+  expectTotals(before, 1, 0, 1);
+  binding.stop();
+  expect(freed.slice(freeCount)).toEqual([0]);
+});
+
+test("synchronous cancellation during native file upload frees its returned handle without delivery", async () => {
+  const before = systemTextResourceStatus().totals, freeCount = freed.length;
+  let binding!: ReturnType<typeof bind>;
+  pod.uploadTextureFile = () => { binding.stop(); return 0; };
+  binding = bind("native-cancel");
+  const operation = request("text.raster");
+  await reply(operation, raster(operation, "text/line-456.rgba"));
+  expect(images.filter(([node, texture]) => node === binding.node && texture >= 0)).toEqual([]);
+  expect([...pending.values()].filter(value => value.method === "file.read" || value.method === "file.delete")).toEqual([]);
+  expect(freed.slice(freeCount)).toEqual([0]);
+  expect(systemTextResourceCounts()).toEqual({active: 0, queued: 0, cached: 0});
+  expectTotals(before, 0, 0, 0);
 });
 
 test("shared resource becomes successful only after every current listener is delivered", async () => {
