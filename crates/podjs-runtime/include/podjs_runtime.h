@@ -253,6 +253,12 @@ int32_t pod_runtime_perf_stats(PodRuntime *runtime, PodRuntimePerfStats *out);
 int32_t pod_runtime_validate_package(PodRuntime *runtime, const char *manifest_json);
 int32_t pod_runtime_eval_bundle(PodRuntime *runtime, const uint8_t *source, size_t length,
                                 const char *label);
+/* Optional CLI-produced QuickJS bytecode. Package validation pins the exact
+ * rquickjs/QuickJS bytecode format, source hash, byte length and SHA-256 before
+ * this enters QuickJS's trusted binary reader. Source evaluation remains the
+ * compatibility path when no bytecode metadata is present. */
+int32_t pod_runtime_eval_bundle_bytecode(PodRuntime *runtime, const uint8_t *bytecode,
+                                         size_t length);
 int32_t pod_runtime_set_lifecycle(PodRuntime *runtime, uint32_t state);
 int32_t pod_runtime_set_theme(PodRuntime *runtime, const char *theme);
 /* External event admission: JSON object <= 1 MiB, at most 256 queued events and
