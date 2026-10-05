@@ -1965,6 +1965,55 @@ mod tests {
     }
 
     #[test]
+    fn pak_stats_respects_legacy_caller_struct_size() {
+        #[repr(C)]
+        struct LegacyPodPakStats {
+            struct_size: u32,
+            directory_entries: u32,
+            directory_parse_micros: u64,
+            pak_hash_micros: u64,
+            first_font_load_micros: u64,
+            loaded_font_slots: u32,
+        }
+
+        #[repr(C)]
+        struct GuardedLegacyStats {
+            stats: LegacyPodPakStats,
+            canary: [u8; 16],
+        }
+
+        let target = CString::new("android-watch").unwrap();
+        let capabilities = CString::new("[]").unwrap();
+        let runtime = pod_runtime_create(&valid_config(&target, &capabilities));
+        let mut guarded = GuardedLegacyStats {
+            stats: LegacyPodPakStats {
+                struct_size: std::mem::size_of::<LegacyPodPakStats>() as u32,
+                directory_entries: u32::MAX,
+                directory_parse_micros: u64::MAX,
+                pak_hash_micros: u64::MAX,
+                first_font_load_micros: u64::MAX,
+                loaded_font_slots: u32::MAX,
+            },
+            canary: [0xa5; 16],
+        };
+        assert_eq!(
+            pod_runtime_pak_stats(
+                runtime,
+                (&mut guarded.stats as *mut LegacyPodPakStats).cast::<PodPakStats>(),
+            ),
+            OK,
+        );
+        assert_eq!(
+            guarded.stats.struct_size,
+            std::mem::size_of::<PodPakStats>() as u32,
+        );
+        assert_eq!(guarded.stats.directory_entries, 0);
+        assert_eq!(guarded.stats.loaded_font_slots, 0);
+        assert_eq!(guarded.canary, [0xa5; 16]);
+        pod_runtime_destroy(runtime);
+    }
+
+    #[test]
     fn mapped_entry_integrity_defers_payload_hashes_and_rejects_font_image_tile_and_js_tamper() {
         let font = b"font atlas payload";
         let image = [1, 0, 1, 0, 3, 0, 0, 0, 255, 0, 0, 255];
@@ -2011,6 +2060,53 @@ mod tests {
         let after = pak_stats(runtime);
         assert_eq!(after.integrity_failures, 3);
         assert_eq!(after.verified_entries, 0);
+        pod_runtime_destroy(runtime);
+    }
+
+    #[test]
+    fn mapped_entry_integrity_reports_successful_lazy_verification_once() {
+        let font = b"font atlas payload";
+        let image = [1, 0, 1, 0, 3, 0, 0, 0, 255, 0, 0, 255];
+        let tile = b"tileset payload";
+        let (pak, integrity, _) = integrity_pak(&[
+            ("ui:font.7", font),
+            ("ui:img.hero", &image),
+            ("ui:tile.map", tile),
+        ]);
+        let source = br#"
+            if (ui.loadPakImage('hero') < 0) throw new Error('valid image rejected');
+            ui.loadPakImage('hero');
+            ui.loadTileTexture('ui:tile.map', 0);
+            ui.loadTileTexture('ui:tile.map', 0);
+            ui.measureText('font', 7);
+            globalThis.frame = function() {};
+        "#;
+        let manifest = package_manifest(&pak, Some(integrity), source);
+        let mapped: &'static [u8] = Box::leak(pak.into_boxed_slice());
+        let target = CString::new("android-watch").unwrap();
+        let capabilities = CString::new("[]").unwrap();
+        let runtime = pod_runtime_create(&valid_config(&target, &capabilities));
+        assert_eq!(
+            unsafe { pod_runtime_load_pak_mapped(runtime, mapped.as_ptr(), mapped.len()) },
+            OK,
+        );
+        assert_eq!(pod_runtime_validate_package(runtime, manifest.as_ptr()), OK);
+        assert_eq!(
+            pod_runtime_eval_bundle(runtime, source.as_ptr(), source.len(), std::ptr::null()),
+            OK,
+        );
+        for _ in 0..200 {
+            unsafe { &*runtime }.surface.tick();
+            if pak_stats(runtime).verified_entries == 3 { break; }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let stats = pak_stats(runtime);
+        assert_eq!(stats.verified_entries, 3);
+        assert_eq!(
+            stats.verified_bytes,
+            (font.len() + image.len() + tile.len()) as u64,
+        );
+        assert_eq!(stats.integrity_failures, 0);
         pod_runtime_destroy(runtime);
     }
 
