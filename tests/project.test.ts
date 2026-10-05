@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { POD_TARGETS } from "../packages/framework/src/targets.ts";
@@ -37,6 +37,18 @@ describe("external project config", () => {
     const project = resolvePodProject(root, POD_TARGETS, defaults);
     expect(project.config.appId).toBe("com.example.demo");
     expect(project.entry).toBe(join(root, "main.tsx"));
+  });
+
+  test("resolves an optional Android resource overlay and theme", () => {
+    const root = fixture(base);
+    mkdirSync(join(root, "android/res"), {recursive: true});
+    writeFileSync(join(root, "pod.config.json"), JSON.stringify({...base,
+      android:{resources:"android/res",theme:"@style/Theme.Demo.Splash"}}));
+    const project = resolvePodProject(root, POD_TARGETS, defaults);
+    expect(project.androidResources).toBe(join(root, "android/res"));
+    expect(project.androidTheme).toBe("@style/Theme.Demo.Splash");
+    expect(() => resolvePodProject(fixture({...base,
+      android:{resources:"missing",theme:"Theme.Demo"}}), POD_TARGETS, defaults)).toThrow("android");
   });
 
   test("rejects missing config", () => {

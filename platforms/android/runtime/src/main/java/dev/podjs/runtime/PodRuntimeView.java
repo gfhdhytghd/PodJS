@@ -49,6 +49,9 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private boolean firstTextureLogged;
     private long surfaceBegan;
     private boolean firstFrameLogged;
+    private int bootGeneration;
+    private boolean detached;
+    private final ExecutorService boot = Executors.newSingleThreadExecutor();
     private final PodServices services;
     private final String targetId;
     private float rotaryRemainder;
@@ -71,7 +74,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                 }
                 if (!firstFrameLogged) {
                     firstFrameLogged = true;
-                    android.util.Log.i("PodJSPerf", "surfaceToFirstFrameMs=" + (android.os.SystemClock.elapsedRealtime() - surfaceBegan));
+                    android.util.Log.i("PodJSPerf", "firstMainFrameMs=" + (android.os.SystemClock.elapsedRealtime() - surfaceBegan));
                 }
                 drainHostEffects(true);
                 services.pumpNotifications();
@@ -210,6 +213,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
 
     @Override protected void onAttachedToWindow() {
         super.onAttachedToWindow();
+        detached = false;
         if (getParent() instanceof ViewGroup) {
             services.attachVideo((ViewGroup) getParent());
             services.attachMediaSurfaces((ViewGroup)getParent(),new PodMediaSurfaceServices.TextureSink(){
@@ -225,46 +229,86 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     }
 
     @Override public void onSurfaceTextureAvailable(SurfaceTexture texture, int width, int height) {
-        Surface surface = new Surface(texture);
-        try {
-            if (host != 0) {
+        if (host != 0) {
+            Surface surface = new Surface(texture);
+            try {
                 nativeResize(host, surface, width, height);
                 nativeTheme(host, currentTheme());
-            nativeLifecycle(host, lifecycleState);
-            pumpServicesWhileSuspended();
-                return;
-            }
-            surfaceBegan = android.os.SystemClock.elapsedRealtime();
-            firstFrameLogged = false;
-            File data = PodTakeover.dataRoot(getContext());
-            if (!data.exists() && !data.mkdirs()) throw new IllegalStateException("PodJS data directory");
-            setHost(nativeCreate(surface, targetId, width, height,
-                getResources().getDisplayMetrics().density, data.getAbsolutePath()));
-            accessibilityEnabled = false;
-            android.content.pm.ApplicationInfo packageInfo = getContext().getApplicationInfo();
-            try (PodPakReader pak = new PodPakReader(packageInfo.sourceDir, packageInfo.splitSourceDirs)) {
-                nativeBootAssets(host, getContext().getAssets(), pak, pak.length());
-            } catch (java.io.IOException error) {
-                throw new IllegalStateException("PodJS package asset read failed", error);
-            }
-            services.approveInstalledBackground(targetId);
-            services.approveInstalledSync(targetId);
-            if(companionSettingsRequested) {companionSettingsRequested=false;showCompanionSettings();}
-            nativeTheme(host, currentTheme());
-            nativeLifecycle(host, lifecycleState);
-            // Boot may already have emitted IO. Start it before the first visual
-            // frame; later completion jobs advance dependent operations directly.
-            pumpServiceResults(hostLifetime);
-            Choreographer.getInstance().removeFrameCallback(frameCallback);
-            if (active) Choreographer.getInstance().postFrameCallback(frameCallback);
+                nativeLifecycle(host, lifecycleState);
+                pumpServicesWhileSuspended();
+            } finally { surface.release(); }
+            return;
+        }
+        surfaceBegan = android.os.SystemClock.elapsedRealtime();
+        firstFrameLogged = false;
+        File data = PodTakeover.dataRoot(getContext());
+        if (!data.exists() && !data.mkdirs()) throw new IllegalStateException("PodJS data directory");
+        final Surface bootSurface = new Surface(texture);
+        final int generation = ++bootGeneration;
+        final AssetManager assets = getContext().getAssets();
+        final float density = getResources().getDisplayMetrics().density;
+        final String dataPath = data.getAbsolutePath();
+        try {
+            boot.execute(() -> {
+                long candidate = 0;
+                Throwable failure = null;
+                try {
+                    candidate = nativeCreate(bootSurface, targetId, width, height, density, dataPath);
+                    if (candidate == 0) throw new IllegalStateException("PodJS native host creation failed");
+                    nativeBootAssets(candidate, assets);
+                } catch (RuntimeException | Error error) {
+                    failure = error;
+                } finally {
+                    bootSurface.release();
+                }
+                final long booted = candidate;
+                final Throwable bootFailure = failure;
+                serviceHandler.post(() -> finishBoot(booted, generation, bootFailure));
+            });
         } catch (RuntimeException | Error error) {
-            destroyHost();
+            bootSurface.release();
             if (error instanceof Error) throw (Error) error;
             throw new IllegalStateException("PodJS boot failed", error);
-        } finally { surface.release(); }
+        }
+    }
+
+    private void finishBoot(long candidate, int generation, Throwable failure) {
+        if (detached || generation != bootGeneration || !isAvailable()) {
+            if (candidate != 0) nativeDestroy(candidate);
+            return;
+        }
+        if (candidate == 0) {
+            android.util.Log.e("PodJS", "Background boot failed before native host creation", failure);
+            if (failure instanceof Error) throw (Error)failure;
+            throw new IllegalStateException("PodJS boot failed", failure);
+        }
+        if (failure != null) {
+            nativeDestroy(candidate);
+            android.util.Log.e("PodJS", "Background boot failed", failure);
+            throw new IllegalStateException("PodJS boot failed", failure);
+        }
+        setHost(candidate);
+        accessibilityEnabled = false;
+        SurfaceTexture texture = getSurfaceTexture();
+        if (texture != null && (getWidth() > 0 && getHeight() > 0)) {
+            Surface surface = new Surface(texture);
+            try { nativeResize(host, surface, getWidth(), getHeight()); }
+            finally { surface.release(); }
+        }
+        services.approveInstalledBackground(targetId);
+        services.approveInstalledSync(targetId);
+        if(companionSettingsRequested) {companionSettingsRequested=false;showCompanionSettings();}
+        nativeTheme(host, currentTheme());
+        nativeLifecycle(host, lifecycleState);
+        // The worker prepared and presented frame zero, including its first
+        // mapped font uploads. Continue guest/service turns on the main loop.
+        pumpServiceResults(hostLifetime);
+        Choreographer.getInstance().removeFrameCallback(frameCallback);
+        if (active) Choreographer.getInstance().postFrameCallback(frameCallback);
     }
 
     @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture texture) {
+        bootGeneration++;
         if (host != 0) nativeDetachSurface(host);
         return true;
     }
@@ -275,17 +319,26 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     @Override public void onSurfaceTextureUpdated(SurfaceTexture texture) {
         if (!firstTextureLogged) {
             firstTextureLogged = true;
-            android.util.Log.i("PodJSPerf", "viewToFirstTextureMs=" + (android.os.SystemClock.elapsedRealtime() - viewBegan));
+            if (getContext() instanceof android.app.Activity) {
+                ((android.app.Activity)getContext()).getWindow().setBackgroundDrawable(
+                    new android.graphics.drawable.ColorDrawable(android.graphics.Color.BLACK));
+            }
+            android.util.Log.i("PodJSPerf", "firstFrame surfaceToFirstFrameMs="
+                + (android.os.SystemClock.elapsedRealtime() - surfaceBegan)
+                + " viewToFirstTextureMs=" + (android.os.SystemClock.elapsedRealtime() - viewBegan));
         }
     }
 
     @Override protected void onDetachedFromWindow() {
+        detached = true;
+        bootGeneration++;
         Choreographer.getInstance().removeFrameCallback(frameCallback);
         accessibility.clear();
         destroyHost();
         for (HttpURLConnection connection : requests.values()) connection.disconnect();
         requests.clear();
         network.shutdownNow();
+        boot.shutdown();
         services.close();
         super.onDetachedFromWindow();
     }
@@ -491,7 +544,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private static native boolean nativeAccessibilityAction(long host, int id, long hash, int action);
     private static native void nativeNavigationState(long host, boolean canGoBack);
     private static native boolean nativeCanGoBack(long host);
-    private static native void nativeBootAssets(long host, AssetManager assets, PodPakReader pak, long pakLength);
+    private static native void nativeBootAssets(long host, AssetManager assets);
     private static native long nativeCreate(Surface surface, String target, int width, int height, float density, String dataDir);
     private static native void nativeBoot(long host, byte[] pak, byte[] js, byte[] manifest);
     private static native void nativeResize(long host, Surface surface, int width, int height);

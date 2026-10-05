@@ -51,11 +51,7 @@ fn runtime() -> *mut PodRuntime {
     result
 }
 
-fn fixture() -> Vec<u8> {
-    let entries: [(&[u8], &[u8]); 2] = [
-        (b"ui:img.pixel", &[1, 0, 1, 0, 3, 0, 0, 0, 17, 31, 47, 255]),
-        (b"custom-tile", b"lazy blob"),
-    ];
+fn pack(entries: &[(&[u8], &[u8])]) -> Vec<u8> {
     let names = 32 + entries.len() * 24;
     let mut pak = vec![0; names];
     pak[..4].copy_from_slice(&spec::pak::MAGIC.to_le_bytes());
@@ -79,6 +75,63 @@ fn fixture() -> Vec<u8> {
     }
     pak.extend_from_slice(b"ignored trailing bytes still belong to the checksum");
     pak
+}
+
+fn fixture() -> Vec<u8> {
+    pack(&[
+        (b"ui:img.pixel", &[1, 0, 1, 0, 3, 0, 0, 0, 17, 31, 47, 255]),
+        (b"custom-tile", b"lazy blob"),
+    ])
+}
+
+#[test]
+fn mapped_pak_indexes_without_loading_fonts_or_images_then_faults_each_on_demand() {
+    let mut atlas = Vec::new();
+    atlas.extend_from_slice(&spec::font_atlas::MAGIC.to_le_bytes());
+    atlas.extend_from_slice(&spec::font_atlas::VERSION.to_le_bytes());
+    atlas.extend_from_slice(&1u16.to_le_bytes());
+    atlas.extend_from_slice(&[8, 10, 7, 12, 7, 0, 1, 0]);
+    atlas.extend_from_slice(&('A' as u32).to_le_bytes());
+    atlas.extend_from_slice(&[0, 0, 8, 0]);
+    atlas.extend_from_slice(&vec![255u8; 8 * 10]);
+    let image = [1, 0, 1, 0, 3, 0, 0, 0, 17, 31, 47, 255];
+    let mut sprite = vec![0u8; 16];
+    sprite[0..2].copy_from_slice(&1u16.to_le_bytes());
+    sprite[2..4].copy_from_slice(&1u16.to_le_bytes());
+    sprite[4] = 3;
+    sprite[6..8].copy_from_slice(&1u16.to_le_bytes());
+    sprite[8..10].copy_from_slice(&1u16.to_le_bytes());
+    sprite[10..12].copy_from_slice(&1u16.to_le_bytes());
+    sprite.extend_from_slice(&[5, 7, 11, 255]);
+    let bytes = Box::leak(pack(&[
+        (b"ui:font.7", &atlas),
+        (b"ui:img.pixel", &image),
+        (b"ui:sprite.icon", &sprite),
+    ]).into_boxed_slice());
+    let runtime = runtime();
+    assert_eq!(unsafe { pod_runtime_load_pak_mapped(runtime, bytes.as_ptr(), bytes.len()) }, OK);
+    assert!(resources(runtime)["fonts"].as_array().unwrap().is_empty());
+    // Sprite tables are immutable at mount, so their atlas stays eager while
+    // ordinary images and font slots remain lazy.
+    assert_eq!(resources(runtime)["textures"].as_array().unwrap().len(), 1);
+    let state = unsafe { &*runtime };
+    state.surface.mount(&state.guest).unwrap();
+    state.guest.eval("lazy", "globalThis.w=ui.measureText('A',7);globalThis.image=ui.loadPakImage('pixel');globalThis.sprite=ui.__sprites.icon.handle;").unwrap();
+    let (width, image_handle, sprite_handle): (f64, i32, i32) = state.guest.with(|ctx| (
+        ctx.globals().get("w").unwrap(), ctx.globals().get("image").unwrap(),
+        ctx.globals().get("sprite").unwrap()
+    ));
+    assert_eq!(width, 8.0);
+    assert!(image_handle >= 0);
+    assert!(sprite_handle >= 0);
+    assert_ne!(image_handle, sprite_handle);
+    assert_eq!(resources(runtime)["fonts"].as_array().unwrap().len(), 1);
+    assert_eq!(resources(runtime)["textures"].as_array().unwrap().len(), 2);
+    let stats = state.surface.lazy_pak_stats();
+    assert_eq!(stats.directory_entries, 3);
+    assert_eq!(stats.loaded_fonts, 1);
+    assert!(stats.first_font_load_micros.is_some());
+    pod_runtime_destroy(runtime);
 }
 
 #[test]

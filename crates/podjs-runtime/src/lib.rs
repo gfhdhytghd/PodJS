@@ -28,6 +28,7 @@ use std::ffi::{CStr, CString, c_char};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::slice;
+use std::time::Instant;
 
 use base64::Engine as _;
 use pocket_fs::{FsModule, Storage};
@@ -138,6 +139,16 @@ pub struct PodFontView {
     pub bitmap_length: usize,
 }
 
+#[repr(C)]
+pub struct PodPakStats {
+    pub struct_size: u32,
+    pub directory_entries: u32,
+    pub directory_parse_micros: u64,
+    pub pak_hash_micros: u64,
+    pub first_font_load_micros: u64,
+    pub loaded_font_slots: u32,
+}
+
 #[derive(Default)]
 struct PodBridge {
     events: VecDeque<String>,
@@ -209,6 +220,7 @@ pub struct PodRuntime {
     package_validated: bool,
     expected_bundle_hash: Option<String>,
     pak_hash: u64,
+    pak_hash_micros: u64,
     bundle_hash: u64,
     draw_words: Vec<u32>,
     draw_hash: u64,
@@ -273,6 +285,7 @@ fn mount_pod(
         }
         ns.set("fontMetrics", Function::new(ctx.clone(), move |slot: f64| {
             if !slot.is_finite() || slot.fract() != 0.0 || !(0.0..=255.0).contains(&slot) { return None; }
+            surface.ensure_font(slot as u8);
             surface.with_ui(|ui| ui.font_atlas(slot as u8).map(|font| json!({
                 "cellWidth": font.cell_w, "cellHeight": font.cell_h,
                 "baseline": font.baseline, "lineHeight": font.line_height,
@@ -542,6 +555,7 @@ pub extern "C" fn pod_runtime_create(config: *const PodRuntimeConfig) -> *mut Po
         package_validated: false,
         expected_bundle_hash: None,
         pak_hash: 0,
+        pak_hash_micros: 0,
         bundle_hash: 0,
         draw_words: Vec::new(),
         draw_hash: 0,
@@ -587,8 +601,37 @@ pub extern "C" fn pod_runtime_load_pak(
         return ERR_STATE;
     }
     let bytes = unsafe { slice::from_raw_parts(bytes, length) };
+    let hash_began = Instant::now();
     runtime.pak_hash = hash_bytes(bytes);
+    runtime.pak_hash_micros =
+        hash_began.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
     runtime.surface.feed_pak(bytes);
+    OK
+}
+
+/// Load a stable read-only mapping and retain only its directory plus the
+/// small styles entry. Font/image/tile payloads are faulted in on first use.
+/// The host must keep `bytes` mapped and immutable until runtime destruction.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pod_runtime_load_pak_mapped(
+    runtime: *mut PodRuntime,
+    bytes: *const u8,
+    length: usize,
+) -> i32 {
+    let Ok(runtime) = runtime_mut(runtime) else { return ERR_ARGUMENT; };
+    if runtime.mounted || bytes.is_null() || length == 0 || length > isize::MAX as usize {
+        set_error("mapped pak requires an unmounted runtime and a valid nonempty mapping");
+        return ERR_STATE;
+    }
+    runtime.pak_hash = 0;
+    runtime.package_validated = false;
+    runtime.expected_bundle_hash = None;
+    let bytes: &'static [u8] = unsafe { slice::from_raw_parts(bytes, length) };
+    unsafe { runtime.surface.feed_pak_mapped(bytes) };
+    let hash_began = Instant::now();
+    runtime.pak_hash = hash_bytes(bytes);
+    runtime.pak_hash_micros =
+        hash_began.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
     OK
 }
 
@@ -616,10 +659,15 @@ pub extern "C" fn pod_runtime_load_pak_reader(
     }
     // Failed/partial loads cannot retain a previous package's authority.
     runtime.pak_hash = 0;
+    runtime.pak_hash_micros = 0;
     runtime.package_validated = false;
     runtime.expected_bundle_hash = None;
     let mut reader = pak_reader::PakReader { length, read_at, context };
-    let result = reader.checksum().and_then(|hash| {
+    let hash_began = Instant::now();
+    let checksum = reader.checksum();
+    runtime.pak_hash_micros =
+        hash_began.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+    let result = checksum.and_then(|hash| {
         runtime.surface.feed_pak_reader(length, |offset, bytes| reader.read_exact_at(offset, bytes))?;
         Ok(hash)
     });
@@ -1258,6 +1306,7 @@ pub extern "C" fn pod_runtime_font(
     if out.is_null() || slot > u8::MAX as u32 {
         return ERR_ARGUMENT;
     }
+    runtime.surface.ensure_font(slot as u8);
     runtime.surface.with_ui(|ui| {
         let Some(font) = ui.font_atlas(slot as u8) else {
             return IDLE;
@@ -1277,6 +1326,29 @@ pub extern "C" fn pod_runtime_font(
         };
         OK
     })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_pak_stats(
+    runtime: *mut PodRuntime,
+    out: *mut PodPakStats,
+) -> i32 {
+    let Ok(runtime) = runtime_mut(runtime) else { return ERR_ARGUMENT; };
+    if out.is_null() {
+        return ERR_ARGUMENT;
+    }
+    let stats = runtime.surface.lazy_pak_stats();
+    unsafe {
+        *out = PodPakStats {
+            struct_size: std::mem::size_of::<PodPakStats>() as u32,
+            directory_entries: stats.directory_entries.min(u32::MAX as usize) as u32,
+            directory_parse_micros: stats.directory_parse_micros,
+            pak_hash_micros: runtime.pak_hash_micros,
+            first_font_load_micros: stats.first_font_load_micros.unwrap_or(0),
+            loaded_font_slots: stats.loaded_fonts.min(u32::MAX as usize) as u32,
+        };
+    }
+    OK
 }
 
 #[unsafe(no_mangle)]

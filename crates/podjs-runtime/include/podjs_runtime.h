@@ -209,6 +209,10 @@ PodRuntime *pod_runtime_create(const PodRuntimeConfig *config);
 uint32_t pod_runtime_logical_width(const PodRuntime *runtime);
 uint32_t pod_runtime_logical_height(const PodRuntime *runtime);
 int32_t pod_runtime_load_pak(PodRuntime *runtime, const uint8_t *bytes, size_t length);
+/* Stable read-only mapping. The bytes must outlive the runtime. Only the
+ * directory and styles are touched at load; fonts/images/tiles load on use.
+ * The full existing FNV package hash is still computed before validation. */
+int32_t pod_runtime_load_pak_mapped(PodRuntime *runtime, const uint8_t *bytes, size_t length);
 /* Synchronous immutable source. Return bytes read (0 means EOF, negative means
  * IO failure); positive short reads are retried. Each request is <= 64 KiB.
  * The callback must not unwind or re-enter runtime and is never retained.
@@ -219,6 +223,15 @@ int32_t pod_runtime_load_pak(PodRuntime *runtime, const uint8_t *bytes, size_t l
 typedef int64_t (*PodPakReadAt)(void *context, uint64_t offset, uint8_t *out, size_t length);
 int32_t pod_runtime_load_pak_reader(PodRuntime *runtime, size_t length,
                                   PodPakReadAt read_at, void *context);
+typedef struct PodPakStats {
+  uint32_t struct_size;
+  uint32_t directory_entries;
+  uint64_t directory_parse_micros;
+  uint64_t pak_hash_micros;
+  uint64_t first_font_load_micros;
+  uint32_t loaded_font_slots;
+} PodPakStats;
+int32_t pod_runtime_pak_stats(PodRuntime *runtime, PodPakStats *out);
 int32_t pod_runtime_validate_package(PodRuntime *runtime, const char *manifest_json);
 int32_t pod_runtime_eval_bundle(PodRuntime *runtime, const uint8_t *source, size_t length,
                                 const char *label);
