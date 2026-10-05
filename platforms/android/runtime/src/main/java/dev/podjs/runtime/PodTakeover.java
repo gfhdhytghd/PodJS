@@ -12,9 +12,8 @@ public final class PodTakeover {
     private PodTakeover() {}
     private static PodTakeoverCoordinator coordinator(Context c) {
         return new PodTakeoverCoordinator(new File(c.getFilesDir(),"package-takeover"),
-                () -> detect(c),new PodTakeoverConverters(new PodRoomV18Converter(c.getDatabasePath("watchrss.db"),
-                    PodRoomAndroidDb::new,(File generation) -> PodStoreConverter.identity(new File(generation,"stores-source"))),
-                    new PodStoreConverter(new File(c.getApplicationInfo().dataDir),new PodStoreAndroidCrypto(c))));
+                () -> detect(c),new PodRoomV18Converter(c.getDatabasePath("watchrss.db"),
+                    PodRoomAndroidDb::new,() -> c.getSharedPreferences("watch_device_identity",Context.MODE_PRIVATE).getString("device_id",null)));
     }
     // Keyed by Android's in-memory sandbox path, not Activity identity. Distinct
     // fixture/storage contexts must not accidentally share an admitted generation.
@@ -77,7 +76,6 @@ public final class PodTakeover {
         }
         for(String name:new String[]{"article_content","offline","reader_assets","notes","watch-cloud-cache"})
             present |= new File(c.getFilesDir(),name).exists();
-        present |= nonempty(prefs) || nonempty(stores);
         if(!present)return new PodTakeoverCoordinator.Source(false,null,0,0,0);
         int schema=-1; String block=null;
         // Version and Room identity/columns are checked on the recovered private

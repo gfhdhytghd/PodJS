@@ -46,7 +46,6 @@ android {
 }
 
 dependencies {
-    implementation("com.google.crypto.tink:tink-android:1.8.0")
     implementation("androidx.metrics:metrics-performance:1.0.0-beta01")
     implementation("com.github.wendykierp:JTransforms:3.2")
     implementation("androidx.webkit:webkit:1.8.0")
@@ -61,6 +60,5 @@ dependencies {
     implementation("androidx.media3:media3-session:1.5.1")
     implementation("androidx.media3:media3-datasource-okhttp:1.5.1")
     androidTestImplementation("androidx.test:runner:1.7.0")
-    androidTestImplementation("androidx.security:security-crypto:1.1.0-alpha06")
     androidTestImplementation("junit:junit:4.13.2")
 }
