@@ -39,6 +39,7 @@ public final class PodSyncIncomingFiles implements Closeable {
         }
     }
     public PodSyncIncomingFiles(Context context, String appId) throws Exception {
+        PodTakeover.requireReady(context);
         this.context=context; storageApp=storageAppId(appId);
         File directory=new File(context.getNoBackupFilesDir(),"podjs-file-offers");
         if (!directory.mkdirs() && !directory.isDirectory()) throw new IOException("File journal unavailable");

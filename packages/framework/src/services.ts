@@ -22,6 +22,7 @@ let nextId = 1;
 const methods: Record<string, PodCapabilityId> = {
   ...platformMethods,
   "app.finishTask": "host.lifecycle",
+  "takeover.status": "host.takeover",
   "app.buildInfo": "host.lifecycle",
   "app.activityState.read": "host.lifecycle", "app.activityState.write": "host.lifecycle",
   "rfcomm.requestPermission": "net.rfcomm", "rfcomm.status": "net.rfcomm", "rfcomm.listen": "net.rfcomm", "rfcomm.accept": "net.rfcomm", "rfcomm.close": "net.rfcomm",
@@ -618,3 +619,16 @@ export const mediaSurfaces={
  state(kind:MediaSurfaceKind,id:string):Promise<MediaSurfaceState>{return hostOperation<MediaSurfaceState>(kind+".surface.state",{id}).result;},
  close(kind:MediaSurfaceKind,id:string):Promise<{closed:boolean}>{return hostOperation<{closed:boolean}>(kind+".surface.close",{id}).result;},
 };
+
+export interface TakeoverStatus {
+  protocol: number;
+  phase: "NONE" | "DETECTED" | "SNAPSHOTTED" | "COPYING" | "VERIFYING" | "READY" | "ACTIVATING" | "ACTIVE" | "PAUSED" | "BLOCKED";
+  reason?: string;
+  resumePhase?: string;
+  requiredBytes?: string;
+  availableBytes?: string;
+}
+/** Read-only first-launch migration status; unsupported hosts reject via capability gating. */
+export const takeover = Object.freeze({
+  status: (): Promise<TakeoverStatus> => hostOperation<TakeoverStatus>("takeover.status", {}).result,
+});

@@ -32,6 +32,7 @@ public final class PodSyncOutbox implements Closeable {
         }
     }
     public PodSyncOutbox(Context context, String appId) throws IOException {
+        PodTakeover.requireReady(context);
         id(appId);
         File root = new File(context.getNoBackupFilesDir(),"podjs-outbox");
         if (!root.mkdirs() && !root.isDirectory()) throw new IOException("Outbox unavailable");

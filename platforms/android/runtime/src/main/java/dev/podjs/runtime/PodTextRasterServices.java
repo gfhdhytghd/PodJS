@@ -48,7 +48,7 @@ final class PodTextRasterServices {
         Bitmap bitmap=Bitmap.createBitmap(textureWidth,textureHeight,Bitmap.Config.ARGB_8888);File output=null;
         try {
             Canvas canvas=new Canvas(bitmap);canvas.clipRect(0,0,width,height);canvas.translate(0,baseline-layout.getLineBaseline(sourceLine));layout.draw(canvas);
-            File root=new File(context.getFilesDir(),"podjs/files/text");if(!root.isDirectory()&&!root.mkdirs())throw new java.io.IOException("text directory unavailable");
+            File root=new File(PodTakeover.filesRoot(context),"text");if(!root.isDirectory()&&!root.mkdirs())throw new java.io.IOException("text directory unavailable");
             output=File.createTempFile("line-",".rgba",root);
             int[] pixels=new int[textureWidth];byte[] row=new byte[textureWidth*4];
             try(BufferedOutputStream out=new BufferedOutputStream(new FileOutputStream(output))){
@@ -73,7 +73,7 @@ final class PodTextRasterServices {
     static void discard(Context context,Object value){
         if(!(value instanceof JSONObject))return;
         String path=((JSONObject)value).optString("path","");
-        if(path.matches("text/line-[A-Za-z0-9_-]+\\.rgba"))new File(context.getFilesDir(),"podjs/files/"+path).delete();
+        if(path.matches("text/line-[A-Za-z0-9_-]+\\.rgba"))new File(PodTakeover.filesRoot(context),path).delete();
     }
     private static int powerOfTwo(int n){int result=1;while(result<n)result*=2;return result;}
     private static double number(JSONObject args,String key,double min,double max,boolean integer){

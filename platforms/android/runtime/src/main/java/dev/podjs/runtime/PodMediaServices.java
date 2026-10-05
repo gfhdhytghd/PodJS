@@ -88,7 +88,7 @@ public final class PodMediaServices implements AutoCloseable {
         this.spectrum = new PodSpeechSpectrum(task -> main.post(task), events);
         if (context == null) throw new IllegalArgumentException("context_required");
         this.context = context.getApplicationContext();
-        File root = new File(this.context.getFilesDir(), "podjs/files");
+        File root = PodTakeover.filesRoot(this.context);
         try {
             if (!root.exists() && !root.mkdirs()) throw new IOException("mkdir_failed");
             mediaRoot = root.getCanonicalFile();

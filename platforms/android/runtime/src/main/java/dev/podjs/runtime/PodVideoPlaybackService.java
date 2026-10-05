@@ -23,6 +23,7 @@ public final class PodVideoPlaybackService extends MediaSessionService {
     public ExoPlayer player() { return player; }
     @Override public void onCreate() {
         super.onCreate();
+        if (!PodTakeover.ready(this)) { stopSelf(); return; }
         NotificationManager manager=(NotificationManager)getSystemService(NOTIFICATION_SERVICE);
         manager.createNotificationChannel(new NotificationChannel("pod_video","Video playback",NotificationManager.IMPORTANCE_LOW));
         DefaultLoadControl loadControl=new DefaultLoadControl.Builder()
@@ -34,7 +35,7 @@ public final class PodVideoPlaybackService extends MediaSessionService {
         addSession(session);
     }
     @Override public MediaSession onGetSession(MediaSession.ControllerInfo controllerInfo) { return session; }
-    @Override public int onStartCommand(Intent intent,int flags,int id) { if(intent!=null&&ACTION_STOP.equals(intent.getAction())) { if(player!=null)player.stop(); stopForeground(true);stopSelf(); return Service.START_NOT_STICKY; }
+    @Override public int onStartCommand(Intent intent,int flags,int id) { if (!PodTakeover.ready(this)) { stopSelf(); return Service.START_NOT_STICKY; } if(intent!=null&&ACTION_STOP.equals(intent.getAction())) { if(player!=null)player.stop(); stopForeground(true);stopSelf(); return Service.START_NOT_STICKY; }
         PendingIntent stop=PendingIntent.getService(this,0,new Intent(this,PodVideoPlaybackService.class).setAction(ACTION_STOP),PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);
         Notification notification=new Notification.Builder(this,"pod_video").setSmallIcon(android.R.drawable.ic_media_play).setContentTitle("WatchRSS").setContentText("正在播放视频").setOngoing(true).addAction(new Notification.Action.Builder(android.R.drawable.ic_media_pause,"停止",stop).build()).build();
         startForeground(1907,notification);
@@ -42,5 +43,5 @@ public final class PodVideoPlaybackService extends MediaSessionService {
         return Service.START_NOT_STICKY; }
     @Override public void onTaskRemoved(Intent rootIntent) { if(player==null||!player.getPlayWhenReady()) stopSelf(); }
     @Override public void onDestroy() { stopForeground(true);if(session!=null)session.release(); if(player!=null)player.release(); session=null;player=null;super.onDestroy(); }
-    @Override public IBinder onBind(Intent intent) { if ("dev.podjs.runtime.BIND_VIDEO".equals(intent.getAction())) return localBinder; return super.onBind(intent); }
+    @Override public IBinder onBind(Intent intent) { if (!PodTakeover.ready(this)) return null; if ("dev.podjs.runtime.BIND_VIDEO".equals(intent.getAction())) return localBinder; return super.onBind(intent); }
 }

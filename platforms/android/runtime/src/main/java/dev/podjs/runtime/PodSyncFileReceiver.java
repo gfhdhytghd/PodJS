@@ -19,6 +19,7 @@ public final class PodSyncFileReceiver implements AutoCloseable {
     private final File parent, root, quotaPath;
 
     public PodSyncFileReceiver(Context context, String applicationId, String peerId) throws IOException {
+        PodTakeover.requireReady(context);
         validateId(applicationId);
         validateId(peerId);
         parent = new File(new File(context.getNoBackupFilesDir(), "podjs-sync"), applicationId);

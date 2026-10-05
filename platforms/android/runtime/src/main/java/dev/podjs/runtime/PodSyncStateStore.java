@@ -28,6 +28,7 @@ public final class PodSyncStateStore implements Closeable {
     private final String deviceId;
 
     public PodSyncStateStore(Context context, String appId, String deviceId) throws Exception {
+        PodTakeover.requireReady(context);
         id(appId); id(deviceId); this.deviceId = deviceId;
         File root = new File(context.getNoBackupFilesDir(), "podjs-state");
         if (!root.mkdirs() && !root.isDirectory()) throw new IOException("State storage unavailable");

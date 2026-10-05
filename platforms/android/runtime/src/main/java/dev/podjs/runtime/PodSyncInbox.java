@@ -35,6 +35,7 @@ public final class PodSyncInbox implements Closeable {
         }
     }
     public PodSyncInbox(Context context, String appId) throws IOException {
+        PodTakeover.requireReady(context);
         id(appId); File root = new File(context.getNoBackupFilesDir(),"podjs-inbox");
         if (!root.mkdirs() && !root.isDirectory()) throw new IOException("Inbox unavailable");
         db = SQLiteDatabase.openOrCreateDatabase(new File(root,appId + ".sqlite"),null);

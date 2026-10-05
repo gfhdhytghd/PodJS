@@ -264,3 +264,24 @@ test("multi-session video preserves ids and atomically describes prewarm promoti
     await expect(promote).resolves.toMatchObject({sessionId:"next",state:"playing",hasRenderedFirstFrame:true,presented:true});
   } finally {(globalThis as {pod?:unknown}).pod=previous;}
 });
+
+
+test("takeover status is read-only and fails closed on old hosts", async () => {
+  const { takeover } = await import("../src/services.ts");
+  const previous = (globalThis as {pod?: unknown}).pod;
+  const commands: string[] = []; let batch: string | undefined;
+  const host = {capabilities: () => "[]", emit: (s:string) => commands.push(s), takeEvents: () => {const b=batch;batch=undefined;return b;}};
+  (globalThis as {pod?:unknown}).pod = host;
+  try {
+    await expect(takeover.status()).rejects.toMatchObject({code:"unsupported"});
+    expect(commands).toEqual([]);
+    host.capabilities = () => '["host.takeover"]';
+    const result = takeover.status();
+    const request=JSON.parse(commands[0]!);
+    expect(request.method).toBe("takeover.status");expect(request.args).toEqual({});
+    batch=JSON.stringify([{t:"service.result",id:request.id,ok:true,value:{protocol:1,phase:"ACTIVE"}}]);
+    __pumpPodEvents();
+    expect(await result).toEqual({protocol:1,phase:"ACTIVE"});
+    expect(Object.keys(takeover)).toEqual(["status"]);
+  } finally {(globalThis as {pod?:unknown}).pod=previous;}
+});

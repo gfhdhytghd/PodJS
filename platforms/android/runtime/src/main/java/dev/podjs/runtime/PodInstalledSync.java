@@ -19,8 +19,9 @@ final class PodInstalledSync implements AutoCloseable {
     final PodSyncServices services;
     final PodSyncHostConnection connection;
     private PodInstalledSync(Context context, HashSet<String> grants) throws Exception {
+        PodTakeover.requireReady(context);
         client=new PodSyncClient(context.getApplicationContext(),context.getPackageName(),localIdentity(context));
-        services=new PodSyncServices(client,grants,null,new File(context.getFilesDir(),"podjs/files"));
+        services=new PodSyncServices(client,grants,null,PodTakeover.filesRoot(context));
         android.os.Handler main=new android.os.Handler(android.os.Looper.getMainLooper());
         connection=new PodSyncHostConnection(client,services,main::post);
     }

@@ -36,7 +36,7 @@ public final class PodHttpServices implements AutoCloseable {
 
     public PodHttpServices(Context context) {
         if (context == null) throw new IllegalArgumentException("context_required");
-        File base = new File(context.getFilesDir(), "podjs/files");
+        File base = PodTakeover.filesRoot(context);
         if (!base.exists() && !base.mkdirs()) throw new IllegalStateException("service_root_unavailable");
         try { root = base.getCanonicalFile(); } catch (IOException e) { throw new IllegalStateException("service_root_unavailable", e); }
     }

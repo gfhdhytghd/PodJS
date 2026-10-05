@@ -81,7 +81,7 @@ public final class PodImageServices implements Closeable {
 
     public PodImageServices(Context context) {
         if (context == null) throw new IllegalArgumentException("context_required");
-        File files = new File(context.getFilesDir(), "podjs/files");
+        File files = PodTakeover.filesRoot(context);
         if (!files.exists() && !files.mkdirs()) throw new IllegalStateException("service_root_unavailable");
         try { root = files.getCanonicalFile(); }
         catch (IOException e) { throw new IllegalStateException("service_root_unavailable", e); }

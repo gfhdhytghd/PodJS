@@ -36,6 +36,7 @@ public final class PodSyncFileRequests implements Closeable {
         }
     }
     public PodSyncFileRequests(Context context,String appId) throws Exception {
+        PodTakeover.requireReady(context);
         identity(appId);
         File root=new File(context.getNoBackupFilesDir(),"podjs-file-requests");
         if(!root.mkdirs() && !root.isDirectory()) throw new IOException("File request storage unavailable");

@@ -169,7 +169,7 @@ final class PodServices implements Closeable {
         volatile PodBrowserAuthServices.Callback authCallback;
         String videoSessionId;
     }
-    PodServices(Context context, Sink sink) { this.context = context; this.sink = sink; device = new PodDeviceServices(context); media = new PodMediaServices(context, event -> { if (!closed) sink.complete(event); }); videoDecoderBudget=new PodVideoDecoderBudget(PodVideoSessionServices.MAX_SESSIONS); video = new PodVideoServices(context,videoDecoderBudget); videoSessions=new PodVideoSessionServices(context,videoDecoderBudget); mediaSurfaces = new PodMediaSurfaceServices(context); inlineText = new PodInlineTextInput(context,event->{if(!closed)sink.complete(event);}); images = new PodImageServices(context); http = new PodHttpServices(context); byteStreams = new PodByteStreamServices(context); webSockets = new PodWebSocketServices(context,byteStreams); discovery = new PodDiscoveryServices(context); bleDiscovery = new PodBleDiscoveryServices(context); networks = new PodNetworkServices(context,event->{if(!closed)sink.complete(event);}); browser = new PodBrowserServices(context); browserAuth = new PodBrowserAuthServices(context); notificationPermission=new PodNotificationPermission(context); bluetoothPermission=new PodBluetoothPermission(context); discoveryPermission=new PodBluetoothPermission(context,0x5044,PodBleDiscoveryServices.permissions()); location=new PodLocationServices(context); }
+    PodServices(Context context, Sink sink) { PodTakeover.requireReady(context); this.context = context; this.sink = sink; device = new PodDeviceServices(context); media = new PodMediaServices(context, event -> { if (!closed) sink.complete(event); }); videoDecoderBudget=new PodVideoDecoderBudget(PodVideoSessionServices.MAX_SESSIONS); video = new PodVideoServices(context,videoDecoderBudget); videoSessions=new PodVideoSessionServices(context,videoDecoderBudget); mediaSurfaces = new PodMediaSurfaceServices(context); inlineText = new PodInlineTextInput(context,event->{if(!closed)sink.complete(event);}); images = new PodImageServices(context); http = new PodHttpServices(context); byteStreams = new PodByteStreamServices(context); webSockets = new PodWebSocketServices(context,byteStreams); discovery = new PodDiscoveryServices(context); bleDiscovery = new PodBleDiscoveryServices(context); networks = new PodNetworkServices(context,event->{if(!closed)sink.complete(event);}); browser = new PodBrowserServices(context); browserAuth = new PodBrowserAuthServices(context); notificationPermission=new PodNotificationPermission(context); bluetoothPermission=new PodBluetoothPermission(context); discoveryPermission=new PodBluetoothPermission(context,0x5044,PodBleDiscoveryServices.permissions()); location=new PodLocationServices(context); }
     void notificationPermissionResult(int code,int[] results){notificationPermission.result(code,results);location.permissionResult(code);bluetoothPermission.result(code); discoveryPermission.result(code);}
     PodServices(Context context, Sink sink, PodBackgroundServices approvedBackground) {
         this(context,sink); background=approvedBackground;
@@ -318,6 +318,10 @@ final class PodServices implements Closeable {
         }
         if (method.startsWith("image.")) {
             request.future = imageWorkers.submit(() -> { try { JSONObject value=images.execute(method,args); if(requests.remove(id,request)) reply(id,true,value,null,null); else images.discard(value); } catch(Exception error) { if(requests.remove(id,request)) failure(id,error instanceof SecurityException?"permission_denied":error instanceof IllegalArgumentException?"invalid_argument":"image_error",error.getMessage()); } });
+            return;
+        }
+        if ("takeover.status".equals(method)) {
+            if (requests.remove(id,request)) reply(id,true,PodTakeover.status(context),null,null);
             return;
         }
         if ("app.buildInfo".equals(method)) {
@@ -505,7 +509,10 @@ final class PodServices implements Closeable {
     }
     private SQLiteDatabase db() {
         if (database == null) {
-            database = context.openOrCreateDatabase("podjs.sqlite", Context.MODE_PRIVATE, null);
+            java.io.File path = PodTakeover.database(context);
+            database = path.equals(context.getDatabasePath("podjs.sqlite"))
+                ? context.openOrCreateDatabase("podjs.sqlite", Context.MODE_PRIVATE, null)
+                : SQLiteDatabase.openOrCreateDatabase(path, null);
             database.setForeignKeyConstraintsEnabled(true);
         }
         return database;

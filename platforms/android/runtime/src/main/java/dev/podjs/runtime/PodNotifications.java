@@ -22,6 +22,7 @@ public final class PodNotifications implements Closeable {
     private final NotificationManager manager;
     private final SQLiteDatabase db;
     public PodNotifications(Context context) throws Exception {
+        PodTakeover.requireReady(context);
         this.context=context.getApplicationContext();manager=context.getSystemService(NotificationManager.class);
         java.io.File root=new java.io.File(context.getNoBackupFilesDir(),"podjs-notifications");
         if (!root.mkdirs()&&!root.isDirectory()) throw new java.io.IOException("Notification storage unavailable");

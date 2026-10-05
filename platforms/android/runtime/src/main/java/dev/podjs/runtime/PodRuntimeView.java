@@ -236,7 +236,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
             }
             surfaceBegan = android.os.SystemClock.elapsedRealtime();
             firstFrameLogged = false;
-            File data = new File(getContext().getFilesDir(), "podjs");
+            File data = PodTakeover.dataRoot(getContext());
             if (!data.exists() && !data.mkdirs()) throw new IllegalStateException("PodJS data directory");
             setHost(nativeCreate(surface, targetId, width, height,
                 getResources().getDisplayMetrics().density, data.getAbsolutePath()));

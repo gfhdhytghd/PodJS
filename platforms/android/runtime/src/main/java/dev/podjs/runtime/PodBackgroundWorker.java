@@ -11,6 +11,7 @@ public final class PodBackgroundWorker extends Worker {
     private PodBackgroundRun active;
     public PodBackgroundWorker(Context context, WorkerParameters params) { super(context,params); }
     @Override public Result doWork() {
+        if (!PodTakeover.ready(getApplicationContext())) return Result.retry();
         String app = getInputData().getString("app"), task = getInputData().getString("task");
         try (PodBackgroundScheduler scheduler = new PodBackgroundScheduler(getApplicationContext())) {
             PodBackgroundScheduler.Job job = scheduler.begin(getId().toString(),app,task,getRunAttemptCount());
@@ -29,7 +30,7 @@ public final class PodBackgroundWorker extends Worker {
                     try { installed=PodBackgroundPackage.installed(getApplicationContext(),"android-watch"); }
                     catch (SecurityException wrongTarget) { installed=PodBackgroundPackage.installed(getApplicationContext(),"wearos-watch"); }
                     if (!installed.permitsSource(job.hash,methods)) throw new SecurityException("Background data grant revoked");
-                    kvRoot=new java.io.File(getApplicationContext().getFilesDir(),"podjs").getAbsolutePath();
+                    kvRoot=PodTakeover.dataRoot(getApplicationContext()).getAbsolutePath();
                 }
                 try (PodBackgroundRun run = new PodBackgroundRun(job.app,job.task,job.source,job.budget,16*1024*1024,payload,methods,kvRoot)) {
                     synchronized (this) { active=run; if (isStopped()) run.cancel(); }
