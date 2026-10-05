@@ -90,3 +90,59 @@ test("WebView services round-trip status and per-origin partial results without 
     expect(commands.at(-1)!.t).toBe("service.cancel");
   } finally { (globalThis as {pod?: unknown}).pod = previous; }
 });
+
+test("embedded browser fails closed on old hosts while the legacy request remains unchanged", async () => {
+  const {browser} = await import("../src/services.ts");
+  const previous = (globalThis as {pod?: unknown}).pod;
+  const commands: any[] = []; let batch: string | undefined;
+  (globalThis as {pod?: unknown}).pod = {
+    capabilities: () => '["system.browser","system.browser.auth"]',
+    emit: (s: string) => commands.push(JSON.parse(s)),
+    takeEvents: () => {const b=batch;batch=undefined;return b;},
+  };
+  try {
+    await expect(browser.open("https://example.org", {mode:"inApp"}).result).rejects.toMatchObject({code:"unsupported"});
+    expect(commands).toEqual([]);
+    const old = browser.open("https://example.org");
+    expect(commands[0]).toMatchObject({method:"browser.open",args:{url:"https://example.org"}});
+    batch=JSON.stringify([{t:"service.result",id:commands[0].id,ok:true,value:null}]);__pumpPodEvents();
+    await old.result;
+  } finally {(globalThis as {pod?: unknown}).pod=previous;}
+});
+
+test("embedded browser forwards local paths, scale and reader theme and surfaces preflight failure", async () => {
+  const {browser} = await import("../src/services.ts");
+  const previous = (globalThis as {pod?: unknown}).pod;
+  const commands: any[] = []; let batch: string | undefined;
+  (globalThis as {pod?: unknown}).pod = {
+    capabilities: () => '["system.browser.inApp"]', emit: (s: string) => commands.push(JSON.parse(s)),
+    takeEvents: () => {const b=batch;batch=undefined;return b;},
+  };
+  try {
+    for (const scaleMode of ["standard","expanded","shrunk"] as const) {
+      const options={mode:"inApp" as const,scaleMode,theme:{dark:true,backgroundColor:"#101010",textZoom:120,fontFamily:"serif" as const}};
+      const op=browser.open(" /data/user/0/test/files/local page.html ", options);
+      expect(commands.at(-1)).toMatchObject({method:"browser.openInApp",args:{url:"/data/user/0/test/files/local page.html",...options}});
+      batch=JSON.stringify([{t:"service.result",id:commands.at(-1).id,ok:true,value:null}]);__pumpPodEvents();await op.result;
+    }
+    for (const code of ["offline","webview_unavailable","busy"]) {
+      const op=browser.open("https://example.org",{mode:"inApp"});
+      batch=JSON.stringify([{t:"service.result",id:commands.at(-1).id,ok:false,code,message:code}]);__pumpPodEvents();
+      await expect(op.result).rejects.toMatchObject({code});
+    }
+    const op=browser.open("file:///data/local/page.html",{mode:"inApp"}); op.cancel();
+    await expect(op.result).rejects.toMatchObject({code:"cancelled"});
+    expect(commands.at(-1).t).toBe("service.cancel");
+  } finally {(globalThis as {pod?: unknown}).pod=previous;}
+});
+
+test("embedded browser rejects invalid options and executable URLs before emitting", async () => {
+  const {browser} = await import("../src/services.ts");
+  for (const url of ["javascript:alert(1)","data:text/html,hello","content://test","", "/bad\u0000path"]) {
+    expect(()=>browser.open(url,{mode:"inApp"})).toThrow();
+  }
+  for (const options of [null, {}, {mode:"external"}, {mode:"inApp",scaleMode:"giant"}, {mode:"inApp",theme:{dark:"true"}}, {mode:"inApp",theme:{dark:true,textZoom:NaN}}, {mode:"inApp",theme:{dark:true,textZoom:20}}, {mode:"inApp",theme:{dark:true,fontFamily:"bad"}}, {mode:"inApp",theme:{dark:true,backgroundColor:"red"}}, {mode:"inApp",unexpected:true}]) {
+    expect(()=>browser.open("https://example.org",options as any)).toThrow();
+  }
+  for (const target of Object.values(POD_TARGETS)) expect(target.capabilities.includes("system.browser.inApp")).toBe(["android-watch","wearos-watch"].includes(target.id));
+});
