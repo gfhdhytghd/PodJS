@@ -25,7 +25,9 @@ public final class PodTakeover {
         return new PodTakeoverCoordinator(new File(sandbox,"files/package-takeover"),
                 () -> detect(c,sandbox),new PodTakeoverConverters(new PodRoomV18Converter(new File(sandbox,"databases/watchrss.db"),
                     PodRoomAndroidDb::new,(File generation) -> PodStoreConverter.identity(new File(generation,"stores-source")),progress::roomCopied),
-                    new PodStoreConverter(sandbox,new PodStoreAndroidCrypto(c)),
+                    new PodStoreConverter(sandbox,new PodStoreAndroidCrypto(c),
+                        "com.lightningstudio.watchrss.podjs.rehearsal".equals(c.getPackageName())&&
+                        (c.getApplicationInfo().flags&android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0),
                     new PodFileConverter(sandbox,PodRoomAndroidDb::new,(file,faces) -> {
                         for(int i=0;i<faces;i++)if(new android.graphics.Typeface.Builder(file).setTtcIndex(i).build()==null)
                             throw new IOException("font_unloadable");

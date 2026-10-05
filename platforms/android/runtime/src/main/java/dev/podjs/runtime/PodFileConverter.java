@@ -31,7 +31,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
     PodFileConverter(File sandbox,PodRoomV18Converter.Factory factory,FontReader fonts,Hook hook,ProgressHook progress) {
         this.sandbox=sandbox;this.factory=factory;this.fonts=fonts;this.hook=hook;this.progress=progress;
     }
-    public String version(){return "watchrss-files-1";}
+    public String version(){return "watchrss-files-2";}
     // A file converter alone does not constitute a publishable storage bundle.
     public boolean complete(){return false;}
     static SortedSet<String> names(JSONObject object) {
@@ -102,6 +102,10 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         if(p.matches("files/article_content/[^/]+")||p.matches("files/offline/rss/[^/]+/[^/]+")||p.matches("files/reader_assets/(fonts|backgrounds|variants)/[^/]+")||p.matches("files/notes/assets/[A-Za-z0-9][A-Za-z0-9._-]{0,159}"))return "asset";
         if(p.startsWith("files/watch-cloud-cache/"))return "cloud-unverified";
         if(p.equals("files/app_log.txt"))return "private-log";
+        // Native TestAppContainer.createTestSettingsRepository: exact public prefixes + UUID.
+        // Preserve these isolated synthetic stores privately; never merge their settings.
+        if(p.matches("files/(add-rss-activity|bili-channel-info|bili-smoke|common-smoke|douyin-channel-info|douyin-smoke|home-feed-list-activity|oobe-activity|settings-activity)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.preferences_pb"))return "private-test-state";
+        if(p.equals("files/profileinstaller_profileWrittenFor_lastUpdateTime.dat"))return "platform-metadata";
         if(p.startsWith("files/offline/bili/")||p.matches("cache/(douyin_preload|bili_stream_cache|rss_images|douyin_preview_snapshots|updates)/.+")||p.matches("cache/tts_[0-9]+\\.mp3"))return "refetchable";
         return "unknown-user-content";
     }
@@ -175,6 +179,8 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
                 if(!receipt.getBoolean("complete")||!receipt.getString("path").equals(p)||!same(receipt,entries.getJSONObject(p)))throw new IOException("file_receipt_changed");
                 if(!same(measure(safe(new File(g,"podjs/files"),p.substring(6))),entries.getJSONObject(p)))throw new IOException("file_readback_mismatch");
             }
+            else if(c.equals("private-test-state"))PodPreferenceReader.protobuf(safe(new File(g,"files-source"),p));
+            else if(c.equals("platform-metadata")&&entries.getJSONObject(p).getLong("size")!=8)block(r,"platform_metadata_invalid");
             else if(c.equals("unknown-user-content"))block(r,"unknown_user_files");
             else if(c.equals("cloud-unverified"))block(r,"cloud_cache_binding_unverified");
         }

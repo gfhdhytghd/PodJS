@@ -11,6 +11,10 @@ import org.json.*;
  * All decrypted values stay in memory or encrypted candidate files. */
 public final class PodStoreConverter implements PodTakeoverCoordinator.Converter {
     public static final class Locked extends IOException { public Locked(){super("user_locked");} }
+    public static final class SourceKeyUnavailable extends IOException {
+        public final boolean missing;
+        public SourceKeyUnavailable(boolean missing){super(missing?"source_master_key_missing":"source_authentication_failed");this.missing=missing;}
+    }
     public interface Crypto {
         Map<String,Object> decrypt(String store,Map<String,Object> ciphertext)throws Exception;
         byte[] seal(JSONObject values)throws Exception;
@@ -18,16 +22,19 @@ public final class PodStoreConverter implements PodTakeoverCoordinator.Converter
         default boolean cloudBindingValid(String userId,String deviceId)throws Exception{return false;}
     }
     public interface Hook { void checkpoint(String store,String boundary)throws Exception; }
-    static final String[] STORES={"settings","bili_cache","reader_preset_state","home_entry_placement","app_resume_state","douyin_watch_history","douyin_recent_window","douyin_feed_cache","watchrss_announcement","watchrss_push","watch_device_identity","watchrss_installation_identity","watchrss_daily_telemetry","watchrss_download_telemetry","watchrss_cloud_state","watchrss_account_state","llm_secure_prefs","tts_secure_prefs","watchrss_cloud_keys"};
-    private final File sandbox;private final Crypto crypto;private final Hook hook;
+    static final String[] STORES={"settings","bili_cache","reader_preset_state","home_entry_placement","app_resume_state","douyin_watch_history","douyin_recent_window","douyin_feed_cache","watchrss_announcement","watchrss_push","watch_device_identity","watchrss_installation_identity","watchrss_daily_telemetry","watchrss_download_telemetry","watchrss_cloud_state","watchrss_account_state","llm_secure_prefs","tts_secure_prefs","watchrss_cloud_keys","bili_account_store","douyin_account_store"};
+    private final File sandbox;private final Crypto crypto;private final Hook hook;private final boolean rehearsal;
     public PodStoreConverter(File sandbox,Crypto crypto){this(sandbox,crypto,(s,b)->{});}
-    PodStoreConverter(File sandbox,Crypto crypto,Hook hook){this.sandbox=sandbox;this.crypto=crypto;this.hook=hook;}
+    public PodStoreConverter(File sandbox,Crypto crypto,boolean rehearsal){this(sandbox,crypto,(s,b)->{},rehearsal);}
+    PodStoreConverter(File sandbox,Crypto crypto,Hook hook){this(sandbox,crypto,hook,false);}
+    PodStoreConverter(File sandbox,Crypto crypto,Hook hook,boolean rehearsal){this.sandbox=sandbox;this.crypto=crypto;this.hook=hook;this.rehearsal=rehearsal;}
     public void active(File g)throws Exception {
+        if(!rehearsal&&json(new File(g,"stores-snapshot.json")).getString("version").endsWith("-isolated"))throw new IOException("isolated_generation_not_admissible");
         validateKv(json(new File(g,"podjs/podjs-kv.json")));
         validateSecure(crypto.open(PodPreferenceReader.bytes(new File(g,"podjs/secure.store"))));
     }
-    public String version(){return "watchrss-stores-1";}public boolean complete(){return false;}
-    static boolean encrypted(String s){return Arrays.asList("watchrss_account_state","llm_secure_prefs","tts_secure_prefs","watchrss_cloud_keys").contains(s);}
+    public String version(){return "watchrss-stores-2"+(rehearsal?"-isolated":"");}public boolean complete(){return false;}
+    static boolean encrypted(String s){return Arrays.asList("watchrss_account_state","llm_secure_prefs","tts_secure_prefs","watchrss_cloud_keys","bili_account_store","douyin_account_store").contains(s);}
     static void write(File f,byte[] b)throws Exception{if(!f.getCanonicalFile().equals(f.getAbsoluteFile()))throw new IOException("candidate_symlink");Files.createDirectories(f.getParentFile().toPath());File tmp=new File(f+".tmp");if(Files.isSymbolicLink(tmp.toPath()))throw new IOException("candidate_symlink");try(FileOutputStream out=new FileOutputStream(tmp)){out.write(b);out.getFD().sync();}Files.move(tmp.toPath(),f.toPath(),StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);PodTakeoverCoordinator.syncDirectory(f.getParentFile());}
     static void json(File f,JSONObject j)throws Exception{write(f,j.toString().getBytes(StandardCharsets.UTF_8));}
     static JSONObject json(File f)throws Exception{return new JSONObject(PodPreferenceReader.utf(PodPreferenceReader.bytes(f)));}
@@ -84,7 +91,11 @@ public final class PodStoreConverter implements PodTakeoverCoordinator.Converter
                     values=path.startsWith("shared_prefs/")&&path.endsWith(".xml")?PodPreferenceReader.xml(source):PodPreferenceReader.protobuf(source);
                     if(encrypted(store)){
                         report.put("present",true);
-                        try{values=crypto.decrypt(store,values);}catch(Exception failure){if(failure instanceof Locked)throw failure;report.put("status","needs-reauth").put("reason","source_crypto_unavailable").put("semanticValid",false);values=null;}
+                        try{values=crypto.decrypt(store,values);}catch(Exception failure){if(failure instanceof Locked)throw failure;if(failure instanceof SourceKeyUnavailable){
+                            SourceKeyUnavailable key=(SourceKeyUnavailable)failure;
+                            report.put("status","needs-reauth").put("reason",rehearsal&&key.missing?"isolated_uid_keystore_unavailable":key.getMessage());
+                        }else report.put("status","failed").put("reason","source_crypto_failed");
+                        report.put("semanticValid",false);values=null;}
                     }
                     if(values!=null){
                         Set<String> unused=new TreeSet<>(values.keySet());report.put("keyCount",values.size()).put("inventoryComplete",true);
@@ -94,7 +105,7 @@ public final class PodStoreConverter implements PodTakeoverCoordinator.Converter
                         if(!report.getString("status").equals("needs-reauth"))report.put("status",unused.isEmpty()?"migrated":"retained-unsupported").put("reason",unused.isEmpty()?"schema_valid":unsupportedReason(store));
                         if(encrypted(store))report.put("semanticValid",report.getString("status").equals("migrated"));
                     }
-                }catch(Exception invalid){if(invalid instanceof Locked)throw invalid;kv=new JSONObject();secret=new JSONObject();report.put("status",encrypted(store)?"needs-reauth":"failed").put("reason",encrypted(store)?"encrypted_schema_invalid":"kv_quota".equals(invalid.getMessage())?"kv_quota_exceeded":"store_schema_invalid");if(values!=null)report.put("keyCount",values.size()).put("inventoryComplete",true).put("unknownKeys",new JSONArray(new TreeSet<>(values.keySet())));if(encrypted(store))report.put("semanticValid",false);}
+                }catch(Exception invalid){if(invalid instanceof Locked)throw invalid;kv=new JSONObject();secret=new JSONObject();report.put("status","failed").put("reason",encrypted(store)?"encrypted_schema_invalid":"kv_quota".equals(invalid.getMessage())?"kv_quota_exceeded":"store_schema_invalid");if(values!=null)report.put("keyCount",values.size()).put("inventoryComplete",true).put("unknownKeys",new JSONArray(new TreeSet<>(values.keySet())));if(encrypted(store))report.put("semanticValid",false);}
             }
             if(store.equals("watchrss_cloud_keys")&&values!=null&&!values.isEmpty()&&!report.getString("status").equals("failed")){
                 boolean valid=false;try{valid=cloudBinding(g);}catch(Exception unavailable){if(unavailable instanceof Locked)throw unavailable;}
@@ -112,13 +123,31 @@ public final class PodStoreConverter implements PodTakeoverCoordinator.Converter
                 envelope=new JSONObject().put("values",secret).put("receipt",report).put("snapshot",hash(new File(g,"stores-snapshot.json")));
             }
             write(new File(dir,"secure.store"),crypto.seal(envelope));hook.checkpoint(store,"files");
-            if(!crypto.open(PodPreferenceReader.bytes(new File(dir,"secure.store"))).toString().equals(envelope.toString()))throw new IOException("secure_readback_invalid");
+            if(!sameJson(crypto.open(PodPreferenceReader.bytes(new File(dir,"secure.store"))),envelope))throw new IOException("secure_readback_invalid");
             json(receipt,report);hook.checkpoint(store,"receipt");
         }
         assemble(g);
     }
     void validateResult(File dir)throws Exception {
-        JSONObject r=json(new File(dir,"receipt.json"));if(!r.getString("kvDigest").equals(hash(new File(dir,"kv.json"))))throw new IOException("kv_receipt_changed");validateKv(json(new File(dir,"kv.json")));JSONObject envelope=crypto.open(PodPreferenceReader.bytes(new File(dir,"secure.store")));if(!envelope.getJSONObject("receipt").toString().equals(r.toString())||!envelope.getString("snapshot").equals(hash(new File(dir.getParentFile().getParentFile(),"stores-snapshot.json"))))throw new IOException("secure_receipt_changed");
+        JSONObject r=json(new File(dir,"receipt.json"));if(!r.getString("kvDigest").equals(hash(new File(dir,"kv.json"))))throw new IOException("kv_receipt_changed");validateKv(json(new File(dir,"kv.json")));JSONObject envelope=crypto.open(PodPreferenceReader.bytes(new File(dir,"secure.store")));if(!sameJson(envelope.getJSONObject("receipt"),r)||!envelope.getString("snapshot").equals(hash(new File(dir.getParentFile().getParentFile(),"stores-snapshot.json"))))throw new IOException("secure_receipt_changed");
+    }
+    /** Compare decoded JSON, not HashMap iteration order or equivalent number spellings. */
+    static boolean sameJson(Object left,Object right)throws Exception {
+        if(left==JSONObject.NULL||right==JSONObject.NULL)return left==right;
+        if(left instanceof JSONObject&&right instanceof JSONObject){
+            JSONObject a=(JSONObject)left,b=(JSONObject)right;
+            if(a.length()!=b.length())return false;
+            for(Iterator<String> i=a.keys();i.hasNext();){String key=i.next();if(!b.has(key)||!sameJson(a.get(key),b.get(key)))return false;}
+            return true;
+        }
+        if(left instanceof JSONArray&&right instanceof JSONArray){
+            JSONArray a=(JSONArray)left,b=(JSONArray)right;
+            if(a.length()!=b.length())return false;
+            for(int i=0;i<a.length();i++)if(!sameJson(a.get(i),b.get(i)))return false;
+            return true;
+        }
+        if(left instanceof Number&&right instanceof Number)return new java.math.BigDecimal(left.toString()).compareTo(new java.math.BigDecimal(right.toString()))==0;
+        return left!=null&&left.equals(right);
     }
     static void merge(JSONObject to,JSONObject from)throws Exception {for(Iterator<String> i=from.keys();i.hasNext();){String k=i.next();if(to.has(k))throw new IOException("target_key_conflict");to.put(k,from.get(k));}}
     void assemble(File g)throws Exception {
@@ -128,12 +157,13 @@ public final class PodStoreConverter implements PodTakeoverCoordinator.Converter
             JSONObject s=crypto.open(PodPreferenceReader.bytes(new File(dir,"secure.store"))).getJSONObject("values");s.remove("__takeover_inventory__");s.remove("__takeover_retained__");merge(secure,s);
             JSONObject r=json(new File(dir,"receipt.json"));r.remove("kvDigest");reports.put(store,r);
         }
-        PodStoreMappings.joint(g,kv,secure,reports);json(new File(g,"stores-report.json"),reports);
+        PodStoreMappings.joint(g,kv,secure,reports);PodStorePolicy.classify(reports,rehearsal);json(new File(g,"stores-report.json"),reports);
+        json(new File(g,"stores-diagnostics.json"),PodStorePolicy.diagnostics(reports));
         File validation=new File(g,"stores-validation.json");
         try {
             validateKv(kv);validateSecure(secure);
             File root=new File(g,"podjs");json(new File(root,"podjs-kv.json"),kv);write(new File(root,"secure.store"),crypto.seal(secure));
-            if(!secure.toString().equals(crypto.open(PodPreferenceReader.bytes(new File(root,"secure.store"))).toString()))throw new IOException("secure_readback_invalid");
+            if(!sameJson(secure,crypto.open(PodPreferenceReader.bytes(new File(root,"secure.store")))))throw new IOException("secure_readback_invalid");
             json(validation,new JSONObject().put("candidateValid",true).put("activationReady",false));
         }catch(Exception failure){json(validation,new JSONObject().put("candidateValid",false).put("reason","kv_quota".equals(failure.getMessage())?"kv_quota_exceeded":"secure_quota".equals(failure.getMessage())?"secure_quota_exceeded":"candidate_write_or_readback_failed").put("activationReady",false));throw failure;}
     }
@@ -151,8 +181,11 @@ public final class PodStoreConverter implements PodTakeoverCoordinator.Converter
         for(String store:stores(g).keySet()){
             File dir=new File(g,"store-results/"+slot(store));validateResult(dir);merge(expected,json(new File(dir,"kv.json")));JSONObject s=crypto.open(PodPreferenceReader.bytes(new File(dir,"secure.store"))).getJSONObject("values");s.remove("__takeover_inventory__");s.remove("__takeover_retained__");merge(secret,s);JSONObject r=json(new File(dir,"receipt.json"));r.remove("kvDigest");reports.put(store,r);
         }
-        PodStoreMappings.joint(g,expected,secret,reports);validateSecure(secret);if(!json(new File(g,"stores-validation.json")).getBoolean("candidateValid"))throw new IOException("candidate_invalid");JSONObject actual=json(new File(g,"podjs/podjs-kv.json"));validateKv(actual);
-        if(!expected.toString().equals(actual.toString())||!secret.toString().equals(crypto.open(PodPreferenceReader.bytes(new File(g,"podjs/secure.store"))).toString())||!reports.toString().equals(json(new File(g,"stores-report.json")).toString()))throw new IOException("store_readback_invalid");
+        PodStoreMappings.joint(g,expected,secret,reports);PodStorePolicy.classify(reports,rehearsal);validateSecure(secret);if(!json(new File(g,"stores-validation.json")).getBoolean("candidateValid"))throw new IOException("candidate_invalid");JSONObject actual=json(new File(g,"podjs/podjs-kv.json"));validateKv(actual);
+        if(!sameJson(expected,actual))throw new IOException("store_kv_readback_invalid");
+        if(!sameJson(secret,crypto.open(PodPreferenceReader.bytes(new File(g,"podjs/secure.store")))))throw new IOException("store_secure_readback_invalid");
+        if(!sameJson(reports,json(new File(g,"stores-report.json"))))throw new IOException("store_report_readback_invalid");
+        if(!sameJson(PodStorePolicy.diagnostics(reports),json(new File(g,"stores-diagnostics.json"))))throw new IOException("store_diagnostics_changed");
         // Receipt deliberately excludes secret digests and values.
         return hash(new File(g,"stores-report.json"));
     }

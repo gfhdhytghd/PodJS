@@ -31,3 +31,11 @@ assert.deepEqual(await douyin.listWatchedIds(),['42']);const history=await douyi
 const {DouyinFeedStore}=await import(`${app}/src/douyin/feed-store.ts`);
 const feed=await new DouyinFeedStore(historyStorage).bootstrap();assert.equal(feed.items[0].awemeId,'42');assert.equal(feed.resolved['42'],123);assert.equal(feed.anchorAwemeId,'42');
 console.log('Store consumer oracle PASS: settings, onboarding, reader, TTS, account, resume, telemetry, Bili, Douyin');
+
+const {BiliClient}=await import(`${app}/src/bili/client.ts`);
+const bili=new BiliClient({transport:{request:()=>{throw Error('oracle must not access network');}},secureStore:{...secure,delete:secure.remove}});
+assert.equal((await bili.getSession())?.cookies.SESSDATA,'DO_NOT_LEAK_BILI');
+assert.equal((await bili.getSession())?.refreshToken,'DO_NOT_LEAK_REFRESH');
+assert.equal((await bili.getSession())?.cookieRefreshCheckedAt,120);
+assert.equal(await douyin.readCookie(),'DO_NOT_LEAK_DOUYIN');
+console.log('Encrypted Bili/Douyin production consumer oracle PASS');

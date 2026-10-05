@@ -17,6 +17,8 @@ public final class FileTakeoverTest {
         StoreTest.write(new File(root,"files/notes/assets/shared.png"),new byte[]{4,5,6});
         StoreTest.write(new File(root,"files/offline/rss/3/incomplete.part"),new byte[]{1});
         StoreTest.write(new File(root,"files/app_log.txt"),"synthetic private log".getBytes());
+        StoreTest.write(new File(root,"files/bili-smoke-00000000-0000-0000-0000-000000000000.preferences_pb"),StoreTest.pref("reading_font_size_sp",StoreTest.concat(StoreTest.var(24),StoreTest.var(18))));
+        StoreTest.write(new File(root,"files/profileinstaller_profileWrittenFor_lastUpdateTime.dat"),new byte[8]);
         StoreTest.write(new File(root,"cache/rss_images/image"),new byte[]{5});
         // Synthetic font loader seam below validates these bytes; Android uses Typeface.Builder.
         byte[] font=new byte[]{0,1,0,0,1,2,3,4};
@@ -82,10 +84,10 @@ public final class FileTakeoverTest {
             File target=root();Process child=new ProcessBuilder(new File(System.getProperty("java.home"),"bin/java").toString(),"-ea","-cp",System.getProperty("java.class.path"),FileTakeoverTest.class.getName(),"crash",source.toString(),target.toString(),boundary).redirectError(ProcessBuilder.Redirect.DISCARD).start();
             check(child.waitFor()==91,"crash boundary "+boundary);activeAndRestart(source,target,body);check(before.equals(StoreTest.digests(source)),"source unchanged after "+boundary);StoreTest.remove(target);crashes++;
         }
-        // A damaged account requires an explicit user decision, never automatic guest fallback.
+        // Native recovers a missing account key to logged-out; preserve source and publish other data.
         File account=fixture();StoreTest.xml(account,"watchrss_account_state","<string name=\"state_json\">synthetic-invalid</string>");File target=root();StoreTest.Crypto badCrypto=new StoreTest.Crypto();badCrypto.unavailable=true;
-        p=new PodTakeoverCoordinator(target,probe,composite(account,b->{},badCrypto)).run();check(p.getProperty("phase").equals("BLOCKED")&&p.getProperty("reason").equals("store_needs_reauth_user_confirmation"),"reauth block");check(!new File(target,"active").exists(),"no reauth publication");StoreTest.remove(account);StoreTest.remove(target);
-        for(String path:new String[]{"files/imports/book.txt","files/watch-cloud-cache/snapshot","files/article_content/fixture.txt"}) {
+        p=new PodTakeoverCoordinator(target,probe,composite(account,b->{},badCrypto)).run();check(p.getProperty("phase").equals("ACTIVE"),"native reauth fallback");check(new File(target,"active").exists(),"other data published");StoreTest.remove(account);StoreTest.remove(target);
+        for(String path:new String[]{"files/imports/book.txt","files/watch-cloud-cache/snapshot","files/article_content/fixture.txt","files/bili-smoke-user.preferences_pb","files/other-00000000-0000-0000-0000-000000000000.preferences_pb","files/profileinstaller_profileWrittenFor_lastUpdateTime.dat","files/bili-smoke-00000000-0000-0000-0000-000000000000.preferences_pb"}) {
             File s=fixture();if(path.endsWith("fixture.txt"))Files.delete(new File(s,path).toPath());else StoreTest.write(new File(s,path),new byte[]{1});target=root();p=run(s,target);check(p.getProperty("phase").equals("BLOCKED"),"missing/unknown/cloud blocks: "+p);check(!new File(target,"active").exists(),"no blocked pointer");StoreTest.remove(s);StoreTest.remove(target);
         }
         // Traversal and both valid/dangling links are rejected without touching their targets.
