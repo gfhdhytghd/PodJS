@@ -10,13 +10,21 @@ import org.json.JSONObject;
  * ACTIVE is terminal, and there is deliberately no guest mutation/activation API. */
 public final class PodTakeover {
     private PodTakeover() {}
+    /** The app sandbox with symlinks resolved once. Inside the app mount namespace
+     * dataDir (/data/user/0/<pkg>) may not be canonical, and every takeover
+     * symlink/canonical check below compares against paths under this root. */
+    static File sandbox(Context c) {
+        File raw=new File(c.getApplicationInfo().dataDir);
+        try { return raw.getCanonicalFile(); }
+        catch(IOException error){throw new IllegalStateException("sandbox_unresolvable",error);}
+    }
     private static PodTakeoverCoordinator coordinator(Context c) {
-        File sandbox=new File(c.getApplicationInfo().dataDir);
+        File sandbox=sandbox(c);
         return new PodTakeoverCoordinator(new File(sandbox,"files/package-takeover"),
                 () -> detect(c),new PodTakeoverConverters(new PodRoomV18Converter(new File(sandbox,"databases/watchrss.db"),
                     PodRoomAndroidDb::new,(File generation) -> PodStoreConverter.identity(new File(generation,"stores-source"))),
-                    new PodStoreConverter(new File(c.getApplicationInfo().dataDir),new PodStoreAndroidCrypto(c)),
-                    new PodFileConverter(new File(c.getApplicationInfo().dataDir),PodRoomAndroidDb::new,(file,faces) -> {
+                    new PodStoreConverter(sandbox,new PodStoreAndroidCrypto(c)),
+                    new PodFileConverter(sandbox,PodRoomAndroidDb::new,(file,faces) -> {
                         for(int i=0;i<faces;i++)if(new android.graphics.Typeface.Builder(file).setTtcIndex(i).build()==null)
                             throw new IOException("font_unloadable");
                     })));
@@ -29,7 +37,7 @@ public final class PodTakeover {
         PodTakeoverAdmission admission=admissions.computeIfAbsent(c.getApplicationInfo().dataDir,
                 ignored -> new PodTakeoverAdmission());
         return admission.paths(() -> PodTakeoverAdmission.Paths.resolve(coordinator(c),
-                new File(c.getFilesDir(),"podjs"),c.getDatabasePath("podjs.sqlite")));
+                new File(sandbox(c),"files/podjs"),new File(sandbox(c),"databases/podjs.sqlite")));
     }
     private static PodTakeoverAdmission.Paths requiredPaths(Context c) {
         try { return paths(c); }
@@ -37,7 +45,7 @@ public final class PodTakeover {
     }
     public static boolean ready(Context c) {
         try { paths(c); return true; }
-        catch(Exception failure){return false;}
+        catch(Exception failure){android.util.Log.w("PodTakeover","admission refused",failure);return false;}
     }
     public static void requireReady(Context c) { requiredPaths(c); }
     public static File dataRoot(Context c) { return requiredPaths(c).data; }
@@ -47,7 +55,7 @@ public final class PodTakeover {
     public static JSONObject status(Context c) {
         JSONObject result=new JSONObject();
         try {
-            Properties p=PodTakeoverCoordinator.read(new File(c.getFilesDir(),"package-takeover/journal"));
+            Properties p=PodTakeoverCoordinator.read(new File(sandbox(c),"files/package-takeover/journal"));
             result.put("protocol",1).put("phase",p.getProperty("phase","NONE"));
             for(String key:new String[]{"reason","resumePhase","requiredBytes","availableBytes"})
                 if(p.containsKey(key))result.put(key,p.getProperty(key));
@@ -64,6 +72,6 @@ public final class PodTakeover {
     static PodTakeoverCoordinator.Source detect(Context c) throws IOException {
         // No Context directory getter here: those may mkdir even on read-only preflight.
         android.os.UserManager users=(android.os.UserManager)c.getSystemService(Context.USER_SERVICE);
-        return PodTakeoverSource.detect(new File(c.getApplicationInfo().dataDir),users==null||users.isUserUnlocked());
+        return PodTakeoverSource.detect(sandbox(c),users==null||users.isUserUnlocked());
     }
 }
