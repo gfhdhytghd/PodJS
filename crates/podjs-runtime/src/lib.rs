@@ -806,6 +806,27 @@ pub extern "C" fn pod_runtime_eval_bundle(
     OK
 }
 
+/// Set before evaluating the guest. Values retain physical units in displayMetrics;
+/// consumers convert using physical/logical extent, not font/raster density.
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_set_scroll_configuration(
+    runtime: *mut PodRuntime, touch_slop: f32, min_fling: f32, max_fling: f32,
+) -> i32 {
+    let Ok(runtime) = runtime_mut(runtime) else { return ERR_ARGUMENT; };
+    if !touch_slop.is_finite() || !min_fling.is_finite() || !max_fling.is_finite()
+        || touch_slop <= 0.0 || min_fling <= 0.0 || max_fling < min_fling {
+        return ERR_ARGUMENT;
+    }
+    let mut bridge = runtime.bridge.borrow_mut();
+    let Ok(mut metrics) = serde_json::from_str::<Value>(&bridge.metrics) else { return ERR_STATE; };
+    metrics["scrollConfiguration"] = json!({
+        "touchSlopPx": touch_slop, "minimumFlingVelocityPx": min_fling,
+        "maximumFlingVelocityPx": max_fling,
+    });
+    bridge.metrics = metrics.to_string();
+    OK
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn pod_runtime_set_lifecycle(runtime: *mut PodRuntime, state: u32) -> i32 {
     let Ok(runtime) = runtime_mut(runtime) else {
@@ -1475,6 +1496,25 @@ mod tests {
             data_dir: std::ptr::null(),
             capabilities_json: std::ptr::null(),
         }
+    }
+
+    #[test]
+    fn scroll_configuration_publishes_physical_units_and_rejects_bad_values() {
+        let target = CString::new("android-watch").unwrap();
+        let caps = CString::new("[]").unwrap();
+        let runtime = pod_runtime_create(&valid_config(&target, &caps));
+        assert!(!runtime.is_null());
+        assert_eq!(pod_runtime_set_scroll_configuration(runtime, 16.0, 100.0, 16000.0), OK);
+        let metrics: Value = serde_json::from_str(&unsafe { &*runtime }.bridge.borrow().metrics).unwrap();
+        assert_eq!(metrics["scrollConfiguration"]["touchSlopPx"], 16.0);
+        assert_eq!(metrics["scrollConfiguration"]["minimumFlingVelocityPx"], 100.0);
+        assert_eq!(metrics["scrollConfiguration"]["maximumFlingVelocityPx"], 16000.0);
+        for (slop, min, max) in [(f32::NAN, 1.0, 2.0), (8.0, 100.0, 50.0), (0.0, 1.0, 2.0), (8.0, 1.0, f32::INFINITY)] {
+            assert_eq!(pod_runtime_set_scroll_configuration(runtime, slop, min, max), ERR_ARGUMENT);
+        }
+        let unchanged: Value = serde_json::from_str(&unsafe { &*runtime }.bridge.borrow().metrics).unwrap();
+        assert_eq!(metrics, unchanged);
+        pod_runtime_destroy(runtime);
     }
 
     fn valid_config(target: &CString, capabilities: &CString) -> PodRuntimeConfig {
