@@ -14,16 +14,22 @@ import org.json.*;
  * Paths and content hashes live only in private receipts, never the public journal. */
 public final class PodFileConverter implements PodTakeoverCoordinator.Converter {
     public interface Hook { void saved(String boundary) throws Exception; }
+    public interface ProgressHook { void copied(long bytes); }
     public interface FontReader { void load(File file, int faces) throws Exception; }
     private final File sandbox;
     private final PodRoomV18Converter.Factory factory;
     private final FontReader fonts;
     private final Hook hook;
+    private final ProgressHook progress;
+    private final Set<File> dirtyDirectories=new HashSet<>();
     public PodFileConverter(File sandbox,PodRoomV18Converter.Factory factory,FontReader fonts) {
-        this(sandbox,factory,fonts,b -> {});
+        this(sandbox,factory,fonts,b -> {},bytes -> {});
     }
     PodFileConverter(File sandbox,PodRoomV18Converter.Factory factory,FontReader fonts,Hook hook) {
-        this.sandbox=sandbox;this.factory=factory;this.fonts=fonts;this.hook=hook;
+        this(sandbox,factory,fonts,hook,bytes -> {});
+    }
+    PodFileConverter(File sandbox,PodRoomV18Converter.Factory factory,FontReader fonts,Hook hook,ProgressHook progress) {
+        this.sandbox=sandbox;this.factory=factory;this.fonts=fonts;this.hook=hook;this.progress=progress;
     }
     public String version(){return "watchrss-files-1";}
     // A file converter alone does not constitute a publishable storage bundle.
@@ -58,23 +64,38 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         safe(source.getParentFile(),source.getName());safe(target.getParentFile(),target.getName());
         if(Files.exists(target.toPath(),LinkOption.NOFOLLOW_LINKS)) {
             if(Files.isSameFile(source.toPath(),target.toPath()))throw new IOException("file_target_linked_to_source");
-            if(!same(measure(target),expected))throw new IOException("file_target_conflict");return;
+            if(!same(measure(target),expected))throw new IOException("file_target_conflict");dirtyDirectories.add(target.getParentFile());if(stage.equals("copy"))progress.copied(expected.getLong("size"));return;
         }
         Files.createDirectories(target.getParentFile().toPath());
         File part=safe(target.getParentFile(),".takeover-"+PodStoreConverter.slot(target.getName())+".part");
         if(Files.exists(part.toPath(),LinkOption.NOFOLLOW_LINKS)&&!Files.isRegularFile(part.toPath(),LinkOption.NOFOLLOW_LINKS))throw new IOException("part_not_regular");
         // Unlink stale private partials instead of truncating an existing inode.
         Files.deleteIfExists(part.toPath());
+        BasicFileAttributes before=Files.readAttributes(source.toPath(),BasicFileAttributes.class,LinkOption.NOFOLLOW_LINKS);
+        MessageDigest digest=MessageDigest.getInstance("SHA-256");long count=0;
         try(FileChannel in=FileChannel.open(source.toPath(),StandardOpenOption.READ,LinkOption.NOFOLLOW_LINKS);
             FileChannel out=FileChannel.open(part.toPath(),StandardOpenOption.CREATE_NEW,StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS)) {
-            ByteBuffer b=ByteBuffer.allocate(64*1024);while(in.read(b)!=-1){b.flip();while(b.hasRemaining())out.write(b);b.clear();}out.force(true);
+            ByteBuffer b=ByteBuffer.allocateDirect(1024*1024);int n;
+            while((n=in.read(b))!=-1){if(n==0)continue;b.flip();digest.update(b.asReadOnlyBuffer());while(b.hasRemaining())out.write(b);count=Math.addExact(count,n);b.clear();}
+            out.force(false);
         }
         hook.saved(stage+".part");
-        if(!same(measure(part),expected)||!same(measure(source),expected))throw new IOException("file_copy_mismatch");
+        BasicFileAttributes after=Files.readAttributes(source.toPath(),BasicFileAttributes.class,LinkOption.NOFOLLOW_LINKS);
+        JSONObject copied=new JSONObject().put("size",count).put("sha256",PodRoomV18Converter.hex(digest.digest()));
+        if(!before.isRegularFile()||count!=before.size()||count!=after.size()||!Objects.equals(before.fileKey(),after.fileKey())||
+                !before.lastModifiedTime().equals(after.lastModifiedTime())||!same(copied,expected)||part.length()!=count)
+            throw new IOException("file_copy_mismatch");
         safe(target.getParentFile(),target.getName());
         if(target.exists())throw new IOException("file_target_conflict");
         Files.move(part.toPath(),target.toPath(),StandardCopyOption.ATOMIC_MOVE);
-        PodTakeoverCoordinator.syncDirectory(target.getParentFile());hook.saved(stage+".rename");
+        dirtyDirectories.add(target.getParentFile());hook.saved(stage+".rename");
+        if(stage.equals("copy"))progress.copied(count);
+    }
+    private void syncDirtyDirectories()throws Exception {
+        List<File> directories=new ArrayList<>(dirtyDirectories);
+        directories.sort(Comparator.comparingInt((File f)->f.toPath().getNameCount()).reversed());
+        for(File directory:directories)PodTakeoverCoordinator.syncDirectory(directory);
+        dirtyDirectories.clear();
     }
     static String category(String p) {
         if(p.endsWith(".part")||p.endsWith(".part.meta")||p.endsWith(".tmp"))return "incomplete";
@@ -104,6 +125,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         if(manifest.exists()){resume(g,PodTakeoverCoordinator.Phase.SNAPSHOTTED);return;}
         SortedMap<String,JSONObject> entries=inventory();
         for(Map.Entry<String,JSONObject> e:entries.entrySet())copyFile(safe(sandbox,e.getKey()),safe(new File(g,"files-source"),e.getKey()),e.getValue(),"snapshot");
+        syncDirtyDirectories();
         SortedMap<String,JSONObject> after=inventory();
         if(!entries.keySet().equals(after.keySet()))throw new IOException("file_inventory_changed");
         for(String p:entries.keySet())if(!same(entries.get(p),after.get(p)))throw new IOException("file_source_changed");
@@ -129,6 +151,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
             else PodStoreConverter.json(record,receipt);
             hook.saved("file");
         }
+        syncDirtyDirectories();
         PodStoreConverter.json(new File(g,"files-report.json"),report(g));hook.saved("report");
     }
     private static String referenceId(JSONObject object,String key) {
