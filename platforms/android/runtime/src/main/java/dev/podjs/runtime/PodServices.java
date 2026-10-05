@@ -111,6 +111,12 @@ final class PodServices implements Closeable {
         });
     }
     private PodNotifications notifications;
+    private final PodAcousticServices acoustic;
+    private final PodGuidedWifiServices guidedWifi;
+    private final PodBluetoothPermission acousticPermission, guidedPermission;
+    private final java.util.concurrent.ExecutorService acousticWorkers = java.util.concurrent.Executors.newFixedThreadPool(2);
+    void acousticLifecycle(int state){acoustic.lifecycle(state==0);if(state==2)guidedWifi.cancel();}
+    void acousticFocus(boolean focused){acoustic.focus(focused);}
     private final PodNotificationPermission notificationPermission;
     private final PodBluetoothPermission bluetoothPermission;
     private final PodBluetoothPermission discoveryPermission;
@@ -178,8 +184,11 @@ final class PodServices implements Closeable {
         volatile PodBrowserAuthServices.Callback authCallback;
         String videoSessionId;
     }
-    PodServices(Context context, Sink sink) { PodTakeover.requireReady(context); this.context = context; this.sink = sink; device = new PodDeviceServices(context); media = new PodMediaServices(context, event -> { if (!closed) sink.complete(event); }); videoDecoderBudget=new PodVideoDecoderBudget(PodVideoSessionServices.MAX_SESSIONS); video = new PodVideoServices(context,videoDecoderBudget); videoSessions=new PodVideoSessionServices(context,videoDecoderBudget); mediaSurfaces = new PodMediaSurfaceServices(context); inlineText = new PodInlineTextInput(context,event->{if(!closed)sink.complete(event);}); images = new PodImageServices(context); http = new PodHttpServices(context); byteStreams = new PodByteStreamServices(context); webSockets = new PodWebSocketServices(context,byteStreams); discovery = new PodDiscoveryServices(context); bleDiscovery = new PodBleDiscoveryServices(context); networks = new PodNetworkServices(context,event->{if(!closed)sink.complete(event);}); browser = new PodBrowserServices(context); browserAuth = new PodBrowserAuthServices(context); notificationPermission=new PodNotificationPermission(context); bluetoothPermission=new PodBluetoothPermission(context); discoveryPermission=new PodBluetoothPermission(context,0x5044,PodBleDiscoveryServices.permissions()); location=new PodLocationServices(context); }
-    void notificationPermissionResult(int code,int[] results){notificationPermission.result(code,results);location.permissionResult(code);bluetoothPermission.result(code); discoveryPermission.result(code);}
+    PodServices(Context context, Sink sink) { PodTakeover.requireReady(context); this.context = context; this.sink = sink; device = new PodDeviceServices(context); media = new PodMediaServices(context, event -> { if (!closed) sink.complete(event); }); videoDecoderBudget=new PodVideoDecoderBudget(PodVideoSessionServices.MAX_SESSIONS); video = new PodVideoServices(context,videoDecoderBudget); videoSessions=new PodVideoSessionServices(context,videoDecoderBudget); mediaSurfaces = new PodMediaSurfaceServices(context); inlineText = new PodInlineTextInput(context,event->{if(!closed)sink.complete(event);}); images = new PodImageServices(context); http = new PodHttpServices(context); byteStreams = new PodByteStreamServices(context); webSockets = new PodWebSocketServices(context,byteStreams); discovery = new PodDiscoveryServices(context); bleDiscovery = new PodBleDiscoveryServices(context); networks = new PodNetworkServices(context,event->{if(!closed)sink.complete(event);}); browser = new PodBrowserServices(context); browserAuth = new PodBrowserAuthServices(context); acoustic=new PodAcousticServices(context);guidedWifi=new PodGuidedWifiServices(context,acoustic);
+        acousticPermission=new PodBluetoothPermission(context,0x5045,new String[]{android.Manifest.permission.RECORD_AUDIO});
+        guidedPermission=new PodBluetoothPermission(context,0x5046,android.os.Build.VERSION.SDK_INT>=33?new String[]{android.Manifest.permission.RECORD_AUDIO,android.Manifest.permission.ACCESS_FINE_LOCATION,android.Manifest.permission.NEARBY_WIFI_DEVICES}:new String[]{android.Manifest.permission.RECORD_AUDIO,android.Manifest.permission.ACCESS_FINE_LOCATION});
+        notificationPermission=new PodNotificationPermission(context); bluetoothPermission=new PodBluetoothPermission(context); discoveryPermission=new PodBluetoothPermission(context,0x5044,PodBleDiscoveryServices.permissions()); location=new PodLocationServices(context); }
+    void notificationPermissionResult(int code,int[] results){notificationPermission.result(code,results);acousticPermission.result(code);guidedPermission.result(code);location.permissionResult(code);bluetoothPermission.result(code); discoveryPermission.result(code);}
     PodServices(Context context, Sink sink, PodBackgroundServices approvedBackground) {
         this(context,sink); background=approvedBackground;
     }
@@ -222,6 +231,28 @@ final class PodServices implements Closeable {
         Request request = new Request();
         request.method = method;
         requests.put(id, request);
+        if(method.startsWith("acoustic.")) {
+            try {acoustic.requireDebug();}catch(Exception error){requests.remove(id,request);failure(id,"permission_denied",error.getMessage());return;}
+            if("acoustic.requestPermission".equals(method)) {
+                main.post(()->{if(closed||!requests.containsKey(id))return;
+                    try{acoustic.requireActive();}catch(Exception error){if(requests.remove(id,request))failure(id,"permission_denied",error.getMessage());return;}
+                    (args.optBoolean("guided")?guidedPermission:acousticPermission).request(id,new PodBluetoothPermission.Callback(){
+                        public void complete(String state){if(requests.remove(id,request))reply(id,true,state,null,null);}
+                        public void fail(String code,String message){if(requests.remove(id,request))failure(id,code,message);}
+                    });
+                });return;
+            }
+            request.future=acousticWorkers.submit(()->{
+                try {request.cancellation.throwIfCanceled();Object value=method.startsWith("acoustic.wifi.")?guidedWifi.execute(method,args):acoustic.execute(method,args);
+                    if(requests.remove(id,request))reply(id,true,value,null,null);
+                    else if(value instanceof JSONObject && ((JSONObject)value).has("session")){
+                        long session=((JSONObject)value).getLong("session");
+                        if(method.equals("acoustic.wifi.connect"))guidedWifi.stop(session);
+                        else acoustic.execute("acoustic.pcm.stop",new JSONObject().put("session",session));
+                    }
+                }catch(Exception error){if(requests.remove(id,request))failure(id,error instanceof SecurityException?"permission_denied":error instanceof IllegalArgumentException?"invalid_argument":"acoustic_error",error.getMessage());}
+            });return;
+        }
         if("location.current".equals(method)) {
             main.post(()->{
                 if(closed || !requests.containsKey(id))return;
@@ -638,6 +669,9 @@ final class PodServices implements Closeable {
         if(request == null) return;
         request.cancellation.cancel();
         if(request.timer != null) main.removeCallbacks(request.timer);
+        if(request.method!=null&&request.method.startsWith("acoustic.")){
+            acoustic.cancel();guidedWifi.cancel();main.post(()->{acousticPermission.cancel(id);guidedPermission.cancel(id);});
+        }
         http.cancel(id);
         media.cancel(request.method);
         video.cancel(request.method);
@@ -652,6 +686,8 @@ final class PodServices implements Closeable {
     }
     @Override public void close() {
         closed=true;
+        acoustic.close();guidedWifi.close();acousticWorkers.shutdownNow();
+        main.post(()->{acousticPermission.cancel();guidedPermission.cancel();});
         main.post(notificationPermission::cancel);
         main.post(location::cancel);
         main.post(bluetoothPermission::cancel);

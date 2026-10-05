@@ -352,8 +352,13 @@ fn mount_pod(
         ns.set(
             "emit",
             Function::new(ctx.clone(), move |line: String| {
-                if serde_json::from_str::<Value>(&line).is_ok() {
-                    b.borrow_mut().effects.push_back(line);
+                if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                    let acoustic = value.get("t").and_then(Value::as_str)==Some("service.request")
+                        && value.get("method").and_then(Value::as_str).is_some_and(|m|m.starts_with("acoustic."));
+                    let mut bridge=b.borrow_mut();
+                    if acoustic && !serde_json::from_str::<Vec<String>>(&bridge.capabilities).unwrap_or_default().iter().any(|c|c=="debug.acoustic") {
+                        bridge.events.push_back(json!({"t":"service.result","id":value.get("id"),"ok":false,"code":"permission_denied","message":"Acoustic capability not granted"}).to_string());
+                    } else {bridge.effects.push_back(line);}
                 }
             })?,
         )?;
@@ -1558,6 +1563,27 @@ mod tests {
             safe_left: 8.0,
             data_dir: std::ptr::null(),
             capabilities_json: std::ptr::null(),
+        }
+    }
+
+    #[test]
+    fn acoustic_effect_requires_capability_and_denial_reaches_guest() {
+        for granted in [false,true] {
+            let target=CString::new("android-watch").unwrap();
+            let caps=CString::new(if granted {"[\"debug.acoustic\"]"} else {"[]"}).unwrap();
+            let runtime=pod_runtime_create(&valid_config(&target,&caps));
+            assert!(!runtime.is_null());
+            let source=b"globalThis.frame=function(){};pod.emit(JSON.stringify({t:'service.request',id:7,method:'acoustic.pcm.open',args:{mode:'record'}}));";
+            let grants: &[&str]=if granted { &["debug.acoustic"] } else { &[] };
+            validate(runtime,"android-watch",b"pak",source,grants);
+            assert_eq!(pod_runtime_eval_bundle(runtime,source.as_ptr(),source.len(),std::ptr::null()),OK);
+            let bridge=unsafe {&*runtime}.bridge.borrow();
+            if granted {assert_eq!(bridge.effects.len(),1);}else{
+                assert!(bridge.effects.is_empty());
+                let reply:Value=serde_json::from_str(bridge.events.back().unwrap()).unwrap();
+                assert_eq!(reply["id"],7);assert_eq!(reply["code"],"permission_denied");assert_eq!(reply["ok"],false);
+            }
+            drop(bridge);pod_runtime_destroy(runtime);
         }
     }
 

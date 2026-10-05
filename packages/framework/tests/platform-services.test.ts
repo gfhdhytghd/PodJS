@@ -300,3 +300,17 @@ test('cloud crypto bridge keeps private keys behind the host boundary and gates 
   (globalThis as any).pod.capabilities=()=> '[]';await expect(deviceAgreement.publicKey('blocked')).rejects.toMatchObject({code:'unsupported'});
  }finally{(globalThis as {pod?:unknown}).pod=previous;}
 });
+
+
+test("acoustic SDK fails closed without capability and keeps PCM operations cancellable", async()=>{
+ const {debugAcoustic}=await import("../src/services.ts");
+ const previous=(globalThis as {pod?:unknown}).pod;const commands:Record<string,unknown>[]=[];let supported=false,batch:string|undefined;
+ (globalThis as {pod?:unknown}).pod={takeEvents:()=>{const v=batch;batch=undefined;return v;},capabilities:()=>supported?'["debug.acoustic"]':'[]',emit:(s:string)=>commands.push(JSON.parse(s))};
+ try{
+  await expect(debugAcoustic.open('record').result).rejects.toMatchObject({code:'unsupported'});expect(commands).toHaveLength(0);
+  supported=true;const permission=debugAcoustic.requestPermission(true),command=commands.at(-1)!;
+  expect(command.method).toBe('acoustic.requestPermission');expect(command.args).toEqual({guided:true});
+  batch=JSON.stringify([{t:'service.result',id:command.id,ok:true,value:'required'}]);__pumpPodEvents();expect(await permission.result).toBe('required');
+  const read=debugAcoustic.read(12);void read.result.catch(()=>{});read.cancel();await expect(read.result).rejects.toMatchObject({code:'cancelled'});expect(commands.at(-1)!.t).toBe('service.cancel');
+ }finally{(globalThis as {pod?:unknown}).pod=previous;}
+});
