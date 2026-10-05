@@ -1,10 +1,13 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
   <uses-feature android:name="android.hardware.type.watch" android:required="true" />
   <uses-feature android:name="android.hardware.vulkan.version" android:version="0x00401000" android:required="true" />
   <uses-permission android:name="android.permission.INTERNET" />
-  <application android:theme="${podAppTheme}" android:label="${podAppName}">
+  <application android:name="dev.podjs.androidwatch.PodApplication" android:theme="${podAppTheme}" android:label="${podAppName}">
     <activity android:name=".MainActivity" android:screenOrientation="portrait" android:exported="true">
       <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
     </activity>
+    <provider android:name="androidx.startup.InitializationProvider" android:authorities="${applicationId}.androidx-startup" tools:node="merge">
+      <meta-data android:name="androidx.work.WorkManagerInitializer" tools:node="remove" />
+    </provider>
   </application>
 </manifest>

@@ -128,7 +128,10 @@ public final class PodTakeover {
      * this native view and returns. */
     public static boolean showRecoveryIfNeeded(android.app.Activity activity,Runnable admitted) {
         PodTakeoverAdmission cached=admissions.get(activity.getApplicationInfo().dataDir);
-        if(cached!=null&&cached.admitted()!=null)return false;
+        if(cached!=null&&cached.admitted()!=null) {
+            android.util.Log.i("PodJSPerf","startup stage=admission cached=true");
+            return false;
+        }
         RecoveryView view=new RecoveryView(activity);
         activity.setContentView(view);
         new RecoveryController(activity,view,admitted).start();
@@ -153,14 +156,20 @@ public final class PodTakeover {
             view.render(new JSONObject(),true);
             android.app.Activity owner=activity.get();if(owner==null){running.set(false);return;}
             Context context=owner.getApplicationContext();
+            long queued=PodStartupTrace.now();
             takeoverExecutor.execute(()->{
+                PodStartupTrace.stage("admissionQueueWait",queued);
+                long began=PodStartupTrace.now();
                 boolean ready=false;ProgressReporter reporter=new ProgressReporter(context,this::update);reporter.reset();
                 try {paths(context,reporter);ready=true;}
                 catch(Exception failure){android.util.Log.w("PodTakeover","background admission pending",failure);}
+                PodStartupTrace.stage("admissionWorker",began);
                 running.set(false);update(status(context));
                 if(ready) {
                     android.app.Activity current=activity.get();
+                    long posted=PodStartupTrace.now();
                     if(current!=null)current.runOnUiThread(()->{
+                        PodStartupTrace.stage("admissionMainQueueWait",posted);
                         if(!current.isFinishing()&&!current.isDestroyed())admitted.run();
                     });
                 }

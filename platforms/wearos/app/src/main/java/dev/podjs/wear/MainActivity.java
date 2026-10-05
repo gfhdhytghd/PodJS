@@ -1,12 +1,12 @@
 package dev.podjs.wear;
-import android.app.Activity; import android.os.Bundle; import android.view.MotionEvent; import dev.podjs.runtime.PodRuntimeView;
+import android.app.Activity; import android.os.Bundle; import android.view.MotionEvent; import dev.podjs.runtime.PodRuntimeView; import dev.podjs.runtime.PodStartupTrace;
 public final class MainActivity extends Activity {
   private PodRuntimeView pod;
   private static final String POD_SAVED_STATE = "dev.podjs.activity-state";
   @Override public void onRequestPermissionsResult(int code,String[] permissions,int[] results){super.onRequestPermissionsResult(code,permissions,results);if(pod!=null)pod.notificationPermissionResult(code,results);}
   private float swipeStartX, swipeStartY;
   private boolean swipeActive, swipeClaimed, platformSwipeDismiss;
-  @Override public void onCreate(Bundle b){platformSwipeDismiss=PodRuntimeView.requestPlatformSwipeDismiss(this);super.onCreate(b);if(dev.podjs.runtime.PodTakeover.showRecoveryIfNeeded(this))return;pod=new PodRuntimeView(this,"wearos-watch");pod.restoreActivityState(b==null?null:b.getString(POD_SAVED_STATE),getLastNonConfigurationInstance() instanceof String?(String)getLastNonConfigurationInstance():null);pod.captureNotificationIntent(getIntent());setContentView(pod);if(PodRuntimeView.ACTION_COMPANION_SETTINGS.equals(getIntent().getAction()))pod.post(pod::showCompanionSettings);}
+  @Override public void onCreate(Bundle b){long began=PodStartupTrace.now();try{platformSwipeDismiss=PodRuntimeView.requestPlatformSwipeDismiss(this);super.onCreate(b);if(dev.podjs.runtime.PodTakeover.showRecoveryIfNeeded(this))return;pod=new PodRuntimeView(this,"wearos-watch");pod.restoreActivityState(b==null?null:b.getString(POD_SAVED_STATE),getLastNonConfigurationInstance() instanceof String?(String)getLastNonConfigurationInstance():null);pod.captureNotificationIntent(getIntent());setContentView(pod);if(PodRuntimeView.ACTION_COMPANION_SETTINGS.equals(getIntent().getAction()))pod.post(pod::showCompanionSettings);}finally{PodStartupTrace.stage("activityOnCreate",began);}}
   @Override protected void onSaveInstanceState(Bundle out){if(pod!=null)out.putString(POD_SAVED_STATE,pod.savedActivityState());super.onSaveInstanceState(out);}
   @Override public Object onRetainNonConfigurationInstance(){return pod==null?null:pod.retainedActivityState();}
   @Override protected void onNewIntent(android.content.Intent intent){super.onNewIntent(intent);setIntent(intent);if(pod==null)return;pod.captureNotificationIntent(intent);if(PodRuntimeView.ACTION_COMPANION_SETTINGS.equals(intent.getAction()))pod.showCompanionSettings();}
