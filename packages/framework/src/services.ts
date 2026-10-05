@@ -76,7 +76,7 @@ const methods: Record<string, PodCapabilityId> = {
   "share.environment": "system.share", "share.text": "system.share",
   "image.decode": "data.images", "image.decodeRegion": "data.images", "image.release": "data.images", "browser.authorize": "system.browser.auth", "browser.authorizeWithStatus": "system.browser.auth.status",
   "sql.query": "data.sqlite", "sql.execute": "data.sqlite", "sql.transaction": "data.sqlite",
-  "input.text": "input.text", "secure.get": "data.secure", "secure.set": "data.secure", "secure.delete": "data.secure",
+  "input.text": "input.text", "input.text.pending": "input.text.state", "input.text.dismiss": "input.text.state", "secure.get": "data.secure", "secure.set": "data.secure", "secure.delete": "data.secure",
   "input.inline.open": "input.text", "input.inline.close": "input.text", "input.inline.set": "input.text",
   "text.layout": "text.layout", "text.layoutBatch": "text.layout", "text.measure": "text.layout", "text.raster": "text.raster", "text.environment": "text.environment",
   "input.time": "input.time",
@@ -168,8 +168,19 @@ export const sqlite = {
   },
 };
 export const textInput = {
-  prompt(title: string, value = ""): HostOperation<string | null> {
-    return hostOperation("input.text", { title, value });
+  /** Stable owner key opts a non-secret draft into configuration-only recovery. */
+  pending(restorationKey:string):HostOperation<boolean> {
+    if(typeof restorationKey!=="string" || !/^[a-zA-Z0-9_.:-]{1,160}$/.test(restorationKey)) throw new HostServiceError("invalid_argument","Invalid input restoration key");
+    return hostOperation("input.text.pending",{restorationKey});
+  },
+  dismiss(restorationKey:string):HostOperation<void> {
+    if(typeof restorationKey!=="string" || !/^[a-zA-Z0-9_.:-]{1,160}$/.test(restorationKey)) throw new HostServiceError("invalid_argument","Invalid input restoration key");
+    return hostOperation("input.text.dismiss",{restorationKey});
+  },
+  prompt(title: string, value = "", options?:{restorationKey:string}): HostOperation<string | null> {
+    if(options && (typeof options.restorationKey!=="string" || !/^[a-zA-Z0-9_.:-]{1,160}$/.test(options.restorationKey) || Object.keys(options).some(k=>k!=="restorationKey"))) throw new HostServiceError("invalid_argument","Invalid input restoration key");
+    if(options && !hasCapability("input.text.state")) return {result:Promise.reject(new HostServiceError("unsupported","input.text.state is unavailable")),cancel:()=>{}};
+    return hostOperation("input.text", { title, value,...options });
   },
   async openInline(value:string,bounds:{x:number;y:number;width:number;height:number},onChange:(value:string)=>void,onSubmit?:()=>void,options:{hint?:string;fontSizeSp?:number;fontAsset?:string;fontWeight?:number;includeFontPadding?:boolean;inputType?:"text"|"uri";multiline?:boolean;keepExisting?:boolean;selectionStart?:number;textAlign?:"start"|"center"|"end";horizontalPaddingDp?:number;verticalPaddingDp?:number;autoFocus?:boolean;document?:{id:string;role:"title"|"body";viewportHeight:number;viewportOverhangDp?:number;metadata?:string;unfocusedCaretColor?:string}}={}):Promise<{close():Promise<void>;setValue(value:string):Promise<void>}> {
     let session:number|undefined,closed=false;
@@ -354,6 +365,8 @@ function browserUrl(url: string): string {
 export interface BrowserOpenOptions {
   mode: "inApp";
   scaleMode?: "standard" | "expanded" | "shrunk";
+  /** Save owned current GET URL, viewport mode, zoom and scroll; excludes DOM/history/forms. */
+  restoreActivity?: boolean;
   theme?: { dark: boolean; backgroundColor?: string; textZoom?: number; fontFamily?: "sans-serif" | "serif" | "monospace" };
 }
 function inAppBrowserArgs(url: string, options: BrowserOpenOptions): Record<string, unknown> {
@@ -361,8 +374,9 @@ function inAppBrowserArgs(url: string, options: BrowserOpenOptions): Record<stri
   if (typeof url !== "string" || !url.trim() || url.length > 8192 || /[\u0000-\u001f\u007f]/.test(url)) invalid();
   url = url.trim();
   if (!url.startsWith("/") && !/^file:\/\/\//i.test(url)) browserUrl(url);
-  if (!options || options.mode !== "inApp" || Object.keys(options).some(k => !["mode", "scaleMode", "theme"].includes(k))) invalid();
+  if (!options || options.mode !== "inApp" || Object.keys(options).some(k => !["mode", "scaleMode", "theme", "restoreActivity"].includes(k))) invalid();
   if (options.scaleMode !== undefined && !["standard", "expanded", "shrunk"].includes(options.scaleMode)) invalid();
+  if(options.restoreActivity !== undefined && typeof options.restoreActivity !== "boolean") invalid();
   const theme = options.theme;
   if (theme !== undefined) {
     if (!theme || typeof theme !== "object" || typeof theme.dark !== "boolean" || Object.keys(theme).some(k => !["dark", "backgroundColor", "textZoom", "fontFamily"].includes(k))) invalid();
@@ -394,6 +408,7 @@ export const browser = {
     return hostOperation("browser.clearSiteData", { origins: args.origins });
   },
   open(url: string, options?: BrowserOpenOptions): HostOperation<void> {
+    if(options?.restoreActivity && !hasCapability("system.browser.inApp.state")) return {result:Promise.reject(new HostServiceError("unsupported","system.browser.inApp.state is unavailable")),cancel:()=>{}};
     return options === undefined
       ? hostOperation<void>("browser.open", {url: browserUrl(url)})
       : hostOperation<void>("browser.openInApp", inAppBrowserArgs(url, options));

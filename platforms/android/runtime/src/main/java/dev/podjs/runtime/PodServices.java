@@ -23,6 +23,17 @@ final class PodServices implements Closeable {
     interface Sink { void complete(String event); }
     private final Context context;
     final PodActivityState activityState = new PodActivityState();
+    final PodModalState modalState = new PodModalState();
+    private EditText modalInput;
+    private AlertDialog modalDialog;
+    private String modalKey, modalTitle;
+    String savedModalState() { return browser.savedState(); }
+    String retainedModalState() {
+        if (modalInput != null && modalKey != null) modalState.update(modalKey,modalTitle,modalInput.getText().toString(),modalInput.getSelectionStart(),modalInput.getSelectionEnd());
+        return modalState.retained();
+    }
+    void restoreModalState(String saved,String retained) { browser.restoreState(saved); modalState.restore(retained); }
+    void resumeModalState() { if(!closed) browser.resumeRestored(); }
     private final Sink sink;
     /** Logs every service request and replies over 64 KiB (tag PodJSPerf); for startup profiling. */
     private static final boolean PERF_TRACE = false;
@@ -417,6 +428,23 @@ final class PodServices implements Closeable {
             });
             return;
         }
+        if ("input.text.dismiss".equals(method)) {
+            main.post(() -> {
+                if(closed || !requests.remove(id,request))return;
+                try {
+                    String key=PodModalState.key(args.opt("restorationKey"));
+                    modalState.clear(key);
+                    if(key.equals(modalKey) && modalDialog!=null)modalDialog.dismiss();
+                    reply(id,true,JSONObject.NULL,null,null);
+                } catch (IllegalArgumentException invalid) { failure(id,"invalid_argument","Invalid input restoration key"); }
+            });
+            return;
+        }
+        if ("input.text.pending".equals(method)) {
+            try { String key=PodModalState.key(args.opt("restorationKey")); if(requests.remove(id,request)) reply(id,true,modalState.pending(key)!=null,null,null); }
+            catch (IllegalArgumentException invalid) { requests.remove(id,request); failure(id,"invalid_argument","Invalid input restoration key"); }
+            return;
+        }
         if ("input.text".equals(method)) { prompt(id, request, args); return; }
         if ("input.inline.open".equals(method) || "input.inline.close".equals(method) || "input.inline.set".equals(method)) {
             main.post(()->{
@@ -543,21 +571,41 @@ final class PodServices implements Closeable {
     }
     private void prompt(int id, Request request, JSONObject args) {
         if (!(context instanceof Activity)) { requests.remove(id); failure(id,"unavailable","Text input requires an Activity"); return; }
-        EditText input = new EditText(context);
-        input.setText(args.optString("value", ""));
-        input.setSingleLine(false);
-        AlertDialog dialog = new AlertDialog.Builder(context).setTitle(args.optString("title", ""))
-            .setView(input)
-            .setPositiveButton(android.R.string.ok, (d,w) -> {
-                if (requests.remove(id,request)) reply(id,true,input.getText().toString(),null,null);
-            })
-            .setNegativeButton(android.R.string.cancel,(d,w) -> {
-                if (requests.remove(id,request)) reply(id,true,JSONObject.NULL,null,null);
-            }).create();
-        dialog.setOnCancelListener(d -> { if(requests.remove(id,request)) reply(id,true,JSONObject.NULL,null,null); });
-        request.dialog = dialog;
-        dialog.show();
-        input.requestFocus();
+        main.post(() -> {
+            if(closed || !requests.containsKey(id)) return;
+            try {
+                if(modalInput != null) throw new PodBrowserServices.BrowserFailure("busy","Text input is already open");
+                String key=args.has("restorationKey")?PodModalState.key(args.opt("restorationKey")):null;
+                String title=args.optString("title","");
+                JSONObject draft=key==null?null:modalState.pending(key);
+                if(draft!=null && !title.equals(draft.optString("title"))) draft=null;
+                EditText input = new EditText(context);
+                input.setText(draft==null?args.optString("value", ""):draft.optString("text"));
+                input.setSingleLine(false);
+                if(draft!=null) input.setSelection(draft.optInt("start",0),draft.optInt("end",0));
+                Runnable finished=()->{
+                    if(modalInput==input){modalInput=null;modalDialog=null;modalKey=null;modalTitle=null;if(key!=null)modalState.clear(key);}
+                };
+                AlertDialog dialog = new AlertDialog.Builder(context).setTitle(title)
+                    .setView(input)
+                    .setPositiveButton(android.R.string.ok, (d,w) -> {
+                        boolean completed=requests.remove(id,request);String value=input.getText().toString();finished.run();d.dismiss();if(completed)reply(id,true,value,null,null);
+                    })
+                    .setNegativeButton(android.R.string.cancel,(d,w) -> {
+                        boolean completed=requests.remove(id,request);finished.run();d.dismiss();if(completed)reply(id,true,JSONObject.NULL,null,null);
+                    }).create();
+                dialog.setOnCancelListener(d -> { boolean completed=requests.remove(id,request);finished.run();d.dismiss();if(completed)reply(id,true,JSONObject.NULL,null,null); });
+                dialog.setOnDismissListener(d -> {
+                    finished.run();
+                    if(requests.remove(id,request))reply(id,true,JSONObject.NULL,null,null);
+                });
+                request.dialog = dialog;
+                modalInput=input;modalDialog=dialog;modalKey=key;modalTitle=title;
+                dialog.show();input.requestFocus();
+            } catch (PodBrowserServices.BrowserFailure busy) { requests.remove(id,request); failure(id,busy.code,busy.getMessage()); }
+            catch (IllegalArgumentException invalid) { requests.remove(id,request); failure(id,"invalid_argument","Invalid input restoration key"); }
+            catch (RuntimeException unavailable) { if(modalDialog!=null)modalDialog.dismiss();modalInput=null;modalDialog=null;modalKey=null;modalTitle=null;requests.remove(id,request);failure(id,"unavailable","Cannot show text input"); }
+        });
     }
     private SQLiteDatabase db() {
         if (database == null) {

@@ -609,3 +609,25 @@ test("omitting presentationFrame resets the complete style and accepts null or a
   else expect(snapshot).not.toHaveProperty("presentationFrame");
  }
 });
+
+
+test("retained prompt identity is separately gated; pending, rebinding and dismissal use scoped requests",async()=>{
+ await expect(textInput.prompt('search','seed',{restorationKey:'r1:search'}).result).rejects.toMatchObject({code:'unsupported'});
+ await expect(textInput.pending('r1:search').result).rejects.toMatchObject({code:'unsupported'});expect(emitted).toHaveLength(0);
+ host.capabilities=()=>JSON.stringify(['input.text','input.text.state']);
+ for(const key of ['', 'bad/key', 'x'.repeat(161)])expect(()=>textInput.pending(key)).toThrow();
+ const pending=textInput.pending('r1:search');expect(emitted.at(-1)).toMatchObject({method:'input.text.pending',args:{restorationKey:'r1:search'}});
+ events.push({t:'service.result',id:emitted.at(-1)!.id,ok:true,value:true});api.__pumpPodEvents();await expect(pending.result).resolves.toBe(true);
+ const prompt=textInput.prompt('search','seed',{restorationKey:'r1:search'});expect(emitted.at(-1)).toMatchObject({method:'input.text',args:{title:'search',value:'seed',restorationKey:'r1:search'}});
+ const id=emitted.at(-1)!.id;
+ const dismiss=textInput.dismiss('r1:search');expect(emitted.at(-1)).toMatchObject({method:'input.text.dismiss',args:{restorationKey:'r1:search'}});
+ events.push({t:'service.result',id,ok:true,value:null},{t:'service.result',id:emitted.at(-1)!.id,ok:true,value:null});api.__pumpPodEvents();await expect(prompt.result).resolves.toBeNull();await dismiss.result;
+});
+test("browser state requires the new capability and preserves explicit opt-in on the wire",async()=>{
+ host.capabilities=()=>JSON.stringify(['system.browser.inApp']);
+ await expect(browser.open('https://example.org',{mode:'inApp',restoreActivity:true}).result).rejects.toMatchObject({code:'unsupported'});expect(emitted).toHaveLength(0);
+ host.capabilities=()=>JSON.stringify(['system.browser.inApp','system.browser.inApp.state']);
+ expect(()=>browser.open('https://example.org',{mode:'inApp',restoreActivity:'yes'} as never)).toThrow();
+ const opened=browser.open('https://example.org',{mode:'inApp',restoreActivity:true});expect(emitted.at(-1)).toMatchObject({method:'browser.openInApp',args:{url:'https://example.org',mode:'inApp',restoreActivity:true}});
+ events.push({t:'service.result',id:emitted.at(-1)!.id,ok:true,value:null});api.__pumpPodEvents();await opened.result;
+});

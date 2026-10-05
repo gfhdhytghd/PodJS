@@ -121,4 +121,49 @@ public class PodInAppBrowserTest {
         }
     }
 
+    @Test public void restorationSchemaDropsUnknownAndOversizedStateBeforeOpening() throws Exception {
+        PodBrowserServices service=new PodBrowserServices(InstrumentationRegistry.getInstrumentation().getTargetContext());
+        JSONObject options=args("https://example.org/path").put("restoreActivity",true);
+        JSONObject state=new JSONObject().put("v",1).put("options",options).put("url","https://example.org/path")
+            .put("scale","expanded").put("x",3).put("y",500).put("zoom",1.25);
+        service.restoreState(state.toString());assertNotNull(service.savedState());
+        for(JSONObject invalid:new JSONObject[]{new JSONObject(state.toString()).put("v",2),new JSONObject(state.toString()).put("zoom",0),new JSONObject(state.toString()).put("x",.5),new JSONObject(state.toString()).put("url","file:///data/private"),new JSONObject(state.toString()).put("dom","private")}){
+            service.restoreState(invalid.toString());assertNull(service.savedState());
+        }
+        JSONObject localToRemote=new JSONObject(state.toString());localToRemote.getJSONObject("options").put("url","file:///android_asset/local.html");
+        service.restoreState(localToRemote.toString());assertNotNull(service.savedState()); // Existing local-page links may enter HTTP(S).
+        service.restoreState("invalid");assertNull(service.savedState());service.close();
+    }
+    @Test public void localWebDocumentRestoresScaleAndScrollWithoutSavingItsBodyOrForms() throws Exception {
+        android.app.Instrumentation instrumentation=InstrumentationRegistry.getInstrumentation();
+        Activity activity=instrumentation.startActivitySync(new Intent(instrumentation.getContext(),VideoTestActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        java.io.File file=java.io.File.createTempFile("m2-state", ".html",activity.getCacheDir());
+        java.nio.file.Files.write(file.toPath(),"<html><body style='height:6000px'>BODY_SENTINEL<input value='FORM_SENTINEL'/></body></html>".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        AtomicReference<PodInAppBrowser> current=new AtomicReference<>();AtomicReference<Throwable> failure=new AtomicReference<>();
+        try {
+            instrumentation.runOnMainSync(()->{try {
+                org.junit.Assume.assumeTrue(WebView.getCurrentWebViewPackage()!=null);
+                PodInAppBrowser b=new PodInAppBrowser(activity,new PodInAppBrowser.Options(args(android.net.Uri.fromFile(file).toString()).put("restoreActivity",true)));current.set(b);b.open();
+            }catch(Throwable error){failure.set(error);}});
+            if(failure.get() instanceof org.junit.AssumptionViolatedException)throw (org.junit.AssumptionViolatedException)failure.get();
+            if(failure.get()!=null)throw new AssertionError(failure.get());
+            awaitDocument(instrumentation,current,false);
+            AtomicReference<String> saved=new AtomicReference<>();
+            instrumentation.runOnMainSync(()->{try {
+                PodInAppBrowser b=current.get();java.lang.reflect.Field toggle=PodInAppBrowser.class.getDeclaredField("toggle");toggle.setAccessible(true);((android.view.View)toggle.get(b)).performClick();
+                b.web.scrollTo(0,500);saved.set(b.snapshot());assertNotNull(saved.get());
+                assertFalse(saved.get().contains("BODY_SENTINEL"));assertFalse(saved.get().contains("FORM_SENTINEL"));
+                JSONObject state=new JSONObject(saved.get());assertEquals("expanded",state.getString("scale"));assertEquals(500,state.getInt("y"));b.dismiss();
+                PodInAppBrowser next=new PodInAppBrowser(activity,new PodInAppBrowser.Options(state.getJSONObject("options")));current.set(next);next.restore(state);next.open();
+            }catch(Throwable error){failure.set(error);}});
+            if(failure.get()!=null)throw new AssertionError(failure.get());awaitDocument(instrumentation,current,true);
+            instrumentation.runOnMainSync(()->{try{assertEquals(500,current.get().web.getScrollY());assertEquals("expanded",new JSONObject(current.get().snapshot()).getString("scale"));current.get().dismiss();assertNull(current.get().snapshot());}catch(Exception error){throw new AssertionError(error);}});
+        } finally {instrumentation.runOnMainSync(()->{if(current.get()!=null)current.get().dismiss();activity.finish();});file.delete();}
+    }
+    private static void awaitDocument(android.app.Instrumentation instrumentation,AtomicReference<PodInAppBrowser> browser,boolean restored)throws Exception {
+        long deadline=android.os.SystemClock.uptimeMillis()+10000;java.util.concurrent.atomic.AtomicBoolean ready=new java.util.concurrent.atomic.AtomicBoolean();
+        while(android.os.SystemClock.uptimeMillis()<deadline){instrumentation.runOnMainSync(()->ready.set(browser.get().web.getContentHeight()>1000&&(!restored||browser.get().web.getScrollY()==500)));if(ready.get())return;Thread.sleep(25);}
+        fail("Local WebView document/scroll did not become ready");
+    }
+
 }

@@ -341,6 +341,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
             throw new IllegalStateException("PodJS boot failed", failure);
         }
         setHost(candidate);
+        services.resumeModalState();
         accessibilityEnabled = false;
         SurfaceTexture texture = getSurfaceTexture();
         long resizeBegan = PodStartupTrace.now();
@@ -593,6 +594,9 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         companionSettings=new PodSyncSettingsDialog(getContext(),services);companionSettings.show();
     }
     public boolean sendBack() { return host != 0 && nativeBack(host); }
+    public void restoreModalState(String saved,String retained) { services.restoreModalState(saved,retained); }
+    public String savedModalState() { flushActivityState(); return services.savedModalState(); }
+    public String retainedModalState() { flushActivityState(); return services.retainedModalState(); }
     public void restoreActivityState(String saved, String retained) { services.activityState.restore(saved, retained); }
     private void flushActivityState() { if (host != 0) { nativePumpServices(host); drainHostEffects(false); } }
     public String savedActivityState() { flushActivityState(); return services.activityState.saved(); }
