@@ -32,8 +32,10 @@ final class PodServices implements Closeable {
     private final PodMediaServices media;
     private PodScreenServices screen;
     private boolean displayResumed=true;
-    void screenLifecycle(boolean resumed){displayResumed=resumed;mediaSurfaces.lifecycle(resumed);main.post(()->{if(!closed&&screen!=null)screen.lifecycle(resumed);});}
+    void screenLifecycle(boolean resumed){displayResumed=resumed;mediaSurfaces.lifecycle(resumed);videoSessions.lifecycle(resumed);main.post(()->{if(!closed&&screen!=null)screen.lifecycle(resumed);});}
+    private final PodVideoDecoderBudget videoDecoderBudget;
     private final PodVideoServices video;
+    private final PodVideoSessionServices videoSessions;
     private final PodMediaSurfaceServices mediaSurfaces;
     private final PodInlineTextInput inlineText;
     private final PodImageServices images;
@@ -164,8 +166,9 @@ final class PodServices implements Closeable {
         AlertDialog dialog;
         Runnable timer;
         String method;
+        String videoSessionId;
     }
-    PodServices(Context context, Sink sink) { this.context = context; this.sink = sink; device = new PodDeviceServices(context); media = new PodMediaServices(context, event -> { if (!closed) sink.complete(event); }); video = new PodVideoServices(context); mediaSurfaces = new PodMediaSurfaceServices(context); inlineText = new PodInlineTextInput(context,event->{if(!closed)sink.complete(event);}); images = new PodImageServices(context); http = new PodHttpServices(context); byteStreams = new PodByteStreamServices(context); webSockets = new PodWebSocketServices(context,byteStreams); discovery = new PodDiscoveryServices(context); bleDiscovery = new PodBleDiscoveryServices(context); networks = new PodNetworkServices(context,event->{if(!closed)sink.complete(event);}); browser = new PodBrowserServices(context); browserAuth = new PodBrowserAuthServices(context); notificationPermission=new PodNotificationPermission(context); bluetoothPermission=new PodBluetoothPermission(context); discoveryPermission=new PodBluetoothPermission(context,0x5044,PodBleDiscoveryServices.permissions()); location=new PodLocationServices(context); }
+    PodServices(Context context, Sink sink) { this.context = context; this.sink = sink; device = new PodDeviceServices(context); media = new PodMediaServices(context, event -> { if (!closed) sink.complete(event); }); videoDecoderBudget=new PodVideoDecoderBudget(PodVideoSessionServices.MAX_SESSIONS); video = new PodVideoServices(context,videoDecoderBudget); videoSessions=new PodVideoSessionServices(context,videoDecoderBudget); mediaSurfaces = new PodMediaSurfaceServices(context); inlineText = new PodInlineTextInput(context,event->{if(!closed)sink.complete(event);}); images = new PodImageServices(context); http = new PodHttpServices(context); byteStreams = new PodByteStreamServices(context); webSockets = new PodWebSocketServices(context,byteStreams); discovery = new PodDiscoveryServices(context); bleDiscovery = new PodBleDiscoveryServices(context); networks = new PodNetworkServices(context,event->{if(!closed)sink.complete(event);}); browser = new PodBrowserServices(context); browserAuth = new PodBrowserAuthServices(context); notificationPermission=new PodNotificationPermission(context); bluetoothPermission=new PodBluetoothPermission(context); discoveryPermission=new PodBluetoothPermission(context,0x5044,PodBleDiscoveryServices.permissions()); location=new PodLocationServices(context); }
     void notificationPermissionResult(int code,int[] results){notificationPermission.result(code,results);location.permissionResult(code);bluetoothPermission.result(code); discoveryPermission.result(code);}
     PodServices(Context context, Sink sink, PodBackgroundServices approvedBackground) {
         this(context,sink); background=approvedBackground;
@@ -175,7 +178,7 @@ final class PodServices implements Closeable {
     void attachApprovedSync(PodSyncServices approvedSync) {
         worker.execute(() -> { if (!closed) sync = approvedSync; });
     }
-    void attachVideo(android.view.ViewGroup parent) { video.attachToParent(parent); }
+    void attachVideo(android.view.ViewGroup parent) { video.attachToParent(parent); videoSessions.attachToParent(parent); }
     void attachMediaSurfaces(android.view.ViewGroup parent,PodMediaSurfaceServices.TextureSink sink){mediaSurfaces.attach(parent,sink);}
     void attachInlineText(android.view.ViewGroup parent){inlineText.attach(parent);}
     boolean handleInlineCrownScroll(android.view.MotionEvent event){return inlineText.handleCrownScroll(event);}
@@ -195,7 +198,7 @@ final class PodServices implements Closeable {
             }
         });
     }
-    void pauseVideoForLifecycle() { video.pauseForLifecycle(); }
+    void pauseVideoForLifecycle() { video.pauseForLifecycle(); videoSessions.lifecycle(false); }
     void dispatch(JSONObject command) throws Exception {
         int id = command.getInt("id");
         if ("service.cancel".equals(command.getString("t"))) { cancel(id); return; }
@@ -279,6 +282,14 @@ final class PodServices implements Closeable {
                 public void complete(JSONObject value){if(requests.remove(id,request))reply(id,true,value,null,null);}
                 public void fail(String code,String message){if(requests.remove(id,request))failure(id,code,message);}
             });return;
+        }
+        if (method.startsWith("video.session.")) {
+            request.videoSessionId=args.optString("sessionId",null);
+            videoSessions.dispatch(method,args,new PodVideoSessionServices.Callback(){
+                public void complete(JSONObject value){if(requests.remove(id,request))reply(id,true,value,null,null);}
+                public void fail(String code,String message){if(requests.remove(id,request))failure(id,code,message);}
+            });
+            return;
         }
         if (method.startsWith("video.")) {
             video.dispatch(method, args, new PodVideoServices.Callback() {
@@ -578,6 +589,7 @@ final class PodServices implements Closeable {
         http.cancel(id);
         media.cancel(request.method);
         video.cancel(request.method);
+        if(request.method!=null&&request.method.startsWith("video.session."))videoSessions.cancel(request.videoSessionId);
         if ("browser.authorize".equals(request.method)) browserAuth.cancel();
         if("notifications.requestPermission".equals(request.method))main.post(notificationPermission::cancel);
         if("location.current".equals(request.method))main.post(location::cancel);
@@ -597,6 +609,7 @@ final class PodServices implements Closeable {
         main.post(()->{if(screen!=null){screen.close();screen=null;}});
         media.close();
         video.close();
+        videoSessions.close();
         mediaSurfaces.close();
         imageWorkers.shutdownNow();
         images.close();

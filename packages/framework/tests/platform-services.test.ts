@@ -146,3 +146,59 @@ test("embedded browser rejects invalid options and executable URLs before emitti
   }
   for (const target of Object.values(POD_TARGETS)) expect(target.capabilities.includes("system.browser.inApp")).toBe(["android-watch","wearos-watch"].includes(target.id));
 });
+
+test("multi-session video is separately advertised and fails closed on legacy video hosts", async () => {
+  const {video,videoSessions}=await import("../src/services.ts");
+  const previous=(globalThis as {pod?:unknown}).pod;
+  const commands:any[]=[];
+  (globalThis as {pod?:unknown}).pod={
+    takeEvents:()=>undefined,
+    capabilities:()=> '["media.video"]',
+    emit:(line:string)=>commands.push(JSON.parse(line)),
+  };
+  try {
+    const bounds={x:0,y:0,width:240,height:240};
+    await expect(videoSessions.prepare({sessionId:"next",url:"next.mp4",bounds,prewarm:true}).result).rejects.toMatchObject({code:"unsupported"});
+    await expect(videoSessions.capabilities()).rejects.toMatchObject({code:"unsupported"});
+    expect(commands).toEqual([]);
+    const legacy=video.prepare({url:"legacy.mp4",bounds});
+    expect(commands[0]).toMatchObject({method:"video.prepare",args:{url:"legacy.mp4",bounds}});
+    legacy.cancel();await expect(legacy.result).rejects.toMatchObject({code:"cancelled"});
+  } finally {(globalThis as {pod?:unknown}).pod=previous;}
+  for(const id of ["android-watch","wearos-watch"] as const)expect(POD_TARGETS[id].capabilities).toContain("media.video.sessions");
+  for(const id of ["watchos-watch","harmonyos-watch"] as const)expect(POD_TARGETS[id].capabilities).not.toContain("media.video.sessions");
+});
+
+test("multi-session video preserves ids and atomically describes prewarm promotion and vertical drag", async () => {
+  const {videoSessions}=await import("../src/services.ts");
+  const previous=(globalThis as {pod?:unknown}).pod;
+  const commands:any[]=[];let batch:string|undefined;
+  (globalThis as {pod?:unknown}).pod={
+    takeEvents:()=>{const value=batch;batch=undefined;return value;},
+    capabilities:()=> '["media.video.sessions"]',
+    emit:(line:string)=>commands.push(JSON.parse(line)),
+  };
+  const reply=(value:unknown)=>{batch=JSON.stringify([{t:"service.result",id:commands.at(-1).id,ok:true,value}]);__pumpPodEvents();};
+  try {
+    const capabilities=videoSessions.capabilities();
+    expect(commands.at(-1)).toMatchObject({method:"video.session.capabilities",args:{}});
+    const capabilityValue={capability:"media.video.sessions",maxSessions:2,decoderLimit:2,decoderInUse:0,targetBufferBytesPerSession:6291456,targetBufferBytesTotal:12582912,prewarmMode:"hidden_first_frame",surfacePromotion:true,verticalTransition:true,surfaceComposition:"android_texture_view",backgroundPlayback:false};
+    reply(capabilityValue);await expect(capabilities).resolves.toEqual(capabilityValue);
+
+    const bounds={x:0,y:0,width:240,height:240,translateY:0,roundClip:{cx:120,cy:120,radius:120}};
+    const prepare=videoSessions.prepare({sessionId:"next",url:"douyin/next.mp4",bounds,prewarm:true,autoplay:false,muted:false,loop:true});
+    expect(commands.at(-1)).toMatchObject({method:"video.session.prepare",args:{sessionId:"next",prewarm:true,bounds}});
+    const prewarmed={ok:true,sessionId:"next",state:"prewarmed",positionMs:0,durationMs:1000,width:16,height:16,muted:true,volume:1,prewarming:true,presented:false,hasRenderedFirstFrame:true,targetBufferBytes:6291456};
+    reply(prewarmed);await expect(prepare.result).resolves.toEqual(prewarmed);
+
+    const drag=videoSessions.transition({fromSessionId:"current",toSessionId:"next",progress:.375,direction:"up",bounds});
+    expect(commands.at(-1)).toMatchObject({method:"video.session.transition",args:{fromSessionId:"current",toSessionId:"next",progress:.375,direction:"up",bounds}});
+    const dragged={fromSessionId:"current",toSessionId:"next",progress:.375,direction:"up",fromOffsetYPx:-90,toOffsetYPx:150,composited:true};
+    reply(dragged);await expect(drag).resolves.toEqual(dragged);
+
+    const promote=videoSessions.promote("next",{replaceSessionId:"current",bounds,autoplay:true});
+    expect(commands.at(-1)).toMatchObject({method:"video.session.promote",args:{sessionId:"next",replaceSessionId:"current",bounds,autoplay:true}});
+    reply({...prewarmed,state:"playing",muted:false,prewarming:false,presented:true});
+    await expect(promote).resolves.toMatchObject({sessionId:"next",state:"playing",hasRenderedFirstFrame:true,presented:true});
+  } finally {(globalThis as {pod?:unknown}).pod=previous;}
+});

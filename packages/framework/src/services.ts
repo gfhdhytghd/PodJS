@@ -44,6 +44,7 @@ const methods: Record<string, PodCapabilityId> = {
   "tts.init": "media.tts", "tts.speak": "media.tts", "tts.stop": "media.tts", "tts.state": "media.tts",
   "video.prepare": "media.video", "video.play": "media.video", "video.pause": "media.video", "video.seek": "media.video", "video.stop": "media.video", "video.setBounds": "media.video", "video.state": "media.video",
   "video.captureBackdrop": "media.video", "video.setTransform": "media.video", "video.setVolume": "media.video",
+  "video.session.capabilities": "media.video.sessions", "video.session.prepare": "media.video.sessions", "video.session.play": "media.video.sessions", "video.session.pause": "media.video.sessions", "video.session.seek": "media.video.sessions", "video.session.stop": "media.video.sessions", "video.session.release": "media.video.sessions", "video.session.setBounds": "media.video.sessions", "video.session.setTransform": "media.video.sessions", "video.session.setVolume": "media.video.sessions", "video.session.state": "media.video.sessions", "video.session.promote": "media.video.sessions", "video.session.transition": "media.video.sessions",
   "image.surface.open":"data.images", "image.surface.update":"data.images", "image.surface.state":"data.images", "image.surface.close":"data.images",
   "video.surface.open":"media.video", "video.surface.update":"media.video", "video.surface.state":"media.video", "video.surface.close":"media.video",
   "share.environment": "system.share", "share.text": "system.share",
@@ -233,7 +234,7 @@ export const speech = {
   speak(text: string,language="zh-CN",rate=1,utteranceId?:string): HostOperation<SpeechState> { return hostOperation("tts.speak",{text,language,rate,...(utteranceId?{utteranceId}:{})}); },
   stop(): Promise<unknown> { return hostOperation("tts.stop",{}).result; },
 };
-export interface VideoBounds { x:number; y:number; width:number; height:number; translateX?:number; visible?:boolean; roundClip?:{cx:number;cy:number;radius:number} }
+export interface VideoBounds { x:number; y:number; width:number; height:number; translateX?:number; translateY?:number; visible?:boolean; roundClip?:{cx:number;cy:number;radius:number} }
 export interface VideoPrepare { url?:string; videoUrl?:string; audioUrl?:string; type?:string; headers?:Record<string,string>; bounds:VideoBounds; autoplay?:boolean; muted?:boolean; loop?:boolean; backgroundPlayback?:boolean }
 export interface VideoState { ok:boolean; state:string; positionMs:number; durationMs:number; width:number; height:number; volume:number; volumeMax:number }
 export const video = {
@@ -247,6 +248,51 @@ export const video = {
   captureBackdrop(): Promise<{ok:boolean}> { return hostOperation<{ok:boolean}>("video.captureBackdrop", {}).result; },
   setTransform(transform:{rotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}): Promise<VideoState> { return hostOperation<VideoState>("video.setTransform", transform as Record<string,unknown>).result; },
   setVolume(volume:number): Promise<VideoState> { return hostOperation<VideoState>("video.setVolume", {volume}).result; },
+};
+
+export interface VideoSessionCapabilities {
+  capability:"media.video.sessions"; maxSessions:number; decoderLimit:number; decoderInUse:number;
+  targetBufferBytesPerSession:number; targetBufferBytesTotal:number;
+  prewarmMode:"hidden_first_frame"; surfacePromotion:true; verticalTransition:true;
+  surfaceComposition:"android_texture_view"; backgroundPlayback:false;
+}
+export interface VideoSessionPrepare extends Omit<VideoPrepare,"backgroundPlayback"> {
+  sessionId:string;
+  /** Decode silently to a retained hidden first frame. Prewarm never requests audio focus. */
+  prewarm?:boolean;
+}
+export interface VideoSessionState {
+  ok:boolean; sessionId:string; state:string; positionMs:number; durationMs:number;
+  width:number; height:number; muted:boolean; volume:number; prewarming:boolean;
+  presented:boolean; hasRenderedFirstFrame:boolean; targetBufferBytes:number;
+}
+export interface VideoSessionTransition {
+  fromSessionId:string; toSessionId:string; progress:number; direction:"up"|"down"; bounds?:VideoBounds;
+}
+export interface VideoSessionTransitionState {
+  fromSessionId:string; toSessionId:string; progress:number; direction:"up"|"down";
+  fromOffsetYPx:number; toOffsetYPx:number; composited:true;
+}
+/** Two retained Android TextureView sessions for immersive pager playback.
+ * The capability is intentionally separate from legacy media.video so an old
+ * one-player host rejects every request before transport.
+ */
+export const videoSessions = {
+  capabilities():Promise<VideoSessionCapabilities> { return hostOperation<VideoSessionCapabilities>("video.session.capabilities",{}).result; },
+  prepare(options:VideoSessionPrepare):HostOperation<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.prepare",options as unknown as Record<string,unknown>); },
+  play(sessionId:string):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.play",{sessionId}).result; },
+  pause(sessionId:string):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.pause",{sessionId}).result; },
+  seek(sessionId:string,positionMs:number):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.seek",{sessionId,positionMs}).result; },
+  stop(sessionId:string):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.stop",{sessionId}).result; },
+  release(sessionId:string):Promise<{sessionId:string;released:boolean}> { return hostOperation<{sessionId:string;released:boolean}>("video.session.release",{sessionId}).result; },
+  setBounds(sessionId:string,bounds:VideoBounds):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setBounds",{sessionId,bounds}).result; },
+  state(sessionId:string):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.state",{sessionId}).result; },
+  setTransform(sessionId:string,transform:{rotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setTransform",{sessionId,...transform}).result; },
+  setVolume(sessionId:string,volume:number):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setVolume",{sessionId,volume}).result; },
+  /** Reveals the retained target first frame before hiding the replaced session. */
+  promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean}={}):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.promote",{sessionId,...options}).result; },
+  /** Atomically translates both native surfaces. Call promote after progress reaches one. */
+  transition(options:VideoSessionTransition):Promise<VideoSessionTransitionState> { return hostOperation<VideoSessionTransitionState>("video.session.transition",options as unknown as Record<string,unknown>).result; },
 };
 
 export interface DownloadResult { status:number; headers:Record<string,string>; url:string; path:string; size:number }

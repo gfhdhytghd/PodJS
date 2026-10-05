@@ -9,6 +9,7 @@ import android.content.Intent;
 import android.os.IBinder;
 import androidx.media3.common.Player;
 import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.session.MediaSession;
 import androidx.media3.session.MediaSessionService;
 
@@ -24,7 +25,11 @@ public final class PodVideoPlaybackService extends MediaSessionService {
         super.onCreate();
         NotificationManager manager=(NotificationManager)getSystemService(NOTIFICATION_SERVICE);
         manager.createNotificationChannel(new NotificationChannel("pod_video","Video playback",NotificationManager.IMPORTANCE_LOW));
-        player=new ExoPlayer.Builder(this).build();
+        DefaultLoadControl loadControl=new DefaultLoadControl.Builder()
+            .setTargetBufferBytes(PodVideoSessionServices.TARGET_BUFFER_BYTES)
+            .setBufferDurationsMs(1_000,4_000,100,250)
+            .build();
+        player=new ExoPlayer.Builder(this).setLoadControl(loadControl).build();
         session=new MediaSession.Builder(this,player).build();
         addSession(session);
     }
