@@ -46,3 +46,47 @@ test("new APIs fail closed without a supporting host", async () => {
     expect(() => syncState.subscribe(() => {})).toThrow("companion.sync.state");
   } finally { (globalThis as { pod?: unknown }).pod = previous; }
 });
+
+test("WebView services require their own capabilities, including on older browser hosts", async () => {
+  const { browser } = await import("../src/services.ts");
+  const previous = (globalThis as {pod?: unknown}).pod;
+  const commands: string[] = [];
+  (globalThis as {pod?: unknown}).pod = { capabilities: () => '["system.browser","system.browser.auth"]', emit: (s: string) => commands.push(s) };
+  try {
+    await expect(browser.availability().result).rejects.toMatchObject({code: "unsupported"});
+    await expect(browser.clearSiteData({origins: ["https://douyin.com"]}).result).rejects.toMatchObject({code: "unsupported"});
+    expect(commands).toEqual([]);
+  } finally { (globalThis as {pod?: unknown}).pod = previous; }
+});
+
+test("WebView services round-trip status and per-origin partial results without claiming global clearance", async () => {
+  const { browser } = await import("../src/services.ts");
+  const previous = (globalThis as {pod?: unknown}).pod;
+  const commands: Record<string, any>[] = []; let batch: string | undefined;
+  (globalThis as {pod?: unknown}).pod = {
+    capabilities: () => '["system.browser.availability","system.browser.siteData"]',
+    emit: (s: string) => commands.push(JSON.parse(s)),
+    takeEvents: () => { const value = batch; batch = undefined; return value; },
+  };
+  const respond = (value: unknown, ok = true) => {
+    batch = JSON.stringify([{t: "service.result", id: commands.at(-1)!.id, ok, ...(ok ? {value} : {code: "invalid_argument", message: "Only bare HTTPS origins are allowed"})}]);
+    __pumpPodEvents();
+  };
+  try {
+    for (const status of ["available", "no_provider", "initialization_failed"] as const) {
+      const op = browser.availability();
+      expect(commands.at(-1)).toMatchObject({method: "browser.availability", args: {}});
+      respond({status}); expect(await op.result).toEqual({status});
+    }
+    const origins = ["https://www.douyin.com", "https://douyin.com"];
+    const op = browser.clearSiteData({origins});
+    expect(commands.at(-1)).toMatchObject({method: "browser.clearSiteData", args: {origins}});
+    const result = origins.map(origin => ({origin, cookies: {status: "remaining" as const, remainingNames: ["session"]}, webStorage: {status: "deletion_requested" as const}}));
+    respond(result); expect(await op.result).toEqual(result);
+    const invalid = browser.clearSiteData({origins: ["http://douyin.com"]});
+    respond(null, false); await expect(invalid.result).rejects.toMatchObject({code: "invalid_argument"});
+    const cancelled = browser.availability(); cancelled.cancel();
+    await expect(cancelled.result).rejects.toMatchObject({code: "cancelled"});
+    expect(commands.at(-1)!.t).toBe("service.cancel");
+  } finally { (globalThis as {pod?: unknown}).pod = previous; }
+});

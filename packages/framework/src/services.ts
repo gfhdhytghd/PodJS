@@ -35,6 +35,8 @@ const methods: Record<string, PodCapabilityId> = {
   "ui.toast": "system.toast",
   "http.download": "net.download",
   "browser.open": "system.browser",
+  "browser.clearSiteData": "system.browser.siteData",
+  "browser.availability": "system.browser.availability",
   "audio.start": "media.audio", "audio.pause": "media.audio", "audio.resume": "media.audio", "audio.setSpeed": "media.audio", "audio.stop": "media.audio", "audio.state": "media.audio",
   "audio.volumeState": "media.audio", "audio.setVolumeIndex": "media.audio",
   "tts.init": "media.tts", "tts.speak": "media.tts", "tts.stop": "media.tts", "tts.state": "media.tts",
@@ -233,7 +235,27 @@ function browserUrl(url: string): string {
   if (!match || /[\u0000-\u0020]/.test(url)) throw new HostServiceError("invalid_argument", "Browser URL must be a valid HTTP or HTTPS URL");
   return url;
 }
+export interface BrowserAvailability {
+  status: "available" | "no_provider" | "initialization_failed";
+  provider?: string;
+  message?: string;
+}
+export interface BrowserSiteDataResult {
+  origin: string;
+  cookies: { status: "root_cleared" | "remaining" | "failed"; remainingNames?: string[]; message?: string };
+  webStorage: { status: "deletion_requested" | "failed"; message?: string };
+}
 export const browser = {
+  /** Probes the embedded Android WebView, not the external browser handler. */
+  availability(): HostOperation<BrowserAvailability> { return hostOperation("browser.availability", {}); },
+  /** Root-path cookies only, matching Android WatchRSS. Cookie domains are shared
+   * across ports and subdomains; parent-domain expiry requires listing that parent.
+   * WebStorage has no completion callback: deletion_requested is not verification.
+   * Requires bare HTTPS origins (no path, query, credentials or fragment).
+   */
+  clearSiteData(args: { origins: readonly string[] }): HostOperation<BrowserSiteDataResult[]> {
+    return hostOperation("browser.clearSiteData", { origins: args.origins });
+  },
   open(url: string): HostOperation<void> { return hostOperation<void>("browser.open", { url: browserUrl(url) }); },
 };
 export const browserAuth = {

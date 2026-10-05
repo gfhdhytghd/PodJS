@@ -46,6 +46,8 @@ export const PodCapability = Object.freeze({
   Theme: "host.theme",
   RoundDisplay: "display.round",
   Browser: "system.browser",
+  BrowserSiteData: "system.browser.siteData",
+  BrowserAvailability: "system.browser.availability",
   Share: "system.share",
 } as const);
 
@@ -75,14 +77,14 @@ export const POD_TARGETS: Readonly<Record<PodTargetProfile["id"], PodTargetProfi
     hostAbi: POD_HOST_ABI,
     logicalViewport: POD_LOGICAL_VIEWPORT,
     renderer: "vulkan-1.1",
-capabilities: [...common, PodCapability.Back, PodCapability.Network, PodCapability.Files, PodCapability.Sqlite, PodCapability.TextLayout, PodCapability.TextRaster, PodCapability.TextEnvironment, PodCapability.TextInput, PodCapability.TimeInput, PodCapability.Location, PodCapability.Secure, PodCapability.Crypto, PodCapability.FileChunks, PodCapability.Uri, PodCapability.Audio, PodCapability.Tts, PodCapability.Video, PodCapability.Timer, PodCapability.DisplayPower, PodCapability.Toast, PodCapability.Images, PodCapability.BrowserAuth, PodCapability.HttpDownload, PodCapability.Rfcomm, PodCapability.Tcp, PodCapability.ByteStream, PodCapability.WebSocket, PodCapability.Discovery, PodCapability.Browser, PodCapability.Share, PodCapability.ScheduledBackground, PodCapability.LocalNotification, PodCapability.SyncState, PodCapability.SyncMessage, PodCapability.SyncFile],
+capabilities: [...common, PodCapability.Back, PodCapability.Network, PodCapability.Files, PodCapability.Sqlite, PodCapability.TextLayout, PodCapability.TextRaster, PodCapability.TextEnvironment, PodCapability.TextInput, PodCapability.TimeInput, PodCapability.Location, PodCapability.Secure, PodCapability.Crypto, PodCapability.FileChunks, PodCapability.Uri, PodCapability.Audio, PodCapability.Tts, PodCapability.Video, PodCapability.Timer, PodCapability.DisplayPower, PodCapability.Toast, PodCapability.Images, PodCapability.BrowserAuth, PodCapability.HttpDownload, PodCapability.Rfcomm, PodCapability.Tcp, PodCapability.ByteStream, PodCapability.WebSocket, PodCapability.Discovery, PodCapability.Browser, PodCapability.BrowserSiteData, PodCapability.BrowserAvailability, PodCapability.Share, PodCapability.ScheduledBackground, PodCapability.LocalNotification, PodCapability.SyncState, PodCapability.SyncMessage, PodCapability.SyncFile],
   },
   "wearos-watch": {
     id: "wearos-watch",
     hostAbi: POD_HOST_ABI,
     logicalViewport: POD_LOGICAL_VIEWPORT,
     renderer: "vulkan-1.1",
-    capabilities: [...common, PodCapability.Back, PodCapability.Network, PodCapability.Files, PodCapability.Sqlite, PodCapability.TextLayout, PodCapability.TextRaster, PodCapability.TextEnvironment, PodCapability.TextInput, PodCapability.TimeInput, PodCapability.Location, PodCapability.Secure, PodCapability.Crypto, PodCapability.FileChunks, PodCapability.Uri, PodCapability.Audio, PodCapability.Tts, PodCapability.Video, PodCapability.Timer, PodCapability.DisplayPower, PodCapability.Toast, PodCapability.Images, PodCapability.BrowserAuth, PodCapability.HttpDownload, PodCapability.Rfcomm, PodCapability.Tcp, PodCapability.ByteStream, PodCapability.WebSocket, PodCapability.Discovery, PodCapability.Browser, PodCapability.Share, PodCapability.ScheduledBackground, PodCapability.LocalNotification, PodCapability.SyncState, PodCapability.SyncMessage, PodCapability.SyncFile],
+    capabilities: [...common, PodCapability.Back, PodCapability.Network, PodCapability.Files, PodCapability.Sqlite, PodCapability.TextLayout, PodCapability.TextRaster, PodCapability.TextEnvironment, PodCapability.TextInput, PodCapability.TimeInput, PodCapability.Location, PodCapability.Secure, PodCapability.Crypto, PodCapability.FileChunks, PodCapability.Uri, PodCapability.Audio, PodCapability.Tts, PodCapability.Video, PodCapability.Timer, PodCapability.DisplayPower, PodCapability.Toast, PodCapability.Images, PodCapability.BrowserAuth, PodCapability.HttpDownload, PodCapability.Rfcomm, PodCapability.Tcp, PodCapability.ByteStream, PodCapability.WebSocket, PodCapability.Discovery, PodCapability.Browser, PodCapability.BrowserSiteData, PodCapability.BrowserAvailability, PodCapability.Share, PodCapability.ScheduledBackground, PodCapability.LocalNotification, PodCapability.SyncState, PodCapability.SyncMessage, PodCapability.SyncFile],
   },
   "watchos-watch": {
     id: "watchos-watch",

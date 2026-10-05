@@ -346,6 +346,20 @@ final class PodServices implements Closeable {
             return;
         }
         if ("input.time".equals(method)) { promptTime(id, request, args); return; }
+        if ("browser.availability".equals(method) || "browser.clearSiteData".equals(method)) {
+            main.post(() -> {
+                if (closed || !requests.containsKey(id)) return;
+                try {
+                    request.cancellation.throwIfCanceled();
+                    PodWebViewServices web = new PodWebViewServices(context);
+                    Object value = "browser.availability".equals(method) ? web.availability() : web.clearSiteData(args);
+                    if (requests.remove(id, request)) reply(id, true, value, null, null);
+                } catch (Exception error) {
+                    if (requests.remove(id, request)) failure(id, error instanceof IllegalArgumentException ? "invalid_argument" : "unavailable", error.getMessage());
+                }
+            });
+            return;
+        }
         if ("browser.open".equals(method)) { openBrowser(id, request, args); return; }
         if ("share.environment".equals(method) || "share.text".equals(method)) {
             main.post(() -> {
