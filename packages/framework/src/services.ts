@@ -17,7 +17,7 @@ export class HostServiceError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = "HostServiceError"; }
 }
 export interface HostOperation<T> { result: Promise<T>; cancel(): void }
-const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
+const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void; status?:(value:unknown)=>void }>();
 let nextId = 1;
 const methods: Record<string, PodCapabilityId> = {
   ...platformMethods,
@@ -47,7 +47,7 @@ const methods: Record<string, PodCapabilityId> = {
   "image.surface.open":"data.images", "image.surface.update":"data.images", "image.surface.state":"data.images", "image.surface.close":"data.images",
   "video.surface.open":"media.video", "video.surface.update":"media.video", "video.surface.state":"media.video", "video.surface.close":"media.video",
   "share.environment": "system.share", "share.text": "system.share",
-  "image.decode": "data.images", "image.decodeRegion": "data.images", "image.release": "data.images", "browser.authorize": "system.browser.auth",
+  "image.decode": "data.images", "image.decodeRegion": "data.images", "image.release": "data.images", "browser.authorize": "system.browser.auth", "browser.authorizeWithStatus": "system.browser.auth.status",
   "sql.query": "data.sqlite", "sql.execute": "data.sqlite", "sql.transaction": "data.sqlite",
   "input.text": "input.text", "secure.get": "data.secure", "secure.set": "data.secure", "secure.delete": "data.secure",
   "input.inline.open": "input.text", "input.inline.close": "input.text", "input.inline.set": "input.text",
@@ -73,7 +73,13 @@ function emit(value: unknown): void {
   host.emit(JSON.stringify(value));
 }
 __onHostEvent(event => {
-  if (event.t !== "service.result" || typeof event.id !== "number") return;
+  if (typeof event.id !== "number") return;
+  if (event.t === "browser.auth.status") {
+    const request = pending.get(event.id);
+    try { request?.status?.(event.value); } catch { /* Observers cannot break service settlement. */ }
+    return;
+  }
+  if (event.t !== "service.result") return;
   const request = pending.get(event.id);
   if (!request) return;
   pending.delete(event.id);
@@ -82,12 +88,15 @@ __onHostEvent(event => {
 });
 /** Cancellation stops delivery; a mutation already committed by the host is not undone. */
 export function hostOperation<T>(method: string, args: Record<string, unknown>): HostOperation<T> {
+  return serviceOperation(method, args);
+}
+function serviceOperation<T>(method: string, args: Record<string, unknown>, status?:(value:unknown)=>void): HostOperation<T> {
   const id = nextId++;
   const result = new Promise<T>((resolve, reject) => {
     const capability = methods[method];
     if (!capability || !hasCapability(capability)) { reject(new HostServiceError("unsupported", `Unsupported host service: ${method}`)); return; }
     if (pending.size >= 64) { reject(new HostServiceError("busy", "Too many pending host operations")); return; }
-    pending.set(id, { resolve: value => resolve(value as T), reject });
+    pending.set(id, { resolve: value => resolve(value as T), reject, status });
     try { emit({ t: "service.request", version: 1, id, method, args }); }
     catch (error) { pending.delete(id); reject(error); }
   });
@@ -95,6 +104,7 @@ export function hostOperation<T>(method: string, args: Record<string, unknown>):
     const request = pending.get(id);
     if (!request) return;
     pending.delete(id);
+    try { request.status?.({type:"cancelled"}); } catch { /* Cancellation must still settle. */ }
     request.reject(new HostServiceError("cancelled", "Operation cancelled"));
     emit({ t: "service.cancel", version: 1, id });
   } };
@@ -311,11 +321,63 @@ export const browser = {
       : hostOperation<void>("browser.openInApp", inAppBrowserArgs(url, options));
   },
 };
+export type BrowserAuthStatus =
+  | {type:"qr";kind:"login"|"secondVerify";imageBase64:string;mime:"image/png"|"image/jpeg"}
+  | {type:"qrCleared"}
+  | {type:"pageState";loading:boolean;loginPanelVisible?:boolean}
+  | {type:"verifying";active:boolean}
+  | {type:"cancelled"};
+export interface BrowserAuthOptions {
+  url:string; cookieOrigin:string; requiredCookieNames:readonly string[]; userAgent?:string;
+  /** Legacy: data-image string/null. With onStatus: also accepts an atomic status snapshot. */
+  qrExtractionScript?:string;
+  onStatus?:(status:BrowserAuthStatus)=>void;
+}
+function isBrowserAuthStatus(value:unknown):value is BrowserAuthStatus {
+  if (!value || typeof value!=="object") return false;
+  const v=value as Record<string,unknown>;
+  switch(v.type) {
+    case "qr": return (v.kind==="login"&&v.mime==="image/png"||v.kind==="secondVerify"&&v.mime==="image/jpeg")
+      && typeof v.imageBase64==="string" && v.imageBase64.length>0 && v.imageBase64.length<=256*1024
+      && v.imageBase64.length%4===0 && /^[A-Za-z0-9+/]+={0,2}$/.test(v.imageBase64);
+    case "qrCleared": case "cancelled": return true;
+    case "pageState": return typeof v.loading==="boolean" && (v.loginPanelVisible===undefined||typeof v.loginPanelVisible==="boolean");
+    case "verifying": return typeof v.active==="boolean";
+    default: return false;
+  }
+}
 export const browserAuth = {
-  authorize(args: {url:string; cookieOrigin:string; requiredCookieNames:readonly string[]; userAgent?:string}): HostOperation<{cookie:string;origin:string}> {
-    return hostOperation("browser.authorize", args as unknown as Record<string,unknown>);
+  authorize(args:BrowserAuthOptions): HostOperation<{cookie:string;origin:string}> {
+    const {onStatus,...wire}=args;
+    if(onStatus===undefined)return hostOperation("browser.authorize",wire);
+    if(typeof onStatus!=="function")throw new HostServiceError("invalid_argument","onStatus must be a function");
+    let cancelled=false;
+    return serviceOperation("browser.authorizeWithStatus",wire,value=>{
+      if(cancelled||!hasCapability("system.browser.auth.status")||!isBrowserAuthStatus(value))return;
+      if(value.type==="cancelled")cancelled=true;
+      onStatus(value);
+    });
   },
 };
+/** Read-only snapshot of the native Douyin selectors. No cookie-based auto-completion. */
+export const DOUYIN_AUTH_STATUS_SCRIPT = `(function(){
+  var verify=document.getElementById('uc-second-verify');
+  var verifying=!!verify&&verify.tagName.toLowerCase()==='div';
+  var panel=!!document.querySelector('article#douyin_login_comp_flat_panel,#douyin-login-new-id,div.douyin_login_new_class,#login-panel-new');
+  if(!panel)panel=Array.from(document.querySelectorAll('div')).some(function(d){return (d.textContent||'').trim().startsWith('登录后免费');});
+  var qr=null;
+  if(!verifying){
+    var images=Array.from(document.querySelectorAll('img[aria-label="二维码"]'));
+    ['image/jpeg','image/png'].some(function(mime){
+      var prefix='data:'+mime+';base64,';
+      var img=images.find(function(i){return (i.getAttribute('src')||'').startsWith(prefix);});
+      if(!img)return false;
+      qr={kind:mime==='image/jpeg'?'secondVerify':'login',mime:mime,imageBase64:img.getAttribute('src').slice(prefix.length)};
+      return true;
+    });
+  }
+  return {qr:qr,verifying:verifying,loading:document.readyState!=='complete',loginPanelVisible:panel};
+})()`;
 export const images = {
   decode(path:string, maxDimension=512): Promise<{path:string;width:number;height:number}> {
     return hostOperation<{path:string;width:number;height:number}>("image.decode", {path, maxDimension}).result;

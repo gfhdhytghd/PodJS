@@ -164,6 +164,7 @@ final class PodServices implements Closeable {
         AlertDialog dialog;
         Runnable timer;
         String method;
+        volatile PodBrowserAuthServices.Callback authCallback;
     }
     PodServices(Context context, Sink sink) { this.context = context; this.sink = sink; device = new PodDeviceServices(context); media = new PodMediaServices(context, event -> { if (!closed) sink.complete(event); }); video = new PodVideoServices(context); mediaSurfaces = new PodMediaSurfaceServices(context); inlineText = new PodInlineTextInput(context,event->{if(!closed)sink.complete(event);}); images = new PodImageServices(context); http = new PodHttpServices(context); byteStreams = new PodByteStreamServices(context); webSockets = new PodWebSocketServices(context,byteStreams); discovery = new PodDiscoveryServices(context); bleDiscovery = new PodBleDiscoveryServices(context); networks = new PodNetworkServices(context,event->{if(!closed)sink.complete(event);}); browser = new PodBrowserServices(context); browserAuth = new PodBrowserAuthServices(context); notificationPermission=new PodNotificationPermission(context); bluetoothPermission=new PodBluetoothPermission(context); discoveryPermission=new PodBluetoothPermission(context,0x5044,PodBleDiscoveryServices.permissions()); location=new PodLocationServices(context); }
     void notificationPermissionResult(int code,int[] results){notificationPermission.result(code,results);location.permissionResult(code);bluetoothPermission.result(code); discoveryPermission.result(code);}
@@ -287,11 +288,21 @@ final class PodServices implements Closeable {
             });
             return;
         }
-        if ("browser.authorize".equals(method)) {
-            browserAuth.authorize(args, new PodBrowserAuthServices.Callback() {
+        if ("browser.authorize".equals(method) || "browser.authorizeWithStatus".equals(method)) {
+            request.authCallback = new PodBrowserAuthServices.Callback() {
+                public boolean isActive() { return !closed && requests.get(id) == request; }
+                public void status(JSONObject value) {
+                    if (!isActive()) return;
+                    try {
+                        String event = new JSONObject().put("t", "browser.auth.status").put("id", id).put("value", value).toString();
+                        // Same main-thread queue as terminal replies: preserve status-before-result order.
+                        main.post(() -> { if (!closed) sink.complete(event); });
+                    } catch (Exception error) { throw new IllegalStateException(error); }
+                }
                 public void complete(JSONObject value) { if (requests.remove(id,request)) reply(id,true,value,null,null); }
                 public void fail(String code,String message) { if (requests.remove(id,request)) failure(id,code,message); }
-            });
+            };
+            browserAuth.authorize(args, request.authCallback, "browser.authorizeWithStatus".equals(method));
             return;
         }
         if (method.startsWith("image.")) {
@@ -578,7 +589,7 @@ final class PodServices implements Closeable {
         http.cancel(id);
         media.cancel(request.method);
         video.cancel(request.method);
-        if ("browser.authorize".equals(request.method)) browserAuth.cancel();
+        if (request.authCallback != null) browserAuth.cancel(request.authCallback);
         if("notifications.requestPermission".equals(request.method))main.post(notificationPermission::cancel);
         if("location.current".equals(request.method))main.post(location::cancel);
         if("rfcomm.requestPermission".equals(request.method))main.post(()->bluetoothPermission.cancel(id));

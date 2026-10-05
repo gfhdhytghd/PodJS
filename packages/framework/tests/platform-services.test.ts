@@ -146,3 +146,65 @@ test("embedded browser rejects invalid options and executable URLs before emitti
   }
   for (const target of Object.values(POD_TARGETS)) expect(target.capabilities.includes("system.browser.inApp")).toBe(["android-watch","wearos-watch"].includes(target.id));
 });
+
+test("authorization status fails closed on old hosts and preserves legacy wire/result", async () => {
+  const {browserAuth}=await import("../src/services.ts");
+  const previous=(globalThis as any).pod; const commands:any[]=[];let batch:string|undefined;
+  (globalThis as any).pod={capabilities:()=>JSON.stringify(["system.browser.auth"]),emit:(s:string)=>commands.push(JSON.parse(s)),takeEvents:()=>{const b=batch;batch=undefined;return b;}};
+  const args={url:"https://www.douyin.com/chat",cookieOrigin:"https://www.douyin.com",requiredCookieNames:["sessionid"]};
+  try {
+    await expect(browserAuth.authorize({...args,onStatus:()=>{}}).result).rejects.toMatchObject({code:"unsupported"});
+    expect(commands).toEqual([]);
+    const op=browserAuth.authorize(args);
+    expect(commands[0]).toMatchObject({method:"browser.authorize",args});
+    const value={cookie:"sessionid=test",origin:args.cookieOrigin};
+    batch=JSON.stringify([{t:"service.result",id:commands[0].id,ok:true,value}]);__pumpPodEvents();
+    expect(await op.result).toEqual(value);
+    for(const target of Object.values(POD_TARGETS))expect(target.capabilities.includes("system.browser.auth.status")).toBe(["android-watch","wearos-watch"].includes(target.id));
+  } finally {(globalThis as any).pod=previous;}
+});
+
+test("authorization statuses are request-scoped, validated and stop at cancellation or settlement", async () => {
+  const {browserAuth}=await import("../src/services.ts");
+  const previous=(globalThis as any).pod;const commands:any[]=[];let batch:string|undefined;
+  (globalThis as any).pod={capabilities:()=>JSON.stringify(["system.browser.auth.status"]),emit:(s:string)=>commands.push(JSON.parse(s)),takeEvents:()=>{const b=batch;batch=undefined;return b;}};
+  const events:any[]=[]; const args={url:"https://www.douyin.com/chat",cookieOrigin:"https://www.douyin.com",requiredCookieNames:[]};
+  const pump=(values:any[])=>{batch=JSON.stringify(values);__pumpPodEvents();};
+  try {
+    const op=browserAuth.authorize({...args,onStatus:v=>events.push(v)});const id=commands.at(-1).id;
+    expect(commands.at(-1)).toMatchObject({method:"browser.authorizeWithStatus",args});
+    expect(commands.at(-1).args).not.toHaveProperty("onStatus");
+    const qr={type:"qr",kind:"login",mime:"image/png",imageBase64:"cXI="};
+    const second={...qr,kind:"secondVerify",mime:"image/jpeg"};
+    const status=(value:any,eventId=id)=>({t:"browser.auth.status",id:eventId,value});
+    pump([status(qr,id+100),status({...qr,mime:"text/plain"}),status({...qr,imageBase64:"bad!"}),status({...qr,imageBase64:"A".repeat(256*1024+4)}),status({type:"pageState",loading:"yes"})]);
+    expect(events).toEqual([]);
+    const sequence=[{type:"pageState",loading:false,loginPanelVisible:true},qr,{type:"verifying",active:true},{type:"qrCleared"},{type:"verifying",active:false},second];
+    pump(sequence.map(v=>status(v)));expect(events).toEqual(sequence);
+    const other=browserAuth.authorize({...args,onStatus:()=>{throw Error("observer");}});const otherId=commands.at(-1).id;
+    pump([status(qr,otherId),{t:"service.result",id:otherId,ok:false,code:"busy",message:"busy"}]);
+    await expect(other.result).rejects.toMatchObject({code:"busy"});
+    op.cancel();op.cancel();await expect(op.result).rejects.toMatchObject({code:"cancelled"});
+    expect(events.at(-1)).toEqual({type:"cancelled"});const count=events.length;
+    pump([status(second),status({type:"cancelled"}),{t:"service.result",id,ok:true,value:{cookie:"late"}}]);expect(events.length).toBe(count);
+    for(const ok of [true,false]){
+      const done=browserAuth.authorize({...args,onStatus:v=>events.push(v)});const doneId=commands.at(-1).id;
+      pump([...(ok?[]:[status({type:"cancelled"},doneId)]),{t:"service.result",id:doneId,ok,value:{cookie:"test",origin:args.cookieOrigin},code:"cancelled",message:"cancelled"},status(qr,doneId)]);
+      if(ok)expect(await done.result).toMatchObject({cookie:"test"});else await expect(done.result).rejects.toMatchObject({code:"cancelled"});
+      const endCount=events.length;done.cancel();pump([status(qr,doneId)]);expect(events.length).toBe(endCount);
+    }
+  } finally {(globalThis as any).pod=previous;}
+});
+
+test("native Douyin snapshot prioritizes JPEG, reveals uc-second-verify and clears vanished QR", async () => {
+  const {DOUYIN_AUTH_STATUS_SCRIPT}=await import("../src/services.ts");
+  let verifying=false,panel=true,images:string[]=[];
+  const document={readyState:"complete",getElementById:()=>verifying?{tagName:"DIV"}:null,
+    querySelector:()=>panel?{}:null,querySelectorAll:(selector:string)=>selector==="div"?[]:images.map(src=>({getAttribute:()=>src}))};
+  const snapshot=()=>new Function("document",`return ${DOUYIN_AUTH_STATUS_SCRIPT}`)(document);
+  images=["data:image/png;base64,cG5n"];expect(snapshot().qr).toEqual({kind:"login",mime:"image/png",imageBase64:"cG5n"});
+  images.push("data:image/jpeg;base64,anBlZw==");expect(snapshot().qr.kind).toBe("secondVerify");
+  verifying=true;expect(snapshot()).toMatchObject({qr:null,verifying:true,loginPanelVisible:true});
+  verifying=false;expect(snapshot().qr.kind).toBe("secondVerify");
+  images=[];panel=false;expect(snapshot()).toEqual({qr:null,verifying:false,loading:false,loginPanelVisible:false});
+});

@@ -292,7 +292,8 @@ fn mount_pod(
                     let mut retained = VecDeque::new();
                     for event in b.events.drain(..) {
                         if serde_json::from_str::<Value>(&event)
-                            .is_ok_and(|value| value.get("t").and_then(Value::as_str) == Some("service.result"))
+                            .is_ok_and(|value| matches!(value.get("t").and_then(Value::as_str),
+                                Some("service.result" | "browser.auth.status")))
                         {
                             results.push(event);
                         } else {
@@ -1964,7 +1965,10 @@ mod tests {
             json!({"t":"future.event"}),
             json!({"t":7}),
         ];
+        // Authorization status must precede its result even when no UI frame runs.
         let results = vec![
+            json!({"t":"browser.auth.status","id":1,"value":{"type":"qr","kind":"login","mime":"image/png","imageBase64":"cXI="}}),
+            json!({"t":"browser.auth.status","id":1,"value":{"type":"cancelled"}}),
             json!({"t":"service.result","id":1,"ok":true,"value":11}),
             json!({"t":"service.result","id":2,"ok":false,"code":"test"}),
         ];
