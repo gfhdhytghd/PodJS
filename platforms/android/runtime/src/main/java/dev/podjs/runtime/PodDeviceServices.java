@@ -144,9 +144,15 @@ public final class PodDeviceServices implements AutoCloseable {
     }
     private JSONObject readSecure() throws Exception {
         if (!secureFile.isFile()) return new JSONObject();
-        byte[] all = readAll(secureFile, MAX_CHUNK_BYTES + 64);
-        if (all.length < 13) throw new IOException("secure_store_corrupt");
-        return new JSONObject(new String(decryptWithKey(getKey(SECURE_ALIAS), all), StandardCharsets.UTF_8));
+        return readSecureFile(secureFile, getKey(SECURE_ALIAS));
+    }
+    /** Shared production decoder for private candidate verification; does not open/create aliases. */
+    static JSONObject readSecureFile(File file, SecretKey key) throws Exception {
+        return decodeSecureBytes(readAll(file, MAX_CHUNK_BYTES + 64), key);
+    }
+    static JSONObject decodeSecureBytes(byte[] all, SecretKey key) throws Exception {
+        if (all.length < 28 || all.length > MAX_CHUNK_BYTES + 64) throw new IOException("secure_store_corrupt");
+        return new JSONObject(new String(decryptWithKey(key, all), StandardCharsets.UTF_8));
     }
     private void writeSecure(JSONObject values) throws Exception {
         byte[] encrypted = encryptWithKey(getKey(SECURE_ALIAS), values.toString().getBytes(StandardCharsets.UTF_8));
