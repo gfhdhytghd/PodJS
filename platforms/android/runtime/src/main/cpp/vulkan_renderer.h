@@ -36,6 +36,20 @@ class VulkanRenderer {
   // Canonical path: decode and rasterize the DrawList directly on the GPU.
   bool submitDrawList(PodRuntime* runtime, const PodDrawList& list);
 
+  struct SubmitPerf {
+    double decodeMs{};
+    double uploadFenceMs{};
+    double uploadMs{};
+    double frameFenceMs{};
+    double acquireMs{};
+    double recordMs{};
+    double queueSubmitMs{};
+    double presentWaitMs{};
+    uint64_t uploadBytes{};
+    uint32_t uploadCount{};
+  };
+  const SubmitPerf& lastSubmitPerf() const { return lastSubmitPerf_; }
+
   // Private host diagnostics; disabled by default and never exposed to guests.
   using DiagnosticsScope = podjs_gpu::RendererTimingRecorder::Scope;
   bool beginRendererTiming(uint32_t capacity) { return diagnostics_.begin(capacity); }
@@ -148,4 +162,5 @@ class VulkanRenderer {
   std::unordered_map<uint64_t, TextureResource> textureCache_;
   std::unordered_set<std::string> loggedGpuFailures_;
   podjs_gpu::RendererTimingRecorder diagnostics_;
+  SubmitPerf lastSubmitPerf_{};
 };

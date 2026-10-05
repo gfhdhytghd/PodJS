@@ -48,6 +48,7 @@ public final class PodDeviceServices implements AutoCloseable {
     private static final String SECURE_ALIAS = "podjs.secure.v1";
     private static final String CRYPTO_ALIAS = "podjs.crypto.v1";
     private static final String SECURE_FILE = "secure.store";
+    private static final Object SECURE_LOCK = new Object();
     private static final byte[] AAD = "PodJS-device-services-v1".getBytes(StandardCharsets.UTF_8);
 
     private final File root;
@@ -70,9 +71,7 @@ public final class PodDeviceServices implements AutoCloseable {
         if (closed) throw new IllegalStateException("service_closed");
         if (method == null || args == null) throw new IllegalArgumentException("method_and_args_required");
         switch (method) {
-            case "secure.get": return secureGet(args);
-            case "secure.set": return secureSet(args);
-            case "secure.delete": return secureDelete(args);
+            case "secure.get": case "secure.set": case "secure.delete": return secureOperation(method,args);
             case "crypto.ecdhPublicKey": return ecdhPublicKey(args);
             case "crypto.ecdhUnwrap": return ecdhUnwrap(args);
             case "crypto.hkdfSha256": return new JSONObject().put("keyBase64", enc(PodCloudCrypto.hkdf(decode(args,"inputBase64"),decode(args,"saltBase64"),decode(args,"infoBase64"))));
@@ -127,6 +126,18 @@ public final class PodDeviceServices implements AutoCloseable {
         } catch (Exception ignored) { }
     }
 
+    // Foreground and background own separate service instances. Reload/update
+    // the encrypted map under an OS lock so unrelated keys cannot be lost.
+    private JSONObject secureOperation(String method,JSONObject args) throws Exception {
+        synchronized(SECURE_LOCK){
+            try(java.io.RandomAccessFile file=new java.io.RandomAccessFile(new File(secureFile.getParentFile(),"secure.store.lock"),"rw");
+                java.nio.channels.FileLock lock=file.getChannel().lock()){
+                if("secure.get".equals(method))return secureGet(args);
+                if("secure.set".equals(method))return secureSet(args);
+                return secureDelete(args);
+            }
+        }
+    }
     private JSONObject secureGet(JSONObject a) throws Exception {
         JSONObject values = readSecure(); String key = required(a, "key");
         JSONObject out = new JSONObject(); out.put("exists", values.has(key));
@@ -362,7 +373,7 @@ public final class PodDeviceServices implements AutoCloseable {
         File source=safeFile(required(a,"path"));
         if (!source.isFile()) throw new IOException("file_not_found");
         long maximum=exactFileSize(a,"maxOutputBytes");
-        if (maximum > 32L*1024*1024) throw new IllegalArgumentException("invalid_max_output_bytes");
+        if (maximum > 64L*1024*1024) throw new IllegalArgumentException("invalid_max_output_bytes");
         String directory=root.toPath().relativize(source.getParentFile().toPath()).toString();
         if (directory.isEmpty()) directory="transcode";
         JSONObject temporary=fileCreateTemp(new JSONObject().put("directory",directory));

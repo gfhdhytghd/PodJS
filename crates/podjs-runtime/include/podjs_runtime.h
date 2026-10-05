@@ -232,6 +232,24 @@ typedef struct PodPakStats {
   uint32_t loaded_font_slots;
 } PodPakStats;
 int32_t pod_runtime_pak_stats(PodRuntime *runtime, PodPakStats *out);
+typedef struct PodRuntimePerfStats {
+  uint32_t struct_size;
+  uint32_t loaded_font_slots;
+  uint32_t pending_font_slots;
+  int32_t last_font_slot;
+  int32_t last_font_async;
+  uint32_t loaded_images;
+  uint64_t frame_number;
+  uint64_t guest_micros;
+  uint64_t surface_tick_micros;
+  uint64_t snapshot_micros;
+  uint64_t resource_generation;
+  uint64_t total_font_load_micros;
+  uint64_t last_font_load_micros;
+  uint64_t total_image_load_micros;
+  uint64_t last_image_load_micros;
+} PodRuntimePerfStats;
+int32_t pod_runtime_perf_stats(PodRuntime *runtime, PodRuntimePerfStats *out);
 int32_t pod_runtime_validate_package(PodRuntime *runtime, const char *manifest_json);
 int32_t pod_runtime_eval_bundle(PodRuntime *runtime, const uint8_t *source, size_t length,
                                 const char *label);
@@ -313,6 +331,11 @@ int32_t pod_runtime_complete_http(PodRuntime *runtime, int32_t handle, uint32_t 
                                   const uint8_t *body, size_t body_length);
 int32_t pod_runtime_fail_http(PodRuntime *runtime, int32_t handle,
                               const char *code, const char *message);
+
+/* Physical pixels and physical pixels/second, from Android ViewConfiguration.
+ * Call before evaluating the guest bundle. Does not change ABI struct layouts. */
+int32_t pod_runtime_set_scroll_configuration(PodRuntime *runtime, float touch_slop,
+                                            float min_fling, float max_fling);
 
 const char *pod_runtime_receipt(PodRuntime *runtime);
 void pod_runtime_destroy(PodRuntime *runtime);

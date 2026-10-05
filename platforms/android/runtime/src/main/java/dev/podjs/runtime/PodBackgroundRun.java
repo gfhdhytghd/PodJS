@@ -56,7 +56,7 @@ public final class PodBackgroundRun implements AutoCloseable {
     public synchronized boolean reply(JSONObject response) {
         if (closed || handle==0) return false;
         byte[] bytes=response.toString().getBytes(StandardCharsets.UTF_8);
-        if (bytes.length>70*1024) throw new IllegalArgumentException("Background reply too large");
+        if (bytes.length>1024*1024) throw new IllegalArgumentException("Background reply too large");
         int result=nativeReply(handle,bytes);
         if (result==-1) throw new IllegalArgumentException("Invalid background reply");
         return result==0;

@@ -24,6 +24,7 @@ const methods: Record<string, PodCapabilityId> = {
   "app.finishTask": "host.lifecycle",
   "takeover.status": "host.takeover",
   "app.buildInfo": "host.lifecycle",
+  "cloud.schedule":"host.lifecycle", "cloud.cancel":"host.lifecycle", "cloud.acquire":"host.lifecycle", "cloud.release":"host.lifecycle",
   "debug.performance.start": "host.lifecycle", "debug.performance.read": "host.lifecycle", "debug.performance.stop": "host.lifecycle",
   "app.activityState.read": "host.lifecycle", "app.activityState.write": "host.lifecycle",
   "rfcomm.requestPermission": "net.rfcomm", "rfcomm.status": "net.rfcomm", "rfcomm.listen": "net.rfcomm", "rfcomm.accept": "net.rfcomm", "rfcomm.close": "net.rfcomm",
@@ -587,7 +588,7 @@ export const webSockets = {
 };
 
 /** Bounded IPv4 mDNS lookup; callers authenticate any discovered endpoint. */
-export interface NetworkSnapshot {active:boolean;internet:boolean;validated:boolean;wifi:boolean;cellular:boolean;bluetooth:boolean}
+export interface NetworkSnapshot {metered?:boolean;active:boolean;internet:boolean;validated:boolean;wifi:boolean;cellular:boolean;bluetooth:boolean}
 export const discovery = {
  networkSnapshot:()=>hostOperation<NetworkSnapshot>("discovery.networkSnapshot",{}).result,
  requestPermission:()=>hostOperation<"granted"|"required">("discovery.requestPermission",{}).result,

@@ -4,6 +4,7 @@
 #include <vulkan/vulkan_android.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <limits>
 #include <string>
@@ -704,9 +705,16 @@ bool VulkanRenderer::createTextureResource(const GpuImage& source, uint64_t key,
 }
 
 bool VulkanRenderer::uploadImages(const std::vector<GpuImage>& frameImages) {
+  const auto uploadBegan = std::chrono::steady_clock::now();
+  lastSubmitPerf_.uploadBytes = 0;
+  lastSubmitPerf_.uploadCount = 0;
   if (vkWaitForFences(device_, 1, &fence_, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
     return logFailure("Waiting for Vulkan upload fence failed");
   }
+  const auto uploadFenceDone = std::chrono::steady_clock::now();
+  lastSubmitPerf_.uploadFenceMs =
+      std::chrono::duration<double, std::milli>(uploadFenceDone - uploadBegan)
+          .count();
 
   GpuImage white{};
   white.width = 1;
@@ -772,7 +780,12 @@ bool VulkanRenderer::uploadImages(const std::vector<GpuImage>& frameImages) {
     stagingBytes += expected;
     pendingTextureBytes += expected;
   }
-  if (pending.empty()) return true;
+  if (pending.empty()) {
+    lastSubmitPerf_.uploadMs = 0;
+    return true;
+  }
+  lastSubmitPerf_.uploadBytes = pendingTextureBytes;
+  lastSubmitPerf_.uploadCount = static_cast<uint32_t>(pending.size());
 
   size_t cachedTextureBytes = 0;
   for (const auto& entry : textureCache_) {
@@ -882,6 +895,8 @@ bool VulkanRenderer::uploadImages(const std::vector<GpuImage>& frameImages) {
   for (const Pending& upload : pending) {
     textureCache_.at(upload.key).ready = true;
   }
+  lastSubmitPerf_.uploadMs = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - uploadFenceDone).count();
   return true;
 }
 
@@ -899,11 +914,18 @@ VulkanRenderer::TextureResource* VulkanRenderer::textureForPrimitive(
 
 bool VulkanRenderer::acquireFrame(uint32_t* imageIndex) {
   if (!valid_ || !imageIndex) return false;
+  const auto fenceBegan = std::chrono::steady_clock::now();
   VkResult result =
       vkWaitForFences(device_, 1, &fence_, VK_TRUE, UINT64_MAX);
+  const auto fenceDone = std::chrono::steady_clock::now();
+  lastSubmitPerf_.frameFenceMs =
+      std::chrono::duration<double, std::milli>(fenceDone - fenceBegan).count();
   if (result != VK_SUCCESS) return logVkFailure("vkWaitForFences(frame)", result);
   result = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, acquired_,
                                  VK_NULL_HANDLE, imageIndex);
+  const auto acquireDone = std::chrono::steady_clock::now();
+  lastSubmitPerf_.acquireMs =
+      std::chrono::duration<double, std::milli>(acquireDone - fenceDone).count();
   if (result == VK_ERROR_OUT_OF_DATE_KHR ||
       result == VK_ERROR_SURFACE_LOST_KHR) {
     return rebuildSurfaceAfterError("vkAcquireNextImageKHR", result);
@@ -969,7 +991,11 @@ bool VulkanRenderer::submitAndPresent(uint32_t imageIndex,
   submit.signalSemaphoreCount = 1;
   submit.pSignalSemaphores = &rendered;
   vkResetFences(device_, 1, &fence_);
+  const auto submitBegan = std::chrono::steady_clock::now();
   VkResult result = vkQueueSubmit(queue_, 1, &submit, fence_);
+  const auto submitDone = std::chrono::steady_clock::now();
+  lastSubmitPerf_.queueSubmitMs =
+      std::chrono::duration<double, std::milli>(submitDone - submitBegan).count();
   if (result != VK_SUCCESS) {
     recreateFrameFenceSignaled();
     return logVkFailure("vkQueueSubmit(frame)", result);
@@ -980,7 +1006,12 @@ bool VulkanRenderer::submitAndPresent(uint32_t imageIndex,
   present.swapchainCount = 1;
   present.pSwapchains = &swapchain_;
   present.pImageIndices = &imageIndex;
+  const auto presentBegan = std::chrono::steady_clock::now();
   result = vkQueuePresentKHR(queue_, &present);
+  lastSubmitPerf_.presentWaitMs = std::chrono::duration<double, std::milli>(
+                                      std::chrono::steady_clock::now() -
+                                      presentBegan)
+                                      .count();
   if (result == VK_ERROR_OUT_OF_DATE_KHR ||
       result == VK_ERROR_SURFACE_LOST_KHR) {
     return rebuildSurfaceAfterError("vkQueuePresentKHR", result);
@@ -1016,6 +1047,7 @@ bool VulkanRenderer::submitRgba(const uint8_t* pixels, size_t byteLength,
   }
   uint32_t imageIndex = 0;
   if (!acquireFrame(&imageIndex)) return false;
+  const auto recordBegan = std::chrono::steady_clock::now();
   if (!ensureStagingCapacity(byteLength)) return false;
   std::memcpy(stagingMapped_, pixels, byteLength);
 
@@ -1050,6 +1082,9 @@ bool VulkanRenderer::submitRgba(const uint8_t* pixels, size_t byteLength,
                        nullptr, 1, &rasterToBlit);
   if (!appendSwapchainBlit(command, imageIndex)) return false;
   POD_VK(vkEndCommandBuffer(command));
+  lastSubmitPerf_.recordMs = std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - recordBegan)
+                                 .count();
   if (!submitAndPresent(imageIndex, VK_PIPELINE_STAGE_TRANSFER_BIT)) return false;
   lastHash_ = contentHash;
   return true;
@@ -1058,12 +1093,17 @@ bool VulkanRenderer::submitRgba(const uint8_t* pixels, size_t byteLength,
 bool VulkanRenderer::submitDrawList(PodRuntime* runtime,
                                     const PodDrawList& list) {
   if (!valid_ || list.content_hash == lastHash_) return false;
+  lastSubmitPerf_ = {};
+  const auto submitBegan = std::chrono::steady_clock::now();
   GpuFrame frame;
   std::string decodeError;
   if (!decodeGpuDrawList(runtime, list, kRasterScale, &frame, &decodeCache_,
                          &decodeError)) {
     return gpuFailureOnce("decode failed: " + decodeError);
   }
+  const auto decoded = std::chrono::steady_clock::now();
+  lastSubmitPerf_.decodeMs =
+      std::chrono::duration<double, std::milli>(decoded - submitBegan).count();
   if (frame.roundedClips.size() > kRoundedClipCapacity) {
     return gpuFailureOnce("rounded clip table exceeds Vulkan buffer capacity");
   }
@@ -1094,6 +1134,7 @@ bool VulkanRenderer::submitDrawList(PodRuntime* runtime,
 
   uint32_t imageIndex = 0;
   if (!acquireFrame(&imageIndex)) return false;
+  const auto recordBegan = std::chrono::steady_clock::now();
   auto* clipData = static_cast<podjs_gpu::RoundedClipData*>(clipMapped_);
   for (size_t i = 0; i < frame.roundedClips.size(); ++i) {
     clipData[i] = podjs_gpu::makeRoundedClipData(frame.roundedClips[i]);
@@ -1154,6 +1195,9 @@ bool VulkanRenderer::submitDrawList(PodRuntime* runtime,
   vkCmdEndRenderPass(command);
   if (!appendSwapchainBlit(command, imageIndex)) return false;
   POD_VK(vkEndCommandBuffer(command));
+  lastSubmitPerf_.recordMs = std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - recordBegan)
+                                 .count();
   if (!submitAndPresent(imageIndex, VK_PIPELINE_STAGE_TRANSFER_BIT)) {
     return false;
   }

@@ -22,18 +22,21 @@ struct ClearPending<'js>(Rc<RefCell<Vec<Pending<'js>>>>);
 impl Drop for ClearPending<'_> { fn drop(&mut self) { self.0.borrow_mut().clear(); } }
 struct CancelServices(Cancellation);
 fn attach_services<'js>(ctx: Ctx<'js>, job: &Object<'js>, waiting: Rc<RefCell<Vec<Pending<'js>>>>, services: Services, app: String, task: String, deadline: Instant, service_cancel: Cancellation) -> rquickjs::Result<()> {
+    let cloud=services.allowed_methods.contains("debug.cloudHost");
+    let max_calls=if cloud {100_000} else {32};
+    let max_bytes=if cloud {1024*1024} else {64*1024};
     let calls=Rc::new(RefCell::new(0usize));
     job.set("request",Function::new(ctx.clone(),move |ctx: Ctx<'js>, method: String, args: Value<'js>| {
         let (promise,resolve,reject)=Promise::new(&ctx)?;
         let failure=if !services.allowed_methods.contains(&method) { Some("permission_denied") }
-            else if *calls.borrow()>=32 || waiting.borrow().len()>=16 { Some("service_quota_exceeded") }
+            else if *calls.borrow()>=max_calls || waiting.borrow().len()>=16 { Some("service_quota_exceeded") }
             else if Instant::now()>=deadline || service_cancel.is_cancelled() { Some("cancelled") }
             else { None };
         if let Some(code)=failure { reject.call::<_,()>((code,))?; return Ok::<_,rquickjs::Error>(promise); }
         let encoded=ctx.json_stringify(args)?.ok_or(rquickjs::Error::Unknown)?.to_string()?;
-        if encoded.len()>64*1024 { reject.call::<_,()>(("request_too_large",))?; return Ok(promise); }
+        if encoded.len()>max_bytes { reject.call::<_,()>(("request_too_large",))?; return Ok(promise); }
         // JSON serialization can call guest toJSON and reenter request.
-        if *calls.borrow()>=32 || waiting.borrow().len()>=16 {
+        if *calls.borrow()>=max_calls || waiting.borrow().len()>=16 {
             reject.call::<_,()>(("service_quota_exceeded",))?; return Ok(promise);
         }
         *calls.borrow_mut()+=1;
@@ -78,8 +81,9 @@ pub fn run(source: &str, options: Options<'_>, cancel: Cancellation) -> RunResul
 pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellation, services: Option<Services>) -> RunResult {
     let started = Instant::now();
     let finish = |status, code| RunResult { status, code, elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64 };
-    if !valid_id(options.app_id) || !valid_id(options.task_id) || !(1..=30_000).contains(&options.budget_ms)
-        || !(4*1024*1024..=32*1024*1024).contains(&options.memory_bytes) || source.len() > 1024*1024 || options.payload_json.len() > 64*1024 {
+    let cloud=services.as_ref().is_some_and(|s| s.allowed_methods.contains("debug.cloudHost"));
+    if !valid_id(options.app_id) || !valid_id(options.task_id) || !(1..=if cloud {300_000} else {30_000}).contains(&options.budget_ms)
+        || !(4*1024*1024..=if cloud {256*1024*1024} else {32*1024*1024}).contains(&options.memory_bytes) || source.len() > 1024*1024 || options.payload_json.len() > 64*1024 {
         return finish(Status::Failure,"invalid_options");
     }
     let active = ACTIVE.get_or_init(|| Mutex::new(HashSet::new()));
@@ -149,7 +153,7 @@ pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellatio
                 drop(waiting);
                 for (request,reply) in replies {
                     match reply {
-                        Ok(json) if json.len()<=64*1024=>match ctx.json_parse(json) {
+                        Ok(json) if json.len()<=if cloud {1024*1024} else {64*1024}=>match ctx.json_parse(json) {
                             Ok(value)=>request.resolve.call::<_,()>((value,)).map_err(|_| "service_reply_failed")?,
                             Err(_)=>{ let _=ctx.catch(); request.reject.call::<_,()>(("invalid_service_reply",)).map_err(|_| "service_reply_failed")?; },
                         },
@@ -175,6 +179,15 @@ pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellatio
 mod tests {
     use super::*;
     fn options(app: &str) -> Options<'_> { Options { app_id:app,task_id:"refresh",budget_ms:100,memory_bytes:8*1024*1024,payload_json:"null" } }
+    #[test] fn cloud_profile_is_explicit_and_preserves_default_budgets() {
+        let source="globalThis.backgroundHandler=async c=>{for(let i=0;i<40;i++){const v=await c.request('debug.cloudHost',{method:'file.read',args:{}});if(v.length!==100000)return 'failure'}try{await c.request('ui.draw',{});return 'failure'}catch(e){return e==='permission_denied'?'success':'failure'}}";
+        let make=|| Services {allowed_methods:HashSet::from(["debug.cloudHost".into()]),dispatch:Arc::new(|_| {
+            let (send,receive)=std::sync::mpsc::channel();send.send(Ok(serde_json::to_string(&"x".repeat(100000)).unwrap())).unwrap();receive
+        })};
+        let config=Options {app_id:"cloud-profile",task_id:"cloud",budget_ms:300000,memory_bytes:256*1024*1024,payload_json:"null"};
+        let denied=run(source,Options {..config},Cancellation::default());assert_eq!(denied.code,"invalid_options");
+        let result=run_with_services(source,config,Cancellation::default(),Some(make()));assert_eq!(result.code,"completed");assert!(matches!(result.status,Status::Success));
+    }
     #[test] fn approved_async_requests_complete_and_bind_host_identity() {
         let services=Services {allowed_methods:HashSet::from(["kv.get".into()]),dispatch:Arc::new(|request| {
             assert_eq!(request.app_id,"async"); assert_eq!(request.task_id,"refresh");

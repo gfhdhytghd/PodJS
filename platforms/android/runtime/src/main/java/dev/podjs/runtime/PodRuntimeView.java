@@ -59,29 +59,58 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private int lifecycleState;
     private final ExecutorService network = Executors.newCachedThreadPool();
     private final Map<Integer, HttpURLConnection> requests = new ConcurrentHashMap<>();
+    private final FrameTimingWindow javaFramePerf = new FrameTimingWindow();
     private final Choreographer.FrameCallback frameCallback = new Choreographer.FrameCallback() {
         @Override public void doFrame(long frameTime) {
             if (host != 0 && active) {
+                long frameBegan = android.os.SystemClock.elapsedRealtimeNanos();
                 boolean enabled = accessibility.enabled();
                 if (enabled != accessibilityEnabled) {
                     nativeAccessibilityEnabled(host, enabled); accessibilityEnabled = enabled;
                     if (!enabled) accessibility.clear();
                 }
-                nativeFrame(host);
+                nativeFrame(host, frameTime);
+                long nativeDone = android.os.SystemClock.elapsedRealtimeNanos();
                 if (enabled) {
                     byte[] semantics = nativeAccessibilitySnapshot(host, accessibilityMetadata);
                     if (semantics != null) accessibility.update(semantics, accessibilityMetadata);
                 }
+                long accessibilityDone = android.os.SystemClock.elapsedRealtimeNanos();
                 if (!firstFrameLogged) {
                     firstFrameLogged = true;
                     android.util.Log.i("PodJSPerf", "firstMainFrameMs=" + (android.os.SystemClock.elapsedRealtime() - surfaceBegan));
                 }
                 drainHostEffects(true);
+                long effectsDone = android.os.SystemClock.elapsedRealtimeNanos();
                 services.pumpNotifications();
+                long frameDone = android.os.SystemClock.elapsedRealtimeNanos();
+                FrameTimingWindow.Snapshot window = javaFramePerf.add(
+                        frameBegan, nativeDone, accessibilityDone, effectsDone, frameDone);
+                if (window != null) {
+                    android.util.Log.i("PodJSPerf", "javaFrameWindow windowMs="
+                        + nanosToMs(window.windowNanos) + " frames=" + window.frames
+                        + " p50/p95/maxMs callbackTotal=" + distributionMs(window.callbackTotal)
+                        + " native=" + distributionMs(window.nativeFrame)
+                        + " accessibility=" + distributionMs(window.accessibility)
+                        + " effects=" + distributionMs(window.effects)
+                        + " notifications=" + distributionMs(window.notifications));
+                }
+                if (frameDone - frameBegan >= 50_000_000L) {
+                    android.util.Log.i("PodJSPerf", "javaFrame totalMs=" + ((frameDone-frameBegan)/1_000_000.0)
+                        + " nativeMs=" + ((nativeDone-frameBegan)/1_000_000.0)
+                        + " accessibilityMs=" + ((accessibilityDone-nativeDone)/1_000_000.0)
+                        + " effectsMs=" + ((effectsDone-accessibilityDone)/1_000_000.0)
+                        + " notificationsMs=" + ((frameDone-effectsDone)/1_000_000.0));
+                }
             }
             if (active) Choreographer.getInstance().postFrameCallback(this);
         }
     };
+
+    private static double nanosToMs(long nanos) { return nanos / 1_000_000.0; }
+    private static String distributionMs(FrameTimingWindow.Distribution value) {
+        return nanosToMs(value.p50) + "/" + nanosToMs(value.p95) + "/" + nanosToMs(value.max);
+    }
 
     private void drainHostEffects(boolean foreground) {
         String effect;
@@ -247,13 +276,17 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         final int generation = ++bootGeneration;
         final AssetManager assets = getContext().getAssets();
         final float density = getResources().getDisplayMetrics().density;
+        final android.view.ViewConfiguration inputConfig = android.view.ViewConfiguration.get(getContext());
+        final int touchSlop = inputConfig.getScaledTouchSlop();
+        final int minFling = inputConfig.getScaledMinimumFlingVelocity();
+        final int maxFling = inputConfig.getScaledMaximumFlingVelocity();
         final String dataPath = data.getAbsolutePath();
         try {
             boot.execute(() -> {
                 long candidate = 0;
                 Throwable failure = null;
                 try {
-                    candidate = nativeCreate(bootSurface, targetId, width, height, density, dataPath);
+                    candidate = nativeCreate(bootSurface, targetId, width, height, density, touchSlop, minFling, maxFling, dataPath);
                     if (candidate == 0) throw new IllegalStateException("PodJS native host creation failed");
                     nativeBootAssets(candidate, assets);
                 } catch (RuntimeException | Error error) {
@@ -545,14 +578,14 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private static native void nativeNavigationState(long host, boolean canGoBack);
     private static native boolean nativeCanGoBack(long host);
     private static native void nativeBootAssets(long host, AssetManager assets);
-    private static native long nativeCreate(Surface surface, String target, int width, int height, float density, String dataDir);
+    private static native long nativeCreate(Surface surface, String target, int width, int height, float density, int touchSlop, int minFling, int maxFling, String dataDir);
     private static native void nativeBoot(long host, byte[] pak, byte[] js, byte[] manifest);
     private static native void nativeResize(long host, Surface surface, int width, int height);
     private static native void nativeDetachSurface(long host);
     private static native void nativeInput(long host, int[] ids, float[] xy, int count, int rotaryMilliDegrees);
     private static native void nativePumpServices(long host);
     private static native void nativePumpServiceResults(long host);
-    private static native void nativeFrame(long host);
+    private static native void nativeFrame(long host, long frameTimeNanos);
     private static native boolean nativeBeginRendererTiming(long host,int capacity);
     private static native long[] nativeEndRendererTiming(long host);
     private static native int nativeMediaTexture(long host,int handle,int[] argb,int width,int height,boolean linear);
