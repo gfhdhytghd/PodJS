@@ -87,9 +87,19 @@ public final class FileTakeoverTest {
         // Native recovers a missing account key to logged-out; preserve source and publish other data.
         File account=fixture();StoreTest.xml(account,"watchrss_account_state","<string name=\"state_json\">synthetic-invalid</string>");File target=root();StoreTest.Crypto badCrypto=new StoreTest.Crypto();badCrypto.unavailable=true;
         p=new PodTakeoverCoordinator(target,probe,composite(account,b->{},badCrypto)).run();check(p.getProperty("phase").equals("ACTIVE"),"native reauth fallback");check(new File(target,"active").exists(),"other data published");StoreTest.remove(account);StoreTest.remove(target);
-        for(String path:new String[]{"files/imports/book.txt","files/watch-cloud-cache/snapshot","files/article_content/fixture.txt","files/bili-smoke-user.preferences_pb","files/other-00000000-0000-0000-0000-000000000000.preferences_pb","files/profileinstaller_profileWrittenFor_lastUpdateTime.dat","files/bili-smoke-00000000-0000-0000-0000-000000000000.preferences_pb"}) {
+        for(String path:new String[]{"files/imports/book.txt","files/watch-cloud-cache/snapshot","files/article_content/fixture.txt","files/bili-smoke-user.preferences_pb","files/other-00000000-0000-0000-0000-000000000000.preferences_pb","files/profileinstaller_profileWrittenFor_lastUpdateTime.dat"}) {
             File s=fixture();if(path.endsWith("fixture.txt"))Files.delete(new File(s,path).toPath());else StoreTest.write(new File(s,path),new byte[]{1});target=root();p=run(s,target);check(p.getProperty("phase").equals("BLOCKED"),"missing/unknown/cloud blocks: "+p);check(!new File(target,"active").exists(),"no blocked pointer");StoreTest.remove(s);StoreTest.remove(target);
         }
+        // A recognized synthetic store is parsed during COPY. Malformed protobuf
+        // pauses the stage before publication, rather than producing a VERIFY blocker.
+        File malformed=fixture();
+        StoreTest.write(new File(malformed,"files/bili-smoke-00000000-0000-0000-0000-000000000000.preferences_pb"),new byte[]{1});
+        Map<String,String> malformedBefore=StoreTest.digests(malformed);
+        target=root();p=run(malformed,target);
+        check(p.getProperty("phase").equals("PAUSED")&&p.getProperty("reason").equals("stage_failed")&&p.getProperty("resumePhase").equals("COPYING"),"malformed synthetic store pauses COPY: "+p);
+        check(!new File(target,"active").exists(),"malformed synthetic store not published");
+        check(malformedBefore.equals(StoreTest.digests(malformed)),"malformed source preserved");
+        StoreTest.remove(malformed);StoreTest.remove(target);
         // Traversal and both valid/dangling links are rejected without touching their targets.
         for(String path:new String[]{"../escape","/absolute","notes/assets/../escape","notes//asset","notes/./asset","notes\\asset"})try{PodFileConverter.safe(source,path);throw new AssertionError("unsafe accepted");}catch(IOException expected){}
         File outside=Files.createTempFile("takeover-outside","").toFile();Files.writeString(outside.toPath(),"untouched");
