@@ -497,8 +497,11 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         if (whole != 0 && host != 0) nativeInput(host, new int[0], new float[0], 0, whole);
     }
 
+    @Override public void onWindowFocusChanged(boolean focused) {super.onWindowFocusChanged(focused);if(services!=null)services.acousticFocus(focused);}
+
     public void setLifecycle(int state) {
         lifecycleState=state;
+        services.acousticLifecycle(state);
         services.screenLifecycle(state==0);
         if(state!=0)services.pauseVideoForLifecycle();
         if(state!=0)companionSettingsRequested=false;

@@ -21,6 +21,9 @@ const pending = new Map<number, { resolve(value: unknown): void; reject(error: E
 let nextId = 1;
 const methods: Record<string, PodCapabilityId> = {
   ...platformMethods,
+  "acoustic.gzip":"debug.acoustic", "acoustic.gunzip":"debug.acoustic",
+  "acoustic.requestPermission":"debug.acoustic", "acoustic.pcm.open":"debug.acoustic", "acoustic.pcm.read":"debug.acoustic", "acoustic.pcm.write":"debug.acoustic", "acoustic.pcm.drain":"debug.acoustic", "acoustic.pcm.stop":"debug.acoustic",
+  "acoustic.wifi.connect":"debug.acoustic", "acoustic.wifi.request":"debug.acoustic", "acoustic.wifi.close":"debug.acoustic",
   "app.finishTask": "host.lifecycle",
   "takeover.status": "host.takeover",
   "app.buildInfo": "host.lifecycle",
@@ -666,3 +669,19 @@ export const cryptoFiles = {
   gzip(inputPath:string):Promise<CryptoFileResult> {return hostOperation<CryptoFileResult>("crypto.gzip",{inputPath}).result;},
   gunzip(inputPath:string,maxBytes:number):Promise<CryptoFileResult> {return hostOperation<CryptoFileResult>("crypto.gunzip",{inputPath,maxBytes}).result;},
 };
+
+/** Debug-only, bounded PCM16 little-endian stream. One session and one pending
+ * IO per session; read/write are pull/ack operations (4096 samples maximum).
+ * Host stops PCM on background, focus loss, cancellation or its watchdog. */
+export interface AcousticPcmSession {session:number;sampleRate:22050;chunkSamples:4096}
+export const debugAcoustic = Object.freeze({
+ requestPermission:(guided=false)=>hostOperation<'granted'|'required'>('acoustic.requestPermission',{guided}),
+ open:(mode:'record'|'play')=>hostOperation<AcousticPcmSession>('acoustic.pcm.open',{mode}),
+ read:(session:number)=>hostOperation<{pcm16Base64:string}>('acoustic.pcm.read',{session}),
+ write:(session:number,pcm16Base64:string)=>hostOperation<{samples:number}>('acoustic.pcm.write',{session,pcm16Base64}),
+ drain:(session:number)=>hostOperation<void>('acoustic.pcm.drain',{session}),
+ stop:(session:number)=>hostOperation<void>('acoustic.pcm.stop',{session}),
+ connect:(ssid:string,passphrase:string)=>hostOperation<{session:number}>('acoustic.wifi.connect',{ssid,passphrase}),
+ request:(session:number,endpoint:{host:string;port:number;token:string;path:'pullRemoteInput'|'pushFavorites'|'pushWatchLater';body?:string})=>hostOperation<Record<string,unknown>>('acoustic.wifi.request',{session,...endpoint}),
+ close:(session:number)=>hostOperation<void>('acoustic.wifi.close',{session}),
+});
