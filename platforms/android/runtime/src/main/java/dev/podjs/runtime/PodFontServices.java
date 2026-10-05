@@ -53,7 +53,7 @@ final class PodFontServices {
         }
         if(relative.isEmpty())return fallback;
         if(context==null)throw new IllegalArgumentException("fontPath requires application context");
-        File root=new File(context.getFilesDir(),"podjs/files").getCanonicalFile();
+        File root=PodTakeover.filesRoot(context).getCanonicalFile();
         if(new File(relative).isAbsolute()||relative.indexOf('\\')>=0||relative.indexOf('\0')>=0)throw new IllegalArgumentException("invalid fontPath");
         for(String part:relative.split("/",-1))if(part.isEmpty()||part.equals(".")||part.equals(".."))throw new IllegalArgumentException("invalid fontPath");
         File file=new File(root,relative).getCanonicalFile();

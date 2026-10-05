@@ -30,6 +30,7 @@ public final class PodSyncFileSnapshots {
     private final String storageApp;
     private final File root;
     public PodSyncFileSnapshots(Context context,String appId) throws Exception {
+        PodTakeover.requireReady(context);
         this.context=context; storageApp=PodSyncIncomingFiles.storageAppId(appId);
         root=new File(new File(new File(context.getNoBackupFilesDir(),"podjs-sync"),storageApp),PEER);
     }

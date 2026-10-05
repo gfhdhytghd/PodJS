@@ -31,6 +31,7 @@ public final class PodSyncPairingStore implements AutoCloseable {
     String applicationId() { return appId; }
 
     public PodSyncPairingStore(Context context, String appId) throws IOException {
+        PodTakeover.requireReady(context);
         validateId(appId); this.appId = appId;
         root = new File(context.getNoBackupFilesDir(),"podjs-pairing-" + digest(appId));
         if (!root.mkdirs() && !root.isDirectory()) throw new IOException("Pairing store unavailable");

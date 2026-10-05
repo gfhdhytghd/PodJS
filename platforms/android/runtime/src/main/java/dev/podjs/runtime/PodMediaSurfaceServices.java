@@ -80,7 +80,7 @@ final class PodMediaSurfaceServices implements AutoCloseable {
 
     PodMediaSurfaceServices(Context context) {
         this.context=context.getApplicationContext();
-        try {root=new File(this.context.getFilesDir(),"podjs/files").getCanonicalFile();}
+        try {root=PodTakeover.filesRoot(this.context).getCanonicalFile();}
         catch(Exception e){throw new IllegalStateException(e);}
     }
     void attach(ViewGroup parent,TextureSink sink){this.parent=parent;this.sink=sink;}

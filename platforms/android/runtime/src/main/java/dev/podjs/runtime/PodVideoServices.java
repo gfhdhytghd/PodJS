@@ -76,7 +76,7 @@ public final class PodVideoServices implements AutoCloseable {
         if (context == null) throw new IllegalArgumentException("context_required");
         this.context = context.getApplicationContext();
         this.decoderBudget = decoderBudget;
-        try { mediaRoot = new File(this.context.getFilesDir(), "podjs/files").getCanonicalFile(); }
+        try { mediaRoot = PodTakeover.filesRoot(this.context).getCanonicalFile(); }
         catch (IOException e) { throw new IllegalStateException("service_root_unavailable", e); }
         density = this.context.getResources().getDisplayMetrics().density;
     }

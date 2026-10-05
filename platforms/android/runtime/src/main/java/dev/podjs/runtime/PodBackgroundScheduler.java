@@ -31,6 +31,7 @@ public final class PodBackgroundScheduler implements Closeable {
     private final WorkManager work;
     private final String packageName;
     public PodBackgroundScheduler(Context context) throws IOException {
+        PodTakeover.requireReady(context);
         packageName=context.getPackageName();
         File root = new File(context.getNoBackupFilesDir(),"podjs-background");
         if (!root.mkdirs() && !root.isDirectory()) throw new IOException("Background storage unavailable");

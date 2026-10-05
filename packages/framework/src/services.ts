@@ -22,6 +22,7 @@ let nextId = 1;
 const methods: Record<string, PodCapabilityId> = {
   ...platformMethods,
   "app.finishTask": "host.lifecycle",
+  "takeover.status": "host.takeover",
   "app.buildInfo": "host.lifecycle",
   "debug.performance.start": "host.lifecycle", "debug.performance.read": "host.lifecycle", "debug.performance.stop": "host.lifecycle",
   "app.activityState.read": "host.lifecycle", "app.activityState.write": "host.lifecycle",
@@ -630,3 +631,16 @@ export const debugPerformance={
  read:(sessionId:number)=>hostOperation<DebugPerformanceSnapshot>('debug.performance.read',{sessionId}).result,
  stop:(sessionId:number)=>hostOperation<DebugPerformanceSnapshot>('debug.performance.stop',{sessionId}).result,
 };
+
+export interface TakeoverStatus {
+  protocol: number;
+  phase: "NONE" | "DETECTED" | "SNAPSHOTTED" | "COPYING" | "VERIFYING" | "READY" | "ACTIVATING" | "ACTIVE" | "PAUSED" | "BLOCKED";
+  reason?: string;
+  resumePhase?: string;
+  requiredBytes?: string;
+  availableBytes?: string;
+}
+/** Read-only first-launch migration status; unsupported hosts reject via capability gating. */
+export const takeover = Object.freeze({
+  status: (): Promise<TakeoverStatus> => hostOperation<TakeoverStatus>("takeover.status", {}).result,
+});
