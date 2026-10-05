@@ -40,8 +40,9 @@ public final class TakeoverBenchmark {
             System.out.println("takeover_benchmark resume_summary copying_verifying_ms="+(copy+verify)+" completed=true");
             return;
         }
-        if(args.length!=1)throw new IllegalArgumentException("usage: TakeoverBenchmark <read-only-native-copy>");
-        File source=new File(args[0]).getCanonicalFile();
+        boolean isolated=args.length==2&&args[0].equals("--isolated-stores");
+        if(args.length!=1&&!isolated)throw new IllegalArgumentException("usage: TakeoverBenchmark [--isolated-stores] <read-only-native-copy>");
+        File source=new File(args[isolated?1:0]).getCanonicalFile();
         File database=new File(source,"databases/watchrss.db");
         if(!database.isFile())throw new IllegalArgumentException("native database missing");
         Map<String,String> before=StoreTest.digests(source);
@@ -49,12 +50,12 @@ public final class TakeoverBenchmark {
         try {
             StoreTest.Crypto crypto=new StoreTest.Crypto();
             // A copied Android sandbox cannot carry UID-bound Keystore keys into
-            // the desktop replay. Exercise the real needs-reauth path instead of
+            // the desktop replay. Inject a missing-key fault to test the policy instead of
             // pretending the ciphertext is plaintext.
             crypto.unavailable=true;
             PodRoomV18Converter room=new PodRoomV18Converter(database,RoomV18Test.Jdbc::new,
                     (File g)->PodStoreConverter.identity(new File(g,"stores-source")));
-            PodStoreConverter stores=new PodStoreConverter(source,crypto);
+            PodStoreConverter stores=new PodStoreConverter(source,crypto,isolated);
             PodFileConverter files=new PodFileConverter(source,RoomV18Test.Jdbc::new,(file,faces)->{});
 
             long snapshot=timed("snapshot",()->{
@@ -71,6 +72,25 @@ public final class TakeoverBenchmark {
             long fileCopy=timed("copy_files",()->files.copy(generation));
             long roomVerify=timed("verify_room",()->room.verify(generation));
             long fileVerify=timed("verify_files",()->files.verify(generation));
+            if(isolated){
+                timed("verify_stores_injected_missing_key",()->stores.verify(generation));
+                org.json.JSONObject diagnostics=PodStoreConverter.json(new File(generation,"stores-diagnostics.json"));
+                String blocker=new PodTakeoverConverters(room,stores,files).blocker(generation);
+                System.out.println("takeover_benchmark injected_missing_key=true android_keystore_verified=false font_runtime_verified=false store_blockers="+diagnostics.getInt("blockerCount")+" known_differences="+diagnostics.getInt("knownDifferenceCount")+" bundle_blocker="+(blocker==null?"none":blocker));
+                System.out.println(diagnostics.toString());
+                if(blocker==null){
+                    String app=System.getenv().getOrDefault("WATCHRSS_APP_SOURCE","/home/wilf/data/OPPO_Develop/PodJS_WatchRSS");
+                    File output=new File(generation,"oracle-result.json");
+                    ProcessBuilder oracle=new ProcessBuilder("python3",new File(app,"scripts/migration/takeover_oracle.py").toString(),"--native",source.toString(),"--candidate",generation.toString());
+                    oracle.environment().put("PYTHONDONTWRITEBYTECODE","1");
+                    Process process=oracle.redirectOutput(output).redirectError(ProcessBuilder.Redirect.DISCARD).start();
+                    int result=process.waitFor();
+                    if(result!=0)throw new AssertionError("private_core_oracle_failed");
+                    org.json.JSONObject checked=PodStoreConverter.json(output);
+                    if(!checked.getBoolean("pass"))throw new AssertionError("private_core_oracle_failed");
+                    System.out.println("takeover_benchmark core_oracle="+checked.toString());
+                }
+            }
             long copying=roomCopy+roomCopyVerify+fileCopy;
             long verifying=roomVerify+fileVerify;
             if(!before.equals(StoreTest.digests(source)))throw new AssertionError("source bytes changed");

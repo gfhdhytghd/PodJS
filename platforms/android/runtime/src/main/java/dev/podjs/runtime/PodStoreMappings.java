@@ -16,6 +16,7 @@ final class PodStoreMappings {
     static void convert(String store,Map<String,Object> p,Set<String> u,JSONObject kv,JSONObject secure,JSONObject report)throws Exception{
         switch(store){
             case "settings":settings(p,u,kv);break;
+            case "WebViewChromiumPrefs":if(p.containsKey("lastVersionCodeUsed"))integer(p.get("lastVersionCodeUsed"),0,Integer.MAX_VALUE);break;
             case "bili_cache":bili(p,u,kv);break;
             case "app_resume_state":
                 if(p.containsKey("intent_uri")){
@@ -28,12 +29,25 @@ final class PodStoreMappings {
             case "watchrss_announcement":simple(p,u,kv,"dismissed_version","announcement.dismissed_version",String.class);break;
             case "watchrss_push":if(p.containsKey("last_seen_notification_id")){kv.put("announcement.last_seen_notification_id",integer(p.get("last_seen_notification_id"),0,9007199254740991L));u.remove("last_seen_notification_id");}break;
             case "watch_device_identity":if(p.containsKey("device_id")){require(!text(p.get("device_id")).trim().isEmpty());u.remove("device_id");}break; // P2b SQLite snapshot
-            case "watchrss_installation_identity":if(p.containsKey("install_id"))require(!text(p.get("install_id")).trim().isEmpty());simple(p,u,kv,"install_id","watchrss.telemetry.install-id",String.class);break;
+            case "watchrss_installation_identity":if(p.containsKey("first_installed_at"))integer(p.get("first_installed_at"),0,9007199254740991L);if(p.containsKey("install_id"))require(!text(p.get("install_id")).trim().isEmpty());simple(p,u,kv,"install_id","watchrss.telemetry.install-id",String.class);break;
             case "watchrss_download_telemetry":if(p.containsKey("release_oobe_recorded")){kv.put("watchrss.telemetry.release-oobe-recorded",Boolean.toString(bool(p.get("release_oobe_recorded"))));u.remove("release_oobe_recorded");}break;
             case "watchrss_daily_telemetry":telemetry(p,u,kv);break;
             case "reader_preset_state":reader(p,u,kv);break;
             case "douyin_watch_history":history(p,u,kv);break;
             case "douyin_recent_window":case "douyin_feed_cache":douyinFeed(store,p,u,kv);break;
+            case "bili_account_store":
+                if(p.containsKey("account_json")){
+                    JSONObject nativeAccount=new JSONObject(text(p.get("account_json"))),cookies=nativeAccount.optJSONObject("cookies");
+                    if(cookies==null)cookies=new JSONObject();
+                    for(Iterator<String> i=cookies.keys();i.hasNext();)text(cookies.get(i.next()));
+                    JSONObject account=new JSONObject().put("cookies",cookies).put("updatedAt",nativeAccount.isNull("updatedAtMillis")?0:integer(nativeAccount.get("updatedAtMillis"),0,9007199254740991L));
+                    if(!nativeAccount.isNull("refreshToken"))account.put("refreshToken",text(nativeAccount.get("refreshToken")));
+                    if(!nativeAccount.isNull("cookieRefreshCheckedAtMillis"))account.put("cookieRefreshCheckedAt",integer(nativeAccount.get("cookieRefreshCheckedAtMillis"),0,9007199254740991L));
+                    secure.put("watchrss.bili.session.v1",account.toString());
+                    if(!nativeAccount.isNull("wbiImgKey")&&!nativeAccount.isNull("wbiSubKey"))secure.put("watchrss.bili.session.v1.wbi",new JSONObject().put("imgKey",text(nativeAccount.get("wbiImgKey"))).put("subKey",text(nativeAccount.get("wbiSubKey"))).toString());
+                    u.remove("account_json");
+                }break;
+            case "douyin_account_store":if(p.containsKey("cookie")){secure.put("douyin.cookie",text(p.get("cookie")));u.remove("cookie");}break;
             case "llm_secure_prefs":if(p.containsKey("llm_api_key"))require(text(p.get("llm_api_key")).length()<=4096);break;
             case "watchrss_cloud_keys":for(String key:p.keySet()){if(key.matches("account_[a-f0-9]{24}(_v[1-9][0-9]*)?"))require(java.util.Base64.getDecoder().decode(text(p.get(key))).length==32);else if(key.matches("account_current_[a-f0-9]{24}"))integer(p.get(key),1,Integer.MAX_VALUE);}break;
             case "watchrss_account_state":
@@ -48,6 +62,11 @@ final class PodStoreMappings {
         for(String key:new String[]{"reading_font_size_sp","llm_prompt_preset","media_playback_start_volume_limit_percent","rss_inline_image_prefetch_mode","oobe_seen_version","privacy_policy_agreed_version"})if(p.containsKey(key))require(p.get(key) instanceof Integer);
         for(String key:new String[]{"tts_speed","reader_auto_scroll_lines_per_second"})if(p.containsKey(key))require(p.get(key) instanceof Float);
         if(p.containsKey("cache_limit_bytes"))require(p.get("cache_limit_bytes") instanceof Long);
+        // Native toast throttling is not a persistent user preference; retain it privately.
+        for(String key:p.keySet()){
+            if(key.matches("temp_original_mode_hint_attempts_[1-9][0-9]*"))text(p.get(key));
+            else if(key.matches("temp_original_mode_hint_last_toast_[1-9][0-9]*"))integer(p.get(key),0,9007199254740991L);
+        }
         JSONObject s=new JSONObject();
         String[][] booleans={{"llm_enabled","llmEnabled","true"},{"llm_auto_summarize","llmAutoSummarize","false"},{"llm_show_token_usage","llmShowTokenUsage","false"},{"reader_auto_scroll_enabled","readerAutoStart","false"},{"media_volume_control_enabled","mediaVolumeControl","true"},{"media_volume_guard_enabled","mediaVolumeGuard","false"},{"sync_media_keep_alive_enabled","syncMediaKeepAlive","false"},{"share_use_system","shareUseSystem","false"}};
         for(String[] b:booleans)s.put(b[1],bool(take(p,u,b[0],Boolean.valueOf(b[2]))));

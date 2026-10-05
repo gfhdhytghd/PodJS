@@ -13,7 +13,7 @@ public class StoreTest {
     static class Crypto implements PodStoreConverter.Crypto {
         final javax.crypto.SecretKey key;boolean unavailable;boolean binding=true;boolean locked;
         Crypto(){byte[] fixtureKey=new byte[32];for(int i=0;i<32;i++)fixtureKey[i]=(byte)i;key=new javax.crypto.spec.SecretKeySpec(fixtureKey,"AES");} // Synthetic-only stable key permits process-kill replay.
-        public Map<String,Object> decrypt(String s,Map<String,Object> raw)throws Exception{if(locked)throw new PodStoreConverter.Locked();if(unavailable)throw new IOException("DO_NOT_LEAK_SECRET");return raw;}
+        public Map<String,Object> decrypt(String s,Map<String,Object> raw)throws Exception{if(locked)throw new PodStoreConverter.Locked();if(unavailable)throw new PodStoreConverter.SourceKeyUnavailable(true);return raw;}
         public boolean cloudBindingValid(String user,String device){return binding;}
         public byte[] seal(JSONObject j)throws Exception{Cipher c=Cipher.getInstance("AES/GCM/NoPadding");c.init(Cipher.ENCRYPT_MODE,key);byte[] b=c.doFinal(j.toString().getBytes(StandardCharsets.UTF_8));return ByteBuffer.allocate(12+b.length).put(c.getIV()).put(b).array();}
         public JSONObject open(byte[] b)throws Exception{Cipher c=Cipher.getInstance("AES/GCM/NoPadding");c.init(Cipher.DECRYPT_MODE,key,new GCMParameterSpec(128,Arrays.copyOf(b,12)));return new JSONObject(new String(c.doFinal(Arrays.copyOfRange(b,12,b.length)),StandardCharsets.UTF_8));}
@@ -31,6 +31,8 @@ public class StoreTest {
         for(String s:PodStoreConverter.STORES)if(!s.equals("settings")&&!s.equals("bili_cache"))xml(root,s,"");
         write(new File(root,"files/datastore/settings.preferences_pb.preferences_pb"),concat(pref("reading_font_size_sp",concat(var(24),var(18))),pref("oobe_seen_version",concat(var(24),var(2))),pref("tts_engine",string("minimax")),pref("tts_model",string("fixture-model")),pref("reading_theme_dark",concat(var(8),var(0))),pref("future_key",string("PRIVATE_USER_SETTING"))));
         write(new File(root,"files/datastore/bili_cache.preferences_pb.preferences_pb"),concat(pref("bili_search_history",string("[\"fixture\"]")),pref("bili_local_interaction_state_json",string("[{\"aid\":7,\"isLiked\":true,\"isCoined\":false,\"isFavorited\":true,\"updatedAt\":123}]")),pref("bili_playback_progress_json",string("[{\"aid\":7,\"cid\":8,\"positionMs\":900,\"durationMs\":1000,\"updatedAt\":123}]"))));
+        xml(root,"bili_account_store","<string name=\"account_json\">{\"cookies\":{\"SESSDATA\":\"DO_NOT_LEAK_BILI\"},\"refreshToken\":\"DO_NOT_LEAK_REFRESH\",\"updatedAtMillis\":123,\"cookieRefreshCheckedAtMillis\":120,\"wbiImgKey\":\"synthetic-img\",\"wbiSubKey\":\"synthetic-sub\"}</string>");
+        xml(root,"douyin_account_store","<string name=\"cookie\">DO_NOT_LEAK_DOUYIN</string>");
         xml(root,"watch_device_identity","<string name=\"device_id\">synthetic-device</string>");
         xml(root,"watchrss_account_state","<string name=\"state_json\">{\"userId\":\"synthetic-user\",\"watchAccessToken\":\"DO_NOT_LEAK_SECRET\"}</string>");
         xml(root,"tts_secure_prefs","<string name=\"tts_api_key_minimax\">DO_NOT_LEAK_TTS</string>");
@@ -53,6 +55,10 @@ public class StoreTest {
         if(args.length>0&&args[0].equals("crash")){
             new PodStoreConverter(new File(args[1]),new Crypto(),(s,b)->{if(s.equals(args[3])&&b.equals(args[4]))Runtime.getRuntime().halt(91);}).copy(new File(args[2]));throw new AssertionError("crash boundary missing");
         }
+        // Hash-colliding JSON names reorder on parse; equivalent number spelling is valid.
+        JSONObject left=new JSONObject().put("Aa",1).put("BB",new JSONObject().put("x",1.0)),right=new JSONObject().put("BB",new JSONObject().put("x",1)).put("Aa",1L);
+        check(PodStoreConverter.sameJson(left,right));check(!PodStoreConverter.sameJson(left,new JSONObject().put("Aa","1").put("BB",new JSONObject().put("x",1))));
+        check(!PodStoreConverter.sameJson(new JSONArray("[1,2]"),new JSONArray("[2,1]")));
         File root=fixture(),g=generation();Crypto crypto=new Crypto();Map<String,String> before=digests(root);PodStoreConverter c=new PodStoreConverter(root,crypto);c.snapshot(g);c.copy(g);String receipt=c.verify(g);check(!c.complete());
         JSONObject kv=PodStoreConverter.json(new File(g,"podjs/podjs-kv.json"));check(kv.getJSONObject("watchrss.settings").getInt("fontSizeSp")==18);check(kv.getJSONObject("watchrss.onboarding").getInt("oobeSeenVersion")==2);check(!kv.getJSONObject("watchrss.onboarding").has("privacyPolicyAgreedVersion"));check(kv.getLong("announcement.last_seen_notification_id")==99);
         check(report(g,"settings").getString("status").equals("retained-unsupported"));check(report(g,"settings").getJSONArray("unknownKeys").getString(0).equals("future_key"));check(report(g,"watchrss_account_state").getBoolean("semanticValid"));

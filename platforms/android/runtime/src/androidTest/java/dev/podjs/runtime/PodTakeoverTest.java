@@ -66,6 +66,7 @@ public final class PodTakeoverTest {
             for(int i=0;i<schema.length();i++)db.execSQL(schema.getString(i));
             db.execSQL("INSERT INTO sync_local_identity(id,device_id,device_order) VALUES(1,'fixture','fixture')");
         }
+        Files.write(new File(g,"stores-snapshot.json").toPath(),"{\"version\":\"watchrss-stores-2\"}".getBytes("UTF-8"));
         Files.write(new File(g,"podjs/podjs-kv.json").toPath(),"{}".getBytes("UTF-8"));
         Files.write(new File(g,"podjs/secure.store").toPath(),new PodStoreAndroidCrypto(c).seal(new org.json.JSONObject()));
         Properties pointer=new Properties();pointer.setProperty("generation",p.getProperty("generation"));pointer.setProperty("receipt",p.getProperty("receipt"));

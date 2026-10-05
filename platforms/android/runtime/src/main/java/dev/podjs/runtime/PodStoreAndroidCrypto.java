@@ -36,15 +36,37 @@ final class PodStoreAndroidCrypto implements PodStoreConverter.Crypto {
     private static byte[] decrypt(SecretKey k,byte[] all,byte[] aad)throws Exception{if(all.length<28)throw new IOException("ciphertext_invalid");Cipher c=Cipher.getInstance("AES/GCM/NoPadding");c.init(Cipher.DECRYPT_MODE,k,new GCMParameterSpec(128,Arrays.copyOf(all,12)));c.updateAAD(aad);return c.doFinal(Arrays.copyOfRange(all,12,all.length));}
     private static byte[] unhex(String s)throws Exception{if(s.length()%2!=0)throw new IOException("keyset_invalid");byte[] b=new byte[s.length()/2];for(int i=0;i<b.length;i++){int a=Character.digit(s.charAt(i*2),16),c=Character.digit(s.charAt(i*2+1),16);if(a<0||c<0)throw new IOException("keyset_invalid");b[i]=(byte)(a*16+c);}return b;}
     public Map<String,Object> decrypt(String name,Map<String,Object> raw)throws Exception{
-        unlocked();SecretKey master=existing(masterAlias);AeadConfig.register();DeterministicAeadConfig.register();
+        unlocked();
+        // Structural failures are bugs, never the expected isolated-UID difference.
+        for(String key:new String[]{KEYS,VALUES})if(!(raw.get(key) instanceof String))throw new IOException("keyset_invalid");
+        byte[] keyset=unhex((String)raw.get(KEYS)),valueKeyset=unhex((String)raw.get(VALUES));
+        if(com.google.crypto.tink.proto.EncryptedKeyset.parseFrom(keyset).getEncryptedKeyset().size()<28||
+           com.google.crypto.tink.proto.EncryptedKeyset.parseFrom(valueKeyset).getEncryptedKeyset().size()<28)throw new IOException("keyset_invalid");
+        for(Map.Entry<String,Object> entry:raw.entrySet()){
+            if(entry.getKey().equals(KEYS)||entry.getKey().equals(VALUES))continue;
+            if(!(entry.getValue() instanceof String)||android.util.Base64.decode(entry.getKey(),android.util.Base64.DEFAULT).length<16||
+                android.util.Base64.decode((String)entry.getValue(),android.util.Base64.DEFAULT).length<16)throw new IOException("encrypted_entry_invalid");
+        }
+        SecretKey master;
+        try{KeyStore ks=store();if(!ks.containsAlias(masterAlias))throw new PodStoreConverter.SourceKeyUnavailable(true);master=(SecretKey)ks.getKey(masterAlias,null);if(master==null)throw new PodStoreConverter.SourceKeyUnavailable(true);}
+        catch(PodStoreConverter.SourceKeyUnavailable absent){throw absent;}
+        catch(java.security.GeneralSecurityException unavailable){throw new PodStoreConverter.SourceKeyUnavailable(false);}
+        AeadConfig.register();DeterministicAeadConfig.register();
         Aead wrapping=new Aead(){public byte[] encrypt(byte[] p,byte[] a)throws java.security.GeneralSecurityException{throw new java.security.GeneralSecurityException("read_only");}public byte[] decrypt(byte[] c,byte[] a)throws java.security.GeneralSecurityException{try{return PodStoreAndroidCrypto.decrypt(master,c,a);}catch(Exception e){throw new java.security.GeneralSecurityException("source_crypto_unavailable");}}};
-        DeterministicAead keys=KeysetHandle.read(BinaryKeysetReader.withBytes(unhex((String)raw.get(KEYS))),wrapping).getPrimitive(DeterministicAead.class);
-        Aead values=KeysetHandle.read(BinaryKeysetReader.withBytes(unhex((String)raw.get(VALUES))),wrapping).getPrimitive(Aead.class);
+        DeterministicAead keys;Aead values;
+        try{
+            keys=KeysetHandle.read(BinaryKeysetReader.withBytes(keyset),wrapping).getPrimitive(DeterministicAead.class);
+            values=KeysetHandle.read(BinaryKeysetReader.withBytes(valueKeyset),wrapping).getPrimitive(Aead.class);
+        }catch(java.security.GeneralSecurityException unavailable){throw new PodStoreConverter.SourceKeyUnavailable(false);}
         Map<String,Object> out=new TreeMap<>();
         for(Map.Entry<String,Object> entry:raw.entrySet()){
             if(entry.getKey().equals(KEYS)||entry.getKey().equals(VALUES))continue;
-            String key=PodPreferenceReader.utf(keys.decryptDeterministically(android.util.Base64.decode(entry.getKey(),android.util.Base64.DEFAULT),name.getBytes(StandardCharsets.UTF_8)));
-            byte[] clear=values.decrypt(android.util.Base64.decode((String)entry.getValue(),android.util.Base64.DEFAULT),entry.getKey().getBytes(StandardCharsets.UTF_8));ByteBuffer b=ByteBuffer.wrap(clear);Object value;
+            byte[] clearKey,clear;
+            try{
+                clearKey=keys.decryptDeterministically(android.util.Base64.decode(entry.getKey(),android.util.Base64.DEFAULT),name.getBytes(StandardCharsets.UTF_8));
+                clear=values.decrypt(android.util.Base64.decode((String)entry.getValue(),android.util.Base64.DEFAULT),entry.getKey().getBytes(StandardCharsets.UTF_8));
+            }catch(java.security.GeneralSecurityException unavailable){throw new PodStoreConverter.SourceKeyUnavailable(false);}
+            String key=PodPreferenceReader.utf(clearKey);Arrays.fill(clearKey,(byte)0);ByteBuffer b=ByteBuffer.wrap(clear);Object value;
             switch(b.getInt()){
                 case 0:value=string(b);break;
                 case 1:Set<String> set=new LinkedHashSet<>();while(b.hasRemaining())if(!set.add(string(b)))throw new IOException("duplicate_set");value=set;break;

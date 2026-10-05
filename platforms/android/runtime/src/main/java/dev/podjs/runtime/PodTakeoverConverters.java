@@ -25,6 +25,8 @@ final class PodTakeoverConverters implements PodTakeoverCoordinator.Converter {
         org.json.JSONObject stores=PodStoreConverter.json(new File(g,"stores-report.json"));
         for(String key:PodFileConverter.names(stores)) {
             String status=stores.getJSONObject(key).getString("status");
+            String disposition=stores.getJSONObject(key).optString("activationDisposition","");
+            if(disposition.equals("known-difference")||disposition.equals("needs-reauth"))continue;
             if(status.equals("needs-reauth"))return "store_needs_reauth_user_confirmation";
             if(!status.equals("migrated")&&!status.equals("absent"))return "store_unsupported_or_failed";
         }

@@ -38,7 +38,9 @@ public final class PodStoreCryptoTest {
             File output=File.createTempFile("candidate-secure-",".store",context.getCacheDir());
             try{Files.write(output.toPath(),candidate);assertEquals(values.toString(),PodDeviceServices.readSecureFile(output,(javax.crypto.SecretKey)keys().getKey(target,null)).toString());}finally{Files.deleteIfExists(output.toPath());}
             keys().deleteEntry(master);Set<String> afterLoss=new HashSet<>(Collections.list(keys().aliases()));
-            try{crypto.decrypt(id,PodPreferenceReader.xml(source));fail("missing source alias accepted");}catch(Exception expected){}
+            try{crypto.decrypt(id,PodPreferenceReader.xml(source));fail("missing source alias accepted");}catch(PodStoreConverter.SourceKeyUnavailable expected){assertTrue(expected.missing);}
+            Map<String,Object> malformed=new HashMap<>(PodPreferenceReader.xml(source));malformed.put(PodStoreAndroidCrypto.KEYS,"not-hex");
+            try{crypto.decrypt(id,malformed);fail("malformed keyset accepted");}catch(PodStoreConverter.SourceKeyUnavailable misclassified){fail("malformed keyset classified as missing key");}catch(Exception expected){}
             assertEquals(afterLoss,new HashSet<>(Collections.list(keys().aliases())));assertArrayEquals(before,Files.readAllBytes(source.toPath()));assertFalse(keys().containsAlias(master));
         }finally{context.deleteSharedPreferences(id);keys().deleteEntry(master);keys().deleteEntry(target);}
     }

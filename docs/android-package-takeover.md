@@ -1,6 +1,6 @@
 # Android package takeover coordinator (P2a–P2d)
 
-The installed host uses the Room/store/file composite described in P2b–P2d below. Verified, unblocked synthetic migrations can publish a complete generation; unsupported data and user-required reauthorization stay blocked. This is not production upgrade approval. Guest code has no registration, resume, activation or cleanup API. Earlier phase sections below retain their implementation scope; P2d supersedes their incomplete-composite gate.
+The installed host uses the Room/store/file composite described in P2b–P2d below. Verified, unblocked synthetic migrations can publish a complete generation; unknown/invalid data and user-required reauthorization stay blocked; P5 permits only native-supported account recovery and explicitly enumerated differences. This is not production upgrade approval. Guest code has no registration, resume, activation or cleanup API. Earlier phase sections below retain their implementation scope; P2d supersedes their incomplete-composite gate.
 
 ## Admission and publication
 
@@ -195,7 +195,7 @@ No real-user data is consumed. `PodStoreCryptoTest` creates uniquely named
 AndroidX/AndroidKeyStore fixtures, exercises the existing-key/cloud-binding path
 and production secure decoder; it is **compiled only**, not run in P2c.
 
-## P2d: files, blockers and activation
+## P2d: files, blockers and activation (store policy superseded by P5)
 
 The installed composite now requires Room, stores **and files**. Standalone
 Room/store/file converters still cannot publish. All three verification callbacks
@@ -272,3 +272,69 @@ note asset paths and the derived sync manifest. Android instrumentation fixtures
 are updated and compiled only; no device, real source data or release package is
 used. Pre-admission UI/off-main-thread scheduling, reauthorization choices, cloud
 adapter completion and physical/real-upgrade acceptance remain lead follow-ups.
+
+## P5: store diagnostics and isolated UID rehearsal
+
+The P4 real-copy report's first store blocker was `WebViewChromiumPrefs`, not
+source crypto: P2d rejected every retained field. P5 validates and explicitly
+classifies only platform version cache, native temporary toast throttling,
+installation-time metadata and the existing native-route home fallback as known
+differences. Extra unknown keys/stores remain blocked. All source bytes and
+private snapshot bytes remain intact.
+
+Bili/Douyin account XML is now classified as encrypted. Decrypted Bili cookies,
+web refresh token, refresh-check time and WBI fields map to the application's
+`watchrss.bili.session.v1` and `.wbi`; Douyin cookie maps to `douyin.cookie`.
+The full decrypted source object stays only in the encrypted retention envelope.
+Encrypted preference key names never appear in the public diagnostics.
+
+Source crypto uses typed missing-master/authentication failures. XML/protobuf,
+hex/Tink keyset structure, plaintext schema, quota and unexpected crypto errors
+are not the expected UID difference. `Locked` remains retryable. Formal migration
+may activate logged-out Watch/Bili/Douyin accounts only for typed source-key
+failures, as those native stores explicitly recover crypto failures to an empty
+account. It writes no fabricated credentials, deletes no source XML or alias,
+and emits `needs-reauth`. Native LLM/TTS do not implement that recovery; formal
+crypto failures there still require confirmation. Cloud key/cache restrictions
+remain unchanged. Invalid encrypted schema remains blocking.
+
+Only the exact debug rehearsal package enables `watchrss-stores-2-isolated`.
+Missing source master there is `isolated_uid_keystore_unavailable`: migration
+continues while recording a known difference. Dependent unavailable external
+TTS configuration is held without hiding unrelated unmapped settings. Formal
+admission rejects an isolated generation. Normal same-package, compatible-signature
+in-place upgrades preserve caller UID; AOSP Keystore APP namespaces use caller
+UID, so still-valid native aliases remain accessible. A copied directory under
+another UID cannot carry those keys. Same package name alone is insufficient;
+this reasoning is not real-upgrade acceptance.
+[AOSP Keystore](https://source.android.com/docs/security/features/keystore),
+[Android Keystore](https://developer.android.com/privacy-and-security/keystore).
+
+`stores-diagnostics.json` is a fixed-name/category/reason projection, regenerated
+and compared during verification. It has no values, key names, user store names
+or exception text. Rehearsal result projects the same fields from the private
+report. Successful core/restart/render checks with differences return
+`PASS_WITH_KNOWN_DIFFERENCES`, with account/Keystore parity explicitly PENDING.
+Unknown stores, format errors and core oracle failures never produce success.
+JVM policy tests include full ACTIVE/restart, preserved new writes/source bytes,
+formal account recovery, isolated/formal separation, missing TTS key with unknown
+settings, malformed stores, backup conflicts, unexpected crypto and locked retry.
+Android source-key/keyset tests are compiled only; device execution is deferred.
+
+The private real-copy replay exposed a pre-existing KV false rejection: comparing
+JSONObject serialization is sensitive to field order. Store readback now uses
+recursive structural equality, preserving type distinctions and array order;
+equivalent numeric spellings compare numerically. Digests and authenticated
+receipts remain checked; changed content still fails.
+
+A subsequent file blocker was positively identified as native instrumentation
+DataStores (nine exact public test prefixes followed by UUID) plus the exact
+AndroidX ProfileInstaller eight-byte update-time marker. File converter version 2
+retains them in private snapshots, never guest settings/files; test protobuf must
+strictly decode, marker length must match, and near-match/unknown user files stay
+blocking. This prevents synthetic test settings from replacing the real DataStore.
+The native androidTest TestAppContainer is the fixture-name source;
+[AndroidX ProfileInstaller](https://android.googlesource.com/platform/frameworks/support/+/refs/heads/androidx-main/profileinstaller/profileinstaller/src/main/java/androidx/profileinstaller/ProfileInstaller.java)
+is the marker source. Real-copy replay with an explicitly injected missing-key
+fault reports no bundle blockers and matching core oracle rows. It does not
+validate Android Keystore, Android Typeface, physical activation or rendering.
