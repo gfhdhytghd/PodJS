@@ -22,11 +22,11 @@ public final class PodBackgroundPackage {
     private final String[] grants;
     static String[] validateGrants(org.json.JSONArray array) throws Exception {
         if (array==null) return new String[0];
-        if (array.length()>4) throw new SecurityException("Too many background grants");
+        if (array.length()>5) throw new SecurityException("Too many background grants");
         java.util.HashSet<String> seen=new java.util.HashSet<>();String[] result=new String[array.length()];
         for (int i=0;i<result.length;i++) {
             Object raw=array.get(i);
-            if (!(raw instanceof String) || !java.util.Arrays.asList("kv.get","kv.set","kv.delete","kv.keys").contains(raw) || !seen.add((String)raw))
+            if (!(raw instanceof String) || !java.util.Arrays.asList("kv.get","kv.set","kv.delete","kv.keys","debug.cloudHost").contains(raw) || !seen.add((String)raw))
                 throw new SecurityException("Invalid background grant");
             result[i]=(String)raw;
         }
@@ -97,6 +97,18 @@ public final class PodBackgroundPackage {
         String source=StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
             .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes.toByteArray())).toString();
         return scheduler.scheduleVerified(app,task,source,item.getString("sha256"),earliestAt,budgetMs,requiresNetwork,payload,grants);
+    }
+    /** Reads the current installed cloud handler, never a persisted guest path. */
+    String cloudSource() throws Exception {
+        if(!java.util.Arrays.asList(grants).containsAll(java.util.Arrays.asList("debug.cloudHost","kv.get")))throw new SecurityException("Cloud background grant missing");
+        JSONObject item=handlers.optJSONObject("watchrss-cloud-sync");
+        if(item==null)throw new SecurityException("Cloud background handler missing");
+        ByteArrayOutputStream output=new ByteArrayOutputStream();
+        try(InputStream input=assets.open(item.getString("file"))){byte[] block=new byte[8192];int n;
+            while((n=input.read(block))!=-1){if(output.size()+n>item.getInt("bytes"))throw new SecurityException("Cloud source too large");output.write(block,0,n);}}
+        String source=StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(output.toByteArray())).toString();
+        if(output.size()!=item.getInt("bytes")||!PodBackgroundScheduler.sha256(source).equals(item.getString("sha256")))throw new SecurityException("Cloud source hash mismatch");
+        return source;
     }
     boolean permitsSource(String hash, String[] methods) throws Exception {
         if (!java.util.Arrays.asList(grants).containsAll(java.util.Arrays.asList(methods))) return false;

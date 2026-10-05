@@ -38,14 +38,17 @@ pub unsafe extern "C" fn pod_background_execute(handle: *const PodBackgroundRun)
     let config = &handle.config;
     let payload_json = config.payload.to_string();
     let queue=handle.requests.clone();
-    let services=if config.allowed_methods.is_empty() {None} else if let Some(root)=&config.kv_root {
-        match crate::kv::background_services(root.into(),config.allowed_methods.iter().cloned().collect()) {
+    let kv_services=if let Some(root)=&config.kv_root {
+        let methods=config.allowed_methods.iter().filter(|m| m.starts_with("kv.")).cloned().collect();
+        match crate::kv::background_services(root.into(),methods) {
             Ok(services)=>Some(services),
             Err(_)=>{crate::set_error("invalid background KV root or grants");return std::ptr::null();}
         }
-    } else {Some(background::Services {
+    } else {None};
+    let services=if config.allowed_methods.is_empty() {None} else {Some(background::Services {
         allowed_methods:config.allowed_methods.iter().cloned().collect(),
         dispatch:Arc::new(move |request| {
+            if request.method.starts_with("kv.") {if let Some(kv)=&kv_services {return (kv.dispatch)(request);}}
             let (send,receive)=mpsc::channel();
             if let Ok(mut queue)=queue.lock() {
                 if !queue.finished && !request.cancellation.is_cancelled() {
@@ -94,7 +97,7 @@ struct Reply {id:u64, ok:bool, #[serde(default)] value:serde_json::Value, code:O
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pod_background_reply(handle: *const PodBackgroundRun, bytes:*const u8, length:usize) -> i32 {
     let Some(handle)=(unsafe {handle.as_ref()}) else {return -1;};
-    if bytes.is_null() || length==0 || length>70*1024 {return -1;}
+    if bytes.is_null() || length==0 || length>if handle.config.allowed_methods.iter().any(|m| m=="debug.cloudHost") {1024*1024} else {70*1024} {return -1;}
     let Ok(reply)=serde_json::from_slice::<Reply>(unsafe {std::slice::from_raw_parts(bytes,length)}) else {return -1;};
     if reply.ok && reply.code.is_some() || !reply.ok && !reply.value.is_null() {return -1;}
     let result=if reply.ok {Ok(reply.value.to_string())} else {
@@ -137,6 +140,19 @@ mod tests {
         let result:serde_json::Value=serde_json::from_str(&worker.join().unwrap()).unwrap();
         assert_eq!(result["status"],"success");assert!(pod_background_poll(handle).is_null());
         pod_background_close(handle);
+    }}
+    #[test] fn cloud_host_replies_and_private_kv_share_one_bounded_guest() { unsafe {
+        let root=std::env::temp_dir().join(format!("pod-cloud-kv-{}",std::process::id()));std::fs::create_dir_all(&root).unwrap();
+        let mut kv=crate::kv::KvStore::open(root.to_str());kv.set("legacy".into(),serde_json::json!("progress")).unwrap();
+        let source="globalThis.backgroundHandler=async c=>{const old=await c.request('kv.get',{key:'legacy'});if(!old.exists||old.value!=='progress')return 'failure';const value=await c.request('debug.cloudHost',{method:'file.read',args:{}});return value.length===100000?'success':'failure'}";
+        let bytes=serde_json::json!({"app_id":"ffi-cloud","task_id":"task","source":source,"budget_ms":300000,"memory_bytes":268435456,"allowed_methods":["debug.cloudHost","kv.get"],"kv_root":root}).to_string();
+        let handle=pod_background_open(bytes.as_ptr(),bytes.len());assert!(!handle.is_null());let address=handle as usize;
+        let worker=std::thread::spawn(move || std::ffi::CStr::from_ptr(pod_background_execute(address as *const PodBackgroundRun)).to_str().unwrap().to_owned());
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+        let request=loop{let line=pod_background_poll(handle);if !line.is_null(){break serde_json::from_str::<serde_json::Value>(std::ffi::CStr::from_ptr(line).to_str().unwrap()).unwrap();}assert!(std::time::Instant::now()<deadline);std::thread::yield_now();};
+        assert_eq!(request["method"],"debug.cloudHost");
+        let reply=serde_json::json!({"id":request["id"],"ok":true,"value":"x".repeat(100000)}).to_string();assert_eq!(pod_background_reply(handle,reply.as_ptr(),reply.len()),0);
+        let result:serde_json::Value=serde_json::from_str(&worker.join().unwrap()).unwrap();assert_eq!(result["status"],"success");pod_background_close(handle);std::fs::remove_dir_all(root).unwrap();
     }}
     #[test] fn cancelled_handle_is_one_shot_and_returns_structured_result() { unsafe {
         let bytes = br#"{"app_id":"app","task_id":"task","source":"while(true){}","budget_ms":100,"memory_bytes":8388608}"#;

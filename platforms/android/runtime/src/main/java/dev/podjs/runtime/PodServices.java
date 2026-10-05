@@ -160,6 +160,7 @@ final class PodServices implements Closeable {
     }
     private final ExecutorService transfers = Executors.newFixedThreadPool(4);
     private SQLiteDatabase database;
+    private PodCloudWork cloudWork;
     private volatile boolean closed;
     private static final class Request {
         final CancellationSignal cancellation = new CancellationSignal();
@@ -444,6 +445,9 @@ final class PodServices implements Closeable {
                         case "notifications.listPending": value=notifications().listPending();break;
                         default: throw new UnsupportedOperationException("Remote notification provider unavailable");
                     }
+                } else if (method.startsWith("cloud.")) {
+                    if(cloudWork==null)cloudWork=new PodCloudWork(context);
+                    value=cloudWork.execute(method,args);
                 } else if (method.startsWith("background.")) {
                     if (background==null) throw new SecurityException("Background scheduling is not authorized");
                     value=background.execute(method,args);
@@ -659,7 +663,7 @@ final class PodServices implements Closeable {
             paragraphLayouts.clear();
             sync=null;
             if(installedSync!=null) try { installedSync.close(); } catch(Exception error) {android.util.Log.e("PodJS","Sync owner close failed",error);}
-            if(database != null) database.close(); if(background!=null) background.close(); if(notifications!=null)notifications.close(); device.close();
+            if(cloudWork!=null)cloudWork.close(); if(database != null) database.close(); if(background!=null) background.close(); if(notifications!=null)notifications.close(); device.close();
         });
         worker.shutdown();
     }

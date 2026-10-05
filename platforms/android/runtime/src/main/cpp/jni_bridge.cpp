@@ -112,7 +112,7 @@ extern "C" JNIEXPORT jint JNICALL Java_dev_podjs_runtime_PodBackgroundRun_native
     JNIEnv* env, jclass, jlong handle, jbyteArray response) {
   if (!handle || !response) return -1;
   jsize length=env->GetArrayLength(response);
-  if (length<=0 || length>70*1024) return -1;
+  if (length<=0 || length>1024*1024) return -1;
   std::vector<uint8_t> bytes(length);
   env->GetByteArrayRegion(response,0,length,reinterpret_cast<jbyte*>(bytes.data()));
   if (env->ExceptionCheck()) return -1;

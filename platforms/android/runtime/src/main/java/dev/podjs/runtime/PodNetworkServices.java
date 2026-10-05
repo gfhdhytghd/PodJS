@@ -22,7 +22,7 @@ final class PodNetworkServices implements Closeable {
         if("discovery.networkSnapshot".equals(method)){
             cancellation.throwIfCanceled();synchronized(this){if(closed)throw new IllegalStateException("Network observation closed");}
             Network network=manager==null?null:manager.getActiveNetwork();NetworkCapabilities caps=network==null?null:manager.getNetworkCapabilities(network);
-            JSONObject result=new JSONObject().put("active",network!=null).put("internet",caps!=null&&caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)).put("validated",caps!=null&&caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)).put("wifi",caps!=null&&caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)).put("cellular",caps!=null&&caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)).put("bluetooth",caps!=null&&caps.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH));
+            JSONObject result=new JSONObject().put("metered",manager==null||manager.isActiveNetworkMetered()).put("active",network!=null).put("internet",caps!=null&&caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)).put("validated",caps!=null&&caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)).put("wifi",caps!=null&&caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)).put("cellular",caps!=null&&caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)).put("bluetooth",caps!=null&&caps.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH));
             cancellation.throwIfCanceled();return result;
         }
         String id=args.getString("subscriptionId");if(!id.matches("[A-Za-z0-9_-]{1,64}"))throw new IllegalArgumentException("Invalid network subscription");

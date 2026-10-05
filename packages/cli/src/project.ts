@@ -76,8 +76,8 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
   if (!Array.isArray(value.capabilities) || value.capabilities.some(cap => typeof cap !== "string")) invalid("capabilities must be an array of strings");
   const capabilities = value.capabilities as string[];
   const backgroundServices = value.backgroundServices ?? [];
-  if (!Array.isArray(backgroundServices) || backgroundServices.length > 4 ||
-      backgroundServices.some(method => !["kv.get", "kv.set", "kv.delete", "kv.keys"].includes(method)) ||
+  if (!Array.isArray(backgroundServices) || backgroundServices.length > 5 ||
+      backgroundServices.some(method => !["kv.get", "kv.set", "kv.delete", "kv.keys", "debug.cloudHost"].includes(method)) ||
       new Set(backgroundServices).size !== backgroundServices.length) invalid("backgroundServices must be unique supported KV methods");
   const known = new Set<string>(Object.values(targets).flatMap(profile => [...profile.capabilities]));
   const unknown = capabilities.filter(cap => !known.has(cap));
