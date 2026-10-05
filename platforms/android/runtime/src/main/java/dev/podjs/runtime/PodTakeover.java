@@ -15,13 +15,12 @@ public final class PodTakeover {
      * symlink/canonical check below compares against paths under this root. */
     static File sandbox(Context c) {
         File raw=new File(c.getApplicationInfo().dataDir);
-        try { return raw.getCanonicalFile(); }
+        try { return PodTakeoverSource.canonicalSandbox(raw); }
         catch(IOException error){throw new IllegalStateException("sandbox_unresolvable",error);}
     }
-    private static PodTakeoverCoordinator coordinator(Context c) {
-        File sandbox=sandbox(c);
+    private static PodTakeoverCoordinator coordinator(Context c,File sandbox) {
         return new PodTakeoverCoordinator(new File(sandbox,"files/package-takeover"),
-                () -> detect(c),new PodTakeoverConverters(new PodRoomV18Converter(new File(sandbox,"databases/watchrss.db"),
+                () -> detect(c,sandbox),new PodTakeoverConverters(new PodRoomV18Converter(new File(sandbox,"databases/watchrss.db"),
                     PodRoomAndroidDb::new,(File generation) -> PodStoreConverter.identity(new File(generation,"stores-source"))),
                     new PodStoreConverter(sandbox,new PodStoreAndroidCrypto(c)),
                     new PodFileConverter(sandbox,PodRoomAndroidDb::new,(file,faces) -> {
@@ -36,8 +35,11 @@ public final class PodTakeover {
     private static PodTakeoverAdmission.Paths paths(Context c) throws Exception {
         PodTakeoverAdmission admission=admissions.computeIfAbsent(c.getApplicationInfo().dataDir,
                 ignored -> new PodTakeoverAdmission());
-        return admission.paths(() -> PodTakeoverAdmission.Paths.resolve(coordinator(c),
-                new File(sandbox(c),"files/podjs"),new File(sandbox(c),"databases/podjs.sqlite")));
+        return admission.paths(() -> {
+            File root=sandbox(c);
+            return PodTakeoverAdmission.Paths.resolve(coordinator(c,root),
+                    new File(root,"files/podjs"),new File(root,"databases/podjs.sqlite"));
+        });
     }
     private static PodTakeoverAdmission.Paths requiredPaths(Context c) {
         try { return paths(c); }
@@ -69,9 +71,10 @@ public final class PodTakeover {
         view.setGravity(android.view.Gravity.CENTER); view.setText("数据迁移尚未完成\n"+status(activity).optString("phase","BLOCKED"));
         activity.setContentView(view); return true;
     }
-    static PodTakeoverCoordinator.Source detect(Context c) throws IOException {
+    static PodTakeoverCoordinator.Source detect(Context c) throws IOException { return detect(c,sandbox(c)); }
+    private static PodTakeoverCoordinator.Source detect(Context c,File root) throws IOException {
         // No Context directory getter here: those may mkdir even on read-only preflight.
         android.os.UserManager users=(android.os.UserManager)c.getSystemService(Context.USER_SERVICE);
-        return PodTakeoverSource.detect(sandbox(c),users==null||users.isUserUnlocked());
+        return PodTakeoverSource.detect(root,users==null||users.isUserUnlocked());
     }
 }

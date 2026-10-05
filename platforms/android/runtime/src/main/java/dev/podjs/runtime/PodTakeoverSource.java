@@ -10,6 +10,8 @@ import java.util.Properties;
  * files do not prove a WatchRSS source exists. Unknown stores are inventoried by
  * converters only after native evidence has admitted the migration. Read-only. */
 final class PodTakeoverSource {
+    /** Resolve only the trusted Context sandbox boundary, never an untrusted child path. */
+    static File canonicalSandbox(File raw)throws IOException { return raw.getCanonicalFile(); }
     static final String[] DATASTORES={"settings.preferences_pb","settings.preferences_pb.preferences_pb","bili_cache.preferences_pb","bili_cache.preferences_pb.preferences_pb"};
     static final String[] PREFS={"reader_preset_state","home_entry_placement","app_resume_state","douyin_watch_history","douyin_recent_window","douyin_feed_cache","watchrss_announcement","watchrss_push","watch_device_identity","watchrss_installation_identity","watchrss_daily_telemetry","watchrss_download_telemetry","watchrss_cloud_state","watchrss_account_state","llm_secure_prefs","tts_secure_prefs","watchrss_cloud_keys"};
     static final String[] FILES={"article_content","offline/rss","offline/bili","reader_assets","notes","watch-cloud-cache"};
