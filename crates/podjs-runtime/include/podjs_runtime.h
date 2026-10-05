@@ -314,6 +314,11 @@ int32_t pod_runtime_complete_http(PodRuntime *runtime, int32_t handle, uint32_t 
 int32_t pod_runtime_fail_http(PodRuntime *runtime, int32_t handle,
                               const char *code, const char *message);
 
+/* Physical pixels and physical pixels/second, from Android ViewConfiguration.
+ * Call before evaluating the guest bundle. Does not change ABI struct layouts. */
+int32_t pod_runtime_set_scroll_configuration(PodRuntime *runtime, float touch_slop,
+                                            float min_fling, float max_fling);
+
 const char *pod_runtime_receipt(PodRuntime *runtime);
 void pod_runtime_destroy(PodRuntime *runtime);
 

@@ -18,6 +18,8 @@ export interface DisplayMetrics {
   readonly physicalWidth: number;
   readonly physicalHeight: number;
   readonly density: number;
+  /** Android ViewConfiguration, in physical px and px/s. Absent on older hosts. */
+  readonly scrollConfiguration?: Readonly<{ touchSlopPx: number; minimumFlingVelocityPx: number; maximumFlingVelocityPx: number }>;
   readonly shape: "round" | "rect";
   readonly safeInsets: Readonly<{ top: number; right: number; bottom: number; left: number }>;
 }

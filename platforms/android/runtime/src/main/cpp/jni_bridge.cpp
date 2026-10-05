@@ -197,7 +197,7 @@ extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodSyncFileReceiver_nat
 }
 
 extern "C" JNIEXPORT jlong JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeCreate(
-    JNIEnv* env, jclass, jobject surface, jstring target, jint width, jint height, jfloat density, jstring dataDir) {
+    JNIEnv* env, jclass, jobject surface, jstring target, jint width, jint height, jfloat density, jint touchSlop, jint minFling, jint maxFling, jstring dataDir) {
   const char* t = env->GetStringUTFChars(target, nullptr); const char* d = env->GetStringUTFChars(dataDir, nullptr);
   if (std::string(t) != "android-watch" && std::string(t) != "wearos-watch") { fail(env, "PodJS target mismatch"); return 0; }
   ANativeWindow* window = ANativeWindow_fromSurface(env, surface);
@@ -209,6 +209,12 @@ const char* capabilities = "[\"input.touch\",\"input.rotary\",\"data.kv\",\"devi
     ANativeWindow_release(window);
     env->ReleaseStringUTFChars(target, t); env->ReleaseStringUTFChars(dataDir, d);
     fail(env, pod_runtime_last_error()); return 0;
+  }
+  if (pod_runtime_set_scroll_configuration(host->runtime, touchSlop, minFling, maxFling) != 0) {
+    ANativeWindow_release(window);
+    pod_runtime_destroy(host->runtime); host->runtime = nullptr;
+    env->ReleaseStringUTFChars(target, t); env->ReleaseStringUTFChars(dataDir, d);
+    fail(env, "Invalid Android scroll configuration"); return 0;
   }
   host->width = static_cast<uint32_t>(width); host->height = static_cast<uint32_t>(height);
   host->logicalWidth = pod_runtime_logical_width(host->runtime);

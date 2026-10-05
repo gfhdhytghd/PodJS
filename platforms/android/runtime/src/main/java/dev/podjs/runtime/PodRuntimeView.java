@@ -247,13 +247,17 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         final int generation = ++bootGeneration;
         final AssetManager assets = getContext().getAssets();
         final float density = getResources().getDisplayMetrics().density;
+        final android.view.ViewConfiguration inputConfig = android.view.ViewConfiguration.get(getContext());
+        final int touchSlop = inputConfig.getScaledTouchSlop();
+        final int minFling = inputConfig.getScaledMinimumFlingVelocity();
+        final int maxFling = inputConfig.getScaledMaximumFlingVelocity();
         final String dataPath = data.getAbsolutePath();
         try {
             boot.execute(() -> {
                 long candidate = 0;
                 Throwable failure = null;
                 try {
-                    candidate = nativeCreate(bootSurface, targetId, width, height, density, dataPath);
+                    candidate = nativeCreate(bootSurface, targetId, width, height, density, touchSlop, minFling, maxFling, dataPath);
                     if (candidate == 0) throw new IllegalStateException("PodJS native host creation failed");
                     nativeBootAssets(candidate, assets);
                 } catch (RuntimeException | Error error) {
@@ -545,7 +549,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private static native void nativeNavigationState(long host, boolean canGoBack);
     private static native boolean nativeCanGoBack(long host);
     private static native void nativeBootAssets(long host, AssetManager assets);
-    private static native long nativeCreate(Surface surface, String target, int width, int height, float density, String dataDir);
+    private static native long nativeCreate(Surface surface, String target, int width, int height, float density, int touchSlop, int minFling, int maxFling, String dataDir);
     private static native void nativeBoot(long host, byte[] pak, byte[] js, byte[] manifest);
     private static native void nativeResize(long host, Surface surface, int width, int height);
     private static native void nativeDetachSurface(long host);
