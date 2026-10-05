@@ -24,9 +24,16 @@ final class PodServices implements Closeable {
     private final Context context;
     final PodActivityState activityState = new PodActivityState();
     private final Sink sink;
+    /** Logs every service request and replies over 64 KiB (tag PodJSPerf); for startup profiling. */
+    private static final boolean PERF_TRACE = false;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final PodParagraphLayout.Cache paragraphLayouts=new PodParagraphLayout.Cache();
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    /** SQLite owns one connection and must stay serial, but must not queue behind file IO,
+     * log writes or cache scans on `worker`; text layout/raster likewise gets its own lane so
+     * reader pagination never blocks (or is blocked by) storage. Per-lane order is preserved. */
+    private final ExecutorService sqlWorker = Executors.newSingleThreadExecutor();
+    private final ExecutorService textWorker = Executors.newSingleThreadExecutor();
     private final ConcurrentHashMap<Integer, Request> requests = new ConcurrentHashMap<>();
     private final PodDeviceServices device;
     private final PodMediaServices media;
@@ -211,6 +218,7 @@ final class PodServices implements Closeable {
         if (requests.size() >= 64) { failure(id,"busy","Too many requests"); return; }
         String method = command.getString("method");
         JSONObject args = command.getJSONObject("args");
+        if (PERF_TRACE) android.util.Log.i("PodJSPerf", "svc id=" + id + " method=" + method + " args=" + Math.min(160, args.toString().length()) + ":" + args.toString().substring(0, Math.min(160, args.toString().length())));
         Request request = new Request();
         request.method = method;
         requests.put(id, request);
@@ -418,7 +426,7 @@ final class PodServices implements Closeable {
             return;
         }
         args.put("requestId", id);
-        request.future = (method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.") || method.startsWith("discovery.") ? streamWorkers : method.startsWith("http.") ? transfers : worker).submit(() -> {
+        request.future = (method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.") || method.startsWith("discovery.") ? streamWorkers : method.startsWith("http.") ? transfers : method.startsWith("sql.") ? sqlWorker : method.startsWith("text.") ? textWorker : worker).submit(() -> {
             try {
                 request.cancellation.throwIfCanceled();
                 Object value;
@@ -618,7 +626,11 @@ final class PodServices implements Closeable {
             JSONObject event = new JSONObject().put("t","service.result").put("id",id).put("ok",ok);
             if(ok) event.put("value",value == null ? JSONObject.NULL : value);
             else event.put("code",code).put("message",message);
-            main.post(() -> { if(!closed) sink.complete(event.toString()); });
+            // Serialize on the calling (worker) thread; the main thread only hands the
+            // finished string to the guest so large replies cannot stall frames.
+            final String json = event.toString();
+            if (PERF_TRACE && json.length() > 65536) android.util.Log.i("PodJSPerf", "large service reply id=" + id + " chars=" + json.length());
+            main.post(() -> { if(!closed) sink.complete(json); });
         } catch(Exception error) { throw new IllegalStateException(error); }
     }
     private void cancel(int id) {
@@ -659,11 +671,14 @@ final class PodServices implements Closeable {
         networks.close(); bleDiscovery.close(); discovery.close(); webSockets.close(); byteStreams.close();
         streamWorkers.shutdownNow();
         transfers.shutdownNow();
+        textWorker.execute(paragraphLayouts::clear);
+        textWorker.shutdown();
+        sqlWorker.execute(() -> { if(database != null) database.close(); });
+        sqlWorker.shutdown();
         worker.execute(() -> {
-            paragraphLayouts.clear();
             sync=null;
             if(installedSync!=null) try { installedSync.close(); } catch(Exception error) {android.util.Log.e("PodJS","Sync owner close failed",error);}
-            if(cloudWork!=null)cloudWork.close(); if(database != null) database.close(); if(background!=null) background.close(); if(notifications!=null)notifications.close(); device.close();
+            if(cloudWork!=null)cloudWork.close(); if(background!=null) background.close(); if(notifications!=null)notifications.close(); device.close();
         });
         worker.shutdown();
     }
