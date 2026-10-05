@@ -30,6 +30,7 @@ export interface PodProjectConfig {
   background?: Record<string, string>;
   backgroundServices?: string[];
   resources?: PodProjectResources;
+  android?: { resources: string; theme: string };
 }
 
 export interface ResolvedPodProject {
@@ -44,6 +45,8 @@ export interface ResolvedPodProject {
   extraChars: string;
   background: Record<string, string>;
   assets: Record<string, string>;
+  androidResources?: string;
+  androidTheme?: string;
 }
 
 const APP_ID = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/;
@@ -141,5 +144,18 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
     if (!existsSync(path) || !statSync(path).isFile()) invalid(`extraCharsFile not found: ${path}`);
     try { return readFileSync(path, "utf8"); } catch { invalid(`cannot read extraCharsFile: ${path}`); }
   })();
-  return { config: { entry: entryValue, appId, versionName, versionCode: value.versionCode as number, name, capabilities, resources, background: backgroundConfig, backgroundServices }, root, configPath, entry, output: join(defaults.outputRoot, appId), fontRegular, fontBold, fontSlots, extraChars, background, assets };
+  let android: PodProjectConfig["android"];
+  let androidResources: string | undefined;
+  let androidTheme: string | undefined;
+  if (value.android !== undefined) {
+    if (!value.android || typeof value.android !== "object" || Array.isArray(value.android)) invalid("android must be an object");
+    const candidate = value.android as Record<string, unknown>;
+    const resourcesPath = stringField(candidate.resources, "android.resources");
+    androidTheme = stringField(candidate.theme, "android.theme");
+    if (!/^@style\/[A-Za-z0-9_.]+$/.test(androidTheme)) invalid("android.theme must be an @style resource");
+    androidResources = resolve(root, resourcesPath);
+    if (!existsSync(androidResources) || !statSync(androidResources).isDirectory()) invalid(`android resources directory not found: ${androidResources}`);
+    android = {resources: resourcesPath, theme: androidTheme};
+  }
+  return { config: { entry: entryValue, appId, versionName, versionCode: value.versionCode as number, name, capabilities, resources, android, background: backgroundConfig, backgroundServices }, root, configPath, entry, output: join(defaults.outputRoot, appId), fontRegular, fontBold, fontSlots, extraChars, background, assets, androidResources, androidTheme };
 }

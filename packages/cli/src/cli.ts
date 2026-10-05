@@ -82,6 +82,7 @@ async function build(target: Target, project?: ResolvedPodProject): Promise<Reso
   run([
     "bun", "vendor/pocketjs/tools/build.ts", app,
     "--framework=solid", `--density=${density}`, "--hz=60",
+    ...(target === "android-watch" || target === "wearos-watch" ? ["--minify"] : []),
     ...(project?.fontSlots.length ? [`--font-slots-json=${JSON.stringify(project.fontSlots)}`] : []),
     ...(project?.extraChars ? [`--extra-chars=${project.extraChars}`] : []),
     `--font-regular=${project?.fontRegular ?? join(ROOT, "assets/fonts/NotoSansCJKSC-Regular-subset.ttf")}`,
@@ -126,7 +127,9 @@ async function packageTarget(target: Target, project?: ResolvedPodProject): Prom
   if (target === "android-watch" || target === "wearos-watch") {
     run(["bash", "scripts/build-android-runtime.sh"]);
     const app = target === "android-watch" ? ":androidApp" : ":wearApp";
-    const gradleArgs = project ? [`-PpodDistDir=${join(project.output, target)}`, `-PpodAppId=${project.config.appId}`, `-PpodAppName=${project.config.name}`, `-PpodVersionName=${project.config.versionName}`, `-PpodVersionCode=${project.config.versionCode}`] : [];
+    const gradleArgs = project ? [`-PpodDistDir=${join(project.output, target)}`, `-PpodAppId=${project.config.appId}`, `-PpodAppName=${project.config.name}`, `-PpodVersionName=${project.config.versionName}`, `-PpodVersionCode=${project.config.versionCode}`,
+      ...(project.androidResources ? [`-PpodResDir=${project.androidResources}`] : []),
+      ...(project.androidTheme ? [`-PpodAppTheme=${project.androidTheme}`] : [])] : [];
     run(["./gradlew", ...gradleArgs, `${app}:assembleDebug`, `${app}:bundleRelease`, ":runtime:assembleRelease"], join(ROOT, "platforms/android"));
   } else if (target === "watchos-watch") {
     if (!capture(["xcodebuild", "-version"])) fail("watchOS packaging must run on the configured Mac");

@@ -11,6 +11,7 @@
 #include <cstring>
 #include <cerrno>
 #include <unistd.h>
+#include <sys/mman.h>
 #include <sys/syscall.h>
 #include <linux/fs.h>
 #include "podjs_runtime.h"
@@ -18,10 +19,18 @@
 #include "vulkan_renderer.h"
 
 static double monoMs() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+struct MappedAsset {
+  void* base = MAP_FAILED;
+  size_t mappedLength = 0;
+  const uint8_t* bytes = nullptr;
+  size_t length = 0;
+  ~MappedAsset() { if(base != MAP_FAILED) munmap(base,mappedLength); }
+};
 struct Host {
   double reportAt = 0, jsMs = 0, rasterMs = 0, presentMs = 0, maxMs = 0;
   unsigned ticks = 0, draws = 0, gpuDraws = 0, cpuDraws = 0;
   PodRuntime* runtime{};
+  MappedAsset pak;
   std::unique_ptr<VulkanRenderer> renderer;
   TouchSnapshotQueue touches;
   std::vector<uint8_t> framebuffer;
@@ -39,6 +48,7 @@ struct Host {
   bool frameFailed = false;
   uint64_t diagnosticFrameSequence = 0;
 };
+static void renderFrame(Host* h);
 static void fail(JNIEnv* env, const char* message) { jclass c = env->FindClass("java/lang/IllegalStateException"); env->ThrowNew(c, message); }
 
 extern "C" JNIEXPORT jint JNICALL Java_dev_podjs_runtime_PodSyncGuestFiles_publishNoReplace(
@@ -230,40 +240,9 @@ extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeBo
   if(result) fail(env,pod_runtime_last_error());
   else __android_log_print(ANDROID_LOG_INFO,"PodJS","%s",pod_runtime_receipt(h->runtime));
 }
-// AAssetManager_open maps the entire stored ZIP entry even in STREAMING mode.
-// Read the pak through ZipFile instead, reusing one bounded JNI byte buffer.
-struct PakSource {
-  JNIEnv* env;
-  jobject reader;
-  jmethodID readAt;
-  jbyteArray buffer;
-};
-static int64_t readPakAt(void* context,uint64_t offset,uint8_t* out,size_t length) {
-  auto* source=static_cast<PakSource*>(context);
-  if(length>64*1024||offset>INT64_MAX||source->env->ExceptionCheck())return -1;
-  const jint count=source->env->CallIntMethod(source->reader,source->readAt,
-      static_cast<jlong>(offset),source->buffer,static_cast<jint>(length));
-  if(source->env->ExceptionCheck()||count<0||static_cast<size_t>(count)>length)return -1;
-  if(count)source->env->GetByteArrayRegion(source->buffer,0,count,reinterpret_cast<jbyte*>(out));
-  return source->env->ExceptionCheck()?-1:count;
-}
-extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeBootAssets(JNIEnv* env,jclass,jlong p,jobject assets,jobject pak,jlong pakLength) {
+extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeBootAssets(JNIEnv* env,jclass,jlong p,jobject assets) {
   auto* h=reinterpret_cast<Host*>(p); if(!h)return;
-  if(!pak||pakLength<=0||static_cast<uint64_t>(pakLength)>SIZE_MAX){fail(env,"PodJS main.pak has invalid length");return;}
-  const auto readerClass=env->GetObjectClass(pak);
-  if(!readerClass)return;
-  const auto readAt=env->GetMethodID(readerClass,"readAt","(J[BI)I");
-  env->DeleteLocalRef(readerClass);
-  if(!readAt)return;
-  const auto buffer=env->NewByteArray(64*1024);
-  if(!buffer)return;
-  PakSource source{env,pak,readAt,buffer};
   const double began=monoMs();
-  int result=pod_runtime_load_pak_reader(h->runtime,static_cast<size_t>(pakLength),readPakAt,&source);
-  env->DeleteLocalRef(buffer);
-  const double loaded=monoMs();
-  if(env->ExceptionCheck())return;
-  if(result){fail(env,pod_runtime_last_error());return;}
   auto* manager=AAssetManager_fromJava(env,assets);
   if(!manager){if(!env->ExceptionCheck())fail(env,"PodJS AssetManager is unavailable");return;}
   using Asset=std::unique_ptr<AAsset,decltype(&AAsset_close)>;
@@ -278,6 +257,38 @@ extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeBo
     }
     return asset;
   };
+  Asset pak=openAsset("main.pak"); if(!pak)return;
+  off64_t assetOffset=0,assetLength=0;
+  const int fd=AAsset_openFileDescriptor64(pak.get(),&assetOffset,&assetLength);
+  if(fd<0||assetOffset<0||assetLength<=0) {
+    if(fd>=0)close(fd);
+    fail(env,"PodJS main.pak must be stored (uncompressed) for mmap startup");return;
+  }
+  const long pageSize=sysconf(_SC_PAGESIZE);
+  if(pageSize<=0||static_cast<uint64_t>(assetLength)>SIZE_MAX) {
+    close(fd);fail(env,"PodJS main.pak mapping size is invalid");return;
+  }
+  const off64_t alignedOffset=assetOffset-(assetOffset%pageSize);
+  const size_t delta=static_cast<size_t>(assetOffset-alignedOffset);
+  if(static_cast<size_t>(assetLength)>SIZE_MAX-delta) {
+    close(fd);fail(env,"PodJS main.pak mapping overflows address space");return;
+  }
+  const size_t mappedLength=delta+static_cast<size_t>(assetLength);
+  void* mapping=mmap(nullptr,mappedLength,PROT_READ,MAP_PRIVATE,fd,alignedOffset);
+  const int mapError=errno;
+  close(fd);
+  if(mapping==MAP_FAILED) {
+    const std::string message=std::string("PodJS cannot mmap stored main.pak: ")+std::strerror(mapError);
+    fail(env,message.c_str());return;
+  }
+  h->pak.base=mapping;h->pak.mappedLength=mappedLength;
+  h->pak.bytes=static_cast<const uint8_t*>(mapping)+delta;
+  h->pak.length=static_cast<size_t>(assetLength);
+  pak.reset();
+  const double mapped=monoMs();
+  int result=pod_runtime_load_pak_mapped(h->runtime,h->pak.bytes,h->pak.length);
+  const double loaded=monoMs();
+  if(result){fail(env,pod_runtime_last_error());return;}
   Asset js=openAsset("main.js"); if(!js)return;
   Asset manifest=openAsset("pod.manifest.json"); if(!manifest)return;
   const auto* jb=static_cast<const uint8_t*>(AAsset_getBuffer(js.get()));
@@ -290,7 +301,13 @@ extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeBo
   result=pod_runtime_validate_package(h->runtime,json.c_str());
   const double validated=monoMs();
   if(!result) result=pod_runtime_eval_bundle(h->runtime,jb,jn,"app:///main.js");
-  __android_log_print(ANDROID_LOG_INFO,"PodJSPerf","boot pakReadMs=%.1f validateMs=%.1f evalMs=%.1f",loaded-began,validated-loaded,monoMs()-validated);
+  const double evaluated=monoMs();
+  double firstFramePrepareMs=0;
+  if(!result) {const double frameBegan=monoMs();renderFrame(h);firstFramePrepareMs=monoMs()-frameBegan;}
+  PodPakStats stats{};stats.struct_size=sizeof(stats);pod_runtime_pak_stats(h->runtime,&stats);
+  __android_log_print(ANDROID_LOG_INFO,"PodJSPerf","boot mmapMs=%.1f dirParseMs=%.3f pakHashMs=%.1f validateMs=%.1f evalMs=%.1f firstSlotLoadMs=%.3f loadedSlots=%u firstFramePrepareMs=%.1f",
+      mapped-began,stats.directory_parse_micros/1000.0,stats.pak_hash_micros/1000.0,validated-loaded,evaluated-validated,
+      stats.first_font_load_micros/1000.0,stats.loaded_font_slots,firstFramePrepareMs);
   if(result)fail(env,pod_runtime_last_error());
   else __android_log_print(ANDROID_LOG_INFO,"PodJS","%s",pod_runtime_receipt(h->runtime));
 }
@@ -347,8 +364,8 @@ extern "C" JNIEXPORT jlongArray JNICALL Java_dev_podjs_runtime_PodRuntimeView_na
   env->SetLongArrayRegion(result,0,static_cast<jsize>(length),values.get());
   return env->ExceptionCheck()?nullptr:result;
 }
-extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeFrame(JNIEnv*,jclass,jlong p) {
-  auto* h = reinterpret_cast<Host*>(p); if (!h) return;
+static void renderFrame(Host* h) {
+  if (!h) return;
   auto hostTiming = h->renderer->beginHostFrame(++h->diagnosticFrameSequence);
   const double start = monoMs();
   const auto& touches = h->touches.nextFrame();
@@ -392,6 +409,9 @@ extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeFr
   }
   hostTiming.setFlags(submittedFlags);
   hostTiming.finish(result==0,result);
+}
+extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeFrame(JNIEnv*,jclass,jlong p) {
+  renderFrame(reinterpret_cast<Host*>(p));
 }
 extern "C" JNIEXPORT jstring JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePollEffect(JNIEnv* env,jclass,jlong p){auto*h=reinterpret_cast<Host*>(p);if(!h)return nullptr;const char* line=pod_runtime_poll_effect(h->runtime);return line?env->NewStringUTF(line):nullptr;}
 extern "C" JNIEXPORT jstring JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePollNet(JNIEnv* env,jclass,jlong p){auto*h=reinterpret_cast<Host*>(p);if(!h)return nullptr;const char* line=pod_runtime_poll_net_command(h->runtime);return line?env->NewStringUTF(line):nullptr;}
