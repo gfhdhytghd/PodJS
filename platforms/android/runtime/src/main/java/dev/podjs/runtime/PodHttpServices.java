@@ -33,6 +33,8 @@ public final class PodHttpServices implements AutoCloseable {
     private final Object cancellationLock = new Object();
     private final java.util.Set<File> temporaryFiles = new java.util.HashSet<>();
     private volatile boolean closed;
+    private final java.util.concurrent.ScheduledExecutorService deadlines=java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
+    private final java.util.concurrent.atomic.AtomicInteger internalIds=new java.util.concurrent.atomic.AtomicInteger(-1);
 
     public PodHttpServices(Context context) {
         if (context == null) throw new IllegalArgumentException("context_required");
@@ -45,10 +47,14 @@ public final class PodHttpServices implements AutoCloseable {
         if (closed) throw new IllegalStateException("service_closed");
         if (!"http.download".equals(method) || args == null) throw new IllegalArgumentException("unsupported_method");
         int requestId = args.optInt("requestId", 0);
+        if(requestId==0){requestId=internalIds.getAndDecrement();args.put("requestId",requestId);}
+        final int id=requestId;
+        int callTimeout=args.optInt("callTimeoutMs",120000);if(callTimeout<1||callTimeout>600000)throw new IllegalArgumentException("invalid_call_timeout_ms");
         AtomicBoolean cancelled = new AtomicBoolean(false);
         if (requestId != 0 && cancellations.putIfAbsent(requestId, cancelled) != null) throw new IllegalArgumentException("duplicate_request_id");
+        java.util.concurrent.ScheduledFuture<?> deadline=deadlines.schedule(()->cancel(id),callTimeout,java.util.concurrent.TimeUnit.MILLISECONDS);
         try { return download(args, cancelled); }
-        finally { if (requestId != 0) { cancellations.remove(requestId, cancelled); connections.remove(requestId); } }
+        finally { deadline.cancel(false); if (requestId != 0) { cancellations.remove(requestId, cancelled); connections.remove(requestId); } }
     }
 
     /** Cancels a currently running download with the matching request id. */
@@ -64,7 +70,7 @@ public final class PodHttpServices implements AutoCloseable {
         return changed;
     }
 
-    @Override public void close() { synchronized (cancellationLock) { closed = true; for (File file : temporaryFiles) file.delete(); temporaryFiles.clear(); for (Map.Entry<Integer, AtomicBoolean> entry : cancellations.entrySet()) { entry.getValue().set(true); HttpURLConnection connection = connections.get(entry.getKey()); if (connection != null) connection.disconnect(); } } }
+    @Override public void close() { synchronized (cancellationLock) { closed = true; deadlines.shutdownNow(); for (File file : temporaryFiles) file.delete(); temporaryFiles.clear(); for (Map.Entry<Integer, AtomicBoolean> entry : cancellations.entrySet()) { entry.getValue().set(true); HttpURLConnection connection = connections.get(entry.getKey()); if (connection != null) connection.disconnect(); } } }
 
     void discard(JSONObject result) {
         synchronized (cancellationLock) {
@@ -75,11 +81,14 @@ public final class PodHttpServices implements AutoCloseable {
 
     private JSONObject download(JSONObject args, AtomicBoolean cancelled) throws Exception {
         String method = args.optString("method", "GET").toUpperCase(Locale.US);
-        if (!"GET".equals(method) && !"HEAD".equals(method) && !"POST".equals(method)) throw new IllegalArgumentException("unsupported_download_method");
+        if (!"GET".equals(method) && !"HEAD".equals(method) && !"POST".equals(method) && !"PATCH".equals(method)) throw new IllegalArgumentException("unsupported_download_method");
         String encodedBody=args.optString("bodyBase64", "");
         if(encodedBody.length()>1_400_000)throw new IllegalArgumentException("request_body_too_large");
         byte[] requestBody=android.util.Base64.decode(encodedBody,android.util.Base64.DEFAULT);
         if(requestBody.length>1024*1024)throw new IllegalArgumentException("request_body_too_large");
+        File bodyFile=args.has("bodyPath")&&!args.isNull("bodyPath")?safeFile(required(args,"bodyPath")):null;
+        if(bodyFile!=null&&(!encodedBody.isEmpty()||!bodyFile.isFile()||bodyFile.length()>8L*1024*1024))throw new IllegalArgumentException("invalid_request_body_file");
+        if(bodyFile!=null&&!("POST".equals(method)||"PATCH".equals(method)))throw new IllegalArgumentException("unexpected_request_body");
         String rawUrl = required(args, "url");
         File target = safeFile(required(args, "path"));
         long maxBytes = args.has("maxBytes") ? args.getLong("maxBytes") : DEFAULT_MAX_BYTES;
@@ -105,7 +114,17 @@ public final class PodHttpServices implements AutoCloseable {
                 connection.setConnectTimeout(timeout); connection.setReadTimeout(readTimeout);
                 connection.setRequestMethod(method);
                 for (Map.Entry<String, String> header : headers.entrySet()) connection.setRequestProperty(header.getKey(), header.getValue());
-                if("POST".equals(method)){connection.setDoOutput(true);connection.setFixedLengthStreamingMode(requestBody.length);try(java.io.OutputStream request=connection.getOutputStream()){request.write(requestBody);}}
+                if("POST".equals(method)||"PATCH".equals(method)){
+                    connection.setDoOutput(true);connection.setFixedLengthStreamingMode(bodyFile==null?requestBody.length:bodyFile.length());
+                    try(java.io.OutputStream request=connection.getOutputStream()){
+                        if(bodyFile==null)request.write(requestBody);
+                        else try(FileInputStream input=new FileInputStream(bodyFile)){
+                            byte[] block=new byte[BUFFER_SIZE];int n;long sent=0,expected=bodyFile.length();
+                            while((n=input.read(block))!=-1){if(closed||cancelled.get())throw new IOException("download_cancelled");sent+=n;if(sent>expected)throw new IOException("request_body_changed");request.write(block,0,n);}
+                            if(sent!=expected)throw new IOException("request_body_changed");
+                        }
+                    }
+                }
                 int status = connection.getResponseCode();
                 if (status < 300 || status > 399) {
                     boolean success = status >= 200 && status < 300;
@@ -136,14 +155,15 @@ public final class PodHttpServices implements AutoCloseable {
                     }
                     return result(status, connection, current, target, length);
                 }
+                if(!args.optBoolean("followRedirects",true))throw new IOException("redirect_disabled");
                 String location = connection.getHeaderField("Location");
                 if (location == null || ++redirects > MAX_REDIRECTS) throw new IOException("redirect_limit");
                 URL next = checkedUrl(current.toURI().resolve(location).toURL().toString());
                 if (!origin(current).equals(origin(next))) {
-                    if("POST".equals(method))throw new IOException("cross_origin_post_redirect");
-                    headers.remove("authorization"); headers.remove("cookie"); headers.remove("proxy-authorization");
+                    if("POST".equals(method)||"PATCH".equals(method))throw new IOException("cross_origin_post_redirect");
+                    headers.remove("authorization"); headers.remove("cookie"); headers.remove("proxy-authorization"); headers.remove("x-watchrss-device-authorization"); headers.remove("x-signature"); headers.remove("apikey");
                 }
-                if("POST".equals(method)&&(status==301||status==302||status==303)){method="GET";requestBody=new byte[0];headers.remove("content-type");}
+                if("POST".equals(method)&&(status==301||status==302||status==303)){method="GET";requestBody=new byte[0];bodyFile=null;headers.remove("content-type");}
                 current = next;
                 connection.disconnect(); connection = null;
             }
