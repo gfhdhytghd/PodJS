@@ -34,6 +34,14 @@ public final class PodTakeoverTest {
         assertEquals(c.getDatabasePath("podjs.sqlite"),PodTakeover.database(c));
         assertFalse(new File(c.getFilesDir(),"package-takeover").exists());
     }
+    @Test public void podjsAndWebViewOnlyRemainFresh()throws Exception {
+        Context c=fixture();File sandbox=new File(c.getApplicationInfo().dataDir);
+        for(String path:new String[]{"shared_prefs/WebViewChromiumPrefs.xml","databases/podjs.sqlite","files/podjs/podjs-kv.json","files/podjs/files/article"}) {
+            File file=new File(sandbox,path);file.getParentFile().mkdirs();Files.write(file.toPath(),"host-only".getBytes("UTF-8"));
+        }
+        assertFalse(PodTakeover.detect(c).present);assertTrue(PodTakeover.ready(c));
+        assertEquals("NONE",PodTakeover.status(c).getString("phase"));assertFalse(new File(sandbox,"files/package-takeover").exists());
+    }
     @Test public void sourceDetectionNeverWritesOrStartsStorage()throws Exception {
         Context c=fixture();header(c,18);byte[] before=Files.readAllBytes(c.getDatabasePath("watchrss.db").toPath());
         assertEquals(18,PodTakeover.detect(c).schema);assertFalse(PodTakeover.ready(c));
@@ -53,7 +61,16 @@ public final class PodTakeoverTest {
     @Test public void allFourRootsResolveSameCommittedGeneration()throws Exception {
         Context c=fixture();File root=new File(c.getFilesDir(),"package-takeover");File g=new File(root,"generations/g-fixture");new File(g,"podjs/files").mkdirs();
         Properties p=new Properties();p.setProperty("protocol","1");p.setProperty("phase","ACTIVE");p.setProperty("generation","g-fixture");p.setProperty("receipt",new String(new char[64]).replace('\0','a'));
-        PodTakeoverCoordinator.atomic(new File(root,"active"),p);PodTakeoverCoordinator.atomic(new File(root,"journal"),p);
+        try(android.database.sqlite.SQLiteDatabase db=android.database.sqlite.SQLiteDatabase.openOrCreateDatabase(new File(g,"podjs.sqlite"),null)) {
+            org.json.JSONArray schema=new org.json.JSONArray(PodRoomV18Converter.resource("watchrss-schema.json"));
+            for(int i=0;i<schema.length();i++)db.execSQL(schema.getString(i));
+            db.execSQL("INSERT INTO sync_local_identity(id,device_id,device_order) VALUES(1,'fixture','fixture')");
+        }
+        Files.write(new File(g,"podjs/podjs-kv.json").toPath(),"{}".getBytes("UTF-8"));
+        Files.write(new File(g,"podjs/secure.store").toPath(),new PodStoreAndroidCrypto(c).seal(new org.json.JSONObject()));
+        Properties pointer=new Properties();pointer.setProperty("generation",p.getProperty("generation"));pointer.setProperty("receipt",p.getProperty("receipt"));
+        PodTakeoverCoordinator.atomic(new File(g,"activation-receipt"),pointer);
+        PodTakeoverCoordinator.atomic(new File(root,"active"),pointer);PodTakeoverCoordinator.atomic(new File(root,"journal"),p);
         assertEquals(new File(g,"podjs.sqlite"),PodTakeover.database(c));
         assertEquals(new File(g,"podjs"),PodTakeover.dataRoot(c)); // Rust KV root
         assertEquals(new File(g,"podjs/files"),PodTakeover.filesRoot(c));

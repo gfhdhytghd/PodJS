@@ -11,10 +11,15 @@ import org.json.JSONObject;
 public final class PodTakeover {
     private PodTakeover() {}
     private static PodTakeoverCoordinator coordinator(Context c) {
-        return new PodTakeoverCoordinator(new File(c.getFilesDir(),"package-takeover"),
-                () -> detect(c),new PodTakeoverConverters(new PodRoomV18Converter(c.getDatabasePath("watchrss.db"),
+        File sandbox=new File(c.getApplicationInfo().dataDir);
+        return new PodTakeoverCoordinator(new File(sandbox,"files/package-takeover"),
+                () -> detect(c),new PodTakeoverConverters(new PodRoomV18Converter(new File(sandbox,"databases/watchrss.db"),
                     PodRoomAndroidDb::new,(File generation) -> PodStoreConverter.identity(new File(generation,"stores-source"))),
-                    new PodStoreConverter(new File(c.getApplicationInfo().dataDir),new PodStoreAndroidCrypto(c))));
+                    new PodStoreConverter(new File(c.getApplicationInfo().dataDir),new PodStoreAndroidCrypto(c)),
+                    new PodFileConverter(new File(c.getApplicationInfo().dataDir),PodRoomAndroidDb::new,(file,faces) -> {
+                        for(int i=0;i<faces;i++)if(new android.graphics.Typeface.Builder(file).setTtcIndex(i).build()==null)
+                            throw new IOException("font_unloadable");
+                    })));
     }
     // Keyed by Android's in-memory sandbox path, not Activity identity. Distinct
     // fixture/storage contexts must not accidentally share an admitted generation.
@@ -57,51 +62,8 @@ public final class PodTakeover {
         activity.setContentView(view); return true;
     }
     static PodTakeoverCoordinator.Source detect(Context c) throws IOException {
-        File db=c.getDatabasePath("watchrss.db");
-        File prefs=new File(c.getApplicationInfo().dataDir,"shared_prefs");
-        File stores=new File(c.getFilesDir(),"datastore");
-        Properties inventory=new Properties();
-        inventory.setProperty("source.database",Boolean.toString(db.exists()));
-        inventory.setProperty("source.wal",Boolean.toString(new File(db+"-wal").exists()));
-        boolean present=db.exists() || new File(db+"-wal").exists();
-        // Native source supplies a suffix to preferencesDataStoreFile; retain both
-        // known names so a version that corrected the doubled suffix is detected.
-        for(String name:new String[]{"settings.preferences_pb","settings.preferences_pb.preferences_pb","bili_cache.preferences_pb","bili_cache.preferences_pb.preferences_pb"}) {
-            boolean exists=new File(stores,name).exists();present |= exists;
-            inventory.setProperty("source.store."+name,Boolean.toString(exists));
-        }
-        for(String name:new String[]{"reader_preset_state","home_entry_placement","app_resume_state","douyin_watch_history","douyin_recent_window","douyin_feed_cache","watchrss_announcement","watchrss_push","watch_device_identity","watchrss_installation_identity","watchrss_daily_telemetry","watchrss_download_telemetry","watchrss_cloud_state","watchrss_account_state","llm_secure_prefs","tts_secure_prefs","watchrss_cloud_keys"})
-        {
-            boolean exists=new File(prefs,name+".xml").exists();present |= exists;
-            inventory.setProperty("source.store."+name,Boolean.toString(exists));
-        }
-        for(String name:new String[]{"article_content","offline","reader_assets","notes","watch-cloud-cache"})
-            present |= new File(c.getFilesDir(),name).exists();
-        present |= nonempty(prefs) || nonempty(stores);
-        if(!present)return new PodTakeoverCoordinator.Source(false,null,0,0,0);
-        int schema=-1; String block=null;
-        // Version and Room identity/columns are checked on the recovered private
-        // snapshot, including uncheckpointed WAL. Never inspect a stale header.
-        if(!db.isFile())block="source_database_missing";
-        else schema=18; // expected contract; converter proves it before COPYING
-        if(c.getDatabasePath("podjs.sqlite").exists() || nonempty(new File(c.getFilesDir(),"podjs")))block="target_conflict";
-        File[] auxiliary=c.getNoBackupFilesDir().listFiles();
-        if(auxiliary==null)throw new IOException("target_unreadable");
-        for(File target:auxiliary)if(target.getName().startsWith("podjs-") && nonempty(target))block="target_conflict";
+        // No Context directory getter here: those may mkdir even on read-only preflight.
         android.os.UserManager users=(android.os.UserManager)c.getSystemService(Context.USER_SERVICE);
-        if(users!=null && !users.isUserUnlocked())block="user_locked";
-        long bytes=size(db)+size(new File(db+"-wal"))+size(prefs)+size(stores);
-        for(String name:new String[]{"article_content","offline","reader_assets","notes","watch-cloud-cache"})bytes=Math.addExact(bytes,size(new File(c.getFilesDir(),name)));
-        long required=Math.addExact(Math.multiplyExact(bytes,3),32L*1024*1024);
-        PodTakeoverCoordinator.Source result=new PodTakeoverCoordinator.Source(true,block,schema,required,c.getFilesDir().getUsableSpace());
-        result.inventory.putAll(inventory);return result;
-    }
-    private static boolean nonempty(File f) throws IOException {return f.exists() && (!f.isDirectory() || f.list()==null || f.list().length>0);}
-    private static long size(File f) throws IOException {
-        if(java.nio.file.Files.isSymbolicLink(f.toPath()))throw new IOException("source_symlink");
-        if(!f.exists())return 0;
-        if(!f.isDirectory())return f.length();
-        File[] children=f.listFiles();if(children==null)throw new IOException("source_unreadable");
-        long total=0;for(File child:children)total=Math.addExact(total,size(child));return total;
+        return PodTakeoverSource.detect(new File(c.getApplicationInfo().dataDir),users==null||users.isUserUnlocked());
     }
 }

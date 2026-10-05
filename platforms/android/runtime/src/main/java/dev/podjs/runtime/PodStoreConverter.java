@@ -22,6 +22,10 @@ public final class PodStoreConverter implements PodTakeoverCoordinator.Converter
     private final File sandbox;private final Crypto crypto;private final Hook hook;
     public PodStoreConverter(File sandbox,Crypto crypto){this(sandbox,crypto,(s,b)->{});}
     PodStoreConverter(File sandbox,Crypto crypto,Hook hook){this.sandbox=sandbox;this.crypto=crypto;this.hook=hook;}
+    public void active(File g)throws Exception {
+        validateKv(json(new File(g,"podjs/podjs-kv.json")));
+        validateSecure(crypto.open(PodPreferenceReader.bytes(new File(g,"podjs/secure.store"))));
+    }
     public String version(){return "watchrss-stores-1";}public boolean complete(){return false;}
     static boolean encrypted(String s){return Arrays.asList("watchrss_account_state","llm_secure_prefs","tts_secure_prefs","watchrss_cloud_keys").contains(s);}
     static void write(File f,byte[] b)throws Exception{if(!f.getCanonicalFile().equals(f.getAbsoluteFile()))throw new IOException("candidate_symlink");Files.createDirectories(f.getParentFile().toPath());File tmp=new File(f+".tmp");if(Files.isSymbolicLink(tmp.toPath()))throw new IOException("candidate_symlink");try(FileOutputStream out=new FileOutputStream(tmp)){out.write(b);out.getFD().sync();}Files.move(tmp.toPath(),f.toPath(),StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);PodTakeoverCoordinator.syncDirectory(f.getParentFile());}

@@ -40,6 +40,15 @@ public final class PodRoomV18Converter implements PodTakeoverCoordinator.Convert
     public PodRoomV18Converter(File source, Factory factory, SnapshotIdentitySource identity) {
         this.source=source;this.factory=factory;this.identity=identity;this.batchSize=128;this.hook=c -> {};
     }
+    public void active(File g)throws Exception {
+        File file=new File(g,"podjs.sqlite");if(file.length()<100)throw new IOException("active_database_invalid");
+        try(Db db=factory.open(file)) {
+            checks(db);
+            for(String table:new String[]{"articles","channels","memo_notes","sync_local_identity"})
+                if(scalar(db,"SELECT name FROM sqlite_master WHERE type='table' AND name=?",table)==null)throw new IOException("active_schema_missing");
+            if(!nonempty(scalar(db,"SELECT device_id FROM sync_local_identity WHERE id=1")))throw new IOException("active_identity_missing");
+        }
+    }
     public String version(){return "watchrss-room-v18-1";}
     public boolean complete(){return false;}
     static String resource(String name) throws Exception {

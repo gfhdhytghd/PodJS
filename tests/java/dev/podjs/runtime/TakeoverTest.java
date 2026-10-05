@@ -62,6 +62,29 @@ public final class TakeoverTest {
         PodTakeoverCoordinator engine=new PodTakeoverCoordinator(root,()->new PodTakeoverCoordinator.Source(false,null,0,0,0),new Converter());
         check(engine.activeGeneration(engine.run())==null);check(!root.exists());check(Files.readString(legacy.toPath()).equals("existing user data"));
     }
+    static void podjsOnlyIsNotNative()throws Exception {
+        File sandbox=Files.createTempDirectory("takeover-podjs-only").toFile();
+        for(String path:new String[]{"shared_prefs/WebViewChromiumPrefs.xml","databases/podjs.sqlite","files/podjs/podjs-kv.json","files/podjs/secure.store","files/podjs/files/article_content/own.html","cache/rss_images/own-cache","shared_prefs/unknown-host.xml"}) {
+            File file=new File(sandbox,path);file.getParentFile().mkdirs();Files.writeString(file.toPath(),"host-owned unchanged bytes");
+        }
+        Map<String,java.nio.file.attribute.FileTime> times=new TreeMap<>();Map<String,String> bytes=new TreeMap<>();
+        try(java.util.stream.Stream<Path> paths=Files.walk(sandbox.toPath())){for(Path path:(Iterable<Path>)paths::iterator){String key=sandbox.toPath().relativize(path).toString();times.put(key,Files.getLastModifiedTime(path));if(Files.isRegularFile(path))bytes.put(key,Files.readString(path));}}
+        File root=new File(sandbox,"files/package-takeover");AtomicInteger probes=new AtomicInteger();
+        check(!PodTakeoverSource.detect(sandbox,false).present); // locked fresh install is still NONE
+        for(int i=0;i<3;i++) {
+            Properties inventory=new Properties();
+            check(!PodTakeoverSource.inventory(sandbox,inventory));check(inventory.values().stream().allMatch("false"::equals));
+            PodTakeoverCoordinator coordinator=new PodTakeoverCoordinator(root,()->{probes.incrementAndGet();return PodTakeoverSource.detect(sandbox,true);},EMPTY_MUST_NOT_RUN);
+            Properties p=coordinator.run();check(p.getProperty("phase").equals("NONE"));check(coordinator.activeGeneration(p)==null);check(!root.exists());
+        }
+        check(probes.get()==3);
+        try(java.util.stream.Stream<Path> paths=Files.walk(sandbox.toPath())){List<Path> all=paths.toList();check(all.size()==times.size());for(Path path:all){String key=sandbox.toPath().relativize(path).toString();check(times.get(key).equals(Files.getLastModifiedTime(path)));if(Files.isRegularFile(path))check(bytes.get(key).equals(Files.readString(path)));}}
+        // A genuine native orphan must still block rather than masquerade as fresh.
+        for(String path:new String[]{"databases/watchrss.db-wal","shared_prefs/watchrss_account_state.xml.bak","files/datastore/settings.preferences_pb.preferences_pb","files/notes/assets/image"}) {
+            File nativeFile=new File(sandbox,path);nativeFile.getParentFile().mkdirs();Files.writeString(nativeFile.toPath(),"native evidence");check(PodTakeoverSource.inventory(sandbox,new Properties()));check(PodTakeoverSource.detect(sandbox,true).present);Files.delete(nativeFile.toPath());
+        }
+    }
+    static final PodTakeoverCoordinator.Converter EMPTY_MUST_NOT_RUN=new Converter(){public void snapshot(File g){throw new AssertionError("no-source converter called");}};
     static void terminalAdmissionCache()throws Exception {
         for(boolean nativeSource:new boolean[]{false,true}) {
             File root=temp();AtomicInteger detects=new AtomicInteger(),resolutions=new AtomicInteger();
@@ -136,11 +159,11 @@ public final class TakeoverTest {
     static void atomicPointer()throws Exception {
         File root=temp();root.mkdirs();File pointer=new File(root,"active");Properties a=new Properties();a.setProperty("generation","g-one");a.setProperty("receipt",HASH);
         PodTakeoverCoordinator.atomic(pointer,a);AtomicBoolean stop=new AtomicBoolean();AtomicReference<Throwable> failure=new AtomicReference<>();
-        Thread reader=new Thread(()->{try{while(!stop.get()){Properties p=PodTakeoverCoordinator.read(pointer);check(p.getProperty("receipt").equals(HASH));check(Set.of("g-one","g-two").contains(p.getProperty("generation")));}}catch(Throwable e){failure.set(e);}});reader.start();
-        for(int i=0;i<100;i++){a.setProperty("generation",i%2==0?"g-one":"g-two");PodTakeoverCoordinator.atomic(pointer,a);}
+        Thread reader=new Thread(()->{try{while(!stop.get()){Properties p=PodTakeoverCoordinator.read(pointer);check(Set.of("g-one","g-two").contains(p.getProperty("generation")));check(p.getProperty("receipt").equals(p.getProperty("generation").equals("g-one")?HASH:"b".repeat(64)));}}catch(Throwable e){failure.set(e);}});reader.start();
+        for(int i=0;i<100;i++){a.setProperty("generation",i%2==0?"g-one":"g-two");a.setProperty("receipt",i%2==0?HASH:"b".repeat(64));PodTakeoverCoordinator.atomic(pointer,a);}
         stop.set(true);reader.join();check(failure.get()==null);
         // Torn temporary file is never a committed pointer.
-        Files.writeString(new File(root,"active.tmp").toPath(),"generation=g-");check(PodTakeoverCoordinator.read(pointer).getProperty("receipt").equals(HASH));
+        Files.writeString(new File(root,"active.tmp").toPath(),"generation=g-");check(PodTakeoverCoordinator.read(pointer).getProperty("receipt").equals("b".repeat(64)));
     }
     static void publicationGapAndCorruption()throws Exception {
         File root=temp();Converter converter=new Converter();
@@ -162,6 +185,25 @@ public final class TakeoverTest {
         File badReceipt=temp();Converter invalid=new Converter(){public String verify(File g){return "";}};
         check(new PodTakeoverCoordinator(badReceipt,source,invalid).run().getProperty("phase").equals("PAUSED"));check(!new File(badReceipt,"active").exists());
     }
+    static void activationRechecksGates()throws Exception {
+        for(PodTakeoverCoordinator.Phase phase:new PodTakeoverCoordinator.Phase[]{PodTakeoverCoordinator.Phase.READY,PodTakeoverCoordinator.Phase.ACTIVATING}) {
+            File root=temp();AtomicBoolean blocked=new AtomicBoolean();
+            Converter converter=new Converter(){public String blocker(File g){return blocked.get()?"needs_user_confirmation":null;}};
+            Properties p=new PodTakeoverCoordinator(root,source,converter,saved->{if(saved==phase)blocked.set(true);}).run();
+            check(p.getProperty("phase").equals("BLOCKED"));check(p.getProperty("reason").equals("needs_user_confirmation"));check(!new File(root,"active").exists());
+        }
+        File root=temp();AtomicBoolean complete=new AtomicBoolean(true);
+        Converter converter=new Converter(){public boolean complete(){return complete.get();}};
+        Properties p=new PodTakeoverCoordinator(root,source,converter,saved->{if(saved==PodTakeoverCoordinator.Phase.ACTIVATING)complete.set(false);}).run();
+        check(p.getProperty("phase").equals("PAUSED"));check(!new File(root,"active").exists());
+        // Neither a journal nor its temporary/lock path may redirect writes outside the candidate.
+        for(String name:new String[]{"journal","journal.tmp","lock"}) {
+            File linked=temp();linked.mkdirs();File outside=Files.createTempFile("takeover-control-link","").toFile();Files.writeString(outside.toPath(),"untouched");
+            Files.createSymbolicLink(new File(linked,name).toPath(),outside.toPath());
+            try{new PodTakeoverCoordinator(linked,source,new Converter()).run();throw new AssertionError();}catch(IOException expected){}
+            check(Files.readString(outside.toPath()).equals("untouched"));
+        }
+    }
     static void concurrency()throws Exception {
         File root=temp();Converter converter=new Converter();ExecutorService pool=Executors.newFixedThreadPool(8);
         try {List<Future<Properties>> runs=new ArrayList<>();for(int i=0;i<16;i++)runs.add(pool.submit(()->new PodTakeoverCoordinator(root,source,converter).run()));
@@ -178,6 +220,6 @@ public final class TakeoverTest {
     }
     public static void main(String[] args)throws Exception {
         if(args.length>0){check(new PodTakeoverCoordinator(new File(args[0]),source,new Converter()).run().getProperty("phase").equals("ACTIVE"));return;}
-        terminalAdmissionCache();concurrentAdmission();noSourceNeverWrites();restartEveryPhase();failures();fresh();atomicPointer();publicationGapAndCorruption();concurrency();System.out.println("takeover JVM: PASS (terminal admission cache, concurrent single resolution, no-source zero writes, phase restart, pause/block, atomic pointer, thread/process locks)");
+        podjsOnlyIsNotNative();terminalAdmissionCache();concurrentAdmission();noSourceNeverWrites();restartEveryPhase();failures();fresh();atomicPointer();publicationGapAndCorruption();activationRechecksGates();concurrency();System.out.println("takeover JVM: PASS (terminal admission cache, concurrent single resolution, no-source zero writes, phase restart, pause/block, atomic pointer, thread/process locks)");
     }
 }

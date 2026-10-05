@@ -13,6 +13,10 @@ public final class PodTakeoverCoordinator {
     public interface Converter {
         String version();
         default boolean complete() { return true; }
+        /** Fixed non-sensitive code; null only when every blocking verification is cleared. */
+        default String blocker(File generation) throws Exception { return null; }
+        /** Read current production stores without comparing them to the old import. */
+        default void active(File generation) throws Exception {}
         void snapshot(File generation) throws Exception;
         void copy(File generation) throws Exception;
         /** Recheck fixed snapshot identity, converter version, cursors and batch receipts. */
@@ -38,7 +42,7 @@ public final class PodTakeoverCoordinator {
         }
     }
     public interface Probe { Source detect() throws Exception; }
-    public interface Checkpoint { void saved(Phase phase); }
+    public interface Checkpoint { void saved(Phase phase); default void published() {} }
     private static final Object PROCESS_LOCK = new Object();
     private final File root;
     private final Probe probe;
@@ -58,7 +62,8 @@ public final class PodTakeoverCoordinator {
             }
             Files.createDirectories(root.toPath());
             syncDirectory(root.getParentFile());
-            try (RandomAccessFile lock=new RandomAccessFile(new File(root,"lock"),"rw"); FileLock held=lock.getChannel().lock()) {
+            safeFile(new File(root,"lock"));
+            try (FileChannel lock=FileChannel.open(new File(root,"lock").toPath(),StandardOpenOption.CREATE,StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS); FileLock held=lock.lock()) {
                 Properties p=read(new File(root,"journal"));
                 if (p.isEmpty()) {
                     Source source=probe.detect();
@@ -76,7 +81,7 @@ public final class PodTakeoverCoordinator {
                 }
                 if (!"1".equals(p.getProperty("protocol"))) throw new IOException("protocol_unsupported");
                 Phase phase=Phase.valueOf(p.getProperty("phase"));
-                if (phase==Phase.ACTIVE) { validatePointer(p); return p; }
+                if (phase==Phase.ACTIVE) { validatePointer(p); converter.active(generation(p.getProperty("generation"))); return p; }
                 if (phase==Phase.BLOCKED) return p;
                 if (!converter.version().equals(p.getProperty("converter"))) {
                     p.setProperty("reason","converter_changed_candidate_retained"); save(p,Phase.BLOCKED); return p;
@@ -105,28 +110,40 @@ public final class PodTakeoverCoordinator {
                             case VERIFYING:
                                 String receipt=converter.verify(generation);
                                 if (receipt==null || !receipt.matches("[a-f0-9]{64}")) throw new IOException("receipt_invalid");
+                                if (blocked(p,generation)) return p;
                                 if (!converter.complete()) {
                                     p.setProperty("reason","converters_incomplete");
                                     p.setProperty("resumePhase",Phase.VERIFYING.name());
                                     save(p,Phase.PAUSED); return p;
                                 }
                                 p.setProperty("receipt",receipt); phase=Phase.READY; break;
-                            case READY: phase=Phase.ACTIVATING; break;
+                            case READY:
+                                if (blocked(p,generation)) return p;
+                                phase=Phase.ACTIVATING; break;
                             case ACTIVATING:
+                                if (blocked(p,generation)) return p;
                                 if (!p.getProperty("receipt","").equals(converter.verify(generation))) throw new IOException("receipt_changed");
+                                if (!converter.complete()) throw new IOException("converters_incomplete");
+                                Properties activation=new Properties();
+                                activation.setProperty("generation",p.getProperty("generation"));
+                                activation.setProperty("receipt",p.getProperty("receipt"));
+                                atomic(new File(generation,"activation-receipt"),activation);
                                 syncTree(generation);
                                 syncDirectory(generation.getParentFile());
                                 syncDirectory(root);
                                 Properties pointer=new Properties(); pointer.setProperty("generation",p.getProperty("generation"));
                                 pointer.setProperty("receipt",p.getProperty("receipt"));
                                 atomic(new File(root,"active"),pointer);
+                                checkpoint.published();
+                                validatePointer(p);
                                 phase=Phase.ACTIVE; break;
-                            case ACTIVE: validatePointer(p); return p;
+                            case ACTIVE: validatePointer(p); converter.active(generation); return p;
                             default: throw new IOException("phase_invalid");
                         }
                         save(p,phase);
                     }
                 } catch (Exception error) {
+                    if(phase==Phase.ACTIVE)throw error; // committed generation is terminal, even if readback fails
                     p.setProperty("resumePhase",phase.name());
                     // Converter exceptions can contain secrets or URLs; persist only fixed codes.
                     p.setProperty("reason",error instanceof IOException && ("space_insufficient".equals(error.getMessage()) || "user_locked".equals(error.getMessage()))?error.getMessage():converter==EMPTY?"converter_unavailable":"stage_failed");
@@ -134,6 +151,12 @@ public final class PodTakeoverCoordinator {
                 }
             }
         }
+    }
+    private boolean blocked(Properties p,File generation)throws Exception {
+        String reason=converter.blocker(generation);
+        if(reason==null)return false;
+        if(!reason.matches("[a-z0-9_]{1,96}"))reason="verification_blocked";
+        p.setProperty("reason",reason);save(p,Phase.BLOCKED);return true;
     }
     private static Properties fresh() { Properties p=new Properties(); p.setProperty("phase","NONE"); return p; }
     private void save(Properties p, Phase phase) throws IOException {
@@ -144,7 +167,16 @@ public final class PodTakeoverCoordinator {
         Properties active=read(new File(root,"active"));
         if (!p.getProperty("generation","").equals(active.getProperty("generation")) ||
             !p.getProperty("receipt","").equals(active.getProperty("receipt"))) throw new IOException("pointer_mismatch");
-        if (!generation(active.getProperty("generation")).isDirectory()) throw new IOException("generation_missing");
+        File g=generation(active.getProperty("generation"));
+        if (!g.isDirectory()) throw new IOException("generation_missing");
+        Properties receipt=read(new File(g,"activation-receipt"));
+        if(!active.equals(receipt))throw new IOException("activation_receipt_mismatch");
+        for(String path:new String[]{"podjs.sqlite","podjs/podjs-kv.json","podjs/secure.store"}) {
+            File file=new File(g,path);
+            if(!file.getCanonicalFile().equals(file.getAbsoluteFile())||!Files.isRegularFile(file.toPath(),LinkOption.NOFOLLOW_LINKS)||file.length()==0)throw new IOException("active_store_missing");
+        }
+        File files=new File(g,"podjs/files");
+        if(!files.getCanonicalFile().equals(files.getAbsoluteFile())||!Files.isDirectory(files.toPath(),LinkOption.NOFOLLOW_LINKS))throw new IOException("active_files_missing");
     }
     File generation(String id) throws IOException {
         if (id==null || !id.matches("g-[a-zA-Z0-9-]+")) throw new IOException("generation_invalid");
@@ -157,12 +189,19 @@ public final class PodTakeoverCoordinator {
         if (!"ACTIVE".equals(admitted.getProperty("phase"))) throw new IOException("takeover_pending");
         validatePointer(admitted); return generation(admitted.getProperty("generation"));
     }
+    private static void safeFile(File file)throws IOException {
+        if(!file.getCanonicalFile().equals(file.getAbsoluteFile()))throw new IOException("takeover_symlink");
+        for(Path path=file.toPath().toAbsolutePath();path!=null;path=path.getParent())if(Files.isSymbolicLink(path))throw new IOException("takeover_symlink");
+    }
     static Properties read(File file) throws IOException {
-        Properties p=new Properties(); if (file.exists()) try(InputStream in=new FileInputStream(file)){p.load(in);} return p;
+        safeFile(file);Properties p=new Properties();
+        if(Files.exists(file.toPath(),LinkOption.NOFOLLOW_LINKS))try(InputStream in=Files.newInputStream(file.toPath(),LinkOption.NOFOLLOW_LINKS)){p.load(in);}return p;
     }
     static void atomic(File file, Properties p) throws IOException {
-        File temporary=new File(file.getParentFile(),file.getName()+".tmp");
-        try(FileOutputStream out=new FileOutputStream(temporary)){p.store(out,null);out.getFD().sync();}
+        safeFile(file);File temporary=new File(file.getParentFile(),file.getName()+".tmp");safeFile(temporary);
+        try(FileChannel channel=FileChannel.open(temporary.toPath(),StandardOpenOption.CREATE,StandardOpenOption.TRUNCATE_EXISTING,StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS)){
+            OutputStream out=java.nio.channels.Channels.newOutputStream(channel);p.store(out,null);out.flush();channel.force(true);
+        }
         Files.move(temporary.toPath(),file.toPath(),StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);
         syncDirectory(file.getParentFile());
     }
