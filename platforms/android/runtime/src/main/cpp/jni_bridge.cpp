@@ -306,10 +306,12 @@ extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeBo
   const double validated=monoMs();
   const char* evalMode="source";
   Asset bytecode(AAssetManager_open(manager,"main.qbc",AASSET_MODE_BUFFER),AAsset_close);
+  double bytecodeAssetMs=0;
   bool evaluateSource=!result&&!bytecode;
   if(!result&&bytecode) {
     const auto* qb=static_cast<const uint8_t*>(AAsset_getBuffer(bytecode.get()));
     if(!qb){fail(env,"PodJS cannot map asset main.qbc");return;}
+    bytecodeAssetMs=monoMs()-validated;
     result=pod_runtime_eval_bundle_bytecode(h->runtime,qb,AAsset_getLength64(bytecode.get()));
     if(!result)evalMode="bytecode";
     else if(result==-2){result=0;evaluateSource=true;}
@@ -333,6 +335,13 @@ extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeBo
       stats.directory_hash_micros/1000.0,stats.eager_hash_micros/1000.0,stats.integrity_hash_micros/1000.0,
       pakIntegrity,stats.verified_entries,stats.integrity_failures,validated-loaded,evaluated-validated,
       evalMode,stats.first_font_load_micros/1000.0,stats.loaded_font_slots,firstFramePrepareMs);
+  if(!result&&std::strcmp(evalMode,"bytecode")==0) {
+    PodEvalStats eval{};eval.struct_size=sizeof(eval);pod_runtime_eval_stats(h->runtime,&eval);
+    __android_log_print(ANDROID_LOG_INFO,"PodJSPerf","bytecode bytes=%llu assetMs=%.3f hashMs=%.3f mountMs=%.3f readObjectMs=%.3f instantiateExecuteMs=%.3f drainJobsMs=%.3f finishMs=%.3f",
+        static_cast<unsigned long long>(eval.bytecode_bytes),bytecodeAssetMs,eval.hash_micros/1000.0,
+        eval.mount_micros/1000.0,eval.read_object_micros/1000.0,eval.execute_micros/1000.0,
+        eval.drain_jobs_micros/1000.0,eval.finish_micros/1000.0);
+  }
   if(result)fail(env,pod_runtime_last_error());
   else __android_log_print(ANDROID_LOG_INFO,"PodJS","%s",pod_runtime_receipt(h->runtime));
 }

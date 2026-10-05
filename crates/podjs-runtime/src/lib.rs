@@ -165,6 +165,26 @@ pub struct PodPakStats {
     pub integrity_hash_micros: u64,
 }
 
+/// Last bytecode evaluation, in microseconds. JS_EvalFunction combines the
+/// global-function closure creation with execution; there is no module linker
+/// phase for the CLI's global IIFE bundle.
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+pub struct PodEvalStats {
+    pub struct_size: u32,
+    pub bytecode_bytes: u64,
+    pub hash_micros: u64,
+    pub mount_micros: u64,
+    pub read_object_micros: u64,
+    pub execute_micros: u64,
+    pub drain_jobs_micros: u64,
+    pub finish_micros: u64,
+}
+
+fn elapsed_micros(began: Instant) -> u64 {
+    began.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
+}
+
 #[repr(C)]
 pub struct PodRuntimePerfStats {
     pub struct_size: u32,
@@ -256,6 +276,7 @@ pub struct PodRuntime {
     expected_bundle_hash: Option<String>,
     expected_bytecode_sha256: Option<String>,
     expected_bytecode_bytes: Option<usize>,
+    eval_stats: PodEvalStats,
     mapped_pak: Option<&'static [u8]>,
     pak_loaded: bool,
     pak_hash: u64,
@@ -684,6 +705,7 @@ pub extern "C" fn pod_runtime_create(config: *const PodRuntimeConfig) -> *mut Po
         expected_bundle_hash: None,
         expected_bytecode_sha256: None,
         expected_bytecode_bytes: None,
+        eval_stats: PodEvalStats::default(),
         mapped_pak: None,
         pak_loaded: false,
         pak_hash: 0,
@@ -1049,24 +1071,33 @@ pub extern "C" fn pod_runtime_eval_bundle_bytecode(
         set_error("bytecode length does not match package manifest");
         return ERR_STATE;
     }
+    runtime.eval_stats = PodEvalStats { bytecode_bytes: length as u64, ..Default::default() };
+    let began = Instant::now();
     let actual_sha256 = format!("{:x}", Sha256::digest(bytes));
+    runtime.eval_stats.hash_micros = elapsed_micros(began);
     if runtime.expected_bytecode_sha256.as_deref() != Some(actual_sha256.as_str()) {
         set_error("bytecode hash does not match package manifest");
         return ERR_STATE;
     }
+    let began = Instant::now();
     if let Err(error) = mount_runtime(runtime) {
         set_error(format!("surface mount failed: {error}"));
         return ERR_GUEST;
     }
+    runtime.eval_stats.mount_micros = elapsed_micros(began);
     runtime.mounted = true;
     let evaluation = runtime.guest.with(|ctx| {
+        let began = Instant::now();
         let compiled = unsafe { raw::JS_ReadObject(
             ctx.as_raw().as_ptr(), bytes.as_ptr(), bytes.len() as _, raw::JS_READ_OBJ_BYTECODE as i32,
         ) };
+        runtime.eval_stats.read_object_micros = elapsed_micros(began);
         if unsafe { raw::JS_IsException(compiled) } {
             return Err(format!("{:?}", ctx.catch()));
         }
+        let began = Instant::now();
         let result = unsafe { raw::JS_EvalFunction(ctx.as_raw().as_ptr(), compiled) };
+        runtime.eval_stats.execute_micros = elapsed_micros(began);
         if unsafe { raw::JS_IsException(result) } {
             return Err(format!("{:?}", ctx.catch()));
         }
@@ -1077,13 +1108,18 @@ pub extern "C" fn pod_runtime_eval_bundle_bytecode(
         set_error(format!("bundle bytecode eval failed: {error}"));
         return ERR_GUEST;
     }
+    let began = Instant::now();
     runtime.guest.drain_jobs();
+    runtime.eval_stats.drain_jobs_micros = elapsed_micros(began);
+    let began = Instant::now();
     let Some(source_hash) = runtime.expected_bundle_hash.as_deref()
         .and_then(|hash| u64::from_str_radix(hash, 16).ok()) else {
         set_error("validated package lost source hash");
         return ERR_STATE;
     };
-    finish_bundle_eval(runtime, source_hash, Some(&actual_sha256))
+    let result = finish_bundle_eval(runtime, source_hash, Some(&actual_sha256));
+    runtime.eval_stats.finish_micros = elapsed_micros(began);
+    result
 }
 
 /// Set before evaluating the guest. Values retain physical units in displayMetrics;
@@ -1676,6 +1712,21 @@ pub extern "C" fn pod_runtime_pak_stats(
     OK
 }
 
+/// Copy only the caller-declared prefix, as with the other stats APIs.
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_eval_stats(runtime: *mut PodRuntime, out: *mut PodEvalStats) -> i32 {
+    let Ok(runtime) = runtime_mut(runtime) else { return ERR_ARGUMENT; };
+    if out.is_null() { return ERR_ARGUMENT; }
+    let available = unsafe { (*out).struct_size as usize };
+    if available < std::mem::size_of::<u32>() { return ERR_ARGUMENT; }
+    let value = PodEvalStats { struct_size: std::mem::size_of::<PodEvalStats>() as u32, ..runtime.eval_stats };
+    unsafe {
+        std::ptr::copy_nonoverlapping((&value as *const PodEvalStats).cast::<u8>(), out.cast::<u8>(),
+            available.min(std::mem::size_of::<PodEvalStats>()));
+    }
+    OK
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn pod_runtime_perf_stats(
     runtime: *mut PodRuntime,
@@ -2185,6 +2236,10 @@ mod tests {
     }
 
     fn compile_test_bytecode(source: &[u8]) -> Vec<u8> {
+        compile_test_bytecode_with_flags(source, pocket_mod::qjs::qjs::JS_WRITE_OBJ_BYTECODE as i32)
+    }
+
+    fn compile_test_bytecode_with_flags(source: &[u8], write_flags: i32) -> Vec<u8> {
         use pocket_mod::qjs::{Context, Runtime, qjs as raw};
         let runtime = Runtime::new().unwrap();
         let context = Context::full(&runtime).unwrap();
@@ -2197,7 +2252,7 @@ mod tests {
             assert!(!unsafe { raw::JS_IsException(compiled) }, "{:?}", ctx.catch());
             let mut length = 0;
             let bytes = unsafe { raw::JS_WriteObject(
-                ctx.as_raw().as_ptr(), &mut length, compiled, raw::JS_WRITE_OBJ_BYTECODE as i32,
+                ctx.as_raw().as_ptr(), &mut length, compiled, write_flags,
             ) };
             unsafe { raw::JS_FreeValue(ctx.as_raw().as_ptr(), compiled); }
             assert!(!bytes.is_null());
@@ -2259,6 +2314,96 @@ mod tests {
         pod_runtime_destroy(runtime);
     }
 
+    #[test]
+    fn stripped_bytecode_is_authenticated_and_eval_stats_respect_caller_size() {
+        use pocket_mod::qjs::qjs as raw;
+        let target = CString::new("android-watch").unwrap();
+        let capabilities = CString::new("[]").unwrap();
+        let source = b"globalThis.frame=()=>{};globalThis.answer=(()=>42)();";
+        let bytecode = compile_test_bytecode_with_flags(source,
+            (raw::JS_WRITE_OBJ_BYTECODE | raw::JS_WRITE_OBJ_STRIP_SOURCE) as i32);
+        let sha = format!("{:x}", Sha256::digest(&bytecode));
+        let manifest = CString::new(json!({
+            "target":"android-watch", "hostAbi":1,
+            "pocketjsRevision":option_env!("PODJS_POCKETJS_REVISION").unwrap_or("0a90bf904d835210e52a11ed275a86d0040b5086"),
+            "pakHash":format!("{:016x}",hash_bytes(b"pak")),
+            "bundleHash":format!("{:016x}",hash_bytes(source)), "capabilities":[],
+            "bytecode":{"file":"main.qbc", "format":QUICKJS_BYTECODE_FORMAT,
+                "rquickjsVersion":"0.12.2", "quickjsBytecodeVersion":QUICKJS_BYTECODE_VERSION,
+                "endianness":"little", "sourceHash":format!("{:016x}",hash_bytes(source)),
+                "sha256":sha, "bytes":bytecode.len(), "sourceIncluded":false, "debugIncluded":true}
+        }).to_string()).unwrap();
+        let runtime = pod_runtime_create(&valid_config(&target, &capabilities));
+        assert_eq!(pod_runtime_load_pak(runtime, b"pak".as_ptr(), 3), OK);
+        assert_eq!(pod_runtime_validate_package(runtime, manifest.as_ptr()), OK);
+        let mut damaged = bytecode.clone();
+        *damaged.last_mut().unwrap() ^= 1;
+        assert_eq!(pod_runtime_eval_bundle_bytecode(runtime, damaged.as_ptr(), damaged.len()), ERR_STATE);
+        assert!(!unsafe { &*runtime }.mounted, "authenticate before mount or reader side effects");
+        assert_eq!(pod_runtime_eval_bundle_bytecode(runtime, bytecode.as_ptr(), bytecode.len()), OK);
+        assert_eq!(unsafe { &*runtime }.guest.with(|ctx| ctx.globals().get::<_, i32>("answer").unwrap()), 42);
+        let receipt: Value = serde_json::from_str(cstr(pod_runtime_receipt(runtime)).unwrap()).unwrap();
+        assert_eq!(receipt["bytecodeSha256"], sha);
+        let mut stats = PodEvalStats { struct_size: std::mem::size_of::<PodEvalStats>() as u32, ..Default::default() };
+        assert_eq!(pod_runtime_eval_stats(runtime, &mut stats), OK);
+        assert_eq!(stats.bytecode_bytes, bytecode.len() as u64);
+        #[repr(C, align(8))]
+        struct Prefix { size: u32, canary: u32 }
+        let mut prefix = Prefix { size: 4, canary: 0xfeed_beef };
+        assert_eq!(pod_runtime_eval_stats(runtime, (&mut prefix as *mut Prefix).cast()), OK);
+        assert_eq!(prefix.size as usize, std::mem::size_of::<PodEvalStats>());
+        assert_eq!(prefix.canary, 0xfeed_beef);
+        prefix.size = 0;
+        assert_eq!(pod_runtime_eval_stats(runtime, (&mut prefix as *mut Prefix).cast()), ERR_ARGUMENT);
+        assert_eq!(pod_runtime_eval_stats(runtime, std::ptr::null_mut()), ERR_ARGUMENT);
+        pod_runtime_destroy(runtime);
+    }
+
+    #[test]
+    #[ignore = "set PODJS_COMPARE_BEFORE and PODJS_COMPARE_AFTER to bytecode distributions"]
+    fn bytecode_variants_preserve_initial_frames() {
+        let roots = ["PODJS_COMPARE_BEFORE", "PODJS_COMPARE_AFTER"].map(|name|
+            PathBuf::from(std::env::var(name).expect("comparison dist path")));
+        assert_eq!(std::fs::read(roots[0].join("main.js")).unwrap(),
+            std::fs::read(roots[1].join("main.js")).unwrap(), "same source required");
+        let mut recordings = Vec::new();
+        for root in &roots {
+            let pak = std::fs::read(root.join("main.pak")).unwrap();
+            let bytecode = std::fs::read(root.join("main.qbc")).unwrap();
+            let manifest_text = std::fs::read_to_string(root.join("pod.manifest.json")).unwrap();
+            let manifest: Value = serde_json::from_str(&manifest_text).unwrap();
+            let target = CString::new(manifest["target"].as_str().unwrap()).unwrap();
+            let capabilities = CString::new(manifest["capabilities"].to_string()).unwrap();
+            let manifest_c = CString::new(manifest_text).unwrap();
+            let mut config = valid_config(&target, &capabilities);
+            config.host_abi = manifest["hostAbi"].as_u64().unwrap() as u32;
+            config.raster_density = 2;
+            config.physical_width = 480;
+            config.physical_height = 480;
+            let runtime = pod_runtime_create(&config);
+            assert!(!runtime.is_null());
+            assert_eq!(pod_runtime_load_pak(runtime,pak.as_ptr(),pak.len()),OK);
+            assert_eq!(pod_runtime_validate_package(runtime,manifest_c.as_ptr()),OK);
+            assert_eq!(pod_runtime_eval_bundle_bytecode(runtime,bytecode.as_ptr(),bytecode.len()),OK,
+                "{}",cstr(pod_runtime_last_error()).unwrap_or("unknown"));
+            let mut frames = Vec::new();
+            for _ in 0..5 {
+                assert_eq!(pod_runtime_frame(runtime,std::ptr::null()),OK);
+                let mut draw = PodDrawList { words:std::ptr::null(),word_count:0,content_hash:0,frame_number:0,changed:0 };
+                assert_eq!(pod_runtime_snapshot(runtime,&mut draw),OK);
+                let words = if draw.word_count == 0 { Vec::new() } else {
+                    unsafe { slice::from_raw_parts(draw.words,draw.word_count) }.to_vec()
+                };
+                assert!(!words.is_empty(), "initial frame must contain draw commands");
+                frames.push((draw.content_hash,words));
+            }
+            println!("K7_FRAMES variant={} hashes={:?} word_counts={:?}",root.display(),frames.iter().map(|f|f.0).collect::<Vec<_>>(),frames.iter().map(|f|f.1.len()).collect::<Vec<_>>());
+            recordings.push(frames);
+            pod_runtime_destroy(runtime);
+        }
+        assert_eq!(recordings[0],recordings[1],"initial draw commands differ");
+    }
+
     #[derive(Default)]
     struct ModuleProfileState {
         stack: Vec<(String, Instant, std::time::Duration)>,
@@ -2314,7 +2459,12 @@ mod tests {
                 let elapsed = began.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
                 compile_samples.push(0);
                 execute_samples.push(elapsed);
-                println!("K5_ITER {} bytecode_load_execute_ms={:.3}", iteration + 1, elapsed as f64 / 1000.0);
+                let stats = unsafe { &*runtime }.eval_stats;
+                println!("K7_ITER {} bytes={} total_ms={:.3} hash_ms={:.3} mount_ms={:.3} read_object_ms={:.3} execute_ms={:.3} drain_ms={:.3} finish_ms={:.3}",
+                    iteration + 1, stats.bytecode_bytes, elapsed as f64 / 1000.0,
+                    stats.hash_micros as f64 / 1000.0, stats.mount_micros as f64 / 1000.0,
+                    stats.read_object_micros as f64 / 1000.0, stats.execute_micros as f64 / 1000.0,
+                    stats.drain_jobs_micros as f64 / 1000.0, stats.finish_micros as f64 / 1000.0);
                 pod_runtime_destroy(runtime);
                 continue;
             }
@@ -2804,7 +2954,7 @@ mod tests {
         let manifest = CString::new(
             json!({
                 "target": target, "hostAbi": 1,
-                "pocketjsRevision": "0a90bf904d835210e52a11ed275a86d0040b5086",
+                "pocketjsRevision": option_env!("PODJS_POCKETJS_REVISION").unwrap_or("0a90bf904d835210e52a11ed275a86d0040b5086"),
                 "pakHash": format!("{:016x}", hash_bytes(pak)),
                 "bundleHash": format!("{:016x}", hash_bytes(bundle)),
                 "capabilities": caps,

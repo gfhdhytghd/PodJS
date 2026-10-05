@@ -6,7 +6,8 @@ val podVersionCode = providers.gradleProperty("podVersionCode").map(String::toIn
 val podDistDir = providers.gradleProperty("podDistDir").orElse("../../../dist/android-watch").get()
 val podAppTheme = providers.gradleProperty("podAppTheme").orElse("@style/AppTheme").get()
 android {
-    androidResources { noCompress += "pak" }
+    // Stored bytecode lets AAsset_getBuffer map it without inflate/copy at boot.
+    androidResources { noCompress += listOf("pak", "qbc") }
     namespace = "dev.podjs.androidwatch"; compileSdk = 36
     defaultConfig { applicationId = podAppId; minSdk = 30; targetSdk = 36; versionCode = podVersionCode; versionName = podVersionName; manifestPlaceholders["podAppName"] = podAppName; manifestPlaceholders["podAppTheme"] = podAppTheme; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     sourceSets["main"].assets.srcDir(podDistDir)
