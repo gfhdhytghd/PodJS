@@ -80,6 +80,30 @@ public final class RoomV18Test {
                 require(process.waitFor()==91,"child terminated at batch");
                 PodRoomV18Converter resumed=new PodRoomV18Converter(source,Jdbc::new,"fixture-设备😀",2,c->{});resumed.copy(g);require(expected.equals(resumed.verify(g)),"crash recovery differs");
             }
+            // Forward compatibility with v1 partial candidates: that converter
+            // persisted a full receipt after every committed page. Completing the
+            // remaining pages must replace the stale-but-valid partial receipt.
+            File legacy=child(root,"legacy-partial-receipt");int[] stopped={0};
+            PodRoomV18Converter legacyWriter=new PodRoomV18Converter(source,Jdbc::new,"fixture-设备😀",2,committed->{if(committed&&stopped[0]++==0)throw new IOException("legacy_stop");});
+            legacyWriter.snapshot(legacy);try{legacyWriter.copy(legacy);throw new AssertionError("legacy partial not stopped");}catch(IOException expectedFailure){}
+            try(Jdbc partial=new Jdbc(new File(legacy,"podjs.sqlite"))) {
+                partial.exec("ATTACH DATABASE ? AS migration",new File(legacy,"room-progress.sqlite").getAbsolutePath());
+                PodRoomV18Converter.seal(partial);
+                partial.exec("UPDATE migration.receipt SET digest='legacy-object-identity-digest' WHERE id=1");
+            }
+            PodRoomV18Converter forward=new PodRoomV18Converter(source,Jdbc::new,"fixture-设备😀",2,c->{});forward.copy(legacy);
+            require(expected.equals(forward.verify(legacy)),"legacy partial receipt not resealed");
+            Properties legacyVerified=PodTakeoverCoordinator.read(new File(legacy,"room-verification.properties"));legacyVerified.remove("version");
+            PodTakeoverCoordinator.atomic(new File(legacy,"room-verification.properties"),legacyVerified);
+            try(Jdbc partial=new Jdbc(new File(legacy,"podjs.sqlite"))) {
+                partial.exec("ATTACH DATABASE ? AS migration",new File(legacy,"room-progress.sqlite").getAbsolutePath());
+                partial.exec("UPDATE migration.receipt SET digest='legacy-verified-object-identity' WHERE id=1");
+            }
+            require(expected.equals(forward.verify(legacy)),"legacy final verification not rebuilt");
+            File blobFile=new File(root,"blob-digest.sqlite");try(Jdbc blob=new Jdbc(blobFile)) {
+                blob.exec("CREATE TABLE blobs(id INTEGER PRIMARY KEY,payload BLOB NOT NULL)");blob.exec("INSERT INTO blobs VALUES(1,?)",new byte[]{1,2,3,4});
+                require(PodRoomV18Converter.tableDigest(blob,"blobs").equals(PodRoomV18Converter.tableDigest(blob,"blobs")),"BLOB digest is process-object dependent");
+            }
             // Real cross-process SQLite byte-range write lock blocks snapshot.
             Process locker=new ProcessBuilder("python3","-c","import fcntl,sys; f=open(sys.argv[1],'r+b'); fcntl.lockf(f,fcntl.LOCK_EX,1,1073741825); print('locked',flush=True); sys.stdin.read()",source.toString()).start();
             require("locked".equals(new BufferedReader(new InputStreamReader(locker.getInputStream())).readLine()),"lock acquired");
