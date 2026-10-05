@@ -68,8 +68,10 @@ public final class PodMediaServices implements AutoCloseable {
     private boolean ttsInitialized;
     private boolean ttsSpeaking;
     private String activeUtterance;
+    private String activeEngineUtterance;
     private long ttsStartedAt;
     private final java.util.function.Consumer<String> ttsEvents;
+    private final PodSpeechSpectrum spectrum;
     private String ttsError;
     private String ttsLanguage, ttsVoice, ttsEngine;
     private long ttsGeneration;
@@ -83,6 +85,7 @@ public final class PodMediaServices implements AutoCloseable {
 
     PodMediaServices(Context context, java.util.function.Consumer<String> events, VolumeAccess volumeAccess) {
         this.ttsEvents = events;
+        this.spectrum = new PodSpeechSpectrum(task -> main.post(task), events);
         if (context == null) throw new IllegalArgumentException("context_required");
         this.context = context.getApplicationContext();
         File root = new File(this.context.getFilesDir(), "podjs/files");
@@ -136,6 +139,10 @@ public final class PodMediaServices implements AutoCloseable {
                     case "tts.speak": ttsSpeak(args, callback); break;
                     case "tts.stop": ttsStop(callback); break;
                     case "tts.state": callback.complete(ttsState()); break;
+                    case "tts.spectrum":
+                        if (!(args.opt("enabled") instanceof Boolean)) throw new IllegalArgumentException("spectrum_enabled_required");
+                        spectrum.setEnabled(args.getBoolean("enabled"));
+                        callback.complete(new JSONObject().put("enabled", args.getBoolean("enabled"))); break;
                     default: callback.fail("unsupported_method", "Unsupported media method: " + method);
                 }
             } catch (Exception e) { callback.fail(errorCode(e), message(e)); }
@@ -258,12 +265,36 @@ public final class PodMediaServices implements AutoCloseable {
         tts.setOnUtteranceProgressListener(ttsListener());
     }
     private UtteranceProgressListener ttsListener() {
+        final long spectrumGeneration = spectrum.generation();
+        final String engineId = activeEngineUtterance, clientId = activeUtterance;
         return new UtteranceProgressListener() {
-            public void onStart(String id) { main.post(() -> { if (isActiveSpeech(id)) { ttsStartedAt = android.os.SystemClock.elapsedRealtime(); ttsSpeaking = true; emitTtsEvent("start", id, 0, 0); } }); }
-            public void onRangeStart(String id, int start, int end, int frame) { main.post(() -> { if (isActiveSpeech(id)) emitTtsEvent("range", id, start, end); }); }
-            public void onDone(String id) { main.post(() -> { if (isActiveSpeech(id)) { emitTtsEvent("done", id, 0, 0); ttsSpeaking = false; activeUtterance = null; } }); }
-            public void onError(String id) { main.post(() -> { if (isActiveSpeech(id)) { emitTtsEvent("error", id, 0, 0); ttsSpeaking = false; activeUtterance = null; ttsError = "tts_speak_failed"; } }); }
-            public void onStop(String id, boolean interrupted) { main.post(() -> { if (isActiveSpeech(id)) { emitTtsEvent("stop", id, 0, 0); ttsSpeaking = false; activeUtterance = null; } }); }
+            private boolean matches(String id) { return engineId != null && engineId.equals(id); }
+            private boolean current() { return engineId != null && engineId.equals(activeEngineUtterance) && isActiveSpeech(clientId); }
+            public void onBeginSynthesis(String id, int rate, int format, int channels) {
+                if (matches(id)) spectrum.begin(spectrumGeneration, clientId, rate, format, channels);
+            }
+            public void onAudioAvailable(String id, byte[] audio) {
+                if (matches(id)) spectrum.audio(spectrumGeneration, clientId, audio);
+            }
+            public void onStart(String id) {
+                if (matches(id)) main.post(() -> { if (current()) { ttsStartedAt = android.os.SystemClock.elapsedRealtime(); ttsSpeaking = true; emitTtsEvent("start", clientId, 0, 0); } });
+            }
+            public void onRangeStart(String id, int start, int end, int frame) {
+                if (matches(id)) main.post(() -> { if (current()) emitTtsEvent("range", clientId, start, end); });
+            }
+            private void finish(String type, String id) {
+                if (!matches(id)) return;
+                spectrum.end(spectrumGeneration, clientId);
+                main.post(() -> {
+                    if (!current()) return;
+                    emitTtsEvent(type, clientId, 0, 0); ttsSpeaking = false;
+                    activeUtterance = null; activeEngineUtterance = null;
+                    if ("error".equals(type)) ttsError = "tts_speak_failed";
+                });
+            }
+            public void onDone(String id) { finish("done", id); }
+            public void onError(String id) { finish("error", id); }
+            public void onStop(String id, boolean interrupted) { finish("stop", id); }
         };
     }
     private boolean isActiveSpeech(String id) { return !closed && id != null && id.equals(activeUtterance); }
@@ -322,12 +353,18 @@ public final class PodMediaServices implements AutoCloseable {
         if (requestedId.length() > 128) throw new IllegalArgumentException("invalid_utterance_id");
         activeUtterance = requestedId.isEmpty() ? UUID.randomUUID().toString() : requestedId;
         ttsStartedAt = 0;
+        // Android routes late engine callbacks through the current listener. A private unique ID
+        // prevents an old utterance from matching even when the guest reuses its public ID.
+        activeEngineUtterance = UUID.randomUUID().toString();
+        spectrum.start(activeUtterance);
         tts.setOnUtteranceProgressListener(ttsListener());
-        int result = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, activeUtterance);
-        if (result != TextToSpeech.SUCCESS) { activeUtterance = null; ttsSpeaking = false; throw new IllegalStateException("tts_speak_failed"); }
+        int result;
+        try { result = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, activeEngineUtterance); }
+        catch (RuntimeException error) { spectrum.stop(); activeEngineUtterance = null; activeUtterance = null; ttsSpeaking = false; throw error; }
+        if (result != TextToSpeech.SUCCESS) { spectrum.stop(); activeEngineUtterance = null; activeUtterance = null; ttsSpeaking = false; throw new IllegalStateException("tts_speak_failed"); }
         ttsSpeaking = true; callback.complete(ttsState());
     }
-    private void ttsStop(Callback callback) throws Exception { ttsError = null; activeUtterance = null; if (tts != null) tts.stop(); ttsSpeaking = false; callback.complete(ttsState()); }
+    private void ttsStop(Callback callback) throws Exception { spectrum.stop(); ttsError = null; activeEngineUtterance = null; activeUtterance = null; if (tts != null) tts.stop(); ttsSpeaking = false; callback.complete(ttsState()); }
     private JSONObject ttsState() {
         try { return new JSONObject().put("ok", true).put("initialized", ttsInitialized)
                 .put("language",ttsLanguage).put("voice",ttsVoice).put("engine",ttsEngine).put("utteranceId",activeUtterance)
@@ -346,7 +383,7 @@ public final class PodMediaServices implements AutoCloseable {
     private void abandonFocus() { audioManager.abandonAudioFocusRequest(focusRequest); }
     private void releasePlayer() { if (player != null) { try { player.reset(); } catch (Exception ignored) {} player.release(); player = null; } }
     private void onAudioFocusChange(int change) { main.post(() -> { if (player == null) return; if (change == AudioManager.AUDIOFOCUS_LOSS) { if (player.isPlaying()) player.pause(); audioState = AUDIO_PAUSED; abandonFocus(); } else if (change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) { if (player.isPlaying()) player.pause(); audioState = AUDIO_PAUSED; } else if (change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK) { player.setVolume(.2f, .2f); } else if (change == AudioManager.AUDIOFOCUS_GAIN) player.setVolume(1f, 1f); }); }
-    @Override public void close() { closed = true; main.post(() -> { silence.close(); if (pendingAudioCallback != null) { pendingAudioCallback.fail("service_closed", "Media service is closed"); pendingAudioCallback = null; } finishTtsInit("service_closed", "Media service is closed"); releasePlayer(); abandonFocus(); if (tts != null) { tts.stop(); tts.shutdown(); tts = null; } ttsInitialized = false; ttsSpeaking = false; audioState = AUDIO_IDLE; }); }
+    @Override public void close() { closed = true; spectrum.close(); main.post(() -> { silence.close(); if (pendingAudioCallback != null) { pendingAudioCallback.fail("service_closed", "Media service is closed"); pendingAudioCallback = null; } finishTtsInit("service_closed", "Media service is closed"); releasePlayer(); abandonFocus(); if (tts != null) { tts.stop(); tts.shutdown(); tts = null; } ttsInitialized = false; ttsSpeaking = false; audioState = AUDIO_IDLE; }); }
     private static String errorCode(Exception e) { return e instanceof SecurityException ? "permission_denied" : e instanceof IllegalArgumentException ? "invalid_argument" : "media_error"; }
     private static String message(Exception e) { return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(); }
 }

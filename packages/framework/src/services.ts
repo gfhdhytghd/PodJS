@@ -39,6 +39,7 @@ const methods: Record<string, PodCapabilityId> = {
   "browser.availability": "system.browser.availability",
   "audio.start": "media.audio", "audio.pause": "media.audio", "audio.resume": "media.audio", "audio.setSpeed": "media.audio", "audio.stop": "media.audio", "audio.state": "media.audio",
   "audio.volumeState": "media.audio", "audio.setVolumeIndex": "media.audio",
+  "tts.spectrum": "media.tts.spectrum",
   "tts.init": "media.tts", "tts.speak": "media.tts", "tts.stop": "media.tts", "tts.state": "media.tts",
   "video.prepare": "media.video", "video.play": "media.video", "video.pause": "media.video", "video.seek": "media.video", "video.stop": "media.video", "video.setBounds": "media.video", "video.state": "media.video",
   "video.captureBackdrop": "media.video", "video.setTransform": "media.video", "video.setVolume": "media.video",
@@ -191,7 +192,29 @@ export const audio = {
 };
 export interface SpeechState { ok:boolean; initialized:boolean; state:string; language?:string; voice?:string; engine?:string; utteranceId?:string }
 export interface SpeechProgressEvent { type: "start" | "range" | "done" | "error" | "stop"; utteranceId:string; start?:number; end?:number; elapsedMs:number }
+/** Synthesis-time PCM levels, independent of speaker volume; not playback-clock synchronized.
+ * Engines without PCM callbacks produce no frames. Reset has empty levels; frame has five [0,1] bands. */
+export interface SpeechSpectrumEvent {
+  type: "frame" | "reset"; source: "synthesis-pcm"; utteranceId: string;
+  sampleRateHz: number; levels: readonly number[];
+}
 export const speech = {
+  /** Opt in explicitly; disabled by default. Stop (also used for pause) clears the spectrum. */
+  setSpectrumEnabled(enabled:boolean): Promise<{enabled:boolean}> {
+    if(typeof enabled!=="boolean")throw new HostServiceError("invalid_argument","Spectrum enabled must be boolean");
+    return hostOperation<{enabled:boolean}>("tts.spectrum",{enabled}).result;
+  },
+  /** Subscribe before enabling. Unsubscribing removes this listener; disable explicitly when no longer needed. */
+  onSpectrum(listener:(event:SpeechSpectrumEvent)=>void):()=>void {
+    if(!hasCapability("media.tts.spectrum"))throw new HostServiceError("unsupported","Unsupported capability: media.tts.spectrum");
+    return __onHostEvent(event=>{
+      if(!hasCapability("media.tts.spectrum")||event.t!=="speech.spectrum"||event.source!=="synthesis-pcm"||typeof event.utteranceId!=="string")return;
+      if(event.type!=="frame"&&event.type!=="reset")return;
+      if(typeof event.sampleRateHz!=="number"||!Number.isInteger(event.sampleRateHz)||event.sampleRateHz<0||(event.type==="frame"&&event.sampleRateHz===0))return;
+      if(!Array.isArray(event.levels)||event.levels.length!==(event.type==="frame"?5:0)||event.levels.some(value=>typeof value!=="number"||!Number.isFinite(value)||value<0||value>1))return;
+      listener({type:event.type,source:"synthesis-pcm",utteranceId:event.utteranceId,sampleRateHz:event.sampleRateHz,levels:[...event.levels]});
+    });
+  },
   onProgress(listener:(event:SpeechProgressEvent)=>void):()=>void {
     return __onHostEvent(event=>{
       if(event.t!=="speech.progress"||typeof event.utteranceId!=="string"||typeof event.type!=="string"||!["start","range","done","error","stop"].includes(event.type))return;

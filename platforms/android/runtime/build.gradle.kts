@@ -46,6 +46,7 @@ android {
 }
 
 dependencies {
+    implementation("com.github.wendykierp:JTransforms:3.2")
     implementation("org.jsoup:jsoup:1.17.2")
     implementation("androidx.work:work-runtime:2.11.2")
     implementation("com.google.zxing:core:3.5.2")
