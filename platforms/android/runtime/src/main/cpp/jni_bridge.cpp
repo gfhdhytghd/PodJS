@@ -3,6 +3,7 @@
 #include <android/log.h>
 #include <android/asset_manager_jni.h>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <memory>
 #include <new>
@@ -14,6 +15,7 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <linux/fs.h>
+#include "frame_perf_window.h"
 #include "podjs_runtime.h"
 #include "touch_snapshot_queue.h"
 #include "vulkan_renderer.h"
@@ -27,8 +29,7 @@ struct MappedAsset {
   ~MappedAsset() { if(base != MAP_FAILED) munmap(base,mappedLength); }
 };
 struct Host {
-  double reportAt = 0, jsMs = 0, rasterMs = 0, presentMs = 0, maxMs = 0;
-  unsigned ticks = 0, draws = 0, gpuDraws = 0, cpuDraws = 0;
+  podjs_perf::FramePerfWindow framePerf;
   PodRuntime* runtime{};
   MappedAsset pak;
   std::unique_ptr<VulkanRenderer> renderer;
@@ -47,8 +48,9 @@ struct Host {
   bool navigationKnown = false;
   bool frameFailed = false;
   uint64_t diagnosticFrameSequence = 0;
+  uint64_t lastResourceGeneration = 0;
 };
-static void renderFrame(Host* h);
+static void renderFrame(Host* h, int64_t frameTimeNanos = 0);
 static void fail(JNIEnv* env, const char* message) { jclass c = env->FindClass("java/lang/IllegalStateException"); env->ThrowNew(c, message); }
 
 extern "C" JNIEXPORT jint JNICALL Java_dev_podjs_runtime_PodSyncGuestFiles_publishNoReplace(
@@ -370,7 +372,7 @@ extern "C" JNIEXPORT jlongArray JNICALL Java_dev_podjs_runtime_PodRuntimeView_na
   env->SetLongArrayRegion(result,0,static_cast<jsize>(length),values.get());
   return env->ExceptionCheck()?nullptr:result;
 }
-static void renderFrame(Host* h) {
+static void renderFrame(Host* h, int64_t frameTimeNanos) {
   if (!h) return;
   auto hostTiming = h->renderer->beginHostFrame(++h->diagnosticFrameSequence);
   const double start = monoMs();
@@ -381,49 +383,109 @@ static void renderFrame(Host* h) {
   guestTiming.finish(result==0,result);
   if (result != 0 && !h->frameFailed) __android_log_print(ANDROID_LOG_ERROR,"PodJS","Frame failed: %s",pod_runtime_last_error());
   h->frameFailed = result != 0;
-  const double afterJs = monoMs();
-  h->jsMs += afterJs-start; h->ticks++;
   int64_t submittedFlags = 0;
+  double snapshotMs = 0, submitMs = 0, gpuDecodeMs = 0,
+      uploadFenceMs = 0, gpuUploadMs = 0, frameFenceMs = 0, acquireMs = 0,
+      gpuRecordMs = 0, queueSubmitMs = 0, presentWaitMs = 0;
+  uint64_t gpuUploadBytes = 0;
+  uint32_t gpuUploadCount = 0;
+  bool gpuSubmitted = false, cpuSubmitted = false;
   if (result == 0) {
     PodDrawList list{};
+    const double snapshotBegan = monoMs();
     auto snapshotTiming = h->renderer->diagnosticScope(podjs_gpu::RendererTimingStage::Snapshot);
     const int snapshotResult = pod_runtime_snapshot(h->runtime,&list);
+    snapshotMs = monoMs()-snapshotBegan;
     snapshotTiming.finish(snapshotResult==0,snapshotResult);
     if (!snapshotResult && (list.changed || h->renderer->needsRedraw(list.content_hash))) {
       const double beforeRaster = monoMs();
       bool submitted = h->renderer->submitDrawList(h->runtime, list);
       if (submitted) {
+        const auto& perf = h->renderer->lastSubmitPerf();
+        gpuDecodeMs = perf.decodeMs; uploadFenceMs = perf.uploadFenceMs;
+        gpuUploadMs = perf.uploadMs; frameFenceMs = perf.frameFenceMs;
+        acquireMs = perf.acquireMs; gpuRecordMs = perf.recordMs;
+        queueSubmitMs = perf.queueSubmitMs; presentWaitMs = perf.presentWaitMs;
+        gpuUploadBytes = perf.uploadBytes;
+        gpuUploadCount = perf.uploadCount;
         submittedFlags |= int64_t{1} << 16;
-        h->gpuDraws++;
-        h->presentMs += monoMs()-beforeRaster;
+        gpuSubmitted = true;
       } else if (h->renderer->valid()) {
         const bool rasterized = pod_runtime_render_rgba_transparent_incremental(h->runtime,VulkanRenderer::kRasterScale,h->framebuffer.data(),h->framebuffer.size())==0;
-        const double afterRaster = monoMs();
         submitted = rasterized && h->renderer->submitRgba(h->framebuffer.data(),h->framebuffer.size(),list.content_hash);
-        h->rasterMs += afterRaster-beforeRaster;
-        h->presentMs += monoMs()-afterRaster;
-        h->cpuDraws += submitted;
-        if (submitted) submittedFlags |= int64_t{1} << 17;
+        if (submitted) { submittedFlags |= int64_t{1} << 17; cpuSubmitted = true; }
       }
-      h->draws += submitted;
+      submitMs = monoMs()-beforeRaster;
     }
   }
-  const double now=monoMs(); h->maxMs=std::max(h->maxMs,now-start);
-  if (now-h->reportAt >= 1000) {
-    if(h->reportAt != 0) __android_log_print(ANDROID_LOG_INFO,"PodJSPerf","windowMs=%.1f ticks=%u draws=%u jsMs=%.2f rasterMs=%.2f presentMs=%.2f maxMs=%.2f gpuDraws=%u cpuDraws=%u",now-h->reportAt,h->ticks,h->draws,h->jsMs/h->ticks,h->draws?h->rasterMs/h->draws:0,h->draws?h->presentMs/h->draws:0,h->maxMs,h->gpuDraws,h->cpuDraws);
-    h->reportAt=now; h->jsMs=h->rasterMs=h->presentMs=h->maxMs=0; h->ticks=h->draws=h->gpuDraws=h->cpuDraws=0;
+  const double now=monoMs();
+  PodRuntimePerfStats perf{};
+  perf.struct_size=sizeof(perf);
+  if(pod_runtime_perf_stats(h->runtime,&perf)==0 &&
+      (now-start>=50 || perf.resource_generation!=h->lastResourceGeneration)) {
+    __android_log_print(ANDROID_LOG_INFO,"PodJSPerf",
+        "frame seq=%llu totalMs=%.2f jsTurnMs=%.2f layoutMs=%.2f drawListMs=%.2f gpuPathMs=%.2f gpuDecodeMs=%.2f uploadFenceMs=%.2f textureUploadMs=%.2f frameFenceMs=%.2f acquireMs=%.2f gpuRecordMs=%.2f queueSubmitMs=%.2f presentWaitMs=%.2f gpuUploads=%u gpuUploadBytes=%llu fontSlot=%d fontLoadMs=%.2f fontAsync=%d loadedFonts=%u pendingFonts=%u imageLoadMs=%.2f loadedImages=%u resourceGen=%llu",
+        static_cast<unsigned long long>(perf.frame_number),now-start,
+        perf.guest_micros/1000.0,perf.surface_tick_micros/1000.0,snapshotMs,submitMs,
+        gpuDecodeMs,uploadFenceMs,gpuUploadMs,frameFenceMs,acquireMs,gpuRecordMs,
+        queueSubmitMs,presentWaitMs,gpuUploadCount,
+        static_cast<unsigned long long>(gpuUploadBytes),perf.last_font_slot,
+        perf.last_font_load_micros/1000.0,perf.last_font_async,perf.loaded_font_slots,
+        perf.pending_font_slots,perf.last_image_load_micros/1000.0,perf.loaded_images,
+        static_cast<unsigned long long>(perf.resource_generation));
+    h->lastResourceGeneration=perf.resource_generation;
+  }
+  podjs_perf::FrameSample sample{
+      .nativeTotalMs=now-start,
+      .jsTurnMs=perf.guest_micros/1000.0,
+      .layoutMs=perf.surface_tick_micros/1000.0,
+      .drawListMs=snapshotMs,
+      .gpuDecodeMs=gpuDecodeMs,
+      .uploadFenceMs=uploadFenceMs,
+      .textureUploadMs=gpuUploadMs,
+      .frameFenceMs=frameFenceMs,
+      .acquireMs=acquireMs,
+      .gpuRecordMs=gpuRecordMs,
+      .queueSubmitMs=queueSubmitMs,
+      .presentWaitMs=presentWaitMs,
+      .uploadBytes=gpuUploadBytes,
+      .uploadCount=gpuUploadCount,
+      .gpuSubmitted=gpuSubmitted,
+      .cpuSubmitted=cpuSubmitted};
+  podjs_perf::WindowSummary window{};
+  if (h->framePerf.add(now,frameTimeNanos,sample,&window)) {
+    const auto values=[](const podjs_perf::Distribution& value) {
+      return std::array<double,3>{value.p50,value.p95,value.max};
+    };
+    const auto total=values(window.nativeTotal),js=values(window.jsTurn),
+        layout=values(window.layout),drawList=values(window.drawList),
+        decode=values(window.gpuDecode),uploadFence=values(window.uploadFence),
+        upload=values(window.textureUpload),frameFence=values(window.frameFence),
+        acquire=values(window.acquire),record=values(window.gpuRecord),
+        submit=values(window.queueSubmit),present=values(window.presentWait);
+    __android_log_print(ANDROID_LOG_INFO,"PodJSPerf",
+        "frameWindow windowMs=%.1f targetHz=60 ticks=%u draws=%u gpuDraws=%u cpuDraws=%u dropped=%u overBudget=%u uploadFrames=%u uploadBytes=%llu p50/p95/maxMs nativeTotal=%.2f/%.2f/%.2f jsTurn=%.2f/%.2f/%.2f layout=%.2f/%.2f/%.2f drawList=%.2f/%.2f/%.2f gpuDecode=%.2f/%.2f/%.2f uploadFence=%.2f/%.2f/%.2f textureUpload=%.2f/%.2f/%.2f frameFence=%.2f/%.2f/%.2f acquire=%.2f/%.2f/%.2f gpuRecord=%.2f/%.2f/%.2f queueSubmit=%.2f/%.2f/%.2f presentWait=%.2f/%.2f/%.2f",
+        window.windowMs,window.ticks,window.draws,window.gpuDraws,window.cpuDraws,
+        window.dropped,window.overBudget,window.uploadFrames,
+        static_cast<unsigned long long>(window.uploadBytes),
+        total[0],total[1],total[2],js[0],js[1],js[2],
+        layout[0],layout[1],layout[2],drawList[0],drawList[1],drawList[2],
+        decode[0],decode[1],decode[2],uploadFence[0],uploadFence[1],uploadFence[2],
+        upload[0],upload[1],upload[2],frameFence[0],frameFence[1],frameFence[2],
+        acquire[0],acquire[1],acquire[2],record[0],record[1],record[2],
+        submit[0],submit[1],submit[2],present[0],present[1],present[2]);
   }
   hostTiming.setFlags(submittedFlags);
   hostTiming.finish(result==0,result);
 }
-extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeFrame(JNIEnv*,jclass,jlong p) {
-  renderFrame(reinterpret_cast<Host*>(p));
+extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeFrame(JNIEnv*,jclass,jlong p,jlong frameTimeNanos) {
+  renderFrame(reinterpret_cast<Host*>(p),frameTimeNanos);
 }
 extern "C" JNIEXPORT jstring JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePollEffect(JNIEnv* env,jclass,jlong p){auto*h=reinterpret_cast<Host*>(p);if(!h)return nullptr;const char* line=pod_runtime_poll_effect(h->runtime);return line?env->NewStringUTF(line):nullptr;}
 extern "C" JNIEXPORT jstring JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePollNet(JNIEnv* env,jclass,jlong p){auto*h=reinterpret_cast<Host*>(p);if(!h)return nullptr;const char* line=pod_runtime_poll_net_command(h->runtime);return line?env->NewStringUTF(line):nullptr;}
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeCompleteHttp(JNIEnv* env,jclass,jlong p,jint handle,jint status,jstring url,jstring headers,jbyteArray body){auto*h=reinterpret_cast<Host*>(p);if(!h)return;const char*u=env->GetStringUTFChars(url,nullptr);const char*hs=env->GetStringUTFChars(headers,nullptr);jsize n=env->GetArrayLength(body);std::vector<uint8_t>b(n);env->GetByteArrayRegion(body,0,n,reinterpret_cast<jbyte*>(b.data()));pod_runtime_complete_http(h->runtime,handle,status,u,hs,b.data(),b.size());env->ReleaseStringUTFChars(url,u);env->ReleaseStringUTFChars(headers,hs);}
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeFailHttp(JNIEnv* env,jclass,jlong p,jint handle,jstring code,jstring message){auto*h=reinterpret_cast<Host*>(p);if(!h)return;const char*c=env->GetStringUTFChars(code,nullptr);const char*m=env->GetStringUTFChars(message,nullptr);pod_runtime_fail_http(h->runtime,handle,c,m);env->ReleaseStringUTFChars(code,c);env->ReleaseStringUTFChars(message,m);}
-extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeLifecycle(JNIEnv*,jclass,jlong p,jint s){auto*h=reinterpret_cast<Host*>(p);if(h){if(s==2){h->touches.clear();h->rotary=0;}pod_runtime_set_lifecycle(h->runtime,s);}}
+extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeLifecycle(JNIEnv*,jclass,jlong p,jint s){auto*h=reinterpret_cast<Host*>(p);if(h){if(s==2){h->touches.clear();h->rotary=0;h->framePerf.resetCadence();}pod_runtime_set_lifecycle(h->runtime,s);}}
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeTheme(JNIEnv* env,jclass,jlong p,jstring theme){auto*h=reinterpret_cast<Host*>(p);if(!h)return;const char*t=env->GetStringUTFChars(theme,nullptr);pod_runtime_set_theme(h->runtime,t);env->ReleaseStringUTFChars(theme,t);}
 extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeBack(JNIEnv*,jclass,jlong p){
   auto*h=reinterpret_cast<Host*>(p);

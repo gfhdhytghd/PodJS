@@ -149,6 +149,25 @@ pub struct PodPakStats {
     pub loaded_font_slots: u32,
 }
 
+#[repr(C)]
+pub struct PodRuntimePerfStats {
+    pub struct_size: u32,
+    pub loaded_font_slots: u32,
+    pub pending_font_slots: u32,
+    pub last_font_slot: i32,
+    pub last_font_async: i32,
+    pub loaded_images: u32,
+    pub frame_number: u64,
+    pub guest_micros: u64,
+    pub surface_tick_micros: u64,
+    pub snapshot_micros: u64,
+    pub resource_generation: u64,
+    pub total_font_load_micros: u64,
+    pub last_font_load_micros: u64,
+    pub total_image_load_micros: u64,
+    pub last_image_load_micros: u64,
+}
+
 #[derive(Default)]
 struct PodBridge {
     events: VecDeque<String>,
@@ -229,6 +248,9 @@ pub struct PodRuntime {
     accessibility_hash: Option<u64>,
     damage_tracker: DamageTracker<DEFAULT_DAMAGE_REGIONS>,
     frame_number: u64,
+    guest_micros: u64,
+    surface_tick_micros: u64,
+    snapshot_micros: u64,
     poll_effect: CString,
     poll_net: CString,
     receipt: CString,
@@ -564,6 +586,9 @@ pub extern "C" fn pod_runtime_create(config: *const PodRuntimeConfig) -> *mut Po
         accessibility_hash: None,
         damage_tracker: DamageTracker::new(),
         frame_number: 0,
+        guest_micros: 0,
+        surface_tick_micros: 0,
+        snapshot_micros: 0,
         poll_effect: CString::default(),
         poll_net: CString::default(),
         receipt: CString::default(),
@@ -1005,15 +1030,21 @@ pub extern "C" fn pod_runtime_frame(runtime: *mut PodRuntime, input: *const PodI
     } else {
         input.analog
     };
+    let guest_began = Instant::now();
     if let Err(error) =
         runtime
             .guest
             .frame_with_touch_hits(input.buttons, analog, &words, &hits[..hit_count])
     {
+        runtime.guest_micros = guest_began.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        runtime.surface_tick_micros = 0;
         set_error(format!("guest frame failed: {error}"));
         return ERR_GUEST;
     }
+    runtime.guest_micros = guest_began.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+    let surface_began = Instant::now();
     runtime.surface.tick();
+    runtime.surface_tick_micros = surface_began.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
     runtime.frame_number += 1;
     OK
 }
@@ -1026,6 +1057,7 @@ pub extern "C" fn pod_runtime_snapshot(runtime: *mut PodRuntime, out: *mut PodDr
     if !runtime.mounted || out.is_null() {
         return ERR_STATE;
     }
+    let began = Instant::now();
     let mut hash = runtime.surface.with_ui(|ui| hash_words(&ui.draw().words));
     runtime.surface.with_ui(|ui| {
         for slot in 0..ui.texture_slot_count() as u32 {
@@ -1053,6 +1085,7 @@ pub extern "C" fn pod_runtime_snapshot(runtime: *mut PodRuntime, out: *mut PodDr
             changed: i32::from(hash != runtime.previous_draw_hash),
         };
     }
+    runtime.snapshot_micros = began.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
     OK
 }
 
@@ -1367,6 +1400,36 @@ pub extern "C" fn pod_runtime_pak_stats(
             pak_hash_micros: runtime.pak_hash_micros,
             first_font_load_micros: stats.first_font_load_micros.unwrap_or(0),
             loaded_font_slots: stats.loaded_fonts.min(u32::MAX as usize) as u32,
+        };
+    }
+    OK
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_perf_stats(
+    runtime: *mut PodRuntime,
+    out: *mut PodRuntimePerfStats,
+) -> i32 {
+    let Ok(runtime) = runtime_mut(runtime) else { return ERR_ARGUMENT; };
+    if out.is_null() { return ERR_ARGUMENT; }
+    let stats = runtime.surface.lazy_pak_stats();
+    unsafe {
+        *out = PodRuntimePerfStats {
+            struct_size: std::mem::size_of::<PodRuntimePerfStats>() as u32,
+            loaded_font_slots: stats.loaded_fonts.min(u32::MAX as usize) as u32,
+            pending_font_slots: stats.pending_fonts.min(u32::MAX as usize) as u32,
+            last_font_slot: stats.last_font_slot.map(i32::from).unwrap_or(-1),
+            last_font_async: i32::from(stats.last_font_async),
+            loaded_images: stats.loaded_images.min(u32::MAX as usize) as u32,
+            frame_number: runtime.frame_number,
+            guest_micros: runtime.guest_micros,
+            surface_tick_micros: runtime.surface_tick_micros,
+            snapshot_micros: runtime.snapshot_micros,
+            resource_generation: stats.resource_generation,
+            total_font_load_micros: stats.total_font_load_micros,
+            last_font_load_micros: stats.last_font_load_micros,
+            total_image_load_micros: stats.total_image_load_micros,
+            last_image_load_micros: stats.last_image_load_micros,
         };
     }
     OK
