@@ -22,7 +22,7 @@ test('example identity is durable before client construction, shared concurrentl
       pairingOpens++; if (pairingFail) throw Error('pairing unavailable'); return pairingOwner;
     }
   };
-  const build = await Bun.build({ entrypoints: [resolve('platforms/harmony/companion_example/src/main/ets/ExampleClient.ets')], target: 'bun', write: false,
+  const build = await Bun.build({ entrypoints: [resolve('platforms/harmony/companion_example/src/main/ets/ExampleClient.ets')], target: 'bun',
     plugins: [{ name: 'identity-os', setup(builder) {
       builder.onResolve({ filter: /^(@ohos\.|@podjs\/companion)/ }, args => ({ path: args.path, namespace: 'identity-os' }));
       builder.onLoad({ filter: /.*/, namespace: 'identity-os' }, args => ({ contents: args.path === '@podjs/companion'

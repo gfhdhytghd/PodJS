@@ -1,7 +1,7 @@
 import { test, expect } from 'bun:test';
 import { createHash, createHmac } from 'node:crypto';
 import { CompanionSyncAttempt } from '../platforms/harmony/companion/src/main/ets/CompanionSyncAttempt';
-import { CompanionSyncExchange, type CompanionSyncPacketStream } from '../platforms/harmony/companion/src/main/ets/CompanionSyncExchange';
+import { CompanionSyncExchange, type CompanionSyncChallengeCrypto, type CompanionSyncPacketStream } from '../platforms/harmony/companion/src/main/ets/CompanionSyncExchange';
 class Timer {
   expire: () => void = () => {}; cancelled = false;
   schedule(_ms: number, expire: () => void) { this.expire = expire; return () => { this.cancelled = true; }; }
@@ -23,7 +23,7 @@ class Link implements CompanionSyncPacketStream {
   }
   close() { this.closed = true; this.waiting?.(null); this.waiting = null; }
 }
-const crypto = (nonce: number) => ({
+const crypto = (nonce: number): CompanionSyncChallengeCrypto => ({
   async challenge() { return new Uint8Array(32).fill(nonce); },
   async sha256(bytes: Uint8Array) { return new Uint8Array(createHash('sha256').update(bytes).digest()); },
   async hmacSha256(key: Uint8Array, bytes: Uint8Array) { return new Uint8Array(createHmac('sha256', key).update(bytes).digest()); }

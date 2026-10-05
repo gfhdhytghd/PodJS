@@ -18,7 +18,7 @@ async function nativeModule(createConnection: (device: string, name: string) => 
   // Execute the actual native adapter source, substituting only its OS module.
   (globalThis as any).__podjsLinkEnhanceTest = { createConnection, createServer };
   const build = await Bun.build({
-    entrypoints: [resolve('platforms/harmony/companion/src/main/ets/NativeCompanionDistributed.ets')], target: 'bun', write: false,
+    entrypoints: [resolve('platforms/harmony/companion/src/main/ets/NativeCompanionDistributed.ets')], target: 'bun',
     plugins: [{ name: 'mock-system-link', setup(builder) {
       builder.onResolve({ filter: /^@ohos\.distributedsched\.linkEnhance$/ }, () => ({ path: 'system-link', namespace: 'mock-system-link' }));
       builder.onLoad({ filter: /.*/, namespace: 'mock-system-link' }, () => ({ contents: 'export default globalThis.__podjsLinkEnhanceTest;', loader: 'js' }));

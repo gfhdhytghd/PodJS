@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 
 test('native client assembles lazy channels and isolates foreground connection lifetimes', async () => {
   const build = await Bun.build({
-    entrypoints: [resolve('platforms/harmony/companion/src/main/ets/NativeCompanionClient.ets')], target: 'bun', write: false,
+    entrypoints: [resolve('platforms/harmony/companion/src/main/ets/NativeCompanionClient.ets')], target: 'bun',
     plugins: [{ name: 'client-system-stubs', setup(builder) {
       builder.onResolve({ filter: /^\.\/NativeCompanion/ }, args => ({ path: resolve(args.resolveDir, args.path + '.ets') }));
       builder.onResolve({ filter: /^(libpodjs_companion\.so|@ohos\.|@kit\.)/ }, args => ({ path: args.path, namespace: 'client-system' }));

@@ -35,8 +35,8 @@ test('owner attaches once, drives outgoing and releases all connection resources
   const unsubscribe = f.owner.subscribe(s => phases.push(s.phase));
   f.owner.subscribe(() => { throw Error('observer'); });
   const pending = connect(f); f.resolve();
-  expect(await pending).toBe(f.transport);
-  expect(f.owner.activeTransport()).toBe(f.transport);
+  expect<Object>(await pending).toBe(f.transport);
+  expect<Object | null>(f.owner.activeTransport()).toBe(f.transport);
   expect(f.counts.drive).toBe(1);
   await expect(connect(f)).rejects.toThrow('already active');
   f.owner.disconnect(); await Promise.resolve();

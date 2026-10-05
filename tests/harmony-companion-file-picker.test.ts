@@ -20,7 +20,7 @@ test('actual picker adapter retries short reads, seeks for rereads and closes on
   (globalThis as any).__podjsPickerTest = { fs, picker: { DocumentViewPicker: class {
     async select(options: { maxSelectNumber: number }) { expect(options.maxSelectNumber).toBe(1); return selections; }
   } } };
-  const build = await Bun.build({ entrypoints: [resolve('platforms/harmony/companion/src/main/ets/NativeCompanionFilePicker.ets')], target: 'bun', write: false,
+  const build = await Bun.build({ entrypoints: [resolve('platforms/harmony/companion/src/main/ets/NativeCompanionFilePicker.ets')], target: 'bun',
     plugins: [{ name: 'picker-os', setup(builder) {
       builder.onResolve({ filter: /^@ohos\.file\.(fs|picker)$/ }, args => ({ path: args.path.endsWith('.fs') ? 'fs' : 'picker', namespace: 'picker-os' }));
       builder.onLoad({ filter: /.*/, namespace: 'picker-os' }, args => ({ contents: `export default globalThis.__podjsPickerTest.${args.path};`, loader: 'js' }));

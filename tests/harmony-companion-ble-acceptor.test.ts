@@ -61,7 +61,7 @@ test('actual GATT client/server exchange framed data and cancel late advertising
   };
   (globalThis as any).canIUse = () => true; (globalThis as any).__podjsBleServer = native;
   try {
-    const build = await Bun.build({ entrypoints: [resolve('tests/fixtures/harmony-ble-exports.ts')], target: 'bun', write: false,
+    const build = await Bun.build({ entrypoints: [resolve('tests/fixtures/harmony-ble-exports.ts')], target: 'bun',
       plugins: [{ name: 'ble-server-os', setup(builder) {
         builder.onResolve({ filter: /\/NativeCompanion/ }, args => ({ path: resolve(args.resolveDir, args.path + '.ets') }));
         builder.onResolve({ filter: /^@ohos\.bluetooth\./ }, args => ({ path: args.path, namespace: 'ble-server-os' }));

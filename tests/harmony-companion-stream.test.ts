@@ -66,7 +66,7 @@ test('real loopback TCP carries fragmented handshake, binary frame and bidirecti
           socket.write(bytes.slice(offset, offset + 17), error => error ? reject(error) : resolve()));
       }, close() { socket.destroy(); }
     }, { schedule(ms, expire) { const timer = setTimeout(expire, ms); return () => clearTimeout(timer); } }, 5000);
-    socket.on('data', bytes => stream.receive(bytes)); socket.on('end', () => stream.end());
+    socket.on('data', bytes => stream.receive(typeof bytes === 'string' ? Buffer.from(bytes) : bytes)); socket.on('end', () => stream.end());
     socket.on('error', error => stream.fail(error)); return stream;
   }
   let accept!: (stream: CompanionPacketStream) => void;

@@ -19,7 +19,7 @@ test.skipIf(!existsSync(androidJar) || !Bun.which('javac') || !Bun.which('java')
       await sender.write(payload);
       const input = [Buffer.from(payload).toString('hex'), ...packets.flatMap(bytes => [Buffer.from(bytes).toString('hex'), Buffer.from(bytes).toString('hex')])].join('\n') + '\n';
       const result = execFileSync('java', ['-cp', output + delimiter + androidJar, 'BleWireInterop', String(mtu)], { input, encoding: 'utf8', timeout: 10000 });
-      const encoded = result.trim().split('\n').map(line => new Uint8Array(Buffer.from(line, 'hex')));
+      const encoded: Uint8Array[] = result.trim().split('\n').map(line => new Uint8Array(Buffer.from(line, 'hex')));
       expect(encoded).toEqual(packets);
       const receiver = new CompanionBlePacketStream(mtu, { async write() {}, close() {} }, timer, 1000);
       for (const packet of encoded) { receiver.receive(packet); receiver.receive(packet); }
