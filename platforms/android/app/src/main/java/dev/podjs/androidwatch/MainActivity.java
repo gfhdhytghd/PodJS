@@ -1,5 +1,5 @@
 package dev.podjs.androidwatch;
-import android.app.Activity; import android.os.Bundle; import android.view.MotionEvent; import dev.podjs.runtime.PodRuntimeView;
+import android.app.Activity; import android.os.Bundle; import android.view.MotionEvent; import dev.podjs.runtime.PodRuntimeView; import dev.podjs.runtime.PodStartupTrace;
 public final class MainActivity extends Activity {
   private PodRuntimeView pod;
   private Bundle pendingState;
@@ -8,8 +8,8 @@ public final class MainActivity extends Activity {
   @Override public void onRequestPermissionsResult(int code,String[] permissions,int[] results){super.onRequestPermissionsResult(code,permissions,results);if(pod!=null)pod.notificationPermissionResult(code,results);}
   private float swipeStartX, swipeStartY;
   private boolean swipeActive, swipeClaimed, platformSwipeDismiss;
-  @Override public void onCreate(Bundle b){platformSwipeDismiss=PodRuntimeView.requestPlatformSwipeDismiss(this);super.onCreate(b);pendingState=b;if(dev.podjs.runtime.PodTakeover.showRecoveryIfNeeded(this,this::startRuntime))return;startRuntime();}
-  private void startRuntime(){if(pod!=null||isFinishing()||isDestroyed())return;Bundle b=pendingState;pendingState=null;pod=new PodRuntimeView(this,"android-watch");pod.restoreActivityState(b==null?null:b.getString(POD_SAVED_STATE),getLastNonConfigurationInstance() instanceof String?(String)getLastNonConfigurationInstance():null);pod.captureNotificationIntent(getIntent());setContentView(pod);if(resumed)pod.setLifecycle(0);if(PodRuntimeView.ACTION_COMPANION_SETTINGS.equals(getIntent().getAction()))pod.post(pod::showCompanionSettings);}
+  @Override public void onCreate(Bundle b){long began=PodStartupTrace.now();try{platformSwipeDismiss=PodRuntimeView.requestPlatformSwipeDismiss(this);super.onCreate(b);pendingState=b;if(dev.podjs.runtime.PodTakeover.showRecoveryIfNeeded(this,this::startRuntime))return;startRuntime();}finally{PodStartupTrace.stage("activityOnCreate",began);}}
+  private void startRuntime(){if(pod!=null||isFinishing()||isDestroyed())return;long began=PodStartupTrace.now();Bundle b=pendingState;pendingState=null;pod=new PodRuntimeView(this,"android-watch");pod.restoreActivityState(b==null?null:b.getString(POD_SAVED_STATE),getLastNonConfigurationInstance() instanceof String?(String)getLastNonConfigurationInstance():null);pod.captureNotificationIntent(getIntent());setContentView(pod);if(resumed)pod.setLifecycle(0);if(PodRuntimeView.ACTION_COMPANION_SETTINGS.equals(getIntent().getAction()))pod.post(pod::showCompanionSettings);PodStartupTrace.stage("activityStartRuntime",began);}
   @Override protected void onSaveInstanceState(Bundle out){if(pod!=null)out.putString(POD_SAVED_STATE,pod.savedActivityState());super.onSaveInstanceState(out);}
   @Override public Object onRetainNonConfigurationInstance(){return pod==null?null:pod.retainedActivityState();}
   @Override protected void onNewIntent(android.content.Intent intent){super.onNewIntent(intent);setIntent(intent);if(pod==null)return;pod.captureNotificationIntent(intent);if(PodRuntimeView.ACTION_COMPANION_SETTINGS.equals(intent.getAction()))pod.showCompanionSettings();}

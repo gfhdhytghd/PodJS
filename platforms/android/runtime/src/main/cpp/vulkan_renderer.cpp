@@ -60,13 +60,24 @@ VulkanRenderer::VulkanRenderer(ANativeWindow* window, uint32_t width,
   createInfo.pApplicationInfo = &app;
   createInfo.enabledExtensionCount = 2;
   createInfo.ppEnabledExtensionNames = extensions;
-  if (vkCreateInstance(&createInfo, nullptr, &instance_) != VK_SUCCESS ||
-      !createDevice() || !createUploadResources() || !createClipResources() ||
-      !createGraphicsResources()) {
+  // Log completed phases, preserving the original failure short-circuit order.
+  const auto timed = [](const char* name, auto operation) {
+    const auto began = std::chrono::steady_clock::now();
+    const bool success = operation();
+    const double elapsed = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - began).count();
+    __android_log_print(ANDROID_LOG_INFO,"PodJSPerf","vulkanCreate stage=%s elapsedMs=%.3f success=%d",
+        name,elapsed,success);
+    return success;
+  };
+  if (!timed("instance", [&] { return vkCreateInstance(&createInfo, nullptr, &instance_) == VK_SUCCESS; }) ||
+      !timed("device", [&] { return createDevice(); }) ||
+      !timed("uploadResources", [&] { return createUploadResources(); }) ||
+      !timed("clipResources", [&] { return createClipResources(); }) ||
+      !timed("graphicsResources", [&] { return createGraphicsResources(); })) {
     return;
   }
-
-  replaceWindow(window, width, height);
+  timed("surfaceSwapchain", [&] { replaceWindow(window, width, height); return valid_; });
 }
 
 uint32_t VulkanRenderer::findMemoryType(

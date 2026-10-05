@@ -50,7 +50,9 @@ public final class PodBackgroundScheduler implements Closeable {
                 if (!hasPayload) db.execSQL("ALTER TABLE jobs ADD COLUMN payload TEXT NOT NULL DEFAULT 'null'");
                 if (!hasMethods) db.execSQL("ALTER TABLE jobs ADD COLUMN methods TEXT NOT NULL DEFAULT '[]'");
             }
+            long workBegan = PodStartupTrace.now();
             work = WorkManager.getInstance(context.getApplicationContext());
+            PodStartupTrace.stage("workManagerAcquire", workBegan);
         } catch (RuntimeException error) { db.close(); throw error; }
     }
     static void id(String value) {

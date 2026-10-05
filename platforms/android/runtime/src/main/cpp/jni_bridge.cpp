@@ -200,13 +200,16 @@ extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodSyncFileReceiver_nat
 
 extern "C" JNIEXPORT jlong JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeCreate(
     JNIEnv* env, jclass, jobject surface, jstring target, jint width, jint height, jfloat density, jint touchSlop, jint minFling, jint maxFling, jstring dataDir) {
+  const double began = monoMs();
   const char* t = env->GetStringUTFChars(target, nullptr); const char* d = env->GetStringUTFChars(dataDir, nullptr);
   if (std::string(t) != "android-watch" && std::string(t) != "wearos-watch") { fail(env, "PodJS target mismatch"); return 0; }
   ANativeWindow* window = ANativeWindow_fromSurface(env, surface);
 const char* capabilities = "[\"input.touch\",\"input.rotary\",\"data.kv\",\"device.haptics\",\"host.lifecycle\",\"host.theme\",\"display.round\",\"input.back\",\"net.http\",\"data.fs\",\"data.sqlite\",\"text.layout\",\"text.raster\",\"text.environment\",\"input.text\",\"input.time\",\"device.location\",\"data.secure\",\"crypto.basic\",\"data.files.chunks\",\"data.uri\",\"media.audio\",\"debug.acoustic\",\"media.tts\",\"media.tts.spectrum\",\"media.video\",\"media.video.sessions\",\"runtime.timer\",\"display.power\",\"system.toast\",\"data.images\",\"system.browser.auth\",\"system.browser.auth.status\",\"net.download\",\"net.rfcomm\",\"net.tcp\",\"net.stream\",\"net.websocket\",\"net.discovery\",\"system.browser\",\"system.browser.siteData\",\"system.browser.availability\",\"system.browser.inApp\",\"system.share\",\"background.scheduled\",\"notification.local\",\"companion.sync.state\",\"companion.sync.message\",\"companion.sync.file\",\"host.takeover\"]";
   PodRuntimeConfig config{sizeof(config), t, PODJS_RUNTIME_ABI_VERSION, 2, (uint32_t)width, (uint32_t)height,
       density, POD_DISPLAY_ROUND, 0, 0, 0, 0, d, capabilities};
+  const double runtimeBegan = monoMs();
   auto host = std::make_unique<Host>(); host->runtime = pod_runtime_create(&config);
+  const double runtimeCreated = monoMs();
   if (!host->runtime) {
     ANativeWindow_release(window);
     env->ReleaseStringUTFChars(target, t); env->ReleaseStringUTFChars(dataDir, d);
@@ -223,8 +226,15 @@ const char* capabilities = "[\"input.touch\",\"input.rotary\",\"data.kv\",\"devi
   host->logicalHeight = pod_runtime_logical_height(host->runtime);
   const uint32_t rasterWidth = host->logicalWidth * VulkanRenderer::kRasterScale;
   const uint32_t rasterHeight = host->logicalHeight * VulkanRenderer::kRasterScale;
+  const double rendererBegan = monoMs();
   host->renderer = std::make_unique<VulkanRenderer>(window, width, height, rasterWidth, rasterHeight); ANativeWindow_release(window);
-  host->framebuffer.resize(host->renderer->rasterBytes());
+  const double rendererCreated = monoMs();
+  // The normal GPU path never consumes the CPU RGBA fallback buffer.
+  __android_log_print(ANDROID_LOG_INFO,"PodJSPerf",
+      "create totalMs=%.3f windowConfigMs=%.3f runtimeMs=%.3f scrollConfigMs=%.3f vulkanMs=%.3f deferredRgbaBytes=%llu rendererReady=%d",
+      rendererCreated-began,runtimeBegan-began,runtimeCreated-runtimeBegan,
+      rendererBegan-runtimeCreated,rendererCreated-rendererBegan,
+      static_cast<unsigned long long>(host->renderer->rasterBytes()),host->renderer->valid());
   env->ReleaseStringUTFChars(target, t); env->ReleaseStringUTFChars(dataDir, d);
   if (!host->renderer->valid()) {
     pod_runtime_destroy(host->runtime); host->runtime=nullptr;
@@ -345,6 +355,10 @@ extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeBo
   if(result)fail(env,pod_runtime_last_error());
   else __android_log_print(ANDROID_LOG_INFO,"PodJS","%s",pod_runtime_receipt(h->runtime));
 }
+extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeRendererReady(JNIEnv*,jclass,jlong p) {
+  auto* h=reinterpret_cast<Host*>(p);
+  return h && h->renderer && h->renderer->valid() ? JNI_TRUE : JNI_FALSE;
+}
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeResize(JNIEnv* env,jclass,jlong p,jobject s,jint w,jint ht){auto*h=reinterpret_cast<Host*>(p);if(!h)return;h->width=static_cast<uint32_t>(w);h->height=static_cast<uint32_t>(ht);auto*n=ANativeWindow_fromSurface(env,s);h->renderer->replaceWindow(n,w,ht);ANativeWindow_release(n);}
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeDetachSurface(JNIEnv*,jclass,jlong p){auto*h=reinterpret_cast<Host*>(p);if(h)h->renderer->replaceWindow(nullptr,0,0);}
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeInput(JNIEnv* env,jclass,jlong p,jintArray ids,jfloatArray xy,jint count,jint rotary){auto*h=reinterpret_cast<Host*>(p);if(!h)return;std::vector<jint> id(count);std::vector<jfloat> pos(count*2);if(count){env->GetIntArrayRegion(ids,0,count,id.data());env->GetFloatArrayRegion(xy,0,count*2,pos.data());}std::vector<PodTouch> next(count);for(int i=0;i<count;i++)next[i]={(uint32_t)id[i],pos[i*2]*h->logicalWidth/std::max(1u,h->width),pos[i*2+1]*h->logicalHeight/std::max(1u,h->height)};h->touches.submit(std::move(next));h->rotary+=rotary;}
@@ -437,6 +451,12 @@ static void renderFrame(Host* h, int64_t frameTimeNanos) {
         submittedFlags |= int64_t{1} << 16;
         gpuSubmitted = true;
       } else if (h->renderer->valid()) {
+        if (h->framebuffer.size() != h->renderer->rasterBytes()) {
+          const double allocationBegan = monoMs();
+          h->framebuffer.resize(h->renderer->rasterBytes());
+          __android_log_print(ANDROID_LOG_INFO,"PodJSPerf","cpuFallbackAllocate bytes=%llu elapsedMs=%.3f",
+              static_cast<unsigned long long>(h->framebuffer.size()),monoMs()-allocationBegan);
+        }
         const bool rasterized = pod_runtime_render_rgba_transparent_incremental(h->runtime,VulkanRenderer::kRasterScale,h->framebuffer.data(),h->framebuffer.size())==0;
         submitted = rasterized && h->renderer->submitRgba(h->framebuffer.data(),h->framebuffer.size(),list.content_hash);
         if (submitted) { submittedFlags |= int64_t{1} << 17; cpuSubmitted = true; }
