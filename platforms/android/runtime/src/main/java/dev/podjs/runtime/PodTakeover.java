@@ -26,7 +26,10 @@ public final class PodTakeover {
                     new PodFileConverter(sandbox,PodRoomAndroidDb::new,(file,faces) -> {
                         for(int i=0;i<faces;i++)if(new android.graphics.Typeface.Builder(file).setTtcIndex(i).build()==null)
                             throw new IOException("font_unloadable");
-                    })));
+                    })), phase -> {
+                        if ((c.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)
+                            android.util.Log.i("PodTakeoverPhase", phase.name());
+                    });
     }
     // Keyed by Android's in-memory sandbox path, not Activity identity. Distinct
     // fixture/storage contexts must not accidentally share an admitted generation.
