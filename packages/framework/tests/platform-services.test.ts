@@ -244,7 +244,7 @@ test("multi-session video preserves ids and atomically describes prewarm promoti
   try {
     const capabilities=videoSessions.capabilities();
     expect(commands.at(-1)).toMatchObject({method:"video.session.capabilities",args:{}});
-    const capabilityValue={capability:"media.video.sessions",maxSessions:2,decoderLimit:2,decoderInUse:0,targetBufferBytesPerSession:6291456,targetBufferBytesTotal:12582912,prewarmMode:"hidden_first_frame",surfacePromotion:true,verticalTransition:true,surfaceComposition:"android_texture_view",backgroundPlayback:false} as const;
+    const capabilityValue={capability:"media.video.sessions",maxSessions:2,decoderLimit:2,decoderInUse:0,targetBufferBytesPerSession:6291456,targetBufferBytesTotal:12582912,prewarmTimeoutMs:2500,prewarmMode:"hidden_first_frame",surfacePromotion:true,verticalTransition:true,surfaceComposition:"android_texture_view",backgroundPlayback:false} as const;
     reply(capabilityValue);await expect(capabilities).resolves.toEqual(capabilityValue);
 
     const bounds={x:0,y:0,width:240,height:240,translateY:0,roundClip:{cx:120,cy:120,radius:120}};

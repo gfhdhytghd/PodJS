@@ -251,7 +251,7 @@ export const speech = {
   stop(): Promise<unknown> { return hostOperation("tts.stop",{}).result; },
 };
 export interface VideoBounds { x:number; y:number; width:number; height:number; translateX?:number; translateY?:number; visible?:boolean; roundClip?:{cx:number;cy:number;radius:number} }
-export interface VideoPrepare { url?:string; videoUrl?:string; audioUrl?:string; type?:string; headers?:Record<string,string>; bounds:VideoBounds; autoplay?:boolean; muted?:boolean; loop?:boolean; backgroundPlayback?:boolean }
+export interface VideoPrepare { url?:string; videoUrl?:string; audioUrl?:string; type?:string; videoMime?:string; videoWidth?:number; videoHeight?:number; headers?:Record<string,string>; bounds:VideoBounds; autoplay?:boolean; muted?:boolean; loop?:boolean; backgroundPlayback?:boolean }
 export interface VideoState { ok:boolean; state:string; positionMs:number; durationMs:number; width:number; height:number; volume:number; volumeMax:number }
 export const video = {
   prepare(options: VideoPrepare): HostOperation<VideoState> { return hostOperation<VideoState>("video.prepare", options as unknown as Record<string,unknown>); },
@@ -268,9 +268,11 @@ export const video = {
 
 export interface VideoSessionCapabilities {
   capability:"media.video.sessions"; maxSessions:number; decoderLimit:number; decoderInUse:number;
-  targetBufferBytesPerSession:number; targetBufferBytesTotal:number;
-  prewarmMode:"hidden_first_frame"; surfacePromotion:true; verticalTransition:true;
+  targetBufferBytesPerSession:number; targetBufferBytesTotal:number; prewarmTimeoutMs:number;
+  prewarmMode:"hidden_first_frame"; surfacePromotion:boolean; verticalTransition:boolean;
   surfaceComposition:"android_texture_view"; backgroundPlayback:false;
+  decoderMime?:string|null; decoderWidth?:number; decoderHeight?:number; decoderName?:string|null;
+  decoderAdvertisedInstances?:number; decoderSizeSupported?:boolean; decoderRuntimeDowngraded?:boolean;
 }
 export interface VideoSessionPrepare extends Omit<VideoPrepare,"backgroundPlayback"> {
   sessionId:string;
@@ -294,7 +296,7 @@ export interface VideoSessionTransitionState {
  * one-player host rejects every request before transport.
  */
 export const videoSessions = {
-  capabilities():Promise<VideoSessionCapabilities> { return hostOperation<VideoSessionCapabilities>("video.session.capabilities",{}).result; },
+  capabilities(profile:Pick<VideoPrepare,"videoMime"|"videoWidth"|"videoHeight">={}):Promise<VideoSessionCapabilities> { return hostOperation<VideoSessionCapabilities>("video.session.capabilities",profile as Record<string,unknown>).result; },
   prepare(options:VideoSessionPrepare):HostOperation<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.prepare",options as unknown as Record<string,unknown>); },
   play(sessionId:string):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.play",{sessionId}).result; },
   pause(sessionId:string):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.pause",{sessionId}).result; },
