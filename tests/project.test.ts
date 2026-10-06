@@ -108,3 +108,11 @@ test("bytecode source stripping is an explicit boolean opt-in", () => {
   for (const bytecode of [true,[],null,{}, {stripSource:"true"}])
     expect(() => resolvePodProject(fixture({...base,bytecode}),POD_TARGETS,defaults)).toThrow("bytecode.stripSource");
 });
+
+
+test("runtime glyph options are explicit and bounded",()=>{
+  expect(resolvePodProject(fixture(base),POD_TARGETS,defaults).config.resources?.glyphCache).toBeUndefined();
+  expect(resolvePodProject(fixture({...base,resources:{glyphCache:{warmChars:"阅读Aa"}}}),POD_TARGETS,defaults).config.resources?.glyphCache).toEqual({warmChars:"阅读Aa"});
+  for(const glyphCache of [null,[],true,{warmChars:2},{warmChars:"x".repeat(4097)}])
+    expect(()=>resolvePodProject(fixture({...base,resources:{glyphCache}}),POD_TARGETS,defaults)).toThrow("glyphCache");
+});

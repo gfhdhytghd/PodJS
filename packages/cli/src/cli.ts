@@ -74,9 +74,19 @@ function doctor(): void {
 
 async function build(target: Target, project?: ResolvedPodProject): Promise<ResolvedPodProject | undefined> {
   const profile = POD_TARGETS[target];
+  if(project?.config.resources?.glyphCache&&target!=="android-watch"&&target!=="wearos-watch") fail("runtime glyph pages currently require android-watch or wearos-watch");
   if (project) {
     const unsupported = project.config.capabilities.filter(capability => !profile.capabilities.includes(capability as never));
     if (unsupported.length) fail(`project requires capabilities unavailable on ${target}: ${unsupported.join(", ")}`);
+  }
+  const glyphOption=project?.config.resources?.glyphCache;
+  let glyphCache=glyphOption;
+  if(glyphOption?.warmCharsFile&&project) {
+    const path=resolve(project.root,glyphOption.warmCharsFile);
+    if(!existsSync(path))fail("glyphCache.warmCharsFile does not exist");
+    const chars=readFileSync(path,"utf8");
+    if(chars.length>8192)fail("glyphCache.warmCharsFile exceeds 8192 code units");
+    glyphCache={...glyphOption,warmChars:glyphOption.warmChars+chars};
   }
   const density = target === "android-watch" || target === "wearos-watch" ? 2 : 2;
   const out = project ? join(project.output, target) : join(ROOT, "dist", target);
@@ -86,6 +96,7 @@ async function build(target: Target, project?: ResolvedPodProject): Promise<Reso
     "--framework=solid", `--density=${density}`, "--hz=60",
     ...(target === "android-watch" || target === "wearos-watch" ? ["--minify"] : []),
     ...(project?.fontSlots.length ? [`--font-slots-json=${JSON.stringify(project.fontSlots)}`] : []),
+    ...(glyphCache ? [`--glyph-cache-json=${JSON.stringify(glyphCache)}`] : []),
     ...(project?.extraChars ? [`--extra-chars=${project.extraChars}`] : []),
     `--font-regular=${project?.fontRegular ?? join(ROOT, "assets/fonts/NotoSansCJKSC-Regular-subset.ttf")}`,
     `--font-bold=${project?.fontBold ?? join(ROOT, "assets/fonts/NotoSansCJKSC-Bold-subset.ttf")}`,
@@ -115,7 +126,7 @@ async function build(target: Target, project?: ResolvedPodProject): Promise<Reso
   const manifest = {
     schema: 1,
     target: profile.id,
-    hostAbi: profile.hostAbi,
+    hostAbi: project?.config.resources?.glyphCache ? 3 : profile.hostAbi,
     logicalViewport: profile.logicalViewport,
     renderer: profile.renderer,
     capabilities: profile.capabilities,

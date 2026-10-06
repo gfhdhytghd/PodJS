@@ -111,6 +111,8 @@ bool gpuRoundedClipContainsPixel(const GpuRoundedClip &c, float x, float y) {
 }
 
 void GpuDecodeCache::pruneStale(PodRuntime *runtime) {
+  ++frame_;
+  pages_.erase(std::remove_if(pages_.begin(),pages_.end(),[&](const Page &p){return pod_runtime_font_epoch(runtime,p.image.slot)!=p.epoch;}),pages_.end());
   entries_.erase(std::remove_if(entries_.begin(), entries_.end(),
                                 [runtime](const GpuImage &entry) {
     if ((entry.stableKey & (1ull << 63)) == 0) return false;
@@ -119,6 +121,15 @@ void GpuDecodeCache::pruneStale(PodRuntime *runtime) {
     return pod_runtime_texture_for_handle(runtime, handle, &current) != 0 ||
            current.revision != entry.revision;
   }), entries_.end());
+}
+
+// Pages grow during decoding. All draw commands must refer to the final
+// immutable snapshot, including glyphs emitted before a later cell was added.
+void GpuDecodeCache::finishFrame(GpuFrame *frame) {
+  for(auto &image:frame->images) for(const auto &p:pages_) if(image.stableKey==p.image.stableKey) {image.rgba=p.image.rgba;image.revision=p.image.revision;break;}
+  std::vector<GpuImage> unique;
+  for(const auto &image:frame->images) if(std::none_of(unique.begin(),unique.end(),[&](const GpuImage &known){return known.stableKey==image.stableKey;})) unique.push_back(image);
+  frame->images=std::move(unique);
 }
 
 bool GpuDecodeCache::get(PodRuntime *runtime, uint32_t slot, GpuImage *out,
@@ -163,6 +174,49 @@ bool GpuDecodeCache::getGlyph(PodRuntime *runtime, uint32_t slot,
     return bad(nullptr, error, "glyph unavailable");
   uint32_t density = std::max(1u, f.raster_density),
            width = f.cell_width * density, height = f.cell_height * density;
+  const uint64_t epoch=pod_runtime_font_epoch(runtime,slot);
+  if(epoch) {
+    auto output=[&](Page &p,size_t cell) {
+      p.last=++clock_;p.pinned=frame_;*out=p.image;
+      const uint32_t x=uint32_t(cell%4)*(width+2)+1,y=uint32_t(cell/4)*(height+2)+1;
+      out->glyphOrigin=x|(y<<16);out->glyphSize=width|(height<<16);
+    };
+    Page *page=nullptr;
+    for(auto &p:pages_) if(p.image.slot==slot&&p.epoch==epoch) {
+      auto known=std::find(p.glyphs.begin(),p.glyphs.end(),uint16_t(glyph));
+      if(known!=p.glyphs.end()) {output(p,size_t(known-p.glyphs.begin()));return true;}
+      if(p.glyphs.size()<16) page=&p;
+    }
+    if(!page) {
+      const size_t bytes=size_t(width+2)*4*(height+2)*4*4;
+      constexpr size_t budget=16*1024*1024;
+      auto used=[&](){size_t n=0;for(const auto &p:pages_) n+=p.image.rgba->size();return n;};
+      while(used()+bytes>budget) {
+        auto victim=pages_.end();for(auto it=pages_.begin();it!=pages_.end();++it) if(it->pinned!=frame_&&(victim==pages_.end()||it->last<victim->last)) victim=it;
+        if(victim==pages_.end()) return bad(nullptr,error,"active glyph pages exceed cache budget");
+        pages_.erase(victim);
+      }
+      Page fresh{};fresh.epoch=epoch;fresh.cellW=width;fresh.cellH=height;
+      fresh.image.slot=slot;fresh.image.width=(width+2)*4;fresh.image.height=(height+2)*4;
+      fresh.image.rasterDensity=density;fresh.image.coverage=true;fresh.image.stableKey=(1ull<<62)|nextPage_++;
+      fresh.image.rgba=std::make_shared<std::vector<uint8_t>>(bytes,0);
+      pages_.push_back(std::move(fresh));page=&pages_.back();
+    }
+    PodGlyphView cell{};
+    if(pod_runtime_glyph(runtime,slot,glyph,&cell)!=0||!cell.coverage||cell.byte_length!=size_t(width)*height) return bad(nullptr,error,"runtime glyph unavailable");
+    // Copy-on-write keeps the previous submitted frame immutable. Replicated
+    // edge texels preserve single-cell clamp/bilinear sampling at UV 0 and 1.
+    auto pixels=page->image.rgba.use_count()==1
+        ? std::const_pointer_cast<std::vector<uint8_t>>(page->image.rgba)
+        : std::make_shared<std::vector<uint8_t>>(*page->image.rgba);
+    const size_t index=page->glyphs.size();const uint32_t x=uint32_t(index%4)*(width+2),y=uint32_t(index/4)*(height+2);
+    for(uint32_t row=0;row<height+2;++row) for(uint32_t col=0;col<width+2;++col) {
+      const uint32_t sx=std::min(width-1,col?col-1:0),sy=std::min(height-1,row?row-1:0);
+      const size_t at=(size_t(y+row)*page->image.width+x+col)*4;
+      (*pixels)[at]=(*pixels)[at+1]=(*pixels)[at+2]=255;(*pixels)[at+3]=cell.coverage[size_t(sy)*width+sx];
+    }
+    page->image.rgba=pixels;++page->image.revision;page->glyphs.push_back(uint16_t(glyph));output(*page,index);return true;
+  }
   size_t stride = size_t(width), offset = size_t(glyph) * height * stride;
   if (offset + size_t(height) * stride > f.bitmap_length)
     return bad(nullptr, error, "glyph bitmap truncated");
@@ -233,6 +287,13 @@ bool decodeGpuDrawList(PodRuntime *runtime, const PodDrawList &list,
                              rounded.end());
     out->primitives.push_back(std::move(primitive));
     return true;
+  };
+  auto appendImage=[&](GpuImage image) {
+    // A page is finalized after every cell in this frame is known. Retaining
+    // intermediate snapshots here would copy the whole page per glyph and
+    // keep up to sixteen obsolete RGBA buffers alive until the frame ends.
+    if(image.glyphSize) image.rgba.reset();
+    out->images.push_back(std::move(image));
   };
   const uint32_t *w = list.words;
   size_t i = 0;
@@ -389,6 +450,7 @@ bool decodeGpuDrawList(PodRuntime *runtime, const PodDrawList &list,
           tri.type = GpuPrimitiveType::TexTri;
           tri.textureSlot = slot;
           tri.glyphSlot = slot;
+          tri.glyphOrigin=image.glyphOrigin;tri.glyphSize=image.glyphSize;
           tri.linearCoverage = true;
           tri.textureKey = image.stableKey;
           const FloatVertex chosen[3] = {corner[a], corner[b], corner[c]};
@@ -416,7 +478,7 @@ bool decodeGpuDrawList(PodRuntime *runtime, const PodDrawList &list,
           }
           return appendPrimitive(std::move(tri));
         };
-        out->images.push_back(std::move(image));
+        appendImage(std::move(image));
         if (precise ? !appendGlyphTriangle(0, 1, 3)
                     : (!appendGlyphTriangle(0, 1, 2) || !appendGlyphTriangle(0, 2, 3)))
           return bad(out, error, "rounded clip table capacity exceeded");
@@ -440,6 +502,7 @@ bool decodeGpuDrawList(PodRuntime *runtime, const PodDrawList &list,
         GpuPrimitive q{};
         q.type = GpuPrimitiveType::GlyphRun;
         q.glyphSlot = slot;
+        q.glyphOrigin=image.glyphOrigin;q.glyphSize=image.glyphSize;
         q.textureSlot = slot;
         q.textureKey = image.stableKey;
         q.vertex[0] = vertex(w[i + g * 2], scale, color);
@@ -452,7 +515,7 @@ bool decodeGpuDrawList(PodRuntime *runtime, const PodDrawList &list,
         q.vertex[0].v = 0;
         q.vertex[1].u = 1;
         q.vertex[1].v = 1;
-        out->images.push_back(std::move(image));
+        appendImage(std::move(image));
         if (!appendPrimitive(std::move(q)))
           return bad(out, error, "rounded clip table capacity exceeded");
       }
@@ -490,5 +553,6 @@ bool decodeGpuDrawList(PodRuntime *runtime, const PodDrawList &list,
   }
   if (!stack.empty())
     return bad(out, error, "unbalanced SCISSOR");
+  cache->finishFrame(out);
   return true;
 }

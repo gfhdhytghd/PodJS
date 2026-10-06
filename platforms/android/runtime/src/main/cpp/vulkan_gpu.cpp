@@ -77,7 +77,11 @@ PrimitivePush makePrimitivePush(const GpuPrimitive& p, uint32_t rasterWidth,
   out.texInfo[0] = (linear || p.linearCoverage) ? 1 : 0;
   out.texInfo[1] = static_cast<int32_t>(p.roundedClipOffset);
   out.texInfo[2] = static_cast<int32_t>(p.roundedClipCount);
-  out.texInfo[3] = p.linearCoverage ? 1 : 0;
+  out.texInfo[3] = p.glyphSize ? 2 : (p.linearCoverage ? 1 : 0);
+  // Reuse unused screen lanes; UVs remain cell-local, so fixed-point sampling
+  // keeps exactly the same float operations as an individual glyph texture.
+  out.screen[2] = std::bit_cast<float>(p.glyphOrigin);
+  out.screen[3] = std::bit_cast<float>(p.glyphSize);
   out.screen[0] = static_cast<float>(rasterWidth);
   out.screen[1] = static_cast<float>(rasterHeight);
   return out;

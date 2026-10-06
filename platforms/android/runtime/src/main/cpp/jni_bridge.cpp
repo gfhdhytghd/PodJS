@@ -205,7 +205,7 @@ extern "C" JNIEXPORT jlong JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeC
   if (std::string(t) != "android-watch" && std::string(t) != "wearos-watch") { fail(env, "PodJS target mismatch"); return 0; }
   ANativeWindow* window = ANativeWindow_fromSurface(env, surface);
 const char* capabilities = "[\"input.touch\",\"input.rotary\",\"data.kv\",\"device.haptics\",\"host.lifecycle\",\"host.theme\",\"display.round\",\"input.back\",\"net.http\",\"data.fs\",\"data.sqlite\",\"text.layout\",\"text.raster\",\"text.environment\",\"input.text\",\"input.time\",\"device.location\",\"data.secure\",\"crypto.basic\",\"data.files.chunks\",\"data.uri\",\"media.audio\",\"debug.acoustic\",\"media.tts\",\"media.tts.spectrum\",\"media.video\",\"media.video.sessions\",\"runtime.timer\",\"display.power\",\"system.toast\",\"data.images\",\"system.browser.auth\",\"system.browser.auth.status\",\"net.download\",\"net.rfcomm\",\"net.tcp\",\"net.stream\",\"net.websocket\",\"net.discovery\",\"system.browser\",\"system.browser.siteData\",\"system.browser.availability\",\"system.browser.inApp\",\"system.share\",\"background.scheduled\",\"notification.local\",\"companion.sync.state\",\"companion.sync.message\",\"companion.sync.file\",\"host.takeover\"]";
-  PodRuntimeConfig config{sizeof(config), t, PODJS_RUNTIME_ABI_VERSION, 2, (uint32_t)width, (uint32_t)height,
+  PodRuntimeConfig config{sizeof(config), t, PODJS_RUNTIME_ABI_VERSION, 3, (uint32_t)width, (uint32_t)height,
       density, POD_DISPLAY_ROUND, 0, 0, 0, 0, d, capabilities};
   const double runtimeBegan = monoMs();
   auto host = std::make_unique<Host>(); host->runtime = pod_runtime_create(&config);
@@ -500,6 +500,15 @@ static void renderFrame(Host* h, int64_t frameTimeNanos) {
       .cpuSubmitted=cpuSubmitted};
   podjs_perf::WindowSummary window{};
   if (h->framePerf.add(now,frameTimeNanos,sample,&window)) {
+    PodGlyphCacheStats glyph{};
+    if(pod_runtime_glyph_cache_stats(h->runtime,&glyph)==0) {
+      __android_log_print(ANDROID_LOG_INFO,"PodJSPerf",
+          "glyphCache hits=%llu misses=%llu materializeMs=%.3f residentBytes=%llu sourceBytes=%llu seedBytes=%llu cells=%llu pageBytes=%llu pages=%llu",
+          (unsigned long long)glyph.hits,(unsigned long long)glyph.misses,glyph.raster_micros/1000.0,
+          (unsigned long long)glyph.resident_bytes,(unsigned long long)glyph.source_bytes,(unsigned long long)glyph.seed_bytes,(unsigned long long)glyph.cells,
+          (unsigned long long)(h->renderer?h->renderer->glyphPageBytes():0),
+          (unsigned long long)(h->renderer?h->renderer->glyphPageCount():0));
+    }
     const auto values=[](const podjs_perf::Distribution& value) {
       return std::array<double,3>{value.p50,value.p95,value.max};
     };
