@@ -47,6 +47,11 @@ const themeHandlers = new Set<ThemeHandler>();
 const backHandlers: BackHandler[] = [];
 let navigationState: NavigationState = Object.freeze({ canGoBack: false });
 const hostEventHandlers = new Set<(event: Record<string, unknown>) => void>();
+/** Demand-only listener ownership; no per-event accounting. */
+export function watchResourceCounts() {
+ return {hostEvents:hostEventHandlers.size,lifecycle:lifecycleHandlers.size,theme:themeHandlers.size,
+  back:backHandlers.length,axis:[...axisHandlers.values()].reduce((n,v)=>n+v.size,0)};
+}
 /** Internal shared event fanout; services must not drain the host queue themselves. */
 export function __onHostEvent(handler: (event: Record<string, unknown>) => void): () => void {
   return subscribe(hostEventHandlers, handler);

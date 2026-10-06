@@ -237,6 +237,11 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
         long servicesBegan = PodStartupTrace.now();
         services = new PodServices(context, this::receiveServiceEvent);
+        if(PodServices.memoryEnabled(context))services.attachMemoryProvider(()->{
+            if(host==0)return null;
+            try {JSONObject stats=new JSONObject(nativeMemoryStats(host));stats.put("pid",android.os.Process.myPid());stats.put("networkRequests",requests.size());return stats;}
+            catch(Exception error){return null;}
+        });
         PodStartupTrace.stage("servicesCreate", servicesBegan);
         setSurfaceTextureListener(this);
         setOpaque(false);
@@ -341,6 +346,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
             throw new IllegalStateException("PodJS boot failed", failure);
         }
         setHost(candidate);
+        startMemoryTrace(hostLifetime);
         services.resumeModalState();
         accessibilityEnabled = false;
         SurfaceTexture texture = getSurfaceTexture();
@@ -372,6 +378,28 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         Choreographer.getInstance().removeFrameCallback(frameCallback);
         if (active) Choreographer.getInstance().postFrameCallback(frameCallback);
         PodStartupTrace.stage("finishBoot", began);
+    }
+
+    /** Debug/PERF_TRACE only. No periodic callback, heap scan, bitmap counter
+     * allocation or log serialization is scheduled for release builds. */
+    private void startMemoryTrace(final HostLifetime owner) {
+        if(!PodServices.memoryEnabled(getContext()))return;
+        serviceHandler.postDelayed(new Runnable(){
+            @Override public void run(){
+                if(owner!=hostLifetime||detached)return;
+                try {services.collectMemoryStats(value->{
+                    if(owner==hostLifetime&&!detached) {
+                        if(value!=null)android.util.Log.i("PodJSMem",value.toString());
+                        // Schedule after delivery so a busy text worker cannot
+                        // accumulate samples or starve paragraph/raster jobs.
+                        serviceHandler.postDelayed(this,1000);
+                    }
+                });}catch(RuntimeException unavailable){
+                    android.util.Log.w("PodJSMem","sample unavailable");
+                    if(owner==hostLifetime&&!detached)serviceHandler.postDelayed(this,1000);
+                }
+            }
+        },1000);
     }
 
     @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture texture) {
@@ -611,6 +639,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         return !canSwipeDismiss() || super.canScrollHorizontally(direction);
     }
 
+    private static native String nativeMemoryStats(long host);
     private static native void nativePostEvent(long host, byte[] event);
     private static native void nativeAccessibilityEnabled(long host, boolean enabled);
     private static native byte[] nativeAccessibilitySnapshot(long host, long[] metadata);

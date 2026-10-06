@@ -769,6 +769,13 @@ static void twoPendingFramesKeepBuffersAndTexturesAlive() {
     assert(submissions.size() == before + 2 && waits.size() == waitStart);
     assert(first.fence != second.fence && first.command != second.command &&
            first.acquired != second.acquired);
+    auto alive = renderer.memoryStats();
+    assert(alive.slots == 2 && alive.inFlightSlots == 2);
+    assert(alive.liveTextures >= 1 && alive.liveTextureBytes >= 8);
+    assert(alive.stagingCapacityBytes > 0 && alive.stagingAllocatedBytes >= alive.stagingCapacityBytes);
+    assert(alive.clipAllocatedBytes > 0 && alive.rasterAllocatedBytes > 0);
+    assert(alive.cpuImageBytes == 8); // Two slot refs + decoder refer to one CPU buffer.
+    assert(waits.size() == waitStart); // Sampling did not wait for/collect a fence.
     verifyPending(); // Frame 1's clip and upload data are unchanged by frame 2.
 
     VkImage oldTexture{};
@@ -779,6 +786,10 @@ static void twoPendingFramesKeepBuffersAndTexturesAlive() {
     ++textureRevision;
     assert(draw(renderer, clippedImage(3), 3));
     assert(imageMemory.count(oldTexture));
+    auto retired = renderer.memoryStats();
+    assert(retired.retiredTextures == 1 && retired.retiredTextureBytes == 8);
+    assert(retired.cpuImageBytes == 16); // Old in-flight revision plus current.
+
     assert(waits.size() == waitStart + 1 && waits.back() == first.fence);
     assert(submissions.back().command == first.command);
     assert(fences.at(second.fence).pending);
@@ -786,6 +797,8 @@ static void twoPendingFramesKeepBuffersAndTexturesAlive() {
     assert(draw(renderer, clippedImage(4), 4));
     assert(waits.back() == second.fence);
     assert(!imageMemory.count(oldTexture));
+    assert(renderer.memoryStats().retiredTextures == 0);
+    assert(renderer.memoryStats().cpuImageBytes == 8);
     assert(submissions.back().command == second.command);
   }
   assert(window.references == 1);

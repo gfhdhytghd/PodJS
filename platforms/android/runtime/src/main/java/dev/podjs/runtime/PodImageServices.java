@@ -72,6 +72,8 @@ public final class PodImageServices implements Closeable {
         }
     }
 
+    int idleDecoderCount() {synchronized(decoderLock){return idleDecoders.size();}}
+
     private void releaseDecoders() {
         synchronized(decoderLock) {
             decoderEpoch++;

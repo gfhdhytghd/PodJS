@@ -11,6 +11,9 @@
 #include <vector>
 #include <cstring>
 #include <cerrno>
+#include <sstream>
+#include <fstream>
+#include <cstdio>
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -608,4 +611,87 @@ extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePo
   jsize size=env->GetArrayLength(event);std::vector<char> data(size+1,0);
   env->GetByteArrayRegion(event,0,size,reinterpret_cast<jbyte*>(data.data()));
   pod_runtime_post_event(h->runtime,data.data());
+}
+
+struct PakVmaStats {
+  bool found{}, exact{};
+  uint64_t vmaBytes{}, rssBytes{}, pssBytes{};
+};
+static PakVmaStats pakVmaStats(const MappedAsset &pak) {
+  PakVmaStats result{};
+  if (pak.base == MAP_FAILED || !pak.mappedLength) return result;
+  std::ifstream smaps("/proc/self/smaps");
+  if (!smaps) return result;
+  const auto begin = reinterpret_cast<uintptr_t>(pak.base);
+  const auto page = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+  if (!page || page > (1u << 20)) return result;
+  const auto end = begin + ((pak.mappedLength + page - 1) / page) * page;
+  bool selected = false;
+  std::string line;
+  while (std::getline(smaps, line)) {
+    unsigned long from{}, to{}, kb{};
+    if (std::sscanf(line.c_str(), "%lx-%lx", &from, &to) == 2) {
+      selected = from < end && to > begin;
+      if (selected) {
+        result.found = true;
+        result.vmaBytes += to - from;
+        result.exact = from == begin && to == end;
+      }
+    } else if (selected && std::sscanf(line.c_str(), "Rss: %lu kB", &kb) == 1) result.rssBytes += kb * 1024;
+    else if (selected && std::sscanf(line.c_str(), "Pss: %lu kB", &kb) == 1) result.pssBytes += kb * 1024;
+  }
+  // If multiple/merged VMAs overlap, totals belong to the entire intersecting
+  // VMAs. Expose that boundary rather than presenting a fabricated pak-only RSS.
+  result.exact = result.exact && result.vmaBytes == end - begin;
+  return result;
+}
+
+// Called on the same main-thread host lane as frames/services. Java checks the
+// debug flag before entering JNI; this function never polls a fence or runs GC.
+extern "C" JNIEXPORT jstring JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeMemoryStats(
+    JNIEnv* env, jclass, jlong p) {
+  auto* h = reinterpret_cast<Host*>(p);
+  if (!h || !h->runtime) return nullptr;
+  const char* runtime = pod_runtime_memory_stats(h->runtime);
+  if (!runtime) return nullptr;
+  std::ostringstream out;
+  out << "{\"native\":" << runtime << ",\"renderer\":";
+  if (!h->renderer) out << "null";
+  else {
+    const auto s = h->renderer->memoryStats();
+    out << "{";
+#define MEM_FIELD(name) out << "\"" #name "\":" << s.name << ",";
+    MEM_FIELD(liveTextures) MEM_FIELD(liveTextureBytes) MEM_FIELD(liveTextureAllocatedBytes)
+    MEM_FIELD(retiredTextures) MEM_FIELD(retiredTextureBytes) MEM_FIELD(retiredTextureAllocatedBytes)
+    MEM_FIELD(stagingCapacityBytes) MEM_FIELD(stagingAllocatedBytes) MEM_FIELD(clipAllocatedBytes)
+    MEM_FIELD(rasterAllocatedBytes) MEM_FIELD(slots) MEM_FIELD(inFlightSlots) MEM_FIELD(slotImageRefs)
+    MEM_FIELD(slotSnapshotCapacityBytes) MEM_FIELD(cpuImageBuffers) MEM_FIELD(cpuImageBytes)
+    MEM_FIELD(decodeTextureSlots) MEM_FIELD(glyphPages)
+#undef MEM_FIELD
+    out << "\"glyphPageBytes\":" << s.glyphPageBytes << "}";
+  }
+  out << ",\"pakMapping\":{\"bytes\":" << h->pak.length
+      << ",\"mappedBytes\":" << h->pak.mappedLength << ",\"mincoreBackingResidentBytes\":";
+  const long page = sysconf(_SC_PAGESIZE);
+  if (h->pak.base != MAP_FAILED && page > 0) {
+    const size_t pages = (h->pak.mappedLength + page - 1) / page;
+    std::vector<unsigned char> residency(pages);
+    if (mincore(h->pak.base, h->pak.mappedLength, residency.data()) == 0) {
+      size_t resident = 0;
+      for (auto value : residency) if (value & 1) resident += page;
+      out << resident;
+    } else out << "null";
+  } else out << "null";
+  const auto vma = pakVmaStats(h->pak);
+  out << ",\"vmaBytes\":";
+  if (vma.found) out << vma.vmaBytes; else out << "null";
+  out << ",\"vmaRssBytes\":";
+  if (vma.found) out << vma.rssBytes; else out << "null";
+  out << ",\"vmaPssBytes\":";
+  if (vma.found) out << vma.pssBytes; else out << "null";
+  out << ",\"exactVma\":" << (vma.exact ? "true" : "false");
+  out << "},\"hostBuffers\":{\"framebufferCapacityBytes\":" << h->framebuffer.capacity()
+      << ",\"mediaPixelCapacityBytes\":" << h->mediaPixels.capacity()
+      << ",\"mediaArgbCapacityBytes\":" << h->mediaArgb.capacity() * sizeof(jint) << "}}";
+  return env->NewStringUTF(out.str().c_str());
 }

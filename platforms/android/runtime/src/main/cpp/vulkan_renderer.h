@@ -70,6 +70,16 @@ class VulkanRenderer {
     return diagnostics_.scope(stage, fields);
   }
 
+  struct MemoryStats {
+    uint64_t liveTextures{}, liveTextureBytes{}, liveTextureAllocatedBytes{};
+    uint64_t retiredTextures{}, retiredTextureBytes{}, retiredTextureAllocatedBytes{};
+    uint64_t stagingCapacityBytes{}, stagingAllocatedBytes{}, clipAllocatedBytes{}, rasterAllocatedBytes{};
+    uint64_t slots{}, inFlightSlots{}, slotImageRefs{}, slotSnapshotCapacityBytes{};
+    uint64_t cpuImageBuffers{}, cpuImageBytes{}, decodeTextureSlots{}, glyphPages{}, glyphPageBytes{};
+  };
+  // On demand only; no allocation counters or scans in the render path.
+  MemoryStats memoryStats() const;
+
   size_t glyphPageBytes() const {return decodeCache_.glyphPageBytes();}
   size_t glyphPageCount() const {return decodeCache_.glyphPageCount();}
 

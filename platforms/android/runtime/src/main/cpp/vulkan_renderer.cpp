@@ -1508,3 +1508,49 @@ VulkanRenderer::~VulkanRenderer() {
   }
   if (instance_) vkDestroyInstance(instance_, nullptr);
 }
+
+VulkanRenderer::MemoryStats VulkanRenderer::memoryStats() const {
+  MemoryStats stats{};
+  auto imageBytes = [this](VkImage image) -> uint64_t {
+    if (!image || !device_) return 0;
+    VkMemoryRequirements requirements{};
+    vkGetImageMemoryRequirements(device_, image, &requirements);
+    return requirements.size;
+  };
+  auto bufferBytes = [this](VkBuffer buffer) -> uint64_t {
+    if (!buffer || !device_) return 0;
+    VkMemoryRequirements requirements{};
+    vkGetBufferMemoryRequirements(device_, buffer, &requirements);
+    return requirements.size;
+  };
+  stats.liveTextures = textureCache_.size();
+  for (const auto &[key, texture] : textureCache_) {
+    stats.liveTextureBytes += uint64_t{texture.width} * texture.height * 4;
+    if (texture.memory) stats.liveTextureAllocatedBytes += imageBytes(texture.image);
+  }
+  stats.retiredTextures = retiredTextures_.size();
+  for (const auto &texture : retiredTextures_) {
+    stats.retiredTextureBytes += uint64_t{texture.width} * texture.height * 4;
+    if (texture.memory) stats.retiredTextureAllocatedBytes += imageBytes(texture.image);
+  }
+  std::unordered_set<const std::vector<uint8_t>*> images;
+  decodeCache_.memoryImages(images);
+  for (const auto &slot : frames_) {
+    stats.slots++;
+    stats.inFlightSlots += slot.pending;
+    stats.stagingCapacityBytes += slot.stagingCapacity;
+    if (slot.stagingMemory) stats.stagingAllocatedBytes += bufferBytes(slot.stagingBuffer);
+    if (slot.clipMemory) stats.clipAllocatedBytes += bufferBytes(slot.clipBuffer);
+    if (slot.rasterMemory) stats.rasterAllocatedBytes += imageBytes(slot.rasterImage);
+    stats.slotImageRefs += slot.images.size();
+    stats.slotSnapshotCapacityBytes += slot.images.capacity() * sizeof(GpuImage)
+        + slot.uploadKeys.capacity() * sizeof(uint64_t);
+    for (const auto &image : slot.images) if (image.rgba) images.insert(image.rgba.get());
+  }
+  stats.cpuImageBuffers = images.size();
+  for (const auto *image : images) stats.cpuImageBytes += image->capacity();
+  stats.decodeTextureSlots = decodeCache_.textureSlots();
+  stats.glyphPages = decodeCache_.glyphPageCount();
+  stats.glyphPageBytes = decodeCache_.glyphPageBytes();
+  return stats;
+}

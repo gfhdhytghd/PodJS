@@ -12,6 +12,7 @@
     "./sync-messages": "./src/sync-messages.ts",
     "./platform-services": "./src/platform-services.ts",
     "./background-handler": "./src/background-handler.ts",
+    "./debug-memory": "./src/debug-memory.ts",
     "./text": "./src/text.tsx",
     "./media-surface": "./src/media-surface.tsx",
     "./bytes": "./src/bytes.ts"
