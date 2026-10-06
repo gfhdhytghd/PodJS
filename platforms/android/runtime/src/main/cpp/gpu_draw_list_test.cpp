@@ -273,4 +273,39 @@ int main() {
   assert(!decode(glyphRun(0,2300))&&error=="active glyph pages exceed cache budget");
   assert(cache.glyphPageBytes()<=16*1024*1024);
   assert(decode(glyphRun(0,2))); // A failed oversized frame does not poison later frames.
+  // Every submitted slot pins its pages, including stale font epochs. Cache
+  // pressure may evict only pages outside the current decode and both flights.
+  GpuDecodeCache flightCache;
+  GpuFrame flightA, flightB, pressure;
+  auto flightDecode = [&](uint32_t first, uint32_t count, GpuFrame *out) {
+    auto words = glyphRun(first, count);
+    return decodeGpuDrawList(runtime, {words.data(), words.size(), 0, 0, 0}, 2,
+                             out, &flightCache, &error);
+  };
+  assert(flightDecode(0, 200, &flightA));
+  flightCache.pinFrame(0, flightA.images);
+  const auto pinnedA = flightA.images[0].stableKey;
+  const auto snapshotA = flightA.images[0].rgba;
+  assert(flightDecode(200, 200, &flightB));
+  flightCache.pinFrame(1, flightB.images);
+  const auto pinnedB = flightB.images[0].stableKey;
+  for (uint32_t batch = 2; batch < 10; ++batch) {
+    assert(flightDecode(batch * 200, 200, &pressure));
+    assert(flightCache.inFlight(pinnedA) && flightCache.inFlight(pinnedB));
+    assert(flightCache.glyphPageBytes() <= 16 * 1024 * 1024);
+  }
+  assert(flightDecode(0, 1, &pressure));
+  assert(pressure.images[0].stableKey == pinnedA &&
+         pressure.images[0].rgba == snapshotA);
+  ++mockEpoch;
+  flightCache.pruneStale(runtime);
+  // Old epoch is retained until BOTH frames release it.
+  flightCache.pinFrame(1, flightA.images);
+  flightCache.releaseFrame(0);
+  assert(flightCache.inFlight(pinnedA));
+  flightCache.releaseFrame(1);
+  flightCache.pruneStale(runtime);
+  assert(!flightCache.inFlight(pinnedA) && flightCache.glyphPageCount() == 0);
+  assert(flightDecode(0, 1, &pressure));
+  assert(pressure.images[0].stableKey != pinnedA);
 }

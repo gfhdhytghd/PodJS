@@ -3,6 +3,7 @@
 #include <android/native_window.h>
 #include <vulkan/vulkan.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -16,6 +17,7 @@
 class VulkanRenderer {
  public:
   static constexpr uint32_t kRasterScale = 2;
+  static constexpr uint32_t kFramesInFlight = GpuDecodeCache::kFramesInFlight;
 
   VulkanRenderer(ANativeWindow* window, uint32_t width, uint32_t height,
                  uint32_t rasterWidth, uint32_t rasterHeight);
@@ -47,6 +49,9 @@ class VulkanRenderer {
     double presentWaitMs{};
     uint64_t uploadBytes{};
     uint32_t uploadCount{};
+    uint32_t slotIndex{};
+    uint32_t inFlightFrames{};
+    bool waitedForSlot{};
   };
   const SubmitPerf& lastSubmitPerf() const { return lastSubmitPerf_; }
 
@@ -82,8 +87,41 @@ class VulkanRenderer {
     VkImage image{};
     VkDeviceMemory memory{};
     VkImageView view{};
-    VkDescriptorSet descriptor{};
+    std::array<VkDescriptorSet, kFramesInFlight> descriptors{};
   };
+  struct FrameSlot {
+    VkCommandBuffer command{};
+    VkSemaphore acquired{};
+    VkFence fence{};
+    bool pending{};
+    bool acquiredImage{};
+    VkBuffer stagingBuffer{};
+    VkDeviceMemory stagingMemory{};
+    VkDeviceSize stagingCapacity{};
+    void *stagingMapped{};
+    VkBuffer clipBuffer{};
+    VkDeviceMemory clipMemory{};
+    void *clipMapped{};
+    VkImage rasterImage{};
+    VkDeviceMemory rasterMemory{};
+    VkImageView rasterView{};
+    VkFramebuffer framebuffer{};
+    // Immutable snapshots and Vulkan handles live until this slot's fence.
+    std::vector<GpuImage> images;
+    std::unordered_set<VkImage> textures;
+    std::vector<uint64_t> uploadKeys;
+  };
+  FrameSlot &frame() { return frames_[frameIndex_]; }
+  bool createFrameUploadResources(FrameSlot &slot);
+  bool createFrameClipResources(FrameSlot &slot);
+  bool ensureStagingCapacity(FrameSlot &slot, VkDeviceSize required);
+  bool textureInFlight(const TextureResource &texture) const;
+  void retireTexture(TextureResource *texture);
+  void collectRetiredTextures();
+  void releaseFrame(uint32_t index);
+  void abortFrame(uint32_t index);
+  bool resetFrameSync();
+
   struct PendingTextureUpload {
     uint64_t key{};
     VkDeviceSize offset{};
@@ -102,10 +140,9 @@ class VulkanRenderer {
                           const std::vector<PendingTextureUpload>& uploads);
   bool createTextureResource(const GpuImage& image, uint64_t key,
                              TextureResource* out);
-  bool acquireFrame(uint32_t* imageIndex, bool waitForFence = true);
+  bool acquireFrame(uint32_t *imageIndex);
   bool submitAndPresent(uint32_t imageIndex, VkPipelineStageFlags waitStage);
   bool appendSwapchainBlit(VkCommandBuffer command, uint32_t imageIndex);
-  bool recreateFrameFenceSignaled();
   bool rebuildSurfaceAfterError(const char* operation, VkResult result);
   bool gpuFailureOnce(const std::string& reason);
   uint64_t imageKey(const GpuImage& image) const;
@@ -145,23 +182,11 @@ class VulkanRenderer {
   VkExtent2D extent_{};
   VkCommandPool commandPool_{};
   std::vector<VkImage> images_;
-  std::vector<VkCommandBuffer> commands_;
   std::vector<VkSemaphore> renderedPerImage_;
-  VkSemaphore acquired_{};
-  VkFence fence_{};
-  VkBuffer stagingBuffer_{};
-  VkDeviceMemory stagingMemory_{};
-  VkDeviceSize stagingCapacity_{};
-  void* stagingMapped_ = nullptr;
-  VkBuffer clipBuffer_{};
-  VkDeviceMemory clipMemory_{};
-  void* clipMapped_ = nullptr;
-
-  VkImage rasterImage_{};
-  VkDeviceMemory rasterMemory_{};
-  VkImageView rasterView_{};
+  std::array<FrameSlot, kFramesInFlight> frames_{};
+  uint32_t frameIndex_{};
+  std::vector<TextureResource> retiredTextures_;
   VkRenderPass renderPass_{};
-  VkFramebuffer framebuffer_{};
   VkDescriptorSetLayout descriptorLayout_{};
   VkDescriptorPool descriptorPool_{};
   VkSampler nearestSampler_{};

@@ -32,6 +32,10 @@ bool logFailure(const char* message) {
 VkDeviceSize align4(VkDeviceSize value) {
   return (value + 3u) & ~VkDeviceSize{3u};
 }
+template <class F> struct OnExit {
+  F action;
+  ~OnExit() { action(); }
+};
 }  // namespace
 
 #define POD_VK(operation)                                                     \
@@ -158,18 +162,37 @@ bool VulkanRenderer::createDevice() {
                VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
   POD_VK(vkCreateCommandPool(device_, &pool, nullptr, &commandPool_));
 
-  VkSemaphoreCreateInfo semaphore{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-  POD_VK(vkCreateSemaphore(device_, &semaphore, nullptr, &acquired_));
-  return recreateFrameFenceSignaled();
+  for (auto &slot : frames_) {
+    VkCommandBufferAllocateInfo allocate{
+        VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    allocate.commandPool = commandPool_;
+    allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocate.commandBufferCount = 1;
+    POD_VK(vkAllocateCommandBuffers(device_, &allocate, &slot.command));
+  }
+  return true; // Slot sync objects are initialized by replaceWindow.
 }
 
-bool VulkanRenderer::recreateFrameFenceSignaled() {
-  if (fence_) vkDestroyFence(device_, fence_, nullptr);
-  fence_ = VK_NULL_HANDLE;
-  VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-  fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-  return vkCreateFence(device_, &fenceInfo, nullptr, &fence_) == VK_SUCCESS ||
-         logFailure("Unable to create Vulkan frame fence");
+// Called only before use or after device idle during a surface rebuild.
+bool VulkanRenderer::resetFrameSync() {
+  for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+    auto &slot = frames_[i];
+    releaseFrame(i);
+    if (slot.acquired)
+      vkDestroySemaphore(device_, slot.acquired, nullptr);
+    if (slot.fence)
+      vkDestroyFence(device_, slot.fence, nullptr);
+    slot.acquired = VK_NULL_HANDLE;
+    slot.fence = VK_NULL_HANDLE;
+    VkSemaphoreCreateInfo semaphore{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    POD_VK(vkCreateSemaphore(device_, &semaphore, nullptr, &slot.acquired));
+    VkFenceCreateInfo fence{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    fence.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+    POD_VK(vkCreateFence(device_, &fence, nullptr, &slot.fence));
+    slot.pending = slot.acquiredImage = false;
+  }
+  collectRetiredTextures();
+  return true;
 }
 
 bool VulkanRenderer::gpuFailureOnce(const std::string& reason) {
@@ -181,27 +204,35 @@ bool VulkanRenderer::gpuFailureOnce(const std::string& reason) {
 }
 
 bool VulkanRenderer::ensureStagingCapacity(VkDeviceSize required) {
-  required = std::max<VkDeviceSize>(required, 4);
-  if (stagingBuffer_ && stagingCapacity_ >= required) return true;
+  return ensureStagingCapacity(frame(), required);
+}
 
-  if (stagingMapped_) {
-    vkUnmapMemory(device_, stagingMemory_);
-    stagingMapped_ = nullptr;
+bool VulkanRenderer::ensureStagingCapacity(FrameSlot &slot,
+                                           VkDeviceSize required) {
+  required = std::max<VkDeviceSize>(required, 4);
+  if (slot.stagingBuffer && slot.stagingCapacity >= required)
+    return true;
+
+  if (slot.stagingMapped) {
+    vkUnmapMemory(device_, slot.stagingMemory);
+    slot.stagingMapped = nullptr;
   }
-  if (stagingBuffer_) vkDestroyBuffer(device_, stagingBuffer_, nullptr);
-  if (stagingMemory_) vkFreeMemory(device_, stagingMemory_, nullptr);
-  stagingBuffer_ = VK_NULL_HANDLE;
-  stagingMemory_ = VK_NULL_HANDLE;
-  stagingCapacity_ = 0;
+  if (slot.stagingBuffer)
+    vkDestroyBuffer(device_, slot.stagingBuffer, nullptr);
+  if (slot.stagingMemory)
+    vkFreeMemory(device_, slot.stagingMemory, nullptr);
+  slot.stagingBuffer = VK_NULL_HANDLE;
+  slot.stagingMemory = VK_NULL_HANDLE;
+  slot.stagingCapacity = 0;
 
   VkBufferCreateInfo buffer{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
   buffer.size = required;
   buffer.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
   buffer.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  POD_VK(vkCreateBuffer(device_, &buffer, nullptr, &stagingBuffer_));
+  POD_VK(vkCreateBuffer(device_, &buffer, nullptr, &slot.stagingBuffer));
 
   VkMemoryRequirements requirements{};
-  vkGetBufferMemoryRequirements(device_, stagingBuffer_, &requirements);
+  vkGetBufferMemoryRequirements(device_, slot.stagingBuffer, &requirements);
   const uint32_t memoryType =
       findMemoryType(requirements.memoryTypeBits,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
@@ -212,15 +243,25 @@ bool VulkanRenderer::ensureStagingCapacity(VkDeviceSize required) {
   VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
   allocation.allocationSize = requirements.size;
   allocation.memoryTypeIndex = memoryType;
-  POD_VK(vkAllocateMemory(device_, &allocation, nullptr, &stagingMemory_));
-  POD_VK(vkBindBufferMemory(device_, stagingBuffer_, stagingMemory_, 0));
-  POD_VK(vkMapMemory(device_, stagingMemory_, 0, required, 0, &stagingMapped_));
-  stagingCapacity_ = required;
+  POD_VK(vkAllocateMemory(device_, &allocation, nullptr, &slot.stagingMemory));
+  POD_VK(
+      vkBindBufferMemory(device_, slot.stagingBuffer, slot.stagingMemory, 0));
+  POD_VK(vkMapMemory(device_, slot.stagingMemory, 0, required, 0,
+                     &slot.stagingMapped));
+  slot.stagingCapacity = required;
   return true;
 }
 
 bool VulkanRenderer::createUploadResources() {
-  if (!ensureStagingCapacity(rasterBytes())) return false;
+  for (auto &slot : frames_)
+    if (!createFrameUploadResources(slot))
+      return false;
+  return true;
+}
+
+bool VulkanRenderer::createFrameUploadResources(FrameSlot &slot) {
+  if (!ensureStagingCapacity(slot, rasterBytes()))
+    return false;
 
   VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   image.imageType = VK_IMAGE_TYPE_2D;
@@ -235,10 +276,10 @@ bool VulkanRenderer::createUploadResources() {
                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
   image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   image.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  POD_VK(vkCreateImage(device_, &image, nullptr, &rasterImage_));
+  POD_VK(vkCreateImage(device_, &image, nullptr, &slot.rasterImage));
 
   VkMemoryRequirements requirements{};
-  vkGetImageMemoryRequirements(device_, rasterImage_, &requirements);
+  vkGetImageMemoryRequirements(device_, slot.rasterImage, &requirements);
   const uint32_t memoryType =
       findMemoryType(requirements.memoryTypeBits,
                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -248,19 +289,26 @@ bool VulkanRenderer::createUploadResources() {
   VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
   allocation.allocationSize = requirements.size;
   allocation.memoryTypeIndex = memoryType;
-  POD_VK(vkAllocateMemory(device_, &allocation, nullptr, &rasterMemory_));
-  POD_VK(vkBindImageMemory(device_, rasterImage_, rasterMemory_, 0));
+  POD_VK(vkAllocateMemory(device_, &allocation, nullptr, &slot.rasterMemory));
+  POD_VK(vkBindImageMemory(device_, slot.rasterImage, slot.rasterMemory, 0));
 
   VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-  view.image = rasterImage_;
+  view.image = slot.rasterImage;
   view.viewType = VK_IMAGE_VIEW_TYPE_2D;
   view.format = kRasterFormat;
   view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-  POD_VK(vkCreateImageView(device_, &view, nullptr, &rasterView_));
+  POD_VK(vkCreateImageView(device_, &view, nullptr, &slot.rasterView));
   return true;
 }
 
 bool VulkanRenderer::createClipResources() {
+  for (auto &slot : frames_)
+    if (!createFrameClipResources(slot))
+      return false;
+  return true;
+}
+
+bool VulkanRenderer::createFrameClipResources(FrameSlot &slot) {
   const VkDeviceSize bytes = VkDeviceSize{kRoundedClipCapacity} *
                              sizeof(podjs_gpu::RoundedClipData);
   VkPhysicalDeviceProperties properties{};
@@ -272,9 +320,9 @@ bool VulkanRenderer::createClipResources() {
   buffer.size = bytes;
   buffer.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   buffer.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  POD_VK(vkCreateBuffer(device_, &buffer, nullptr, &clipBuffer_));
+  POD_VK(vkCreateBuffer(device_, &buffer, nullptr, &slot.clipBuffer));
   VkMemoryRequirements requirements{};
-  vkGetBufferMemoryRequirements(device_, clipBuffer_, &requirements);
+  vkGetBufferMemoryRequirements(device_, slot.clipBuffer, &requirements);
   const uint32_t memoryType = findMemoryType(
       requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -284,9 +332,9 @@ bool VulkanRenderer::createClipResources() {
   VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
   allocation.allocationSize = requirements.size;
   allocation.memoryTypeIndex = memoryType;
-  POD_VK(vkAllocateMemory(device_, &allocation, nullptr, &clipMemory_));
-  POD_VK(vkBindBufferMemory(device_, clipBuffer_, clipMemory_, 0));
-  POD_VK(vkMapMemory(device_, clipMemory_, 0, bytes, 0, &clipMapped_));
+  POD_VK(vkAllocateMemory(device_, &allocation, nullptr, &slot.clipMemory));
+  POD_VK(vkBindBufferMemory(device_, slot.clipBuffer, slot.clipMemory, 0));
+  POD_VK(vkMapMemory(device_, slot.clipMemory, 0, bytes, 0, &slot.clipMapped));
   return true;
 }
 
@@ -370,14 +418,18 @@ bool VulkanRenderer::createGraphicsResources() {
   renderPass.pDependencies = dependencies;
   POD_VK(vkCreateRenderPass(device_, &renderPass, nullptr, &renderPass_));
 
-  VkFramebufferCreateInfo framebuffer{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
-  framebuffer.renderPass = renderPass_;
-  framebuffer.attachmentCount = 1;
-  framebuffer.pAttachments = &rasterView_;
-  framebuffer.width = rasterWidth_;
-  framebuffer.height = rasterHeight_;
-  framebuffer.layers = 1;
-  POD_VK(vkCreateFramebuffer(device_, &framebuffer, nullptr, &framebuffer_));
+  for (auto &slot : frames_) {
+    VkFramebufferCreateInfo framebuffer{
+        VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    framebuffer.renderPass = renderPass_;
+    framebuffer.attachmentCount = 1;
+    framebuffer.pAttachments = &slot.rasterView;
+    framebuffer.width = rasterWidth_;
+    framebuffer.height = rasterHeight_;
+    framebuffer.layers = 1;
+    POD_VK(
+        vkCreateFramebuffer(device_, &framebuffer, nullptr, &slot.framebuffer));
+  }
 
   VkPushConstantRange pushRange{};
   pushRange.stageFlags =
@@ -484,13 +536,21 @@ bool VulkanRenderer::createGraphicsResources() {
 
 void VulkanRenderer::replaceWindow(ANativeWindow* window, uint32_t width,
                                    uint32_t height) {
-  if (device_) vkDeviceWaitIdle(device_);
+  if (device_) {
+    const VkResult idle = vkDeviceWaitIdle(device_);
+    if (idle != VK_SUCCESS) {
+      valid_ = false;
+      lastHash_ = 0;
+      logVkFailure("vkDeviceWaitIdle(surface rebuild)", idle);
+      return;
+    }
+  }
   destroySurface();
   window_ = window;
   width_ = width;
   height_ = height;
   if (window_) ANativeWindow_acquire(window_);
-  valid_ = createSurfaceAndSwapchain();
+  valid_ = resetFrameSync() && createSurfaceAndSwapchain();
   lastHash_ = 0;
 }
 
@@ -595,18 +655,17 @@ bool VulkanRenderer::createSurfaceAndSwapchain() {
   images_.resize(imageCount);
   POD_VK(vkGetSwapchainImagesKHR(device_, swapchain_, &imageCount,
                                  images_.data()));
-  commands_.resize(imageCount);
-  VkCommandBufferAllocateInfo allocate{
-      VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-  allocate.commandPool = commandPool_;
-  allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-  allocate.commandBufferCount = imageCount;
-  POD_VK(vkAllocateCommandBuffers(device_, &allocate, commands_.data()));
   renderedPerImage_.resize(imageCount, VK_NULL_HANDLE);
   VkSemaphoreCreateInfo semaphore{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
   for (VkSemaphore& rendered : renderedPerImage_) {
     POD_VK(vkCreateSemaphore(device_, &semaphore, nullptr, &rendered));
   }
+  __android_log_print(ANDROID_LOG_INFO, "PodJSPerf",
+                      "framePipeline slots=%u presentMode=FIFO minImages=%u "
+                      "requestedImages=%u actualImages=%u maxImages=%u",
+                      kFramesInFlight, capabilities.minImageCount,
+                      swapchain.minImageCount, imageCount,
+                      capabilities.maxImageCount);
   return true;
 }
 
@@ -675,9 +734,12 @@ bool VulkanRenderer::createTextureResource(const GpuImage& source, uint64_t key,
     VkDescriptorSetAllocateInfo descriptor{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     descriptor.descriptorPool = descriptorPool_;
-    descriptor.descriptorSetCount = 1;
-    descriptor.pSetLayouts = &descriptorLayout_;
-    result = vkAllocateDescriptorSets(device_, &descriptor, &texture.descriptor);
+    std::array<VkDescriptorSetLayout, kFramesInFlight> layouts;
+    layouts.fill(descriptorLayout_);
+    descriptor.descriptorSetCount = kFramesInFlight;
+    descriptor.pSetLayouts = layouts.data();
+    result = vkAllocateDescriptorSets(device_, &descriptor,
+                                      texture.descriptors.data());
   }
   if (result != VK_SUCCESS) {
     destroyTexture(&texture);
@@ -693,24 +755,26 @@ bool VulkanRenderer::createTextureResource(const GpuImage& source, uint64_t key,
   imageInfo.sampler = source.linear ? linearSampler_ : nearestSampler_;
   imageInfo.imageView = texture.view;
   imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  VkDescriptorBufferInfo bufferInfo{};
-  bufferInfo.buffer = clipBuffer_;
-  bufferInfo.range = VkDeviceSize{kRoundedClipCapacity} *
-                     sizeof(podjs_gpu::RoundedClipData);
-  VkWriteDescriptorSet writes[2]{};
-  writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-  writes[0].dstSet = texture.descriptor;
-  writes[0].dstBinding = 0;
-  writes[0].descriptorCount = 1;
-  writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  writes[0].pImageInfo = &imageInfo;
-  writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-  writes[1].dstSet = texture.descriptor;
-  writes[1].dstBinding = 1;
-  writes[1].descriptorCount = 1;
-  writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  writes[1].pBufferInfo = &bufferInfo;
-  vkUpdateDescriptorSets(device_, 2, writes, 0, nullptr);
+  for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+    VkDescriptorBufferInfo bufferInfo{};
+    bufferInfo.buffer = frames_[i].clipBuffer;
+    bufferInfo.range =
+        VkDeviceSize{kRoundedClipCapacity} * sizeof(podjs_gpu::RoundedClipData);
+    VkWriteDescriptorSet writes[2]{};
+    writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    writes[0].dstSet = texture.descriptors[i];
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].pImageInfo = &imageInfo;
+    writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    writes[1].dstSet = texture.descriptors[i];
+    writes[1].dstBinding = 1;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[1].pBufferInfo = &bufferInfo;
+    vkUpdateDescriptorSets(device_, 2, writes, 0, nullptr);
+  }
   *out = texture;
   return true;
 }
@@ -773,7 +837,7 @@ bool VulkanRenderer::prepareImageUploads(
     }
     if (pendingKeys.find(key) != pendingKeys.end()) continue;
     if (existing != textureCache_.end()) {
-      destroyTexture(&existing->second);
+      retireTexture(&existing->second);
       textureCache_.erase(existing);
     }
     stagingBytes = align4(stagingBytes);
@@ -795,18 +859,23 @@ bool VulkanRenderer::prepareImageUploads(
   lastSubmitPerf_.uploadBytes = pendingTextureBytes;
   lastSubmitPerf_.uploadCount = static_cast<uint32_t>(pending.size());
 
+  collectRetiredTextures();
   size_t cachedTextureBytes = 0;
+  for (const auto &texture : retiredTextures_)
+    cachedTextureBytes += size_t{texture.width} * texture.height * 4;
   for (const auto& entry : textureCache_) {
     cachedTextureBytes +=
         size_t{entry.second.width} * entry.second.height * 4;
   }
-  while (textureCache_.size() + pending.size() > kTextureCacheCapacity ||
-         cachedTextureBytes + pendingTextureBytes >
-             kTextureCacheByteCapacity) {
+  while (textureCache_.size() + retiredTextures_.size() + pending.size() >
+             kTextureCacheCapacity ||
+         cachedTextureBytes + pendingTextureBytes > kTextureCacheByteCapacity) {
     auto victim = textureCache_.end();
     for (auto candidate = textureCache_.begin();
          candidate != textureCache_.end(); ++candidate) {
-      if (requestedKeys.find(candidate->first) != requestedKeys.end()) continue;
+      if (requestedKeys.find(candidate->first) != requestedKeys.end() ||
+          textureInFlight(candidate->second))
+        continue;
       if (victim == textureCache_.end() ||
           candidate->second.lastUsedFrame < victim->second.lastUsedFrame) {
         victim = candidate;
@@ -821,14 +890,16 @@ bool VulkanRenderer::prepareImageUploads(
     destroyTexture(&victim->second);
     textureCache_.erase(victim);
   }
-  if (textureCache_.size() + pending.size() > kDescriptorCapacity) {
+  if ((textureCache_.size() + retiredTextures_.size() + pending.size()) *
+          kFramesInFlight >
+      kDescriptorCapacity) {
     return gpuFailureOnce(
         "texture cache reached descriptor capacity (4096 entries)");
   }
   if (!ensureStagingCapacity(stagingBytes)) return false;
 
   for (const Pending& upload : pending) {
-    std::memcpy(static_cast<uint8_t*>(stagingMapped_) + upload.offset,
+    std::memcpy(static_cast<uint8_t *>(frame().stagingMapped) + upload.offset,
                 upload.source->rgba->data(), upload.source->rgba->size());
     TextureResource texture{};
     if (!createTextureResource(*upload.source, upload.key, &texture)) {
@@ -863,7 +934,7 @@ void VulkanRenderer::recordImageUploads(
     copy.bufferOffset = upload.offset;
     copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     copy.imageExtent = {texture.width, texture.height, 1};
-    vkCmdCopyBufferToImage(command, stagingBuffer_, texture.image,
+    vkCmdCopyBufferToImage(command, frame().stagingBuffer, texture.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
     VkImageMemoryBarrier toShader = toCopy;
     toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -888,36 +959,111 @@ VulkanRenderer::TextureResource* VulkanRenderer::textureForPrimitive(
   return exact == textureCache_.end() ? nullptr : &exact->second;
 }
 
-bool VulkanRenderer::waitForFrameFence() {
-  const auto fenceBegan = std::chrono::steady_clock::now();
-  const VkResult result =
-      vkWaitForFences(device_, 1, &fence_, VK_TRUE, UINT64_MAX);
-  lastSubmitPerf_.frameFenceMs = std::chrono::duration<double, std::milli>(
-                                     std::chrono::steady_clock::now() -
-                                     fenceBegan)
-                                     .count();
-  return result == VK_SUCCESS || logVkFailure("vkWaitForFences(frame)", result);
+bool VulkanRenderer::textureInFlight(const TextureResource &texture) const {
+  for (const auto &slot : frames_)
+    if (slot.pending && slot.textures.count(texture.image))
+      return true;
+  return false;
 }
 
-bool VulkanRenderer::acquireFrame(uint32_t* imageIndex, bool waitForFence) {
-  if (!valid_ || !imageIndex) return false;
-  if (waitForFence && !waitForFrameFence()) return false;
-  const auto acquireBegan = std::chrono::steady_clock::now();
-  VkResult result = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX,
-                                          acquired_, VK_NULL_HANDLE, imageIndex);
-  const auto acquireDone = std::chrono::steady_clock::now();
-  lastSubmitPerf_.acquireMs =
-      std::chrono::duration<double, std::milli>(acquireDone - acquireBegan)
-          .count();
-  if (result == VK_ERROR_OUT_OF_DATE_KHR ||
-      result == VK_ERROR_SURFACE_LOST_KHR) {
-    return rebuildSurfaceAfterError("vkAcquireNextImageKHR", result);
+void VulkanRenderer::retireTexture(TextureResource *texture) {
+  if (textureInFlight(*texture)) {
+    retiredTextures_.push_back(*texture);
+    *texture = {};
+  } else {
+    destroyTexture(texture);
   }
-  if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
-    return logVkFailure("vkAcquireNextImageKHR", result);
+}
+
+void VulkanRenderer::collectRetiredTextures() {
+  for (auto it = retiredTextures_.begin(); it != retiredTextures_.end();) {
+    if (textureInFlight(*it)) {
+      ++it;
+      continue;
+    }
+    destroyTexture(&*it);
+    it = retiredTextures_.erase(it);
   }
-  POD_VK(vkResetCommandBuffer(commands_[*imageIndex], 0));
+}
+
+void VulkanRenderer::releaseFrame(uint32_t index) {
+  auto &slot = frames_[index];
+  slot.pending = slot.acquiredImage = false;
+  slot.images.clear();
+  slot.textures.clear();
+  slot.uploadKeys.clear();
+  decodeCache_.releaseFrame(index);
+}
+
+bool VulkanRenderer::waitForFrameFence() {
+  const auto began = std::chrono::steady_clock::now();
+  auto timing = diagnosticScope(podjs_gpu::RendererTimingStage::FrameFenceWait,
+                                {.flags = frameIndex_});
+  lastSubmitPerf_.slotIndex = frameIndex_;
+  lastSubmitPerf_.waitedForSlot = frame().pending;
+  const VkResult result =
+      frame().pending
+          ? vkWaitForFences(device_, 1, &frame().fence, VK_TRUE, UINT64_MAX)
+          : VK_SUCCESS;
+  lastSubmitPerf_.frameFenceMs = std::chrono::duration<double, std::milli>(
+                                     std::chrono::steady_clock::now() - began)
+                                     .count();
+  timing.finish(result == VK_SUCCESS, result);
+  if (result != VK_SUCCESS) {
+    valid_ = false;
+    return logVkFailure("vkWaitForFences(slot)", result);
+  }
+  releaseFrame(frameIndex_);
+  collectRetiredTextures();
   return true;
+}
+
+bool VulkanRenderer::acquireFrame(uint32_t *imageIndex) {
+  if (!valid_ || !imageIndex) return false;
+  const auto began = std::chrono::steady_clock::now();
+  auto timing = diagnosticScope(podjs_gpu::RendererTimingStage::AcquireImage,
+                                {.flags = frameIndex_});
+  const VkResult result =
+      vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX, frame().acquired,
+                            VK_NULL_HANDLE, imageIndex);
+  lastSubmitPerf_.acquireMs = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - began)
+                                  .count();
+  timing.finish(result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR, result);
+  if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_ERROR_SURFACE_LOST_KHR)
+    return rebuildSurfaceAfterError("vkAcquireNextImageKHR", result);
+  if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
+    return logVkFailure("vkAcquireNextImageKHR", result);
+  frame().acquiredImage = true;
+  return true;
+}
+
+// A failed recording after acquire must consume the acquire semaphore and
+// release the unpresented image via swapchain recreation before CPU fallback.
+void VulkanRenderer::abortFrame(uint32_t index) {
+  auto &slot = frames_[index];
+  if (slot.pending)
+    return; // Successful submits retain all resources.
+  if (slot.acquiredImage) {
+    VkPipelineStageFlags stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    VkSubmitInfo drain{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    drain.waitSemaphoreCount = 1;
+    drain.pWaitSemaphores = &slot.acquired;
+    drain.pWaitDstStageMask = &stage;
+    VkResult result = vkResetFences(device_, 1, &slot.fence);
+    if (result == VK_SUCCESS)
+      result = vkQueueSubmit(queue_, 1, &drain, slot.fence);
+    if (result == VK_SUCCESS)
+      result = vkWaitForFences(device_, 1, &slot.fence, VK_TRUE, UINT64_MAX);
+    if (result != VK_SUCCESS) {
+      valid_ = false;
+      logVkFailure("drain aborted Vulkan acquire", result);
+    } else {
+      rebuildSurfaceAfterError("aborted frame", VK_ERROR_OUT_OF_DATE_KHR);
+    }
+  }
+  releaseFrame(index);
+  collectRetiredTextures();
 }
 
 bool VulkanRenderer::appendSwapchainBlit(VkCommandBuffer command,
@@ -943,9 +1089,10 @@ bool VulkanRenderer::appendSwapchainBlit(VkCommandBuffer command,
   blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   blit.dstOffsets[1] = {static_cast<int32_t>(extent_.width),
                         static_cast<int32_t>(extent_.height), 1};
-  vkCmdBlitImage(command, rasterImage_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                 images_[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                 &blit, VK_FILTER_LINEAR);
+  vkCmdBlitImage(command, frame().rasterImage,
+                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, images_[imageIndex],
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                 VK_FILTER_LINEAR);
 
   VkImageMemoryBarrier swapToPresent = swapToBlit;
   swapToPresent.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -964,33 +1111,52 @@ bool VulkanRenderer::submitAndPresent(uint32_t imageIndex,
       !renderedPerImage_[imageIndex]) {
     return logFailure("Missing render-finished semaphore for swapchain image");
   }
+  const uint32_t slotIndex = frameIndex_;
+  auto &slot = frame();
   VkSemaphore rendered = renderedPerImage_[imageIndex];
   VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
   submit.waitSemaphoreCount = 1;
-  submit.pWaitSemaphores = &acquired_;
+  submit.pWaitSemaphores = &slot.acquired;
   submit.pWaitDstStageMask = &waitStage;
   submit.commandBufferCount = 1;
-  submit.pCommandBuffers = &commands_[imageIndex];
+  submit.pCommandBuffers = &slot.command;
   submit.signalSemaphoreCount = 1;
   submit.pSignalSemaphores = &rendered;
-  vkResetFences(device_, 1, &fence_);
+  POD_VK(vkResetFences(device_, 1, &slot.fence));
+  auto submitTiming = diagnosticScope(
+      podjs_gpu::RendererTimingStage::FrameSubmit, {.flags = slotIndex});
   const auto submitBegan = std::chrono::steady_clock::now();
-  VkResult result = vkQueueSubmit(queue_, 1, &submit, fence_);
+  VkResult result = vkQueueSubmit(queue_, 1, &submit, slot.fence);
   const auto submitDone = std::chrono::steady_clock::now();
+  submitTiming.finish(result == VK_SUCCESS, result);
   lastSubmitPerf_.queueSubmitMs =
       std::chrono::duration<double, std::milli>(submitDone - submitBegan).count();
   if (result != VK_SUCCESS) {
-    recreateFrameFenceSignaled();
     return logVkFailure("vkQueueSubmit(frame)", result);
   }
+  slot.pending = true;
+  slot.acquiredImage =
+      false; // Enqueued wait consumes it before the slot fence.
+  decodeCache_.pinFrame(slotIndex, slot.images);
+  for (uint64_t key : slot.uploadKeys)
+    textureCache_.at(key).ready = true;
+  frameIndex_ = (frameIndex_ + 1) % kFramesInFlight;
+  for (const auto &pending : frames_)
+    if (pending.pending)
+      ++lastSubmitPerf_.inFlightFrames;
   VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
   present.waitSemaphoreCount = 1;
   present.pWaitSemaphores = &rendered;
   present.swapchainCount = 1;
   present.pSwapchains = &swapchain_;
   present.pImageIndices = &imageIndex;
+  auto presentTiming =
+      diagnosticScope(podjs_gpu::RendererTimingStage::Present,
+                      {.count = imageIndex, .flags = slotIndex});
   const auto presentBegan = std::chrono::steady_clock::now();
   result = vkQueuePresentKHR(queue_, &present);
+  presentTiming.finish(result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR,
+                       result);
   lastSubmitPerf_.presentWaitMs = std::chrono::duration<double, std::milli>(
                                       std::chrono::steady_clock::now() -
                                       presentBegan)
@@ -999,8 +1165,9 @@ bool VulkanRenderer::submitAndPresent(uint32_t imageIndex,
       result == VK_ERROR_SURFACE_LOST_KHR) {
     return rebuildSurfaceAfterError("vkQueuePresentKHR", result);
   }
-  return result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR ||
-         logVkFailure("vkQueuePresentKHR", result);
+  if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
+    return rebuildSurfaceAfterError("vkQueuePresentKHR", result);
+  return true;
 }
 
 bool VulkanRenderer::rebuildSurfaceAfterError(const char* operation,
@@ -1028,13 +1195,26 @@ bool VulkanRenderer::submitRgba(const uint8_t* pixels, size_t byteLength,
   if (!pixels || byteLength != rasterBytes()) {
     return logFailure("Invalid CPU raster frame submitted to Vulkan");
   }
+  lastSubmitPerf_ = {};
+  if (!waitForFrameFence())
+    return false;
+  const uint32_t slotIndex = frameIndex_;
+  OnExit cleanup{[&] { abortFrame(slotIndex); }};
+  const auto uploadBegan = std::chrono::steady_clock::now();
+  if (!ensureStagingCapacity(byteLength))
+    return false;
+  std::memcpy(frame().stagingMapped, pixels, byteLength);
+  lastSubmitPerf_.uploadMs = std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - uploadBegan)
+                                 .count();
+  lastSubmitPerf_.uploadBytes = byteLength;
+  lastSubmitPerf_.uploadCount = 1;
+
   uint32_t imageIndex = 0;
   if (!acquireFrame(&imageIndex)) return false;
   const auto recordBegan = std::chrono::steady_clock::now();
-  if (!ensureStagingCapacity(byteLength)) return false;
-  std::memcpy(stagingMapped_, pixels, byteLength);
-
-  VkCommandBuffer command = commands_[imageIndex];
+  VkCommandBuffer command = frame().command;
+  POD_VK(vkResetCommandBuffer(command, 0));
   VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   POD_VK(vkBeginCommandBuffer(command, &begin));
@@ -1045,7 +1225,7 @@ bool VulkanRenderer::submitRgba(const uint8_t* pixels, size_t byteLength,
   rasterToCopy.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
   rasterToCopy.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   rasterToCopy.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  rasterToCopy.image = rasterImage_;
+  rasterToCopy.image = frame().rasterImage;
   rasterToCopy.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
   vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
@@ -1053,7 +1233,7 @@ bool VulkanRenderer::submitRgba(const uint8_t* pixels, size_t byteLength,
   VkBufferImageCopy copy{};
   copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   copy.imageExtent = {rasterWidth_, rasterHeight_, 1};
-  vkCmdCopyBufferToImage(command, stagingBuffer_, rasterImage_,
+  vkCmdCopyBufferToImage(command, frame().stagingBuffer, frame().rasterImage,
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
   VkImageMemoryBarrier rasterToBlit = rasterToCopy;
   rasterToBlit.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -1077,20 +1257,27 @@ bool VulkanRenderer::submitDrawList(PodRuntime* runtime,
                                     const PodDrawList& list) {
   if (!valid_ || list.content_hash == lastHash_) return false;
   lastSubmitPerf_ = {};
+  if (!waitForFrameFence())
+    return false;
+  const uint32_t slotIndex = frameIndex_;
+  OnExit cleanup{[&] { abortFrame(slotIndex); }};
   const auto submitBegan = std::chrono::steady_clock::now();
-  GpuFrame frame;
+  auto decodeTiming = diagnosticScope(podjs_gpu::RendererTimingStage::Decode,
+                                      {.flags = slotIndex});
+  GpuFrame decodedFrame;
   std::string decodeError;
-  if (!decodeGpuDrawList(runtime, list, kRasterScale, &frame, &decodeCache_,
-                         &decodeError)) {
+  if (!decodeGpuDrawList(runtime, list, kRasterScale, &decodedFrame,
+                         &decodeCache_, &decodeError)) {
     return gpuFailureOnce("decode failed: " + decodeError);
   }
+  decodeTiming.finish(true, 0);
   const auto decoded = std::chrono::steady_clock::now();
   lastSubmitPerf_.decodeMs =
       std::chrono::duration<double, std::milli>(decoded - submitBegan).count();
-  if (frame.roundedClips.size() > kRoundedClipCapacity) {
+  if (decodedFrame.roundedClips.size() > kRoundedClipCapacity) {
     return gpuFailureOnce("rounded clip table exceeds Vulkan buffer capacity");
   }
-  for (const auto& primitive : frame.primitives) {
+  for (const auto &primitive : decodedFrame.primitives) {
     if (primitive.type != GpuPrimitiveType::Tri &&
         primitive.type != GpuPrimitiveType::TexTri) {
       continue;
@@ -1104,13 +1291,10 @@ bool VulkanRenderer::submitDrawList(PodRuntime* runtime,
     }
   }
   ++frameSerial_;
-  // One wait protects last frame's staging/texture/clip resources. New texture
-  // copies are recorded into this frame below, so they need no second submit or
-  // synchronous upload fence.
-  if (!waitForFrameFence()) return false;
   std::vector<PendingTextureUpload> pendingUploads;
-  if (!prepareImageUploads(frame.images, &pendingUploads)) return false;
-  for (const auto& primitive : frame.primitives) {
+  if (!prepareImageUploads(decodedFrame.images, &pendingUploads))
+    return false;
+  for (const auto &primitive : decodedFrame.primitives) {
     if (!textureForPrimitive(primitive)) {
       return gpuFailureOnce(
           "primitive texture missing for type " +
@@ -1120,14 +1304,24 @@ bool VulkanRenderer::submitDrawList(PodRuntime* runtime,
     }
   }
 
-  uint32_t imageIndex = 0;
-  if (!acquireFrame(&imageIndex, false)) return false;
-  const auto recordBegan = std::chrono::steady_clock::now();
-  auto* clipData = static_cast<podjs_gpu::RoundedClipData*>(clipMapped_);
-  for (size_t i = 0; i < frame.roundedClips.size(); ++i) {
-    clipData[i] = podjs_gpu::makeRoundedClipData(frame.roundedClips[i]);
+  frame().images = decodedFrame.images;
+  for (const auto &primitive : decodedFrame.primitives)
+    frame().textures.insert(textureForPrimitive(primitive)->image);
+  for (const auto &upload : pendingUploads) {
+    frame().textures.insert(textureCache_.at(upload.key).image);
+    frame().uploadKeys.push_back(upload.key);
   }
-  VkCommandBuffer command = commands_[imageIndex];
+  auto *clipData =
+      static_cast<podjs_gpu::RoundedClipData *>(frame().clipMapped);
+  for (size_t i = 0; i < decodedFrame.roundedClips.size(); ++i) {
+    clipData[i] = podjs_gpu::makeRoundedClipData(decodedFrame.roundedClips[i]);
+  }
+  uint32_t imageIndex = 0;
+  if (!acquireFrame(&imageIndex))
+    return false;
+  const auto recordBegan = std::chrono::steady_clock::now();
+  VkCommandBuffer command = frame().command;
+  POD_VK(vkResetCommandBuffer(command, 0));
   VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   POD_VK(vkBeginCommandBuffer(command, &begin));
@@ -1140,7 +1334,7 @@ bool VulkanRenderer::submitDrawList(PodRuntime* runtime,
   clear.color.float32[3] = 0.0f;
   VkRenderPassBeginInfo render{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
   render.renderPass = renderPass_;
-  render.framebuffer = framebuffer_;
+  render.framebuffer = frame().framebuffer;
   render.renderArea.extent = {rasterWidth_, rasterHeight_};
   render.clearValueCount = 1;
   render.pClearValues = &clear;
@@ -1153,7 +1347,7 @@ bool VulkanRenderer::submitDrawList(PodRuntime* runtime,
   viewport.maxDepth = 1.0f;
   vkCmdSetViewport(command, 0, 1, &viewport);
 
-  for (const auto& primitive : frame.primitives) {
+  for (const auto &primitive : decodedFrame.primitives) {
     const int32_t x0 = std::clamp(primitive.clip.x0, 0,
                                   static_cast<int32_t>(rasterWidth_));
     const int32_t y0 = std::clamp(primitive.clip.y0, 0,
@@ -1171,8 +1365,8 @@ bool VulkanRenderer::submitDrawList(PodRuntime* runtime,
     TextureResource* texture = textureForPrimitive(primitive);
     texture->lastUsedFrame = frameSerial_;
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            pipelineLayout_, 0, 1, &texture->descriptor, 0,
-                            nullptr);
+                            pipelineLayout_, 0, 1,
+                            &texture->descriptors[slotIndex], 0, nullptr);
     const podjs_gpu::PrimitivePush push = podjs_gpu::makePrimitivePush(
         primitive, rasterWidth_, rasterHeight_, texture->linear);
     vkCmdPushConstants(command, pipelineLayout_,
@@ -1190,19 +1384,15 @@ bool VulkanRenderer::submitDrawList(PodRuntime* runtime,
   if (!submitAndPresent(imageIndex, VK_PIPELINE_STAGE_TRANSFER_BIT)) {
     return false;
   }
-  for (const PendingTextureUpload& upload : pendingUploads) {
-    auto texture = textureCache_.find(upload.key);
-    if (texture != textureCache_.end()) texture->second.ready = true;
-  }
   lastHash_ = list.content_hash;
   return true;
 }
 
 void VulkanRenderer::destroyTexture(TextureResource* texture) {
   if (!device_ || !texture) return;
-  if (texture->descriptor && descriptorPool_) {
-    vkFreeDescriptorSets(device_, descriptorPool_, 1, &texture->descriptor);
-  }
+  for (VkDescriptorSet descriptor : texture->descriptors)
+    if (descriptor && descriptorPool_)
+      vkFreeDescriptorSets(device_, descriptorPool_, 1, &descriptor);
   if (texture->view) vkDestroyImageView(device_, texture->view, nullptr);
   if (texture->image) vkDestroyImage(device_, texture->image, nullptr);
   if (texture->memory) vkFreeMemory(device_, texture->memory, nullptr);
@@ -1211,12 +1401,6 @@ void VulkanRenderer::destroyTexture(TextureResource* texture) {
 
 void VulkanRenderer::destroySwapchain() {
   if (!device_) return;
-  if (!commands_.empty()) {
-    vkFreeCommandBuffers(device_, commandPool_,
-                         static_cast<uint32_t>(commands_.size()),
-                         commands_.data());
-  }
-  commands_.clear();
   images_.clear();
   for (VkSemaphore rendered : renderedPerImage_) {
     if (rendered) vkDestroySemaphore(device_, rendered, nullptr);
@@ -1241,7 +1425,11 @@ void VulkanRenderer::destroyGraphicsResources() {
   if (pipeline_) vkDestroyPipeline(device_, pipeline_, nullptr);
   if (pipelineLayout_)
     vkDestroyPipelineLayout(device_, pipelineLayout_, nullptr);
-  if (framebuffer_) vkDestroyFramebuffer(device_, framebuffer_, nullptr);
+  for (auto &slot : frames_) {
+    if (slot.framebuffer)
+      vkDestroyFramebuffer(device_, slot.framebuffer, nullptr);
+    slot.framebuffer = VK_NULL_HANDLE;
+  }
   if (renderPass_) vkDestroyRenderPass(device_, renderPass_, nullptr);
   if (linearSampler_) vkDestroySampler(device_, linearSampler_, nullptr);
   if (nearestSampler_) vkDestroySampler(device_, nearestSampler_, nullptr);
@@ -1251,7 +1439,6 @@ void VulkanRenderer::destroyGraphicsResources() {
     vkDestroyDescriptorSetLayout(device_, descriptorLayout_, nullptr);
   pipeline_ = VK_NULL_HANDLE;
   pipelineLayout_ = VK_NULL_HANDLE;
-  framebuffer_ = VK_NULL_HANDLE;
   renderPass_ = VK_NULL_HANDLE;
   linearSampler_ = VK_NULL_HANDLE;
   nearestSampler_ = VK_NULL_HANDLE;
@@ -1261,42 +1448,61 @@ void VulkanRenderer::destroyGraphicsResources() {
 
 void VulkanRenderer::destroyUploadResources() {
   if (!device_) return;
-  if (stagingMapped_) {
-    vkUnmapMemory(device_, stagingMemory_);
-    stagingMapped_ = nullptr;
+  for (auto &slot : frames_) {
+    if (slot.stagingMapped) {
+      vkUnmapMemory(device_, slot.stagingMemory);
+      slot.stagingMapped = nullptr;
+    }
+    if (slot.rasterView)
+      vkDestroyImageView(device_, slot.rasterView, nullptr);
+    if (slot.rasterImage)
+      vkDestroyImage(device_, slot.rasterImage, nullptr);
+    if (slot.rasterMemory)
+      vkFreeMemory(device_, slot.rasterMemory, nullptr);
+    if (slot.stagingBuffer)
+      vkDestroyBuffer(device_, slot.stagingBuffer, nullptr);
+    if (slot.stagingMemory)
+      vkFreeMemory(device_, slot.stagingMemory, nullptr);
+    slot.rasterView = VK_NULL_HANDLE;
+    slot.rasterImage = VK_NULL_HANDLE;
+    slot.rasterMemory = VK_NULL_HANDLE;
+    slot.stagingBuffer = VK_NULL_HANDLE;
+    slot.stagingMemory = VK_NULL_HANDLE;
+    slot.stagingCapacity = 0;
   }
-  if (rasterView_) vkDestroyImageView(device_, rasterView_, nullptr);
-  if (rasterImage_) vkDestroyImage(device_, rasterImage_, nullptr);
-  if (rasterMemory_) vkFreeMemory(device_, rasterMemory_, nullptr);
-  if (stagingBuffer_) vkDestroyBuffer(device_, stagingBuffer_, nullptr);
-  if (stagingMemory_) vkFreeMemory(device_, stagingMemory_, nullptr);
-  rasterView_ = VK_NULL_HANDLE;
-  rasterImage_ = VK_NULL_HANDLE;
-  rasterMemory_ = VK_NULL_HANDLE;
-  stagingBuffer_ = VK_NULL_HANDLE;
-  stagingMemory_ = VK_NULL_HANDLE;
-  stagingCapacity_ = 0;
 }
 
 void VulkanRenderer::destroyClipResources() {
   if (!device_) return;
-  if (clipMapped_) vkUnmapMemory(device_, clipMemory_);
-  if (clipBuffer_) vkDestroyBuffer(device_, clipBuffer_, nullptr);
-  if (clipMemory_) vkFreeMemory(device_, clipMemory_, nullptr);
-  clipMapped_ = nullptr;
-  clipBuffer_ = VK_NULL_HANDLE;
-  clipMemory_ = VK_NULL_HANDLE;
+  for (auto &slot : frames_) {
+    if (slot.clipMapped)
+      vkUnmapMemory(device_, slot.clipMemory);
+    if (slot.clipBuffer)
+      vkDestroyBuffer(device_, slot.clipBuffer, nullptr);
+    if (slot.clipMemory)
+      vkFreeMemory(device_, slot.clipMemory, nullptr);
+    slot.clipMapped = nullptr;
+    slot.clipBuffer = VK_NULL_HANDLE;
+    slot.clipMemory = VK_NULL_HANDLE;
+  }
 }
 
 VulkanRenderer::~VulkanRenderer() {
   if (device_) vkDeviceWaitIdle(device_);
+  for (uint32_t i = 0; i < kFramesInFlight; ++i)
+    releaseFrame(i);
+  collectRetiredTextures();
   destroySurface();
   destroyGraphicsResources();
   destroyClipResources();
   destroyUploadResources();
   if (device_) {
-    if (fence_) vkDestroyFence(device_, fence_, nullptr);
-    if (acquired_) vkDestroySemaphore(device_, acquired_, nullptr);
+    for (auto &slot : frames_) {
+      if (slot.fence)
+        vkDestroyFence(device_, slot.fence, nullptr);
+      if (slot.acquired)
+        vkDestroySemaphore(device_, slot.acquired, nullptr);
+    }
     if (commandPool_) vkDestroyCommandPool(device_, commandPool_, nullptr);
     vkDestroyDevice(device_, nullptr);
   }

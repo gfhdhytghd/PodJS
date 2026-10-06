@@ -25,6 +25,8 @@ void percentilesAndDrawOnlyStagesAreExact() {
     sample.layoutMs = i * 0.2;
     sample.drawListMs = i * 0.3;
     sample.gpuSubmitted = i > 10;
+    sample.waitedForSlot = i > 12;
+    sample.inFlightFrames = i > 11 ? 2 : 1;
     sample.gpuDecodeMs = i;
     sample.presentWaitMs = i * 2;
     sample.uploadCount = i == 20 ? 2 : 0;
@@ -43,6 +45,7 @@ void percentilesAndDrawOnlyStagesAreExact() {
   CHECK(summary.gpuDecode.p95 == 20);
   CHECK(summary.presentWait.max == 40);
   CHECK(summary.overBudget == 4);
+  CHECK(summary.slotReuses == 8 && summary.maxInFlight == 2);
   CHECK(summary.uploadFrames == 1 && summary.uploadBytes == 4096);
 }
 
