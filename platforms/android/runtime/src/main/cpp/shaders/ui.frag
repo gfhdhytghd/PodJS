@@ -12,16 +12,24 @@ layout(location=0) out vec4 outColor;
 uvec4 rgba(uint c) { return uvec4(c,c>>8,c>>16,c>>24)&255u; }
 int edge(ivec2 a, ivec2 b, ivec2 q) { ivec2 d=b-a,v=q-a; return d.x*v.y-d.y*v.x; }
 uvec4 fetch(ivec2 at) {
-    return uvec4(round(texelFetch(image,clamp(at,ivec2(0),textureSize(image,0)-1),0)*255.0));
+    ivec2 origin=ivec2(0),dim=textureSize(image,0);
+    if(p.texInfo.w==2) {
+        uint packedOrigin=floatBitsToUint(p.screen.z),packedSize=floatBitsToUint(p.screen.w);
+        origin=ivec2(packedOrigin&65535u,packedOrigin>>16);
+        dim=ivec2(packedSize&65535u,packedSize>>16);
+    }
+    return uvec4(round(texelFetch(image,origin+clamp(at,ivec2(0),dim-1),0)*255.0));
 }
 uvec4 sampleImage(vec2 uv) {
-    vec2 dim=vec2(textureSize(image,0));
+    ivec2 size=textureSize(image,0);
+    if(p.texInfo.w==2) {uint packed=floatBitsToUint(p.screen.w);size=ivec2(packed&65535u,packed>>16);}
+    vec2 dim=vec2(size);
     if(p.texInfo.x==0) return fetch(ivec2(uv*dim));
     // Match the software sampler's 8-bit fixed point bilinear interpolation.
     ivec2 fixedAt=ivec2(uv*dim*256.0)-128;
     // Coverage resampling clamps the half-texel fringe before interpolation.
     if(p.texInfo.w!=0) fixedAt=max(fixedAt,ivec2(0));
-    ivec2 base=clamp(fixedAt>>8,ivec2(0),textureSize(image,0)-1); uvec2 frac=uvec2(fixedAt&255);
+    ivec2 base=clamp(fixedAt>>8,ivec2(0),size-1); uvec2 frac=uvec2(fixedAt&255);
     uvec4 top=(fetch(base)*(256u-frac.x)+fetch(base+ivec2(1,0))*frac.x)>>8;
     uvec4 bot=(fetch(base+ivec2(0,1))*(256u-frac.x)+fetch(base+ivec2(1,1))*frac.x)>>8;
     return (top*(256u-frac.y)+bot*frac.y)>>8;

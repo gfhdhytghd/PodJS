@@ -10,6 +10,9 @@ static uint64_t revision = 3;
 static bool truncated = false;
 static uint8_t linearSampling = 0;
 static bool textureAvailable = true;
+static bool runtimeFont=false;
+static uint32_t mockCellW=1,mockCellH=1,mockGlyphCount=2;
+static uint64_t mockEpoch=77;
 extern "C" int32_t pod_runtime_texture_for_handle(PodRuntime *, int32_t handle,
                                                   PodTextureView *out) {
   static const uint8_t px[] = {0, 1};
@@ -26,8 +29,14 @@ extern "C" int32_t pod_runtime_font(PodRuntime *, uint32_t slot,
   static const uint8_t bits[] = {64, 128, 255, 32, 10, 20, 30, 40};
   if (slot != 2)
     return 1;
-  *out = {2, 1, 1, 1, 1, 2, 2, bits, sizeof(bits)};
+  *out = {2, mockCellW, mockCellH, 1, 1, 2, mockGlyphCount, bits, sizeof(bits)};
   return 0;
+}
+extern "C" uint64_t pod_runtime_font_epoch(PodRuntime *,uint32_t slot) {return runtimeFont&&slot==2?mockEpoch:0;}
+extern "C" int32_t pod_runtime_glyph(PodRuntime *r,uint32_t slot,uint32_t glyph,PodGlyphView *out) {
+  PodFontView f{};if(pod_runtime_font(r,slot,&f)||glyph>=f.glyph_count)return 1;
+  if(mockCellW==1&&mockCellH==1&&glyph<2) {*out={f.bitmap+glyph*4,4};return 0;}
+  static std::vector<uint8_t> bits;bits.assign(size_t(mockCellW)*mockCellH*4,uint8_t(glyph%255+1));*out={bits.data(),bits.size()};return 0;
 }
 static uint32_t xy(int x, int y) {
   return uint16_t(x) | (uint32_t(uint16_t(y)) << 16);
@@ -235,4 +244,33 @@ int main() {
   assert(decodeGpuDrawList(runtime, {rect.data(), rect.size(), 0, 0, 0}, 1,
                            &releaseFrame, &releaseCache, &error));
   assert(releasedPixels.expired());
+  runtimeFont=true;
+  assert(decode({3,(2u<<16)|2,0xffffffff,xy(0,0),0,xy(1,0),1}));
+  assert(frame.images.size()==1&&frame.images[0].width==16&&frame.images[0].height==16);
+  assert(frame.primitives[0].textureKey==frame.primitives[1].textureKey);
+  assert(frame.images[0].revision==2&&frame.primitives[0].glyphOrigin==(1u|(1u<<16))&&frame.primitives[1].glyphOrigin==(5u|(1u<<16)));
+  assert((*frame.images[0].rgba)[(1*16+1)*4+3]==64&&(*frame.images[0].rgba)[(1*16+5)*4+3]==10);
+  assert((*frame.images[0].rgba)[0*4+3]==64&&(*frame.images[0].rgba)[(3*16+3)*4+3]==32);
+  const auto pagePush=podjs_gpu::makePrimitivePush(frame.primitives[0],466,466,false);
+  assert(pagePush.texInfo[3]==2&&std::bit_cast<uint32_t>(pagePush.screen[2])==(1u|(1u<<16))&&std::bit_cast<uint32_t>(pagePush.screen[3])==(2u|(2u<<16)));
+  const auto snapshot=frame.images[0].rgba;
+  assert(decode({13,(1u<<16)|2,0xffffffff,f32(1),f32(0),f32(0),f32(1),f32(0),f32(0),1}));
+  assert(frame.images[0].rgba==snapshot&&frame.primitives[0].vertex[0].u==0&&frame.primitives[0].glyphOrigin==(5u|(1u<<16)));
+  mockGlyphCount=3;
+  assert(decode({3,(1u<<16)|2,0xffffffff,xy(0,0),2}));
+  assert(frame.images[0].rgba!=snapshot&&(*snapshot)[(1*16+9)*4+3]==0&&(*frame.images[0].rgba)[(1*16+9)*4+3]==3);
+  const auto oldKey=frame.images[0].stableKey;
+  mockCellW=mockCellH=32;mockGlyphCount=4096;++mockEpoch;
+  auto glyphRun=[](uint32_t first,uint32_t count) {
+    std::vector<uint32_t> run={3,(count<<16)|2,0xffffffff};
+    for(uint32_t i=0;i<count;++i) {run.push_back(xy(int(i%10),int(i%10)));run.push_back(first+i);}return run;
+  };
+  for(uint32_t batch=0;batch<10;++batch) {
+    assert(decode(glyphRun(batch*200,200)));assert(cache.glyphPageBytes()<=16*1024*1024);
+    assert(frame.images[0].stableKey!=oldKey&&frame.images.size()<=14);
+  }
+  assert(cache.glyphPageCount()<=60);
+  assert(!decode(glyphRun(0,2300))&&error=="active glyph pages exceed cache budget");
+  assert(cache.glyphPageBytes()<=16*1024*1024);
+  assert(decode(glyphRun(0,2))); // A failed oversized frame does not poison later frames.
 }

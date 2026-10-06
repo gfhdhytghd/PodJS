@@ -34,6 +34,7 @@ struct GpuPrimitive {
   uint32_t width{}, height{}, textureSlot{};
   uint64_t textureKey{};
   uint32_t glyphSlot{};
+  uint32_t glyphOrigin{},glyphSize{};
   bool linearCoverage{};
   bool subpixelCoverage{};
   float floatCoordinates[6]{};
@@ -47,6 +48,7 @@ struct GpuImage {
   uint64_t revision{}, stableKey{};
   bool linear{};
   bool coverage{};
+  uint32_t glyphOrigin{},glyphSize{};
   std::shared_ptr<const std::vector<uint8_t>> rgba;
 };
 struct GpuFrame {
@@ -63,12 +65,18 @@ bool gpuRoundedClipContainsPixel(const GpuRoundedClip& clip, float pixelX,
 class GpuDecodeCache {
 public:
   void pruneStale(PodRuntime *runtime);
+  void finishFrame(GpuFrame *frame);
+  size_t glyphPageBytes() const {size_t bytes=0;for(const auto &p:pages_) bytes+=p.image.rgba->size();return bytes;}
+  size_t glyphPageCount() const {return pages_.size();}
   bool get(PodRuntime *runtime, uint32_t slot, GpuImage *out,
            std::string *error);
   bool getGlyph(PodRuntime *runtime, uint32_t slot, uint32_t glyph,
                 GpuImage *out, std::string *error);
 
 private:
+  struct Page {GpuImage image; uint64_t epoch{},last{},pinned{}; uint32_t cellW{},cellH{};std::vector<uint16_t> glyphs;};
+  std::vector<Page> pages_;
+  uint64_t frame_{},clock_{},nextPage_{1};
   std::vector<GpuImage> entries_;
 };
 

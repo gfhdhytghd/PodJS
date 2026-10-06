@@ -44,7 +44,7 @@ use pocketjs_core::spec;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 pub const MIN_ABI_VERSION: u32 = 1;
 pub const DEFAULT_LOGICAL_WIDTH: u32 = 240;
 pub const DEFAULT_LOGICAL_HEIGHT: u32 = 240;
@@ -147,6 +147,12 @@ pub struct PodFontView {
     pub bitmap: *const u8,
     pub bitmap_length: usize,
 }
+
+#[repr(C)]
+pub struct PodGlyphView { pub coverage:*const u8,pub byte_length:usize }
+
+#[repr(C)]
+pub struct PodGlyphCacheStats {pub hits:u64,pub misses:u64,pub raster_micros:u64,pub resident_bytes:u64,pub source_bytes:u64,pub seed_bytes:u64,pub cells:u64}
 
 #[repr(C)]
 pub struct PodPakStats {
@@ -256,6 +262,7 @@ impl HttpTransport for HostTransport {
 }
 
 pub struct PodRuntime {
+    last_glyph:Option<std::sync::Arc<[u8]>>,
     guest: Guest,
     surface: UiSurface,
     fs: Rc<RefCell<FsModule>>,
@@ -687,6 +694,7 @@ pub extern "C" fn pod_runtime_create(config: *const PodRuntimeConfig) -> *mut Po
     Box::into_raw(Box::new(PodRuntime {
         guest,
         surface,
+        last_glyph:None,
         fs,
         net,
         transport,
@@ -1671,6 +1679,38 @@ pub extern "C" fn pod_runtime_font(
         };
         OK
     })
+}
+
+/// Zero for legacy atlases; runtime epoch is immutable per installation.
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_glyph_cache_stats(runtime:*mut PodRuntime,out:*mut PodGlyphCacheStats)->i32 {
+    let Ok(runtime)=runtime_mut(runtime) else {return ERR_ARGUMENT};if out.is_null() {return ERR_ARGUMENT;}
+    let (s,source,seeds)=runtime.surface.glyph_cache_stats();
+    unsafe {*out=PodGlyphCacheStats{hits:s.hits,misses:s.misses,raster_micros:s.raster_micros,resident_bytes:s.bytes as u64,source_bytes:source as u64,seed_bytes:seeds as u64,cells:s.cells as u64};}OK
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_font_epoch(runtime:*mut PodRuntime,slot:u32)->u64 {
+    let Ok(runtime)=runtime_mut(runtime) else {return 0};
+    if slot>255 {return 0;}
+    runtime.surface.with_ui(|ui|ui.font_atlas(slot as u8).and_then(|a|a.runtime.as_ref()).map_or(0,|i|i.cache_epoch))
+}
+/// Coverage pointer is valid until the next glyph call or runtime destruction.
+/// Decoder copies it immediately; an Arc pins it across shared-cache eviction.
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_glyph(runtime:*mut PodRuntime,slot:u32,gid:u32,out:*mut PodGlyphView)->i32 {
+    let Ok(runtime)=runtime_mut(runtime) else {return ERR_ARGUMENT};
+    if slot>255||gid>65535||out.is_null() {return ERR_ARGUMENT;}
+    let cell=runtime.surface.with_ui(|ui| {
+        let a=ui.font_atlas(slot as u8)?;if gid>=u32::from(a.glyph_count) {return None;}
+        match a.glyph_coverage(gid as u16) {
+            pocketjs_core::text::GlyphRows::Shared(v)=>Some(v),
+            pocketjs_core::text::GlyphRows::Borrowed(v)=>if a.runtime.is_some() {None}else{Some(std::sync::Arc::<[u8]>::from(v))},
+        }
+    });
+    let Some(cell)=cell else {return IDLE};
+    unsafe {*out=PodGlyphView{coverage:cell.as_ptr(),byte_length:cell.len()};}
+    runtime.last_glyph=Some(cell);OK
 }
 
 #[unsafe(no_mangle)]
@@ -3046,9 +3086,9 @@ mod tests {
     }
 
     #[test]
-    fn abi_two_hosts_boot_legacy_and_current_guests_without_bypassing_validation() {
+    fn abi_one_two_three_hosts_boot_supported_guests_without_bypassing_validation() {
         for target_name in ["android-watch", "wearos-watch", "watchos-watch", "harmonyos-watch"] {
-            for (host_abi, package_abi, accepted) in [(2,1,true),(2,2,true),(1,1,true),(1,2,false),(2,0,false),(2,3,false)] {
+            for (host_abi, package_abi, accepted) in [(3,1,true),(3,2,true),(3,3,true),(2,1,true),(2,2,true),(1,1,true),(1,2,false),(2,0,false),(2,3,false),(3,4,false)] {
                 let target = CString::new(target_name).unwrap(); let caps = CString::new("[]").unwrap();
                 let mut config = valid_config(&target,&caps); config.host_abi = host_abi;
                 let runtime = pod_runtime_create(&config); assert!(!runtime.is_null());
@@ -3069,7 +3109,7 @@ mod tests {
                     assert_eq!(pod_runtime_eval_bundle(runtime,source.as_ptr(),source.len(),std::ptr::null()),OK);
                     let receipt: Value = serde_json::from_str(cstr(pod_runtime_receipt(runtime)).unwrap()).unwrap();
                     assert_eq!(receipt["hostAbi"],host_abi); assert_eq!(receipt["packageAbi"],package_abi);
-                    assert_eq!(receipt["runtimeAbi"],2);
+                    assert_eq!(receipt["runtimeAbi"],ABI_VERSION);
                 } else {
                     assert_eq!(pod_runtime_eval_bundle(runtime,source.as_ptr(),source.len(),std::ptr::null()),ERR_STATE);
                 }

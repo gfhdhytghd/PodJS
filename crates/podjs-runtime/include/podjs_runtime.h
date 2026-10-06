@@ -14,7 +14,7 @@ void pod_sync_cancellation_cancel(const PodSyncCancellation *value);
 bool pod_sync_cancellation_is_cancelled(const PodSyncCancellation *value);
 void pod_sync_cancellation_free(PodSyncCancellation *value);
 
-#define PODJS_RUNTIME_ABI_VERSION 2
+#define PODJS_RUNTIME_ABI_VERSION 3
 #define PODJS_RUNTIME_MIN_ABI_VERSION 1
 /* ABI 2 adds host-only sync handles without changing ABI 1 struct layouts.
  * New runtimes accept host configs 1..2. Packages must request 1..host_abi;
@@ -348,6 +348,11 @@ int32_t pod_runtime_texture(PodRuntime *runtime, uint32_t slot, PodTextureView *
 int32_t pod_runtime_texture_for_handle(PodRuntime *runtime, int32_t handle,
                                        PodTextureView *out);
 int32_t pod_runtime_font(PodRuntime *runtime, uint32_t slot, PodFontView *out);
+typedef struct PodGlyphView {const uint8_t *coverage; size_t byte_length;} PodGlyphView;
+typedef struct PodGlyphCacheStats {uint64_t hits,misses,raster_micros,resident_bytes,source_bytes,seed_bytes,cells;} PodGlyphCacheStats;
+int32_t pod_runtime_glyph_cache_stats(PodRuntime *runtime, PodGlyphCacheStats *out);
+uint64_t pod_runtime_font_epoch(PodRuntime *runtime, uint32_t slot);
+int32_t pod_runtime_glyph(PodRuntime *runtime, uint32_t slot, uint32_t gid, PodGlyphView *out);
 
 /* Native host effects and networking. Returned strings are owned by the
  * runtime and remain valid until the next poll of the same kind. */

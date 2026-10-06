@@ -65,6 +65,9 @@ class VulkanRenderer {
     return diagnostics_.scope(stage, fields);
   }
 
+  size_t glyphPageBytes() const {return decodeCache_.glyphPageBytes();}
+  size_t glyphPageCount() const {return decodeCache_.glyphPageCount();}
+
  private:
   struct TextureResource {
     uint64_t key{};

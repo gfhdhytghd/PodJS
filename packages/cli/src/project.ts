@@ -18,6 +18,8 @@ export interface PodProjectResources {
   fontSlots?: PodFontSlot[];
   fontBold?: string;
   extraCharsFile?: string;
+  /** Opt-in native TTF coverage cache; requires host ABI 3. */
+  glyphCache?: { warmChars: string; warmCharsFile?:string; preseedScanned?:boolean };
 }
 
 export interface PodProjectConfig {
@@ -100,6 +102,13 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
     if (!value.resources || typeof value.resources !== "object" || Array.isArray(value.resources)) invalid("resources must be an object");
     const r = value.resources as Record<string, unknown>;
     resources = {};
+    if(r.glyphCache!==undefined){
+      const option=r.glyphCache as Record<string,unknown>;
+      if(!option||typeof option!=="object"||Array.isArray(option)||typeof option.warmChars!=="string"||option.warmChars.length>4096)invalid("resources.glyphCache requires warmChars string <=4096 code units");
+      if(option.preseedScanned!==undefined&&typeof option.preseedScanned!=="boolean")invalid("resources.glyphCache.preseedScanned must be boolean");
+      if(option.warmCharsFile!==undefined&&(typeof option.warmCharsFile!=="string"||!option.warmCharsFile.trim()))invalid("resources.glyphCache.warmCharsFile requires a path");
+      resources.glyphCache={warmChars:option.warmChars,...(option.preseedScanned!==undefined?{preseedScanned:option.preseedScanned as boolean}:{}),...(option.warmCharsFile!==undefined?{warmCharsFile:option.warmCharsFile as string}:{})};
+    }
     if (r.assets !== undefined) {
       const resolvedAssets = resolveProjectAssets(r.assets, root);
       resources.assets = resolvedAssets.config;
