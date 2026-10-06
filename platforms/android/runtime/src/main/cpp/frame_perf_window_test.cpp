@@ -62,11 +62,31 @@ void cadenceCountsMissedVsyncsAndLifecycleReset() {
   CHECK(summary.dropped == 2);
 }
 
+void spikesHaveStrictThresholdAndReset() {
+  podjs_perf::FramePerfWindow window;
+  podjs_perf::WindowSummary summary;
+  podjs_perf::FrameSample sample;
+  sample.nativeTotalMs = 33; sample.jsTurnMs = 33;
+  CHECK(!window.add(1000, 1'000'000'000, sample, &summary));
+  sample.nativeTotalMs = 33.01; sample.jsTurnMs = 34;
+  CHECK(!window.add(1100, 1'033'000'000, sample, &summary));
+  sample.nativeTotalMs = 50; sample.jsTurnMs = 10;
+  CHECK(window.add(2100, 1'066'000'001, sample, &summary));
+  CHECK(summary.nativeOver33 == 2 && summary.jsOver33 == 1);
+  CHECK(summary.cadenceOver33 == 1);
+  window.resetCadence();
+  sample = {};
+  CHECK(window.add(3100, 9'000'000'000, sample, &summary));
+  CHECK(summary.nativeOver33 == 0 && summary.jsOver33 == 0);
+  CHECK(summary.cadenceOver33 == 0);
+}
+
 } // namespace
 
 int main() {
   percentilesAndDrawOnlyStagesAreExact();
   cadenceCountsMissedVsyncsAndLifecycleReset();
+  spikesHaveStrictThresholdAndReset();
   std::puts("frame_perf_window_test: ok");
   return 0;
 }

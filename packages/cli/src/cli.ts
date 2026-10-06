@@ -134,6 +134,7 @@ async function build(target: Target, project?: ResolvedPodProject): Promise<Reso
     bundleHash,
     pakHash: fnv1a64(pakBytes),
     pakIntegrity: buildPakIntegrity(pakBytes),
+    ...(project?.config.resources?.preloadFontSlots?.length ? { preloadFontSlots: project.config.resources.preloadFontSlots } : {}),
     ...(bytecodeEnabled ? { bytecode: {
       file: "main.qbc",
       format: "quickjs-rquickjs-0.12.2-bc26-le-v1",

@@ -116,3 +116,9 @@ test("runtime glyph options are explicit and bounded",()=>{
   for(const glyphCache of [null,[],true,{warmChars:2},{warmChars:"x".repeat(4097)}])
     expect(()=>resolvePodProject(fixture({...base,resources:{glyphCache}}),POD_TARGETS,defaults)).toThrow("glyphCache");
 });
+
+test("font preload hints are bounded unique slots", () => {
+  expect(resolvePodProject(fixture({...base,resources:{preloadFontSlots:[2,1,22]}}),POD_TARGETS,defaults).config.resources?.preloadFontSlots).toEqual([2,1,22]);
+  for (const preloadFontSlots of [null,1,[1,1],[-1],[64],[1.5],Array.from({length:9},(_,i)=>i)])
+    expect(() => resolvePodProject(fixture({...base,resources:{preloadFontSlots}}),POD_TARGETS,defaults)).toThrow("preloadFontSlots");
+});

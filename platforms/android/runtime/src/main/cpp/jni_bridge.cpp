@@ -561,7 +561,8 @@ static void renderFrame(Host* h, int64_t frameTimeNanos) {
         "textureUpload=%.2f/%.2f/%.2f frameFence=%.2f/%.2f/%.2f "
         "acquire=%.2f/%.2f/%.2f gpuRecord=%.2f/%.2f/%.2f "
         "queueSubmit=%.2f/%.2f/%.2f presentWait=%.2f/%.2f/%.2f slots=2 "
-        "slotReuses=%u maxInFlight=%u acquireWait=%.2f/%.2f/%.2f",
+        "slotReuses=%u maxInFlight=%u acquireWait=%.2f/%.2f/%.2f "
+        "nativeOver33=%u jsOver33=%u cadenceOver33=%u",
         window.windowMs, window.ticks, window.draws, window.gpuDraws,
         window.cpuDraws, window.dropped, window.overBudget, window.uploadFrames,
         static_cast<unsigned long long>(window.uploadBytes), total[0], total[1],
@@ -572,7 +573,8 @@ static void renderFrame(Host* h, int64_t frameTimeNanos) {
         acquire[1], acquire[2], record[0], record[1], record[2], submit[0],
         submit[1], submit[2], present[0], present[1], present[2],
         window.slotReuses, window.maxInFlight, acquire[0], acquire[1],
-        acquire[2]);
+        acquire[2], window.nativeOver33, window.jsOver33,
+        window.cadenceOver33);
   }
   hostTiming.setFlags(submittedFlags);
   hostTiming.finish(result==0,result);
