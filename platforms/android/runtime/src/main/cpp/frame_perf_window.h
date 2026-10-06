@@ -29,6 +29,8 @@ struct FrameSample {
   double presentWaitMs{};
   uint64_t uploadBytes{};
   uint32_t uploadCount{};
+  uint32_t inFlightFrames{};
+  bool waitedForSlot{};
   bool gpuSubmitted{};
   bool cpuSubmitted{};
 };
@@ -42,6 +44,8 @@ struct WindowSummary {
   uint32_t dropped{};
   uint32_t overBudget{};
   uint32_t uploadFrames{};
+  uint32_t slotReuses{};
+  uint32_t maxInFlight{};
   uint64_t uploadBytes{};
   Distribution nativeTotal;
   Distribution jsTurn;
@@ -95,8 +99,12 @@ public:
       ++overBudget_;
     if (sample.gpuSubmitted || sample.cpuSubmitted)
       ++draws_;
-    if (sample.gpuSubmitted) {
+    if (sample.gpuSubmitted)
       ++gpuDraws_;
+    if (sample.gpuSubmitted || sample.cpuSubmitted) {
+      if (sample.waitedForSlot)
+        ++slotReuses_;
+      maxInFlight_ = std::max(maxInFlight_, sample.inFlightFrames);
       gpuDecode_.push_back(sample.gpuDecodeMs);
       uploadFence_.push_back(sample.uploadFenceMs);
       textureUpload_.push_back(sample.textureUploadMs);
@@ -122,6 +130,8 @@ public:
     out->dropped = dropped_;
     out->overBudget = overBudget_;
     out->uploadFrames = uploadFrames_;
+    out->slotReuses = slotReuses_;
+    out->maxInFlight = maxInFlight_;
     out->uploadBytes = uploadBytes_;
     out->nativeTotal = summarize(nativeTotal_);
     out->jsTurn = summarize(jsTurn_);
@@ -190,7 +200,7 @@ private:
     queueSubmit_.clear();
     presentWait_.clear();
     ticks_ = draws_ = gpuDraws_ = cpuDraws_ = dropped_ = overBudget_ = 0;
-    uploadFrames_ = 0;
+    uploadFrames_ = slotReuses_ = maxInFlight_ = 0;
     uploadBytes_ = 0;
   }
 
@@ -203,6 +213,8 @@ private:
   uint32_t dropped_{};
   uint32_t overBudget_{};
   uint32_t uploadFrames_{};
+  uint32_t slotReuses_{};
+  uint32_t maxInFlight_{};
   uint64_t uploadBytes_{};
   std::vector<double> nativeTotal_;
   std::vector<double> jsTurn_;

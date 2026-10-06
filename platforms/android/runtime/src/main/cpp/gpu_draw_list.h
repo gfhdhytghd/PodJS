@@ -1,9 +1,11 @@
 #pragma once
 
 #include "podjs_runtime.h"
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 enum class GpuPrimitiveType : uint8_t {
@@ -64,6 +66,10 @@ bool gpuRoundedClipContainsPixel(const GpuRoundedClip& clip, float pixelX,
 
 class GpuDecodeCache {
 public:
+  static constexpr uint32_t kFramesInFlight = 2;
+  void pinFrame(uint32_t slot, const std::vector<GpuImage> &images);
+  void releaseFrame(uint32_t slot);
+  bool inFlight(uint64_t key) const;
   void pruneStale(PodRuntime *runtime);
   void finishFrame(GpuFrame *frame);
   size_t glyphPageBytes() const {size_t bytes=0;for(const auto &p:pages_) bytes+=p.image.rgba->size();return bytes;}
@@ -75,6 +81,7 @@ public:
 
 private:
   struct Page {GpuImage image; uint64_t epoch{},last{},pinned{}; uint32_t cellW{},cellH{};std::vector<uint16_t> glyphs;};
+  std::array<std::unordered_set<uint64_t>, kFramesInFlight> inFlightPages_;
   std::vector<Page> pages_;
   uint64_t frame_{},clock_{},nextPage_{1};
   std::vector<GpuImage> entries_;

@@ -428,7 +428,8 @@ static void renderFrame(Host* h, int64_t frameTimeNanos) {
       uploadFenceMs = 0, gpuUploadMs = 0, frameFenceMs = 0, acquireMs = 0,
       gpuRecordMs = 0, queueSubmitMs = 0, presentWaitMs = 0;
   uint64_t gpuUploadBytes = 0;
-  uint32_t gpuUploadCount = 0;
+  uint32_t gpuUploadCount = 0, frameSlot = 0, inFlightFrames = 0;
+  bool waitedForSlot = false;
   bool gpuSubmitted = false, cpuSubmitted = false;
   if (result == 0) {
     PodDrawList list{};
@@ -440,14 +441,8 @@ static void renderFrame(Host* h, int64_t frameTimeNanos) {
     if (!snapshotResult && (list.changed || h->renderer->needsRedraw(list.content_hash))) {
       const double beforeRaster = monoMs();
       bool submitted = h->renderer->submitDrawList(h->runtime, list);
+      const auto gpuAttempt = h->renderer->lastSubmitPerf();
       if (submitted) {
-        const auto& perf = h->renderer->lastSubmitPerf();
-        gpuDecodeMs = perf.decodeMs; uploadFenceMs = perf.uploadFenceMs;
-        gpuUploadMs = perf.uploadMs; frameFenceMs = perf.frameFenceMs;
-        acquireMs = perf.acquireMs; gpuRecordMs = perf.recordMs;
-        queueSubmitMs = perf.queueSubmitMs; presentWaitMs = perf.presentWaitMs;
-        gpuUploadBytes = perf.uploadBytes;
-        gpuUploadCount = perf.uploadCount;
         submittedFlags |= int64_t{1} << 16;
         gpuSubmitted = true;
       } else if (h->renderer->valid()) {
@@ -461,6 +456,33 @@ static void renderFrame(Host* h, int64_t frameTimeNanos) {
         submitted = rasterized && h->renderer->submitRgba(h->framebuffer.data(),h->framebuffer.size(),list.content_hash);
         if (submitted) { submittedFlags |= int64_t{1} << 17; cpuSubmitted = true; }
       }
+      if (submitted) {
+        const auto &perf = h->renderer->lastSubmitPerf();
+        gpuDecodeMs = perf.decodeMs;
+        uploadFenceMs = perf.uploadFenceMs;
+        gpuUploadMs = perf.uploadMs;
+        frameFenceMs = perf.frameFenceMs;
+        acquireMs = perf.acquireMs;
+        gpuRecordMs = perf.recordMs;
+        queueSubmitMs = perf.queueSubmitMs;
+        presentWaitMs = perf.presentWaitMs;
+        gpuUploadBytes = perf.uploadBytes;
+        gpuUploadCount = perf.uploadCount;
+        frameSlot = perf.slotIndex;
+        inFlightFrames = perf.inFlightFrames;
+        waitedForSlot = perf.waitedForSlot;
+        if (cpuSubmitted) {
+          gpuDecodeMs += gpuAttempt.decodeMs;
+          uploadFenceMs += gpuAttempt.uploadFenceMs;
+          gpuUploadMs += gpuAttempt.uploadMs;
+          frameFenceMs += gpuAttempt.frameFenceMs;
+          acquireMs += gpuAttempt.acquireMs;
+          gpuRecordMs += gpuAttempt.recordMs;
+          queueSubmitMs += gpuAttempt.queueSubmitMs;
+          presentWaitMs += gpuAttempt.presentWaitMs;
+          waitedForSlot = waitedForSlot || gpuAttempt.waitedForSlot;
+        }
+      }
       submitMs = monoMs()-beforeRaster;
     }
   }
@@ -469,35 +491,46 @@ static void renderFrame(Host* h, int64_t frameTimeNanos) {
   perf.struct_size=sizeof(perf);
   if(pod_runtime_perf_stats(h->runtime,&perf)==0 &&
       (now-start>=50 || perf.resource_generation!=h->lastResourceGeneration)) {
-    __android_log_print(ANDROID_LOG_INFO,"PodJSPerf",
-        "frame seq=%llu totalMs=%.2f jsTurnMs=%.2f layoutMs=%.2f drawListMs=%.2f gpuPathMs=%.2f gpuDecodeMs=%.2f uploadFenceMs=%.2f textureUploadMs=%.2f frameFenceMs=%.2f acquireMs=%.2f gpuRecordMs=%.2f queueSubmitMs=%.2f presentWaitMs=%.2f gpuUploads=%u gpuUploadBytes=%llu fontSlot=%d fontLoadMs=%.2f fontAsync=%d loadedFonts=%u pendingFonts=%u imageLoadMs=%.2f loadedImages=%u resourceGen=%llu",
-        static_cast<unsigned long long>(perf.frame_number),now-start,
-        perf.guest_micros/1000.0,perf.surface_tick_micros/1000.0,snapshotMs,submitMs,
-        gpuDecodeMs,uploadFenceMs,gpuUploadMs,frameFenceMs,acquireMs,gpuRecordMs,
-        queueSubmitMs,presentWaitMs,gpuUploadCount,
-        static_cast<unsigned long long>(gpuUploadBytes),perf.last_font_slot,
-        perf.last_font_load_micros/1000.0,perf.last_font_async,perf.loaded_font_slots,
-        perf.pending_font_slots,perf.last_image_load_micros/1000.0,perf.loaded_images,
-        static_cast<unsigned long long>(perf.resource_generation));
+    __android_log_print(
+        ANDROID_LOG_INFO, "PodJSPerf",
+        "frame seq=%llu totalMs=%.2f jsTurnMs=%.2f layoutMs=%.2f "
+        "drawListMs=%.2f gpuPathMs=%.2f gpuDecodeMs=%.2f uploadFenceMs=%.2f "
+        "textureUploadMs=%.2f frameFenceMs=%.2f acquireMs=%.2f "
+        "gpuRecordMs=%.2f queueSubmitMs=%.2f presentWaitMs=%.2f gpuUploads=%u "
+        "gpuUploadBytes=%llu fontSlot=%d fontLoadMs=%.2f fontAsync=%d "
+        "loadedFonts=%u pendingFonts=%u imageLoadMs=%.2f loadedImages=%u "
+        "resourceGen=%llu frameSlot=%u inFlight=%u slotReuse=%d "
+        "acquireWaitMs=%.2f",
+        static_cast<unsigned long long>(perf.frame_number), now - start,
+        perf.guest_micros / 1000.0, perf.surface_tick_micros / 1000.0,
+        snapshotMs, submitMs, gpuDecodeMs, uploadFenceMs, gpuUploadMs,
+        frameFenceMs, acquireMs, gpuRecordMs, queueSubmitMs, presentWaitMs,
+        gpuUploadCount, static_cast<unsigned long long>(gpuUploadBytes),
+        perf.last_font_slot, perf.last_font_load_micros / 1000.0,
+        perf.last_font_async, perf.loaded_font_slots, perf.pending_font_slots,
+        perf.last_image_load_micros / 1000.0, perf.loaded_images,
+        static_cast<unsigned long long>(perf.resource_generation), frameSlot,
+        inFlightFrames, waitedForSlot, acquireMs);
     h->lastResourceGeneration=perf.resource_generation;
   }
-  podjs_perf::FrameSample sample{
-      .nativeTotalMs=now-start,
-      .jsTurnMs=perf.guest_micros/1000.0,
-      .layoutMs=perf.surface_tick_micros/1000.0,
-      .drawListMs=snapshotMs,
-      .gpuDecodeMs=gpuDecodeMs,
-      .uploadFenceMs=uploadFenceMs,
-      .textureUploadMs=gpuUploadMs,
-      .frameFenceMs=frameFenceMs,
-      .acquireMs=acquireMs,
-      .gpuRecordMs=gpuRecordMs,
-      .queueSubmitMs=queueSubmitMs,
-      .presentWaitMs=presentWaitMs,
-      .uploadBytes=gpuUploadBytes,
-      .uploadCount=gpuUploadCount,
-      .gpuSubmitted=gpuSubmitted,
-      .cpuSubmitted=cpuSubmitted};
+  podjs_perf::FrameSample sample{.nativeTotalMs = now - start,
+                                 .jsTurnMs = perf.guest_micros / 1000.0,
+                                 .layoutMs = perf.surface_tick_micros / 1000.0,
+                                 .drawListMs = snapshotMs,
+                                 .gpuDecodeMs = gpuDecodeMs,
+                                 .uploadFenceMs = uploadFenceMs,
+                                 .textureUploadMs = gpuUploadMs,
+                                 .frameFenceMs = frameFenceMs,
+                                 .acquireMs = acquireMs,
+                                 .gpuRecordMs = gpuRecordMs,
+                                 .queueSubmitMs = queueSubmitMs,
+                                 .presentWaitMs = presentWaitMs,
+                                 .uploadBytes = gpuUploadBytes,
+                                 .uploadCount = gpuUploadCount,
+                                 .inFlightFrames = inFlightFrames,
+                                 .waitedForSlot = waitedForSlot,
+                                 .gpuSubmitted = gpuSubmitted,
+                                 .cpuSubmitted = cpuSubmitted};
   podjs_perf::WindowSummary window{};
   if (h->framePerf.add(now,frameTimeNanos,sample,&window)) {
     PodGlyphCacheStats glyph{};
@@ -518,17 +551,28 @@ static void renderFrame(Host* h, int64_t frameTimeNanos) {
         upload=values(window.textureUpload),frameFence=values(window.frameFence),
         acquire=values(window.acquire),record=values(window.gpuRecord),
         submit=values(window.queueSubmit),present=values(window.presentWait);
-    __android_log_print(ANDROID_LOG_INFO,"PodJSPerf",
-        "frameWindow windowMs=%.1f targetHz=60 ticks=%u draws=%u gpuDraws=%u cpuDraws=%u dropped=%u overBudget=%u uploadFrames=%u uploadBytes=%llu p50/p95/maxMs nativeTotal=%.2f/%.2f/%.2f jsTurn=%.2f/%.2f/%.2f layout=%.2f/%.2f/%.2f drawList=%.2f/%.2f/%.2f gpuDecode=%.2f/%.2f/%.2f uploadFence=%.2f/%.2f/%.2f textureUpload=%.2f/%.2f/%.2f frameFence=%.2f/%.2f/%.2f acquire=%.2f/%.2f/%.2f gpuRecord=%.2f/%.2f/%.2f queueSubmit=%.2f/%.2f/%.2f presentWait=%.2f/%.2f/%.2f",
-        window.windowMs,window.ticks,window.draws,window.gpuDraws,window.cpuDraws,
-        window.dropped,window.overBudget,window.uploadFrames,
-        static_cast<unsigned long long>(window.uploadBytes),
-        total[0],total[1],total[2],js[0],js[1],js[2],
-        layout[0],layout[1],layout[2],drawList[0],drawList[1],drawList[2],
-        decode[0],decode[1],decode[2],uploadFence[0],uploadFence[1],uploadFence[2],
-        upload[0],upload[1],upload[2],frameFence[0],frameFence[1],frameFence[2],
-        acquire[0],acquire[1],acquire[2],record[0],record[1],record[2],
-        submit[0],submit[1],submit[2],present[0],present[1],present[2]);
+    __android_log_print(
+        ANDROID_LOG_INFO, "PodJSPerf",
+        "frameWindow windowMs=%.1f targetHz=60 ticks=%u draws=%u gpuDraws=%u "
+        "cpuDraws=%u dropped=%u overBudget=%u uploadFrames=%u uploadBytes=%llu "
+        "p50/p95/maxMs nativeTotal=%.2f/%.2f/%.2f jsTurn=%.2f/%.2f/%.2f "
+        "layout=%.2f/%.2f/%.2f drawList=%.2f/%.2f/%.2f "
+        "gpuDecode=%.2f/%.2f/%.2f uploadFence=%.2f/%.2f/%.2f "
+        "textureUpload=%.2f/%.2f/%.2f frameFence=%.2f/%.2f/%.2f "
+        "acquire=%.2f/%.2f/%.2f gpuRecord=%.2f/%.2f/%.2f "
+        "queueSubmit=%.2f/%.2f/%.2f presentWait=%.2f/%.2f/%.2f slots=2 "
+        "slotReuses=%u maxInFlight=%u acquireWait=%.2f/%.2f/%.2f",
+        window.windowMs, window.ticks, window.draws, window.gpuDraws,
+        window.cpuDraws, window.dropped, window.overBudget, window.uploadFrames,
+        static_cast<unsigned long long>(window.uploadBytes), total[0], total[1],
+        total[2], js[0], js[1], js[2], layout[0], layout[1], layout[2],
+        drawList[0], drawList[1], drawList[2], decode[0], decode[1], decode[2],
+        uploadFence[0], uploadFence[1], uploadFence[2], upload[0], upload[1],
+        upload[2], frameFence[0], frameFence[1], frameFence[2], acquire[0],
+        acquire[1], acquire[2], record[0], record[1], record[2], submit[0],
+        submit[1], submit[2], present[0], present[1], present[2],
+        window.slotReuses, window.maxInFlight, acquire[0], acquire[1],
+        acquire[2]);
   }
   hostTiming.setFlags(submittedFlags);
   hostTiming.finish(result==0,result);

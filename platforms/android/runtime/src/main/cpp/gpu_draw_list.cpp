@@ -110,9 +110,34 @@ bool gpuRoundedClipContainsPixel(const GpuRoundedClip &c, float x, float y) {
   return dx * dx + dy * dy <= 1.0f;
 }
 
+void GpuDecodeCache::pinFrame(uint32_t slot,
+                              const std::vector<GpuImage> &images) {
+  auto &keys = inFlightPages_.at(slot);
+  keys.clear();
+  for (const auto &image : images)
+    keys.insert(image.stableKey);
+}
+
+void GpuDecodeCache::releaseFrame(uint32_t slot) {
+  inFlightPages_.at(slot).clear();
+}
+
+bool GpuDecodeCache::inFlight(uint64_t key) const {
+  for (const auto &keys : inFlightPages_)
+    if (keys.count(key))
+      return true;
+  return false;
+}
+
 void GpuDecodeCache::pruneStale(PodRuntime *runtime) {
   ++frame_;
-  pages_.erase(std::remove_if(pages_.begin(),pages_.end(),[&](const Page &p){return pod_runtime_font_epoch(runtime,p.image.slot)!=p.epoch;}),pages_.end());
+  pages_.erase(std::remove_if(pages_.begin(), pages_.end(),
+                              [&](const Page &p) {
+                                return !inFlight(p.image.stableKey) &&
+                                       pod_runtime_font_epoch(
+                                           runtime, p.image.slot) != p.epoch;
+                              }),
+               pages_.end());
   entries_.erase(std::remove_if(entries_.begin(), entries_.end(),
                                 [runtime](const GpuImage &entry) {
     if ((entry.stableKey & (1ull << 63)) == 0) return false;
@@ -192,7 +217,11 @@ bool GpuDecodeCache::getGlyph(PodRuntime *runtime, uint32_t slot,
       constexpr size_t budget=16*1024*1024;
       auto used=[&](){size_t n=0;for(const auto &p:pages_) n+=p.image.rgba->size();return n;};
       while(used()+bytes>budget) {
-        auto victim=pages_.end();for(auto it=pages_.begin();it!=pages_.end();++it) if(it->pinned!=frame_&&(victim==pages_.end()||it->last<victim->last)) victim=it;
+        auto victim = pages_.end();
+        for (auto it = pages_.begin(); it != pages_.end(); ++it)
+          if (it->pinned != frame_ && !inFlight(it->image.stableKey) &&
+              (victim == pages_.end() || it->last < victim->last))
+            victim = it;
         if(victim==pages_.end()) return bad(nullptr,error,"active glyph pages exceed cache budget");
         pages_.erase(victim);
       }
