@@ -36,7 +36,7 @@ use anyhow::Context as _;
 use base64::Engine as _;
 use pocket_fs::{FsModule, Storage};
 use pocket_mod::Guest;
-use pocket_mod::qjs::{Function, Ctx, TypedArray};
+use pocket_mod::qjs::{Function, Ctx, TypedArray, CatchResultExt};
 use pocket_net::{HttpRequest, HttpTransport, NetFailure, NetSurface, TransportCompletion};
 use pocket_ui_surface::UiSurface;
 use pocketjs_core::damage::{DEFAULT_DAMAGE_REGIONS, DamagePolicy, DamageTracker};
@@ -302,6 +302,7 @@ pub struct PodRuntime {
     guest_micros: u64,
     surface_tick_micros: u64,
     snapshot_micros: u64,
+    memory_stats_json: CString,
     poll_effect: CString,
     poll_net: CString,
     receipt: CString,
@@ -732,6 +733,7 @@ pub extern "C" fn pod_runtime_create(config: *const PodRuntimeConfig) -> *mut Po
         guest_micros: 0,
         surface_tick_micros: 0,
         snapshot_micros: 0,
+        memory_stats_json: CString::default(),
         poll_effect: CString::default(),
         poll_net: CString::default(),
         receipt: CString::default(),
@@ -1702,6 +1704,90 @@ pub extern "C" fn pod_runtime_font(
     })
 }
 
+// Fixed names and numeric leaves only: a malformed/custom guest diagnostic
+// must not put text, cache keys or URLs into the automatically logged sample.
+fn numeric_sdk_memory(value: Value) -> Value {
+    let sources: &[(&str, &[&str])] = &[
+        ("systemText", &["active","queued","cached","queueSlots","refs","listeners","textures","textureBytes","utf16Units","paragraphUtf16Units","keyUtf16Units","caretUnits"]),
+        ("services", &["pending"]),
+        ("watch", &["hostEvents","lifecycle","theme","back","axis"]),
+        ("tree", &["roots","retained","sweep","textures","sprites"]),
+        ("frame", &["callbacks"]),
+        ("bench", &["errors","disposed","offset"]),
+    ];
+    let mut result = serde_json::Map::new();
+    for (name, fields) in sources {
+        let Some(source) = value.get(*name) else { continue; };
+        if source.is_null() { result.insert((*name).into(),Value::Null); continue; }
+        let mut counts = serde_json::Map::new();
+        for key in *fields {
+            if let Some(Value::Number(number)) = source.get(*key) {
+                counts.insert((*key).into(),Value::Number(number.clone()));
+            }
+        }
+        if !counts.is_empty() { result.insert((*name).into(),Value::Object(counts)); }
+    }
+    if result.is_empty() { Value::Null } else { Value::Object(result) }
+}
+
+/// Demand-only ownership snapshot. The host must serialize this with guest
+/// turns, exactly as it serializes texture/frame APIs. No GC is performed.
+impl PodRuntime {
+    pub fn memory_stats(&self) -> Value {
+        // Collect optional SDK registries outside the runtime mutex used by
+        // JS_ComputeMemoryUsage. No text, keys, paths or URLs are recorded.
+        let sdk = self.guest.with(|ctx| {
+            ctx.globals().get::<_, Option<Function>>("__podMemoryStats").catch(&ctx).ok().flatten()
+                .and_then(|f| f.call::<_, String>(()).catch(&ctx).ok())
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .map(numeric_sdk_memory).unwrap_or(Value::Null)
+        });
+        let q = self.guest.memory_usage();
+        let ui = self.surface.with_ui(|ui| ui.memory_stats());
+        let (glyph, source, seeds) = self.surface.glyph_cache_stats();
+        let bridge = self.bridge.borrow();
+        json!({
+            "schema": 1, "frame": self.frame_number,
+            "quickjs": {"mallocBytes":q.malloc_size, "usedBytes":q.memory_used_size,
+                "mallocCount":q.malloc_count, "usedCount":q.memory_used_count,
+                "objects":q.obj_count, "objectBytes":q.obj_size,
+                "strings":q.str_count, "stringBytes":q.str_size,
+                "atoms":q.atom_count, "atomBytes":q.atom_size,
+                "shapes":q.shape_count, "shapeBytes":q.shape_size,
+                "functions":q.js_func_count, "functionBytes":q.js_func_size,
+                "functionCodeBytes":q.js_func_code_size, "arrays":q.array_count},
+            "surface": {"nodes":ui.nodes, "nodeSlots":ui.node_slots,
+                "nodeCapacity":ui.node_capacity, "nodeArenaBytes":ui.node_arena_bytes,
+                "nodePayloadCapacityBytes":ui.node_payload_capacity_bytes,
+                "textures":ui.textures, "textureSlots":ui.texture_slots,
+                "textureCapacity":ui.texture_capacity,
+                "textureBytes":ui.texture_bytes, "textureCapacityBytes":ui.texture_capacity_bytes,
+                "fontBitmapBytes":ui.font_bitmap_bytes},
+            "glyph": {"cells":glyph.cells, "cellBytes":glyph.bytes, "sourceBytes":source,
+                "seedBytes":seeds, "lastPinnedCellBytes":self.last_glyph.as_ref().map_or(0,|v|v.len()),
+                "hits":glyph.hits, "misses":glyph.misses},
+            "runtime": {"pakMappedBytes":self.mapped_pak.map_or(0,|v|v.len()),
+                "drawCapacityBytes":self.draw_words.capacity()*4,
+                "accessibilityCapacityBytes":self.accessibility_json.capacity(),
+                "events":bridge.events.len(), "effects":bridge.effects.len(),
+                "eventBytes":bridge.events.iter().map(|v|v.len()).sum::<usize>(),
+                "effectBytes":bridge.effects.iter().map(|v|v.len()).sum::<usize>(),
+                "netCommands":self.transport.inner.borrow().commands.len(),
+                "netCompletions":self.transport.inner.borrow().completions.len()},
+            "sdk": sdk
+        })
+    }
+}
+
+/// JSON remains valid until the next memory sample or runtime destruction.
+/// Android callers enforce FLAG_DEBUGGABLE/PERF_TRACE before invoking this.
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_memory_stats(runtime: *mut PodRuntime) -> *const c_char {
+    let Ok(runtime) = runtime_mut(runtime) else { return std::ptr::null(); };
+    runtime.memory_stats_json = CString::new(runtime.memory_stats().to_string()).unwrap_or_default();
+    runtime.memory_stats_json.as_ptr()
+}
+
 /// Zero for legacy atlases; runtime epoch is immutable per installation.
 #[unsafe(no_mangle)]
 pub extern "C" fn pod_runtime_glyph_cache_stats(runtime:*mut PodRuntime,out:*mut PodGlyphCacheStats)->i32 {
@@ -1942,6 +2028,45 @@ mod tests {
             data_dir: std::ptr::null(),
             capabilities_json: std::ptr::null(),
         }
+    }
+
+    #[test]
+    fn memory_snapshot_uses_default_guest_and_distinguishes_live_from_capacity() {
+        assert!(pod_runtime_memory_stats(std::ptr::null_mut()).is_null());
+        let target = CString::new("android-watch").unwrap();
+        let caps = CString::new("[]").unwrap();
+        let runtime = pod_runtime_create(&valid_config(&target, &caps));
+        assert!(!runtime.is_null());
+        let r = unsafe { &*runtime };
+        let initial = r.memory_stats();
+        assert!(initial["quickjs"]["mallocBytes"].as_i64().unwrap() > 0);
+        assert_eq!(initial["surface"]["nodes"], 1);
+        assert_eq!(initial["sdk"], Value::Null);
+        r.guest.eval("allocate", "globalThis.held = Array.from({length:1000}, (_, i)=>({text:'owned'+i}));").unwrap();
+        let (node,texture) = r.surface.with_ui(|ui| {
+            (ui.create_node(0),ui.upload_texture(&[1;64],4,4,3))
+        });
+        let allocated = r.memory_stats();
+        assert!(allocated["quickjs"]["usedBytes"].as_i64().unwrap() > initial["quickjs"]["usedBytes"].as_i64().unwrap());
+        assert_eq!(allocated["surface"]["nodes"], 2);
+        assert_eq!(allocated["surface"]["textures"], 1);
+        assert_eq!(allocated["surface"]["textureBytes"], 64);
+        r.guest.eval("release", "globalThis.held = null; globalThis.__podMemoryStats=()=>JSON.stringify({services:{pending:0}});").unwrap();
+        r.surface.with_ui(|ui|{ui.destroy_node(node);ui.free_texture(texture);});
+        let released: Value = serde_json::from_str(unsafe {CStr::from_ptr(pod_runtime_memory_stats(runtime))}.to_str().unwrap()).unwrap();
+        assert_eq!(released["surface"]["nodes"], 1);
+        assert_eq!(released["surface"]["textureBytes"], 0);
+        assert_eq!(released["surface"]["textureSlots"], 1);
+        assert_eq!(released["surface"]["nodeCapacity"], allocated["surface"]["nodeCapacity"]);
+        assert_eq!(released["sdk"]["services"]["pending"], 0);
+        r.guest.eval("private diagnostic", "globalThis.__podMemoryStats=()=>JSON.stringify({privateText:'secret',services:{pending:2,url:'secret'},tree:{textures:'secret'}});").unwrap();
+        assert_eq!(r.memory_stats()["sdk"],json!({"services":{"pending":2}}));
+        r.guest.eval("broken diagnostic", "globalThis.__podMemoryStats=()=>{throw new Error('unavailable');};").unwrap();
+        assert_eq!(r.memory_stats()["sdk"],Value::Null);
+        r.guest.eval("diagnostic getter", "Object.defineProperty(globalThis,'__podMemoryStats',{get(){throw new Error('unavailable');},configurable:true});").unwrap();
+        assert_eq!(r.memory_stats()["sdk"],Value::Null);
+        r.guest.eval("after sampling", "globalThis.afterSampling = 42;").unwrap();
+        pod_runtime_destroy(runtime);
     }
 
     #[test]

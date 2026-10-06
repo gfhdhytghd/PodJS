@@ -72,6 +72,11 @@ public:
   bool inFlight(uint64_t key) const;
   void pruneStale(PodRuntime *runtime);
   void finishFrame(GpuFrame *frame);
+  void memoryImages(std::unordered_set<const std::vector<uint8_t>*> &out) const {
+    for (const auto &entry : entries_) if (entry.rgba) out.insert(entry.rgba.get());
+    for (const auto &page : pages_) if (page.image.rgba) out.insert(page.image.rgba.get());
+  }
+  size_t textureSlots() const { return entries_.size(); }
   size_t glyphPageBytes() const {size_t bytes=0;for(const auto &p:pages_) bytes+=p.image.rgba->size();return bytes;}
   size_t glyphPageCount() const {return pages_.size();}
   bool get(PodRuntime *runtime, uint32_t slot, GpuImage *out,

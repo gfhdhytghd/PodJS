@@ -350,6 +350,8 @@ int32_t pod_runtime_texture_for_handle(PodRuntime *runtime, int32_t handle,
 int32_t pod_runtime_font(PodRuntime *runtime, uint32_t slot, PodFontView *out);
 typedef struct PodGlyphView {const uint8_t *coverage; size_t byte_length;} PodGlyphView;
 typedef struct PodGlyphCacheStats {uint64_t hits,misses,raster_micros,resident_bytes,source_bytes,seed_bytes,cells;} PodGlyphCacheStats;
+/* Demand-only JSON; valid until next sample/destruction. Host debug gate required. */
+const char *pod_runtime_memory_stats(PodRuntime *runtime);
 int32_t pod_runtime_glyph_cache_stats(PodRuntime *runtime, PodGlyphCacheStats *out);
 uint64_t pod_runtime_font_epoch(PodRuntime *runtime, uint32_t slot);
 int32_t pod_runtime_glyph(PodRuntime *runtime, uint32_t slot, uint32_t gid, PodGlyphView *out);

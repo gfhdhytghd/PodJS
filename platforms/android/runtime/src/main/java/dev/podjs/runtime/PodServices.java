@@ -37,6 +37,45 @@ final class PodServices implements Closeable {
     private final Sink sink;
     /** Logs every service request and replies over 64 KiB (tag PodJSPerf); for startup profiling. */
     private static final boolean PERF_TRACE = false;
+    static boolean memoryEnabled(Context context) {
+        return PERF_TRACE || (context.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0;
+    }
+    private final PodTextRasterServices.Stats textBitmapStats;
+    private java.util.function.Supplier<JSONObject> memoryProvider;
+    void attachMemoryProvider(java.util.function.Supplier<JSONObject> provider){memoryProvider=provider;}
+    /** Native/QuickJS on main, paragraph data on its serial text worker. The
+     * timestamps expose lane delay rather than claiming an atomic JVM snapshot. */
+    void collectMemoryStats(java.util.function.Consumer<JSONObject> done) {
+        if(!memoryEnabled(context))throw new SecurityException("Memory tools require a debug build");
+        if(closed)return;
+        final long nativeAt=android.os.SystemClock.elapsedRealtime();
+        final long nativeBegan=android.os.SystemClock.elapsedRealtimeNanos();
+        final JSONObject value=memoryProvider==null?new JSONObject():memoryProvider.get();
+        if(value==null)throw new IllegalStateException("Runtime memory unavailable");
+        final double nativeCollectMs=(android.os.SystemClock.elapsedRealtimeNanos()-nativeBegan)/1_000_000.0;
+        textWorker.execute(()->{
+            try {
+                JSONObject text=new JSONObject().put("paragraphEntries",paragraphLayouts.entries.size())
+                    .put("paragraphUtf16Units",paragraphLayouts.units).put("paragraphBuilds",paragraphLayouts.builds)
+                    .put("textBitmaps",textBitmapStats==null?JSONObject.NULL:textBitmapStats.snapshot());
+                long textAt=android.os.SystemClock.elapsedRealtime();
+                main.post(()->{
+                    if(closed)return;
+                    try {
+                        Runtime jvm=Runtime.getRuntime();
+                        value.put("nativeAtMs",nativeAt).put("textAtMs",textAt).put("nativeCollectMs",nativeCollectMs)
+                            .put("sampleAtMs",android.os.SystemClock.elapsedRealtime()).put("text",text)
+                            .put("java",new JSONObject().put("nativeHeapAllocatedBytes",android.os.Debug.getNativeHeapAllocatedSize())
+                                .put("nativeHeapSizeBytes",android.os.Debug.getNativeHeapSize())
+                                .put("heapUsedBytes",jvm.totalMemory()-jvm.freeMemory()).put("heapCapacityBytes",jvm.totalMemory())
+                                .put("serviceRequests",requests.size())
+                                .put("idleImageDecoders",images.idleDecoderCount()).put("allProcessBitmaps",JSONObject.NULL));
+                        done.accept(value);
+                    }catch(Exception error){android.util.Log.w("PodJSMem","sample unavailable");done.accept(null);}
+                });
+            }catch(Exception error){main.post(()->done.accept(null));}
+        });
+    }
     private final Handler main = new Handler(Looper.getMainLooper());
     private final PodParagraphLayout.Cache paragraphLayouts=new PodParagraphLayout.Cache();
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -195,7 +234,7 @@ final class PodServices implements Closeable {
         volatile PodBrowserAuthServices.Callback authCallback;
         String videoSessionId;
     }
-    PodServices(Context context, Sink sink) { PodTakeover.requireReady(context); this.context = context; this.sink = sink; device = new PodDeviceServices(context); media = new PodMediaServices(context, event -> { if (!closed) sink.complete(event); }); videoDecoderBudget=new PodVideoDecoderBudget(PodVideoSessionServices.MAX_SESSIONS); video = new PodVideoServices(context,videoDecoderBudget); videoSessions=new PodVideoSessionServices(context,videoDecoderBudget); mediaSurfaces = new PodMediaSurfaceServices(context); inlineText = new PodInlineTextInput(context,event->{if(!closed)sink.complete(event);}); images = new PodImageServices(context); http = new PodHttpServices(context); byteStreams = new PodByteStreamServices(context); webSockets = new PodWebSocketServices(context,byteStreams); discovery = new PodDiscoveryServices(context); bleDiscovery = new PodBleDiscoveryServices(context); networks = new PodNetworkServices(context,event->{if(!closed)sink.complete(event);}); browser = new PodBrowserServices(context); browserAuth = new PodBrowserAuthServices(context); acoustic=new PodAcousticServices(context);guidedWifi=new PodGuidedWifiServices(context,acoustic);
+    PodServices(Context context, Sink sink) { PodTakeover.requireReady(context); this.context = context; this.sink = sink; textBitmapStats=memoryEnabled(context)?new PodTextRasterServices.Stats():null; device = new PodDeviceServices(context); media = new PodMediaServices(context, event -> { if (!closed) sink.complete(event); }); videoDecoderBudget=new PodVideoDecoderBudget(PodVideoSessionServices.MAX_SESSIONS); video = new PodVideoServices(context,videoDecoderBudget); videoSessions=new PodVideoSessionServices(context,videoDecoderBudget); mediaSurfaces = new PodMediaSurfaceServices(context); inlineText = new PodInlineTextInput(context,event->{if(!closed)sink.complete(event);}); images = new PodImageServices(context); http = new PodHttpServices(context); byteStreams = new PodByteStreamServices(context); webSockets = new PodWebSocketServices(context,byteStreams); discovery = new PodDiscoveryServices(context); bleDiscovery = new PodBleDiscoveryServices(context); networks = new PodNetworkServices(context,event->{if(!closed)sink.complete(event);}); browser = new PodBrowserServices(context); browserAuth = new PodBrowserAuthServices(context); acoustic=new PodAcousticServices(context);guidedWifi=new PodGuidedWifiServices(context,acoustic);
         acousticPermission=new PodBluetoothPermission(context,0x5045,new String[]{android.Manifest.permission.RECORD_AUDIO});
         guidedPermission=new PodBluetoothPermission(context,0x5046,android.os.Build.VERSION.SDK_INT>=33?new String[]{android.Manifest.permission.RECORD_AUDIO,android.Manifest.permission.ACCESS_FINE_LOCATION,android.Manifest.permission.NEARBY_WIFI_DEVICES}:new String[]{android.Manifest.permission.RECORD_AUDIO,android.Manifest.permission.ACCESS_FINE_LOCATION});
         notificationPermission=new PodNotificationPermission(context); bluetoothPermission=new PodBluetoothPermission(context); discoveryPermission=new PodBluetoothPermission(context,0x5044,PodBleDiscoveryServices.permissions()); location=new PodLocationServices(context); }
@@ -372,6 +411,16 @@ final class PodServices implements Closeable {
             request.future = imageWorkers.submit(() -> { try { JSONObject value=images.execute(method,args); if(requests.remove(id,request)) reply(id,true,value,null,null); else images.discard(value); } catch(Exception error) { if(requests.remove(id,request)) failure(id,error instanceof SecurityException?"permission_denied":error instanceof IllegalArgumentException?"invalid_argument":"image_error",error.getMessage()); } });
             return;
         }
+        if ("debug.memoryStats".equals(method)) {
+            main.post(()->{
+                if(closed||!requests.containsKey(id))return;
+                try {
+                    request.cancellation.throwIfCanceled();
+                    collectMemoryStats(value->{if(requests.remove(id,request)){if(value==null)failure(id,"memory_error","Memory sample unavailable");else reply(id,true,value,null,null);}});
+                }catch(Exception error){if(requests.remove(id,request))failure(id,error instanceof SecurityException?"permission_denied":"memory_error",error.getMessage());}
+            });
+            return;
+        }
         if (method.startsWith("debug.performance.")) {
             main.post(() -> {
                 if (closed || !requests.remove(id, request)) return;
@@ -494,7 +543,7 @@ final class PodServices implements Closeable {
                 } else if (method.startsWith("discovery.")) {
                     value = method.startsWith("discovery.network")?networks.execute(method,args,request.cancellation):"discovery.mdns".equals(method)?discovery.execute(method,args,request.cancellation):bleDiscovery.execute(method,args,request.cancellation);
                 } else if ("text.raster".equals(method)) {
-                    value = PodTextRasterServices.raster(context,args,request.cancellation,paragraphLayouts);
+                    value = PodTextRasterServices.raster(context,args,request.cancellation,paragraphLayouts,textBitmapStats);
                 } else if ("text.layout".equals(method)) {
                     value = PodTextLayoutServices.layout(context,args, request.cancellation,paragraphLayouts);
                 } else if ("text.layoutBatch".equals(method)) {

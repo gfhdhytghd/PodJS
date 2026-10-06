@@ -38,6 +38,8 @@ export class HostServiceError extends Error {
 export interface HostOperation<T> { result: Promise<T>; cancel(): void }
 const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void; status?:(value:unknown)=>void }>();
 let nextId = 1;
+/** Live promise/callback table, including the stats request if called by a guest. */
+export const serviceResourceCounts=()=>({pending:pending.size});
 const methods: Record<string, PodCapabilityId> = {
   ...platformMethods,
   "acoustic.gzip":"debug.acoustic", "acoustic.gunzip":"debug.acoustic",
@@ -47,6 +49,7 @@ const methods: Record<string, PodCapabilityId> = {
   "takeover.status": "host.takeover",
   "app.buildInfo": "host.lifecycle",
   "cloud.schedule":"host.lifecycle", "cloud.cancel":"host.lifecycle", "cloud.acquire":"host.lifecycle", "cloud.release":"host.lifecycle",
+  "debug.memoryStats": "host.lifecycle",
   "debug.performance.start": "host.lifecycle", "debug.performance.read": "host.lifecycle", "debug.performance.stop": "host.lifecycle",
   "app.activityState.read": "host.lifecycle", "app.activityState.write": "host.lifecycle",
   "rfcomm.requestPermission": "net.rfcomm", "rfcomm.status": "net.rfcomm", "rfcomm.listen": "net.rfcomm", "rfcomm.accept": "net.rfcomm", "rfcomm.close": "net.rfcomm",
@@ -666,6 +669,15 @@ export const mediaSurfaces={
  state(kind:MediaSurfaceKind,id:string):Promise<MediaSurfaceState>{return hostOperation<MediaSurfaceState>(kind+".surface.state",{id}).result;},
  close(kind:MediaSurfaceKind,id:string):Promise<{closed:boolean}>{return hostOperation<{closed:boolean}>(kind+".surface.close",{id}).result;},
 };
+
+/** Debug/PERF_TRACE host gate. Unsupported/release hosts reject; no GC or
+ * allocator trim is performed by a sample. See docs/memory-attribution.md. */
+export interface DebugMemorySnapshot {
+ native:Record<string,unknown>;renderer:Record<string,number>|null;
+ text:Record<string,unknown>;java:Record<string,unknown>;
+ pid:number;nativeAtMs:number;textAtMs:number;sampleAtMs:number;
+}
+export const debugMemoryStats=()=>hostOperation<DebugMemorySnapshot>("debug.memoryStats",{}).result;
 
 /** Android debug-build-only native frame metrics; unsupported hosts reject. */
 export interface DebugPerformanceSnapshot {

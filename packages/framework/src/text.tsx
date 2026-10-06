@@ -126,6 +126,17 @@ export function SystemTextLine(props:{options:SystemTextLineOptions;pixelScale:n
   <Image accessibilityHidden ref={value=>{node=value;}} class="absolute left-[0] top-[0]" style={{width:(texture()?.width??props.options.widthPx)/props.pixelScale,height:(texture()?.height??props.options.heightPx)/props.pixelScale,opacity:texture()?1:0}}/>
  </View>;
 }
+/** Numeric-only ownership, computed on demand without walking status listeners. */
+export function systemTextMemoryStats() {
+ let refs=0,listeners=0,textures=0,textureBytes=0,utf16Units=0,paragraphUtf16Units=0,keyUtf16Units=0,caretUnits=0;
+ for(const entry of entries.values()){
+  refs+=entry.refs;listeners+=entry.listeners.size;utf16Units+=entry.options.text.length;
+  paragraphUtf16Units+=entry.options.paragraph?.text.length??0;keyUtf16Units+=entry.key.length;caretUnits+=entry.carets.length;
+  if(entry.handle>=0){textures++;textureBytes+=entry.width*entry.height*4;}
+ }
+ return {...systemTextResourceCounts(),queueSlots:queue.length,refs,listeners,textures,textureBytes,utf16Units,paragraphUtf16Units,keyUtf16Units,caretUnits};
+}
+
 export const systemTextResourceCounts=()=>({active,queued:queue.filter(value=>!value.cancelled).length,cached:entries.size});
 
 export interface SystemTextEntryStatus {

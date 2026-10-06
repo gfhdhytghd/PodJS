@@ -17,10 +17,21 @@ import java.io.FileOutputStream;
 
 /** One bounded system-shaped text line, including color-font fallback, as straight RGBA. */
 final class PodTextRasterServices {
+    /** Allocated only for debug/PERF_TRACE service lifetimes. Counts owned text
+     * bitmaps, not every Android/media bitmap in the process. */
+    static final class Stats {
+        private long created,recycled,live,peak,bytes,peakBytes;
+        synchronized void allocate(long size){created++;live++;bytes+=size;peak=Math.max(peak,live);peakBytes=Math.max(peakBytes,bytes);}
+        synchronized void recycle(long size){recycled++;live--;bytes-=size;}
+        synchronized JSONObject snapshot() throws Exception {return new JSONObject().put("created",created).put("recycled",recycled).put("live",live).put("peak",peak).put("liveBytes",bytes).put("peakBytes",peakBytes);}
+    }
     static JSONObject raster(Context context, JSONObject args, CancellationSignal cancellation) throws Exception {
         return raster(context,args,cancellation,null);
     }
     static JSONObject raster(Context context,JSONObject args,CancellationSignal cancellation,PodParagraphLayout.Cache cache)throws Exception {
+        return raster(context,args,cancellation,cache,null);
+    }
+    static JSONObject raster(Context context,JSONObject args,CancellationSignal cancellation,PodParagraphLayout.Cache cache,Stats stats)throws Exception {
         Object value=args.opt("text");
         if(!(value instanceof String))throw new IllegalArgumentException("text must be a string");
         String text=(String)value;
@@ -46,6 +57,7 @@ final class PodTextRasterServices {
         cancellation.throwIfCanceled();
         int textureWidth=powerOfTwo(width),textureHeight=powerOfTwo(height);
         Bitmap bitmap=Bitmap.createBitmap(textureWidth,textureHeight,Bitmap.Config.ARGB_8888);File output=null;
+        long trackedBytes=stats==null?0:bitmap.getAllocationByteCount();if(stats!=null)stats.allocate(trackedBytes);
         try {
             Canvas canvas=new Canvas(bitmap);canvas.clipRect(0,0,width,height);canvas.translate(0,baseline-layout.getLineBaseline(sourceLine));layout.draw(canvas);
             File root=new File(PodTakeover.filesRoot(context),"text");if(!root.isDirectory()&&!root.mkdirs())throw new java.io.IOException("text directory unavailable");
@@ -68,7 +80,7 @@ final class PodTextRasterServices {
                 carets.put(x);
             }
             return new JSONObject().put("carets",carets).put("path","text/"+output.getName()).put("width",textureWidth).put("height",textureHeight).put("contentWidth",width).put("contentHeight",height);
-        }catch(Exception error){if(output!=null)output.delete();throw error;}finally{bitmap.recycle();}
+        }catch(Exception error){if(output!=null)output.delete();throw error;}finally{bitmap.recycle();if(stats!=null)stats.recycle(trackedBytes);}
     }
     static void discard(Context context,Object value){
         if(!(value instanceof JSONObject))return;
