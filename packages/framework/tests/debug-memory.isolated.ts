@@ -27,7 +27,7 @@ test('default production memoryStats request settles and releases its callback',
  expect(serviceResourceCounts().pending).toBe(1);
  const snapshot={native:{quickjs:{usedBytes:1024}},renderer:null,pid:7};
  await reply(emitted.at(-1),snapshot);
- expect(await result).toEqual(snapshot);
+ expect(await result).toEqual(snapshot as never);
  expect(serviceResourceCounts().pending).toBe(0);
  const denied=debugMemoryStats();const request=emitted.at(-1);
  events.push({t:'service.result',id:request.id,ok:false,code:'permission_denied',message:'Memory tools require a debug build'});
