@@ -43,6 +43,9 @@ struct WindowSummary {
   uint32_t cpuDraws{};
   uint32_t dropped{};
   uint32_t overBudget{};
+  uint32_t nativeOver33{};
+  uint32_t jsOver33{};
+  uint32_t cadenceOver33{};
   uint32_t uploadFrames{};
   uint32_t slotReuses{};
   uint32_t maxInFlight{};
@@ -129,6 +132,10 @@ public:
     out->cpuDraws = cpuDraws_;
     out->dropped = dropped_;
     out->overBudget = overBudget_;
+    const auto over33 = [](double value) { return value > 33.0; };
+    out->nativeOver33 = std::count_if(nativeTotal_.begin(), nativeTotal_.end(), over33);
+    out->jsOver33 = std::count_if(jsTurn_.begin(), jsTurn_.end(), over33);
+    out->cadenceOver33 = cadenceOver33_;
     out->uploadFrames = uploadFrames_;
     out->slotReuses = slotReuses_;
     out->maxInFlight = maxInFlight_;
@@ -175,6 +182,8 @@ private:
       constexpr double targetNanos = kTargetFrameMs * 1'000'000.0;
       const double delta =
           static_cast<double>(frameTimeNanos - lastFrameTimeNanos_);
+      if (delta > 33'000'000.0)
+        ++cadenceOver33_;
       const long long intervals = std::llround(delta / targetNanos);
       if (intervals > 1) {
         const uint64_t missed = static_cast<uint64_t>(intervals - 1);
@@ -200,7 +209,7 @@ private:
     queueSubmit_.clear();
     presentWait_.clear();
     ticks_ = draws_ = gpuDraws_ = cpuDraws_ = dropped_ = overBudget_ = 0;
-    uploadFrames_ = slotReuses_ = maxInFlight_ = 0;
+    uploadFrames_ = slotReuses_ = maxInFlight_ = cadenceOver33_ = 0;
     uploadBytes_ = 0;
   }
 
@@ -212,6 +221,7 @@ private:
   uint32_t cpuDraws_{};
   uint32_t dropped_{};
   uint32_t overBudget_{};
+  uint32_t cadenceOver33_{};
   uint32_t uploadFrames_{};
   uint32_t slotReuses_{};
   uint32_t maxInFlight_{};

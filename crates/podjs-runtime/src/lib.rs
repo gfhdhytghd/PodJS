@@ -965,6 +965,27 @@ pub extern "C" fn pod_runtime_validate_package(
         set_error(format!("package pak integrity validation failed: {error:#}"));
         return ERR_STATE;
     }
+    let preload_slots = match value.get("preloadFontSlots") {
+        None => Vec::new(),
+        Some(Value::Array(items)) if items.len() <= 8 => {
+            let mut slots = Vec::new();
+            for item in items {
+                let Some(slot) = item.as_u64().filter(|slot| *slot <= 63) else {
+                    set_error("invalid preloadFontSlots"); return ERR_STATE;
+                };
+                let slot = slot as u8;
+                if slots.contains(&slot) || !runtime.surface.has_font_resource(slot) {
+                    set_error("duplicate or missing preloadFontSlots resource"); return ERR_STATE;
+                }
+                slots.push(slot);
+            }
+            slots
+        }
+        Some(_) => { set_error("invalid preloadFontSlots"); return ERR_STATE; }
+    };
+    // Start before bytecode eval. Entry SHA-256 is still verified by the worker,
+    // and ensure_font consumes completed work before its synchronous fallback.
+    for slot in preload_slots { runtime.surface.request_font(slot); }
     runtime.package_validated = true;
     runtime.package_abi = package_abi.expect("validated package ABI") as u32;
     // Legacy bundles may assert ui.__hostAbi exactly. Negotiate before mount,
@@ -2199,6 +2220,57 @@ mod tests {
         );
         assert_eq!(stats.integrity_failures, 0);
         pod_runtime_destroy(runtime);
+    }
+
+    #[test]
+    fn startup_font_preload_is_bounded_async_and_preserves_entry_integrity() {
+        use pocketjs_core::spec::font_atlas as fa;
+        let mut font = Vec::new();
+        font.extend_from_slice(&fa::MAGIC.to_le_bytes());
+        font.extend_from_slice(&fa::VERSION.to_le_bytes());
+        font.extend_from_slice(&1u16.to_le_bytes());
+        font.extend_from_slice(&[8, 10, 7, 12, 7, 0, 1, 0]);
+        font.extend_from_slice(&('A' as u32).to_le_bytes());
+        font.extend_from_slice(&[0, 0, 8, 0]);
+        font.extend_from_slice(&[255; 80]);
+        let (pak, integrity, ranges) = integrity_pak(&[("ui:font.7", &font)]);
+        let source = b"globalThis.frame=function(){};";
+        let original: Value = serde_json::from_str(package_manifest(&pak, Some(integrity), source).to_str().unwrap()).unwrap();
+        for damaged in [false, true] {
+            let mut bytes = pak.clone();
+            if damaged { bytes[ranges["ui:font.7"].start] ^= 1; }
+            let mapped = Box::leak(bytes.into_boxed_slice());
+            let target = CString::new("android-watch").unwrap();
+            let capabilities = CString::new("[]").unwrap();
+            let runtime = pod_runtime_create(&valid_config(&target, &capabilities));
+            assert_eq!(unsafe { pod_runtime_load_pak_mapped(runtime, mapped.as_ptr(), mapped.len()) }, OK);
+            for invalid in [json!(null), json!([7,7]), json!([64]), json!([1.5]), json!([8]), json!([0,1,2,3,4,5,6,7,8])] {
+                let mut manifest = original.clone(); manifest["preloadFontSlots"] = invalid;
+                let manifest = CString::new(manifest.to_string()).unwrap();
+                assert_eq!(pod_runtime_validate_package(runtime, manifest.as_ptr()), ERR_STATE);
+                assert!(!unsafe { &*runtime }.package_validated);
+            }
+            let mut manifest = original.clone(); manifest["preloadFontSlots"] = json!([7]);
+            let manifest = CString::new(manifest.to_string()).unwrap();
+            assert_eq!(pod_runtime_validate_package(runtime, manifest.as_ptr()), OK);
+            assert_eq!(pak_stats(runtime).loaded_font_slots, 0, "queueing must not parse on the validation thread");
+            for _ in 0..200 {
+                unsafe { &*runtime }.surface.tick();
+                if pak_stats(runtime).verified_entries + pak_stats(runtime).integrity_failures > 0 { break; }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let stats = unsafe { &*runtime }.surface.lazy_pak_stats();
+            if damaged {
+                assert_eq!(stats.integrity_failures, 1); assert_eq!(stats.loaded_fonts, 0);
+                assert!(!unsafe { &*runtime }.surface.ensure_font(7));
+            } else {
+                assert_eq!(stats.verified_entries, 1); assert_eq!(stats.loaded_fonts, 1);
+                assert!(stats.last_font_async);
+                assert!(unsafe { &*runtime }.surface.ensure_font(7));
+                assert_eq!(pak_stats(runtime).verified_entries, 1);
+            }
+            pod_runtime_destroy(runtime);
+        }
     }
 
     #[test]

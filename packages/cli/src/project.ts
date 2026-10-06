@@ -16,6 +16,8 @@ export interface PodProjectResources {
   assets?: Record<string, string>;
   fontRegular?: string;
   fontSlots?: PodFontSlot[];
+  /** Bounded startup hint; hashes and atlas parsing run on the existing worker. */
+  preloadFontSlots?: number[];
   fontBold?: string;
   extraCharsFile?: string;
   /** Opt-in native TTF coverage cache; requires host ABI 3. */
@@ -116,6 +118,12 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
     }
     if (r.fontRegular !== undefined) resources.fontRegular = stringField(r.fontRegular, "resources.fontRegular");
     if (r.fontBold !== undefined) resources.fontBold = stringField(r.fontBold, "resources.fontBold");
+    if (r.preloadFontSlots !== undefined) {
+      const slots = r.preloadFontSlots;
+      if (!Array.isArray(slots) || slots.length > 8 || new Set(slots).size !== slots.length ||
+          slots.some(slot => !Number.isInteger(slot) || slot < 0 || slot > 63)) invalid("resources.preloadFontSlots must be at most 8 unique slots 0..63");
+      resources.preloadFontSlots = slots;
+    }
     if (r.fontSlots !== undefined) {
       if (!Array.isArray(r.fontSlots)) invalid("resources.fontSlots must be an array");
       const used = new Set<number>();

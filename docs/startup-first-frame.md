@@ -32,6 +32,21 @@ validation, host mount, guest evaluation and generation ownership are unchanged.
 No guest/eval parallelism is added: runtime viewport and Vulkan attachment still
 use the actual surface; error order and single-owner QuickJS access stay intact.
 
+## Optional startup font prefetch
+
+`pod.config.json` may set `resources.preloadFontSlots` to at most eight unique
+slot IDs from 0 through 63. The CLI forwards this hint into the package manifest.
+Admission rejects malformed hints and slots without a packaged font resource.
+After package validation, the existing font worker begins entry SHA-256 validation
+and atlas parsing before guest bytecode evaluation. The first actual font use
+consumes a completed worker result before falling back to the existing synchronous
+load. The hint does not skip resource integrity checks or change required fonts.
+Omitting it retains the existing loading path.
+
+WatchRSS prefetches slots 2, 1, 19, and 22 for its startup overlay and visible home
+cards. Startup savings depend on worker completion and contention; the entry hash
+statistics include this work and must not be added to the enclosing boot duration.
+
 ## PodJSPerf timing fields
 
 All durations use monotonic clocks. Startup logs contain timing/state fields only.
