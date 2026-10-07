@@ -43,3 +43,16 @@ export function normalizeHtmlWhitespace(source:string):string {
   if(part)previousSpace=part.endsWith(' ');parts.push(part);start=end;
  }return parts.join('');
 }
+
+export interface HtmlTextPreview {units:number;prefix:string;imageSource:string}
+/** Lightweight generic text prefix and first img src, with whitespace collapsed.
+ * Returns null for unsupported hosts/UTF-16 or rejected sources. Caller owns
+ * truncation punctuation, URLs, enclosure precedence and exact legacy fallback.
+ * No HTML5 parsing claim; the compatibility dialect uses simple markup regexes.
+ */
+export function htmlTextPreview(source:string,maxUnits:number):HtmlTextPreview|null {
+ if(!Number.isSafeInteger(maxUnits)||maxUnits<0||maxUnits>4096)throw new RangeError('Invalid HTML text prefix limit');
+ const host=(globalThis as {pod?:{htmlPreview?:(source:string,limit:number)=>[number,string,string]|null}}).pod?.htmlPreview;
+ if(!host)return null;let result:[number,string,string]|null;try{result=host(source,maxUnits);}catch{return null;}
+ return result?{units:result[0],prefix:result[1],imageSource:result[2]}:null;
+}

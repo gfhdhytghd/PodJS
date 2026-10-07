@@ -26,6 +26,8 @@ fn main() -> anyhow::Result<()> {
         if std::env::var("PODJS_BENCH_PORTABLE").as_deref() != Ok("1") {
             podjs_runtime::byte_codecs::mount(ctx.clone(), &pod)?;
             podjs_runtime::html::mount(ctx.clone(), &pod)?;
+            podjs_runtime::html_preview::mount(ctx.clone(), &pod)?;
+            podjs_runtime::xml::mount(ctx.clone(), &pod)?;
             // Synthetic metric parity fixture, not an Android font measurement.
             pod.set(
                 "wrapAtlasTextChunk",
@@ -43,6 +45,17 @@ fn main() -> anyhow::Result<()> {
                 "decodeUtf8",
                 Function::new(ctx.clone(), podjs_runtime::decode_utf8)?,
             )?;
+        }
+        // Optional private scratch KV directory, never a production app root.
+        // This uses the same locked/fsync/rename store and wire values as mount_pod.
+        if let Ok(root) = std::env::var("PODJS_BENCH_KV_DIR") {
+            let store = std::rc::Rc::new(std::cell::RefCell::new(podjs_runtime::kv::KvStore::open(Some(&root))));
+            let get = store.clone();
+            pod.set("kvGet", Function::new(ctx.clone(), move |key:String| get.borrow_mut().get_json(&key).ok().flatten())?)?;
+            pod.set("kvSet", Function::new(ctx.clone(), move |key:String,value:String| -> i32 {
+                let Ok(value)=serde_json::from_str::<serde_json::Value>(&value) else {return 1;};
+                if store.borrow_mut().set(key,value).is_ok(){0}else{1}
+            })?)?;
         }
         ctx.globals().set("pod", pod)?;
         ctx.eval::<(), _>(source)

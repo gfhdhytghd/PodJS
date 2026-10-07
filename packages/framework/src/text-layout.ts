@@ -66,3 +66,14 @@ export function prepareTextLayout<Row,Layout,Entry,Key>(steps:Iterator<Row,Layou
  })();
  return {done,stats,cancel(){if(cancelled)return;cancelled=true;pending?.cancel();close();}};
 }
+
+/** Host frame boundary when available; portable timer for non-host callers.
+ * Existing layout callers retain their original host-only default scheduler.
+ */
+export function yieldWorkTurn():HostOperation<void> {
+ const host=(globalThis as {pod?:{capabilities?:()=>string}}).pod;
+ if(host?.capabilities&&JSON.parse(host.capabilities()).includes('runtime.timer'))return delay(1);
+ let timer:ReturnType<typeof setTimeout>,reject:(error:Error)=>void=()=>{};
+ const result=new Promise<void>((resolve,fail)=>{reject=fail;timer=setTimeout(resolve,1);});
+ return {result,cancel(){clearTimeout(timer);reject(Error('work cancelled'));}};
+}

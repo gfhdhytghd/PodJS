@@ -28,7 +28,7 @@ fn patterns() -> &'static Patterns {
 }
 /// Small named-entity vocabulary matches the SDK's fragment dialect. Unknown
 /// names remain literal. Reject surrogate codepoints for a lossless JS fallback.
-fn decode(input: &str) -> Option<String> {
+pub(crate) fn decode(input: &str) -> Option<String> {
     let mut out = String::with_capacity(input.len());
     let mut cursor = 0;
     for c in patterns().entity.captures_iter(input) {

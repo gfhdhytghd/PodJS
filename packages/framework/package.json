@@ -27,7 +27,8 @@
     "./image": "./src/image.tsx",
     "./service-trace": "./src/service-trace.ts",
     "./html": "./src/html.ts",
-    "./html-slices": "./src/html-slices.ts"
+    "./html-slices": "./src/html-slices.ts",
+    "./xml": "./src/xml.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",
