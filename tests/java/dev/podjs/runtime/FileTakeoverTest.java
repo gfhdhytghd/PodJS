@@ -27,6 +27,7 @@ public final class FileTakeoverTest {
         StoreTest.write(new File(root,"files/reader_assets/backgrounds/"+"z".repeat(251)+".png"),new byte[]{8});
         try(RoomV18Test.Jdbc d=new RoomV18Test.Jdbc(db)) {
             RoomV18Test.fixture(d);
+            d.exec("UPDATE offline_media SET localPath=replace(localPath,?,?)", "com.lightningstudio.watchrss", "dev.podjs.source");
             d.exec("UPDATE rss_items SET content='watchrss-watch-content:fixture.txt',link='https://example.invalid/body' WHERE id=1");
             String articleId=PodStoreConverter.slot("https://example.invalid/body");
             d.exec("UPDATE saved_sync_states SET articleId=? WHERE itemId=1 AND saveType='FAVORITE'",articleId);
@@ -41,7 +42,7 @@ public final class FileTakeoverTest {
         return root;
     }
     static PodFileConverter files(File source,PodFileConverter.Hook hook) {
-        return new PodFileConverter(source,RoomV18Test.Jdbc::new,(file,faces)->{check(faces==1,"font faces");check(Files.readAllBytes(file.toPath())[1]==1,"font reader bytes");},hook);
+        return new PodFileConverter(source,RoomV18Test.Jdbc::new,(file,faces)->{check(faces==1,"font faces");check(Files.readAllBytes(file.toPath())[1]==1,"font reader bytes");},hook,bytes->{},"dev.podjs.source","dev.podjs.rehearsal");
     }
     static PodTakeoverConverters composite(File source,PodFileConverter.Hook hook,StoreTest.Crypto crypto) {
         return new PodTakeoverConverters(new PodRoomV18Converter(new File(source,"databases/watchrss.db"),RoomV18Test.Jdbc::new,(File g)->PodStoreConverter.identity(new File(g,"stores-source"))),new PodStoreConverter(source,crypto),files(source,hook));
@@ -63,6 +64,29 @@ public final class FileTakeoverTest {
         PodTakeoverCoordinator next=new PodTakeoverCoordinator(root,()->{throw new AssertionError("ACTIVE must not inspect source");},PodTakeoverCoordinator.EMPTY);
         check(next.run().getProperty("phase").equals("ACTIVE"),"terminal active");check(Files.readString(body.toPath()).equals("new user edit"),"no reimport");
     }
+    static void aliasesAndLocks()throws Exception {
+        File source=fixture();PodFileConverter converter=files(source,b->{});
+        String relative="offline/rss/2/image.jpg";
+        for(String name:new String[]{"dev.podjs.source","dev.podjs.rehearsal"}) {
+            check(converter.ownSourcePath("/data/user/0/"+name+"/files/"+relative,relative),"source/target user alias");
+            check(converter.ownSourcePath("/data/data/"+name+"/files/"+relative,relative),"source/target legacy alias");
+        }
+        check(converter.ownSourcePath(new File(source,"files/"+relative).getPath(),relative),"canonical source");
+        for(String path:new String[]{"/data/user/0/dev.podjs.other/files/"+relative,"/data/user/1/dev.podjs.source/files/"+relative,"/tmp/files/"+relative,"/data/user/0/dev.podjs.source.extra/files/"+relative,"/data/user/0/dev.podjs.source/files/offline/rss/2/../image.jpg"})
+            check(!converter.ownSourcePath(path,relative),"alien/traversal alias rejected");
+        check(!converter.ownSourcePath("/data/data/dev.podjs.source/files/../escape","../escape"),"unsafe relative rejected");
+        String[] locks={"cache/watchrss.db.lck","cache/data/user/0/dev.podjs.rehearsal/no_backup/androidx.work.workdb.lck","cache/data/data/dev.podjs.source/databases/watchrss.db.lck"};
+        for(String path:locks){check(converter.classify(path).equals("database-lock"),"exact DB lock");StoreTest.write(new File(source,path),new byte[]{0});}
+        Map<String,String> before=StoreTest.digests(source);File target=root();Properties active=run(source,target);
+        check(active.getProperty("phase").equals("ACTIVE"),"locks do not block");check(before.equals(StoreTest.digests(source)),"locks left untouched");
+        for(String path:locks)check(!new File(generation(target,active),"podjs/files/"+path).exists(),"locks not migrated to assets");
+        StoreTest.remove(target);StoreTest.remove(source);
+        for(String path:new String[]{"cache/other.db.lck","cache/watchrss.db.lck.user","cache/data/user/0/dev.podjs.other/no_backup/androidx.work.workdb.lck","cache/data/user/1/dev.podjs.rehearsal/no_backup/androidx.work.workdb.lck","files/recovery-rehearsal/seed.json","files/recovery-rehearsal/business.json","files/recovery-rehearsal/interrupt.bin","files/watchrss.db.lck"}){
+            source=fixture();converter=files(source,b->{});check(converter.classify(path).equals("unknown-user-content"),"unknown lock/marker still blocked");
+            StoreTest.write(new File(source,path),new byte[]{0});target=root();check(run(source,target).getProperty("phase").equals("BLOCKED"),"unknown user files still block ACTIVE");
+            StoreTest.remove(target);StoreTest.remove(source);
+        }
+    }
     public static void main(String[] args)throws Exception {
         if(args.length>0&&args[0].equals("crash")) {
             File source=new File(args[1]),root=new File(args[2]);String boundary=args[3];
@@ -72,6 +96,7 @@ public final class FileTakeoverTest {
                 public void published(){if(boundary.equals("published"))Runtime.getRuntime().halt(91);}
             }).run();throw new AssertionError("missing crash: "+boundary);
         }
+        aliasesAndLocks();
         File source=fixture();Map<String,String> before=StoreTest.digests(source);String body=Files.readString(new File(source,"files/article_content/fixture.txt").toPath());
         File full=root();Properties p=run(source,full);check(p.getProperty("phase").equals("ACTIVE"),"full pipeline: "+p);
         File g=generation(full,p);
