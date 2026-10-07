@@ -37,3 +37,8 @@ XML preparation exposes `xml.nativeStep` synchronous spans. Upload and flat-row
 adoption are 4096-unit/byte pieces; the default scheduler yields a host timer
 between slices. These spans exclude the timer wait and do not include all work
 in the enclosing completion.
+
+An optional third `traceServiceWork` argument records a nonnegative integer
+`units` only. Supply lengths/counts with a fixed code-authored label; never pass
+content or sensitive identifiers. KV exposes nested `kv.encode` and `kv.write`
+spans; write units are encoded UTF-16 length (not UTF-8 bytes).

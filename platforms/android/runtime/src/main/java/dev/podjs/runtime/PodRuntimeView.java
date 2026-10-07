@@ -129,7 +129,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                 }
                 else if ("diagnostic.serviceWork".equals(command.optString("t"))) {
                     if(serviceResultTrace.enabled && command.optString("label").matches("[a-zA-Z][a-zA-Z0-9_.:-]{0,79}"))
-                        android.util.Log.i("PodJSService", "guest label="+command.optString("label")+" ms="+command.optLong("elapsedMs")+" exclusiveMs="+command.optLong("exclusiveMs"));
+                        android.util.Log.i("PodJSService", "guest label="+command.optString("label")+" ms="+command.optLong("elapsedMs")+" exclusiveMs="+command.optLong("exclusiveMs")+(command.has("units")?" units="+command.optLong("units"):""));
                 }
                 else if (command.optString("t").startsWith("service.")) {
                     if (serviceResultTrace.enabled) {

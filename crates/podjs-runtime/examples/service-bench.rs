@@ -28,6 +28,7 @@ fn main() -> anyhow::Result<()> {
             podjs_runtime::html::mount(ctx.clone(), &pod)?;
             podjs_runtime::html_preview::mount(ctx.clone(), &pod)?;
             podjs_runtime::xml::mount(ctx.clone(), &pod)?;
+            podjs_runtime::json_projection::mount(ctx.clone(), &pod)?;
             // Synthetic metric parity fixture, not an Android font measurement.
             pod.set(
                 "wrapAtlasTextChunk",

@@ -25,6 +25,7 @@ pub mod byte_codecs;
 pub mod html;
 pub mod html_preview;
 pub mod xml;
+pub mod json_projection;
 pub mod text_wrap;
 mod pak_reader;
 mod pak_integrity;
@@ -439,6 +440,7 @@ fn mount_pod(
         html::mount(ctx.clone(), &ns)?;
         html_preview::mount(ctx.clone(), &ns)?;
         xml::mount(ctx.clone(), &ns)?;
+        json_projection::mount(ctx.clone(), &ns)?;
         text_wrap::mount(ctx.clone(), &ns, surface.clone())?;
         ns.set("decodeBase64", Function::new(ctx.clone(), decode_base64)?)?;
         ns.set("encodeBase64", Function::new(ctx.clone(), encode_base64)?)?;

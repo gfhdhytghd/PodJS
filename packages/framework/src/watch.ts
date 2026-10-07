@@ -190,9 +190,9 @@ export const kv = Object.freeze({
   },
   set(key: string, value: unknown): void {
     validateKvKey(key);
-    traceServiceWork("kv.set",()=>{const encoded = JSON.stringify(value);
+    traceServiceWork("kv.set",()=>{const encoded = traceServiceWork("kv.encode",()=>JSON.stringify(value));
     if (encoded === undefined) throw new Error("PodJS KV values must be JSON serializable");
-    if (host()?.kvSet(key, encoded) !== 0) throw new Error(`PodJS KV write failed for ${key}`);});
+    if (traceServiceWork("kv.write",()=>host()?.kvSet(key, encoded),encoded.length) !== 0) throw new Error(`PodJS KV write failed for ${key}`);});
   },
   delete(key: string): boolean {
     validateKvKey(key);
