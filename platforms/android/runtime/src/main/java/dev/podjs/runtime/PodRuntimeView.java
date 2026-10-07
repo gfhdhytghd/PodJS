@@ -127,7 +127,13 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                     rootSwipeEnabled = command.optBoolean("rootSwipeEnabled", true);
                     if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(!canSwipeDismiss());
                 }
-                else if (command.optString("t").startsWith("service.")) services.dispatch(command);
+                else if (command.optString("t").startsWith("service.")) {
+                    if (serviceResultTrace.enabled) {
+                        if ("service.request".equals(command.optString("t"))) serviceResultTrace.request(command.optInt("id"),command.optString("method"));
+                        else if ("service.cancel".equals(command.optString("t"))) serviceResultTrace.cancel(command.optInt("id"));
+                    }
+                    services.dispatch(command);
+                }
                 else if ("notification.ack".equals(command.optString("t"))) services.acknowledgeNotification(command.getString("eventId"));
             } catch (Exception error) { android.util.Log.e("PodJS", "Invalid host effect", error); }
         }
@@ -191,19 +197,37 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
 
     // Every completion enters through a new main-looper job. A token identifies
     // the guest lifetime even if the allocator later reuses its native address.
+    private final ServiceResultTrace serviceResultTrace;
     private void postHostCompletion(HostLifetime owner, Runnable completion) {
+        postHostCompletion(owner,completion,null);
+    }
+    private void postHostCompletion(HostLifetime owner, Runnable completion, String category) {
         if (owner == null) return;
         serviceHandler.post(() -> {
             if (!ownsHost(owner)) return;
-            completion.run();
-            pumpServiceResults(owner);
+            long began=category==null?0:System.nanoTime();
+            try {
+                completion.run();
+                pumpServiceResults(owner);
+            } finally {
+                if(category!=null) {
+                    String record=serviceResultTrace.finish(category,System.nanoTime()-began);
+                    if(record!=null)android.util.Log.i("PodJSService",record);
+                }
+            }
         });
     }
     private void receiveServiceEvent(String event) {
         HostLifetime owner = hostLifetime;
         if (owner == null) return;
         byte[] bytes = event.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        postHostCompletion(owner, () -> nativePostEvent(owner.handle, bytes));
+        String category=null;
+        if(serviceResultTrace.enabled)try {
+            JSONObject value=new JSONObject(event);
+            String type=value.optString("t");
+            if("service.result".equals(type)||"browser.auth.status".equals(type))category=serviceResultTrace.result(value.optInt("id"),"service.result".equals(type));
+        } catch(Exception ignored) { /* Diagnostics never block delivery. */ }
+        postHostCompletion(owner, () -> nativePostEvent(owner.handle, bytes),category);
     }
     private void pumpServiceResults(HostLifetime owner) {
         if (Looper.myLooper() != Looper.getMainLooper()) throw new IllegalStateException("Service turns require the main looper");
@@ -233,6 +257,11 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         super(context);
         long began = PodStartupTrace.now();
         this.targetId = targetId;
+        // Default log level is INFO. Only a debuggable host explicitly opted in
+        // via log.tag.PodJSService=DEBUG collects/logs completion-turn timings.
+        serviceResultTrace = new ServiceResultTrace(
+            (context.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0,
+            android.util.Log.isLoggable("PodJSService",android.util.Log.DEBUG));
         accessibility = new PodAccessibility(this, (id, hash, action) -> host != 0 && nativeAccessibilityAction(host, id, hash, action));
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
         long servicesBegan = PodStartupTrace.now();
@@ -434,6 +463,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         network.shutdownNow();
         boot.shutdown();
         services.close();
+        serviceResultTrace.clear();
         super.onDetachedFromWindow();
     }
 

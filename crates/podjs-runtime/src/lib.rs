@@ -325,6 +325,33 @@ fn encode_base64(input: TypedArray<'_, u8>) -> Option<String> {
     input.as_bytes().map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
+/// Optional pure codec fast path. Invalid UTF-8 falls back to the application's
+/// legacy decoder; views respect byte offsets and never retain guest storage.
+/// Media callers split this into bounded pieces and yield between host turns.
+#[doc(hidden)]
+pub fn decode_utf8(input: TypedArray<'_, u8>) -> Option<String> {
+    std::str::from_utf8(input.as_bytes()?).ok().map(str::to_owned)
+}
+
+#[cfg(test)]
+mod utf8_service_tests {
+    use super::*;
+    #[test]
+    fn native_utf8_respects_views_bom_nul_and_invalid_fallback() {
+        let rt = rquickjs::Runtime::new().unwrap();
+        let context = rquickjs::Context::full(&rt).unwrap();
+        context.with(|ctx| {
+            ctx.globals().set("decode", Function::new(ctx.clone(), decode_utf8).unwrap()).unwrap();
+            let text: String = ctx.eval("decode(new Uint8Array([0,239,187,191,228,184,173,240,159,153,130,0,1]).subarray(1,12))").unwrap();
+            assert_eq!(text, "\u{feff}中🙂\0");
+            assert_eq!(ctx.eval::<String,_>("decode(new Uint8Array())").unwrap(), "");
+            for input in ["[128]", "[192,175]", "[240,159]", "[237,160,128]", "[244,144,128,128]"] {
+                assert!(ctx.eval::<Option<String>,_>(format!("decode(new Uint8Array({input}))")).unwrap().is_none());
+            }
+        });
+    }
+}
+
 // Only the image decoder's bounded RGBA outputs may bypass the JSON/Base64
 // service lane. The guest still receives an owned typed array, never a path to
 // arbitrary application files.
@@ -404,6 +431,7 @@ fn mount_pod(
     guest.mount("pod", |ctx, ns| {
         ns.set("decodeBase64", Function::new(ctx.clone(), decode_base64)?)?;
         ns.set("encodeBase64", Function::new(ctx.clone(), encode_base64)?)?;
+        ns.set("decodeUtf8", Function::new(ctx.clone(), decode_utf8)?)?;
         if let Some(root) = guest_files_root {
             let image_root = root.join("images");
             ns.set("readDecodedRgba", Function::new(ctx.clone(), move |ctx, relative: String| {
@@ -3230,6 +3258,8 @@ mod tests {
             }}
             if(pod.decodeBase64('invalid!')!=null||pod.decodeBase64('AB==')!=null)throw new Error('fallback boundary');
             bytes[0]=99;if(pod.decodeBase64({encoded:?})[0]!==0)throw new Error('shared buffer');
+            if(pod.decodeUtf8(new Uint8Array([9,65,0,66,9]).subarray(1,4))!=='A\0B')throw new Error('mounted UTF8 view');
+            if(pod.decodeUtf8(new Uint8Array([128]))!=null)throw new Error('mounted UTF8 fallback');
         "#);
         validate(runtime, "android-watch", b"pak", source.as_bytes(), &[]);
         assert_eq!(pod_runtime_eval_bundle(runtime, source.as_ptr(), source.len(), std::ptr::null()), OK, "{}", unsafe { CStr::from_ptr(pod_runtime_last_error()) }.to_string_lossy());
