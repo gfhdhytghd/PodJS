@@ -73,3 +73,9 @@ export function createFirstScreenGate(options: FirstScreenGateOptions = {}) {
 }
 
 export {STARTUP_EXIT_DURATION_MS, startupExitFrame, type StartupExitFrame} from "./startup-transition.ts";
+
+/** Capture ownership immediately after apply. Cleanup leaves a newer publisher alone.
+ * Register the returned closure with the caller's lifecycle cleanup. */
+export function restoreIfOwned<T>(apply:()=>void,snapshot:()=>T,restore:()=>void):()=>void{
+ apply();const ownState=snapshot();return ()=>{if(snapshot()===ownState)restore();};
+}

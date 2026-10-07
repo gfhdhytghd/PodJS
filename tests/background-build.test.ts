@@ -43,3 +43,14 @@ test("headless handlers can use pure SQL/regexp helpers without gaining UI or ho
   const f=fixture(`import * as api from '${denied}'; export default ()=>api;`);await expect(buildBackground({denied:f.entry},f.root)).rejects.toThrow('Background');
  }
 });
+
+
+test("headless JSON numeric tokens execute without a host and keep UI denied",async()=>{
+ const {root,entry}=fixture("import {parseJsonObjectNumbers,jsonNumberToken,isJsonInteger} from '@podjs/framework/json-numbers'; export default ()=>{const obj=parseJsonObjectNumbers('{\"i\":1,\"d\":1.0}');return {i:isJsonInteger(obj,'i'),d:isJsonInteger(obj,'d'),token:jsonNumberToken(obj,'d')};};");
+ mkdirSync(join(root,'node_modules/@podjs'),{recursive:true});symlinkSync(new URL('../packages/framework',import.meta.url).pathname,join(root,'node_modules/@podjs/framework'),'dir');
+ const artifacts=await buildBackground({numbers:entry},root),context:Record<string,any>={};runInNewContext(readFileSync(join(root,artifacts.numbers!.file),'utf8'),context);
+ expect(JSON.parse(JSON.stringify(await context.backgroundHandler()))).toEqual({i:true,d:false,token:'1.0'});expect(context.pod).toBeUndefined();expect(context.frame).toBeUndefined();
+ for(const denied of ['@podjs/framework/startup-overlay','@podjs/framework/startup','@podjs/framework/logging','@podjs/framework/services','@podjs/framework/json-numbers/unsafe']){
+  const f=fixture(`import * as api from '${denied}'; export default ()=>api;`);await expect(buildBackground({denied:f.entry},f.root)).rejects.toThrow('Background');
+ }
+});
