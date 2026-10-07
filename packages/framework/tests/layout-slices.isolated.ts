@@ -55,8 +55,12 @@ test('mid-task cancellation cancels the host operation, closes its iterator once
 test('errors and duplicate keys fail closed and release the iterator without publishing',async()=>{
  for(const mode of ['duplicate','throw','host-failure']){
   let closes=0,published=0;function* rows(){yield* fixture(1);if(mode==='throw')throw Error('iterator failed');yield* fixture(1);return {height:0};}
-  const iterator=rows();const task=prepareTextLayout({next:()=>iterator.next(),return:()=>{closes++;return iterator.return({height:0});}},callbacks(()=>published++));const error=task.done.catch(value=>value);
-  if(mode==='host-failure'){const req=emitted.shift()!;events.push({t:'service.result',id:req.id,ok:false,code:'unavailable',message:'yield failed'});__pumpPodEvents();await settle();}else await nextTurn();
+  const iterator=rows();const task=prepareTextLayout({next:()=>iterator.next(),return:()=>{closes++;return iterator.return({height:0});}},callbacks(()=>published++));let settled=false;const error=task.done.catch(value=>value).finally(()=>{settled=true;});
+  if(mode==='host-failure'){const req=emitted.shift()!;events.push({t:'service.result',id:req.id,ok:false,code:'unavailable',message:'yield failed'});__pumpPodEvents();await settle();}else {
+   // The default 1ms budget may cross a clock boundary after the first row.
+   // Deliver every requested host turn until the duplicate/throw is observed.
+   for(let turns=0;!settled&&turns<8;turns++)await nextTurn();
+  }
   expect(await error).toBeInstanceOf(Error);expect(closes).toBe(1);expect(published).toBe(0);expect(emitted).toHaveLength(0);
  }
 });
