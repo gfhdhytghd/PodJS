@@ -547,7 +547,14 @@ export const fileChunks = {
 export { base64ToBytes, utf8ToString, stringToUtf8 } from "../../../vendor/pocketjs/framework/src/bytes.ts";
 
 /** Wall-clock delay driven by the host, independent of UI frame cadence. */
-export function delay(milliseconds:number):HostOperation<void> { return hostOperation<void>("runtime.delay",{milliseconds}); }
+/** Host timers accept 1..120000ms (Android rejects 0). A 0/sub-millisecond request is a
+ * "yield to the next turn" and is clamped to 1ms so callers cannot stall on a rejected timer. */
+export function hostDelayMilliseconds(milliseconds:number):number {
+  return Number.isFinite(milliseconds)?Math.min(120000,Math.max(1,Math.ceil(milliseconds))):1;
+}
+export function delay(milliseconds:number):HostOperation<void> {
+  return hostOperation<void>("runtime.delay",{milliseconds:hostDelayMilliseconds(milliseconds)});
+}
 
 /** Public-key RSA OAEP with SHA-256, MGF1 SHA-256 and an empty label. */
 export function rsaOaepSha256(publicKeyPem:string,inputBase64:string):HostOperation<{ciphertextBase64:string}>{return hostOperation("crypto.rsaOaepSha256",{publicKeyPem,inputBase64});}

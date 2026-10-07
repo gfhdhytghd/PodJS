@@ -47,7 +47,7 @@ export interface PodProjectConfig {
   /** Omit duplicate function source strings, retaining error locations.
    * Opt in only if Function.toString source introspection is unused. */
   bytecode?: { stripSource: boolean };
-  android?: { resources?: string; theme?: string; signing?: AndroidSigning };
+  android?: { resources?: string; theme?: string; cleartextTraffic?: boolean; signing?: AndroidSigning };
 }
 
 export interface ResolvedPodProject {
@@ -64,6 +64,8 @@ export interface ResolvedPodProject {
   assets: Record<string, string>;
   androidResources?: string;
   androidTheme?: string;
+  /** android:usesCleartextTraffic; default false (Android platform default for targetSdk >= 28). */
+  androidCleartextTraffic?: boolean;
   androidSigning?: AndroidSigning;
 }
 
@@ -184,6 +186,7 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
   let android: PodProjectConfig["android"];
   let androidResources: string | undefined;
   let androidTheme: string | undefined;
+  let androidCleartextTraffic: boolean | undefined;
   let androidSigning: AndroidSigning | undefined;
   if (value.android !== undefined) {
     if (!value.android || typeof value.android !== "object" || Array.isArray(value.android)) invalid("android must be an object");
@@ -199,6 +202,11 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
       androidTheme = stringField(candidate.theme, "android.theme");
       if (!/^@style\/[A-Za-z0-9_.]+$/.test(androidTheme)) invalid("android.theme must be an @style resource");
       android.theme = androidTheme;
+    }
+    if (candidate.cleartextTraffic !== undefined) {
+      if (typeof candidate.cleartextTraffic !== "boolean") invalid("android.cleartextTraffic must be a boolean");
+      androidCleartextTraffic = candidate.cleartextTraffic;
+      android.cleartextTraffic = androidCleartextTraffic;
     }
     if (candidate.signing !== undefined) {
       const signing = candidate.signing as Record<string, unknown>;
@@ -220,5 +228,5 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
       }
     }
   }
-  return { config: { entry: entryValue, appId, versionName, versionCode: value.versionCode as number, name, capabilities, resources, android, background: backgroundConfig, backgroundServices, bytecode }, root, configPath, entry, output: join(defaults.outputRoot, appId), fontRegular, fontBold, fontSlots, extraChars, background, assets, androidResources, androidTheme, androidSigning };
+  return { config: { entry: entryValue, appId, versionName, versionCode: value.versionCode as number, name, capabilities, resources, android, background: backgroundConfig, backgroundServices, bytecode }, root, configPath, entry, output: join(defaults.outputRoot, appId), fontRegular, fontBold, fontSlots, extraChars, background, assets, androidResources, androidTheme, androidCleartextTraffic, androidSigning };
 }

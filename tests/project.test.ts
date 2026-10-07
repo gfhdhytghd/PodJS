@@ -25,6 +25,13 @@ describe("external project config", () => {
     for (const backgroundServices of [["http.get"],["kv.get","kv.get"],"kv.get",[null]])
       expect(() => resolvePodProject(fixture({...base,backgroundServices}),POD_TARGETS,defaults)).toThrow("backgroundServices");
   });
+  test("android cleartext traffic is an explicit boolean opt-in", () => {
+    expect(resolvePodProject(fixture(base),POD_TARGETS,defaults).androidCleartextTraffic).toBeUndefined();
+    expect(resolvePodProject(fixture({...base,android:{cleartextTraffic:true}}),POD_TARGETS,defaults).androidCleartextTraffic).toBe(true);
+    expect(() => resolvePodProject(fixture({...base,android:{cleartextTraffic:"yes"}}),POD_TARGETS,defaults)).toThrow("android.cleartextTraffic");
+    const manifest = readFileSync(new URL("../platforms/android/app/src/main/AndroidManifest.xml", import.meta.url), "utf8");
+    expect(manifest).toContain('android:usesCleartextTraffic="${podCleartextTraffic}"');
+  });
   test("resolves separate background entries and rejects UI reuse", () => {
     const root = fixture({ ...base, background: { refresh: "background.ts" } });
     expect(resolvePodProject(root,POD_TARGETS,defaults).background.refresh).toBe(join(root,"background.ts"));

@@ -2,7 +2,7 @@
   <uses-feature android:name="android.hardware.type.watch" android:required="true" />
   <uses-feature android:name="android.hardware.vulkan.version" android:version="0x00401000" android:required="true" />
   <uses-permission android:name="android.permission.INTERNET" />
-  <application android:name="dev.podjs.androidwatch.PodApplication" android:theme="${podAppTheme}" android:label="${podAppName}">
+  <application android:name="dev.podjs.androidwatch.PodApplication" android:theme="${podAppTheme}" android:label="${podAppName}" android:usesCleartextTraffic="${podCleartextTraffic}">
     <activity android:name=".MainActivity" android:screenOrientation="portrait" android:exported="true">
       <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
     </activity>

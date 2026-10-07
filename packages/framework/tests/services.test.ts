@@ -631,3 +631,8 @@ test("browser state requires the new capability and preserves explicit opt-in on
  const opened=browser.open('https://example.org',{mode:'inApp',restoreActivity:true});expect(emitted.at(-1)).toMatchObject({method:'browser.openInApp',args:{url:'https://example.org',mode:'inApp',restoreActivity:true}});
  events.push({t:'service.result',id:emitted.at(-1)!.id,ok:true,value:null});api.__pumpPodEvents();await opened.result;
 });
+
+test("delay clamps to the host timer range so yields never send 0ms", async () => {
+  const { hostDelayMilliseconds } = await import("../src/services.ts");
+  expect([0, 0.2, -5, Number.NaN, 7.5, 999999].map(hostDelayMilliseconds)).toEqual([1, 1, 1, 1, 8, 120000]);
+});

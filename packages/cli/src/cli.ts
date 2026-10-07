@@ -179,7 +179,8 @@ async function packageTarget(target: Target, project?: ResolvedPodProject, relea
     const app = target === "android-watch" ? ":androidApp" : ":wearApp";
     const gradleArgs = project ? [`-PpodDistDir=${join(project.output, target)}`, `-PpodAppId=${project.config.appId}`, `-PpodAppName=${project.config.name}`, `-PpodVersionName=${project.config.versionName}`, `-PpodVersionCode=${project.config.versionCode}`,
       ...(project.androidResources ? [`-PpodResDir=${project.androidResources}`] : []),
-      ...(project.androidTheme ? [`-PpodAppTheme=${project.androidTheme}`] : [])] : [];
+      ...(project.androidTheme ? [`-PpodAppTheme=${project.androidTheme}`] : []),
+      `-PpodCleartextTraffic=${project.androidCleartextTraffic === true}`] : [];
     gradleArgs.push(`-PpodReleaseDebuggable=${overrides.debuggable}`);
     if (!project && overrides.versionCode !== undefined) gradleArgs.push(`-PpodVersionCode=${overrides.versionCode}`);
     const plan = androidPackagePlan(release, project?.androidSigning);
