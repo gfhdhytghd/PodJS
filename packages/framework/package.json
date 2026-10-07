@@ -17,7 +17,8 @@
     "./media-surface": "./src/media-surface.tsx",
     "./bytes": "./src/bytes.ts",
     "./watch-ui": "./src/watch-ui.ts",
-    "./navigation": "./src/navigation.ts"
+    "./navigation": "./src/navigation.ts",
+    "./image": "./src/image.tsx"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",
