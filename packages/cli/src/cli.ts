@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { createProject } from "./create.ts";
 import {writeDebugExternal} from './debug-external.ts';
 import { existsSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
@@ -239,6 +240,15 @@ interface TargetOptions {
 }
 
 const cli = cac("pod");
+
+cli
+  .command("create <dir>", "Create a standalone watch app (source only)")
+  .option("--app-id <id>", "Android application id")
+  .option("--name <name>", "Display name")
+  .action((directory: string, options: {appId: string; name: string}) => {
+    try { createProject(directory, options); }
+    catch (error) { fail(error instanceof Error ? error.message : String(error)); }
+  });
 
 cli
   .command("doctor", "Check the local PodJS development environment")

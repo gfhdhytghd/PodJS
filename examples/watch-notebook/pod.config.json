@@ -1,0 +1,19 @@
+{
+  "entry": "src/main.tsx",
+  "appId": "dev.podjs.notebook",
+  "name": "Watch Notebook",
+  "versionName": "1.0.0",
+  "versionCode": 1,
+  "capabilities": [
+    "input.touch",
+    "input.back",
+    "data.kv",
+    "input.rotary",
+    "net.http",
+    "net.download",
+    "data.fs",
+    "data.files.chunks",
+    "data.images",
+    "crypto.basic"
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "name": "dev.podjs.notebook",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "postinstall": "bun scripts/link-framework.ts",
+    "pod": "bun scripts/pod.ts",
+    "build": "bun scripts/pod.ts build --target=android-watch",
+    "package": "bun scripts/pod.ts package --target=android-watch",
+    "typecheck": "tsc --noEmit",
+    "test": "bun --conditions=browser test ./tests/model.test.ts ./tests/data.test.ts && bun --conditions=browser test ./tests/resources.isolated.ts"
+  },
+  "dependencies": {
+    "@podjs/framework": "file:../../packages/framework",
+    "@pocketjs/framework": "file:../../vendor/pocketjs",
+    "solid-js": "1.9.15"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.0",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "@pocketjs/framework": "file:../../vendor/pocketjs"
+  }
+}

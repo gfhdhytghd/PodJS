@@ -17,22 +17,32 @@ those metrics and capabilities, never target names.
 The production runtime evaluates only the JS and pak embedded in the signed
 application package. Debug deployment may replace those assets over ADB or HDC.
 
-## Bootstrap
+## Bootstrap and your first app
+
+See [Getting started](docs/getting-started.md) for prerequisites, all public
+framework exports, debug/release packaging and signing configuration.
 
 ```sh
 bun install
 (cd vendor/pocketjs && bun install)
-bun run doctor
-bun test
-cargo test --workspace
+bun scripts/link-pocket.ts
+bun run pod -- create /absolute/path/my-watch --app-id dev.example.mywatch --name "My Watch"
+cd /absolute/path/my-watch
+bun install
+bun run typecheck
+bun run test
+bun run build
+bun run pod -- package --target=android-watch
 ```
 
-Build and package a target with the checked-in CLI:
-
-```sh
-bun run pod build --target=android-watch
-bun run pod package --target=android-watch
-```
+The scaffold contains a black round-screen-safe list/detail app with animated
+Back navigation, file dependencies to this framework and sample tests. The
+standalone [Watch Notebook example](examples/watch-notebook/README.md) demonstrates
+windowed rows, image/cache, scroll restoration, watch actions, startup tracing,
+logging and KV without WatchRSS or takeover. After dependency bootstrap, run
+`bun run test:scaffold` from the framework root for offline generated-app and
+example install/typecheck/test/build checks. `bun run test` runs framework tests.
+Build/package commands do not install to a device.
 
 Android packaging emits an ARMv7/ARM64 debug APK, release AAB and reusable
 AAR. Wear OS uses the same runtime/AAR with a separate manifest and rotary
