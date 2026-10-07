@@ -24,6 +24,16 @@ export interface PodProjectResources {
   glyphCache?: { warmChars: string; warmCharsFile?:string; preseedScanned?:boolean };
 }
 
+export interface AndroidSigning {
+  keystoreProperties: string;
+  lineage?: string;
+  rotationMinSdk?: number;
+  /** v1/v2 with lineage require its oldest signer. */
+  lineageSignerProperties?: string;
+  /** Explicit opt-in for rotating from the standard Android debug keystore. */
+  lineageDebugKeystore?: string;
+}
+
 export interface PodProjectConfig {
   entry: string;
   appId: string;
@@ -37,7 +47,7 @@ export interface PodProjectConfig {
   /** Omit duplicate function source strings, retaining error locations.
    * Opt in only if Function.toString source introspection is unused. */
   bytecode?: { stripSource: boolean };
-  android?: { resources: string; theme: string };
+  android?: { resources?: string; theme?: string; signing?: AndroidSigning };
 }
 
 export interface ResolvedPodProject {
@@ -54,6 +64,7 @@ export interface ResolvedPodProject {
   assets: Record<string, string>;
   androidResources?: string;
   androidTheme?: string;
+  androidSigning?: AndroidSigning;
 }
 
 const APP_ID = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/;
@@ -173,15 +184,41 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
   let android: PodProjectConfig["android"];
   let androidResources: string | undefined;
   let androidTheme: string | undefined;
+  let androidSigning: AndroidSigning | undefined;
   if (value.android !== undefined) {
     if (!value.android || typeof value.android !== "object" || Array.isArray(value.android)) invalid("android must be an object");
     const candidate = value.android as Record<string, unknown>;
-    const resourcesPath = stringField(candidate.resources, "android.resources");
-    androidTheme = stringField(candidate.theme, "android.theme");
-    if (!/^@style\/[A-Za-z0-9_.]+$/.test(androidTheme)) invalid("android.theme must be an @style resource");
-    androidResources = resolve(root, resourcesPath);
-    if (!existsSync(androidResources) || !statSync(androidResources).isDirectory()) invalid(`android resources directory not found: ${androidResources}`);
-    android = {resources: resourcesPath, theme: androidTheme};
+    android = {};
+    if (candidate.resources !== undefined) {
+      const resourcesPath = stringField(candidate.resources, "android.resources");
+      androidResources = resolve(root, resourcesPath);
+      if (!existsSync(androidResources) || !statSync(androidResources).isDirectory()) invalid(`android resources directory not found: ${androidResources}`);
+      android.resources = resourcesPath;
+    }
+    if (candidate.theme !== undefined) {
+      androidTheme = stringField(candidate.theme, "android.theme");
+      if (!/^@style\/[A-Za-z0-9_.]+$/.test(androidTheme)) invalid("android.theme must be an @style resource");
+      android.theme = androidTheme;
+    }
+    if (candidate.signing !== undefined) {
+      const signing = candidate.signing as Record<string, unknown>;
+      if (!signing || typeof signing !== "object" || Array.isArray(signing)) invalid("android.signing must be an object");
+      const configured: AndroidSigning = { keystoreProperties: stringField(signing.keystoreProperties, "android.signing.keystoreProperties") };
+      for (const key of ["lineage", "lineageSignerProperties", "lineageDebugKeystore"] as const) {
+        if (signing[key] !== undefined) configured[key] = stringField(signing[key], `android.signing.${key}`);
+      }
+      if (signing.rotationMinSdk !== undefined) {
+        if (!Number.isInteger(signing.rotationMinSdk) || (signing.rotationMinSdk as number) < 28) invalid("android.signing.rotationMinSdk must be an integer >= 28");
+        configured.rotationMinSdk = signing.rotationMinSdk as number;
+      }
+      if (configured.lineageSignerProperties && configured.lineageDebugKeystore) invalid("android.signing requires only one oldest signer");
+      if (!configured.lineage && (configured.lineageSignerProperties || configured.lineageDebugKeystore || configured.rotationMinSdk !== undefined)) invalid("android.signing rotation options require lineage");
+      android.signing = configured;
+      androidSigning = { ...configured, keystoreProperties: resolve(root, configured.keystoreProperties) };
+      for (const key of ["lineage", "lineageSignerProperties", "lineageDebugKeystore"] as const) {
+        if (configured[key]) androidSigning[key] = resolve(root, configured[key]);
+      }
+    }
   }
-  return { config: { entry: entryValue, appId, versionName, versionCode: value.versionCode as number, name, capabilities, resources, android, background: backgroundConfig, backgroundServices, bytecode }, root, configPath, entry, output: join(defaults.outputRoot, appId), fontRegular, fontBold, fontSlots, extraChars, background, assets, androidResources, androidTheme };
+  return { config: { entry: entryValue, appId, versionName, versionCode: value.versionCode as number, name, capabilities, resources, android, background: backgroundConfig, backgroundServices, bytecode }, root, configPath, entry, output: join(defaults.outputRoot, appId), fontRegular, fontBold, fontSlots, extraChars, background, assets, androidResources, androidTheme, androidSigning };
 }
