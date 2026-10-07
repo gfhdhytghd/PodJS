@@ -20,15 +20,25 @@ await task.done;
 
 The iterator yields rows one at a time and returns the complete layout result.
 Preparing each entry and its key index is included in the work budget. Defaults
-are 0.5 ms of measured work and at most 16 rows per turn; both can be configured.
-A clock with millisecond resolution can overshoot a submillisecond target. A
+are 1 ms of measured work and at most 64 rows per turn; both can be configured.
+A clock with millisecond resolution and an indivisible step can overshoot the target. A
 single iterator step is indivisible, so callers must not put a long synchronous
 shaping call inside it. This API bounds cooperative work rather than preempting
 JavaScript. Native paragraph shaping should happen through text services before
 row construction, or the iterator must split its own expensive work.
 
 The `publish` callback runs once, after completion, with `{layout, entries,
-indices}`. Duplicate keys, failed host yields and iterator errors reject `done`
+indices}`.
+For first-screen display, optionally add `preview: {rows: 16, publish: prefix =>
+setFirstWindow(prefix)}`. Once a slice has at least that many entries, the preview
+receives copied `entries`/`indices` exactly once, unless the iterator already
+finished (then only `publish` runs). Further preparation never appends to that
+prefix. It has no final layout result: consumers must defer full-document
+progress/anchor restoration until `publish`. Cancellation suppresses future
+callbacks; a prefix already displayed remains the consumer's responsibility.
+The wall/row budget excludes both preview and final publication, including any
+reactive mount work they trigger. Keep that work confined to the visible window.
+Duplicate keys, failed host yields and iterator errors reject `done`
 and do not publish an incomplete source. `cancel()` cancels the outstanding
 host operation and closes the iterator, suppressing late replies and publication.
 The iterator's return value must contain the same final geometry as the caller's

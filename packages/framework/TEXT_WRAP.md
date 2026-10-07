@@ -12,10 +12,12 @@ its measurer. Keep each input paragraph small and schedule between paragraphs.
 
 `@podjs/framework/text-layout` exposes `prepareTextLayout` without importing
 text rendering. It consumes an iterator with the existing default scheduler:
-`runtime.delay(1)`, 0.5ms work budget and at most 16 steps per turn. A single
+`runtime.delay(1)`, 1ms work budget and at most 64 steps per turn. A single
 iterator step must be bounded. Cancellation closes the iterator, cancels a
 pending timer and suppresses late publication. The final coherent snapshot
-contains rows and their key index; it can feed `createIndexedWindowSource`.
+contains rows and their key index; an optional immutable first-window prefix
+can precede completion without exposing partial final geometry. The completed
+snapshot can feed `createIndexedWindowSource`.
 
 `@podjs/framework/keyed-memo` exposes `createKeyedMemo`. Dependencies compare
 with Object.is. Own a memo per document/job, clear it when the source changes
