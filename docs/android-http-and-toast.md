@@ -4,6 +4,21 @@
 
 `timeoutMs` controls connection establishment and defaults the read timeout (valid range 1–120000ms). Optional `readTimeoutMs` independently permits 1–600000ms for slow API responses. This is a per-read socket timeout, not a whole-request deadline. WatchRSS uses 15000/600000ms to match its native AI summary client.
 
+The default connection/read timeout is 30000ms. `callTimeoutMs` sets the
+whole operation deadline (default 120000ms, range 1–600000ms), including manual
+redirects. The Android client enables OkHttp fast fallback and inherits its
+connection-failure retry default; it does not add application-level retries.
+A read timeout alone is not evidence that these defaults are too short.
+
+The convenience `http.download(url, path, maxBytes)` uses host defaults and adds
+no application request headers. For source-specific request policies, use
+`hostOperation<DownloadResult>("http.download", {url, path, maxBytes, headers,
+timeoutMs, readTimeoutMs, callTimeoutMs})`. User-Agent and Referer belong to the
+application policy. Preserve the returned operation's cancellation and remove
+scratch files in `finally`. An HTML access-denied/challenge response must not be
+made into a feed by relaxing the XML parser: check HTTP status, response type
+and request policy before changing parsing semantics.
+
 `ui.toast` requires the separately advertised `system.toast` capability. `hostOperation("ui.toast", {message: "…"})` displays an Android short Toast on the main thread. Android-watch and Wear OS advertise it through their shared Android runtime; other hosts do not advertise support. Pending requests can be cancelled before dispatch. Once a Toast has been shown, cancelling the completed request does not retract it.
 
 Verification: `PodHttpServicesTest` covers optional error-status/body retrieval, retained default rejection, byte limits, read-timeout bounds and existing cancellation/download behavior. Framework service tests verify Toast capability gating and dispatch; `android-capabilities.test.ts` checks the advertised ABI capability order. WatchRSS's reader-summary device fixture exercises real loopback 401 refresh, 402 handling, retry, fold/unfold and navigation cancellation against these services.
