@@ -1,3 +1,4 @@
+export {prepareTextLayout,type TextLayoutSnapshot,type TextLayoutSliceOptions,type TextLayoutSliceStats} from "./text-layout.ts";
 import {createEffect,createSignal,onCleanup,type JSX} from "solid-js";
 import {View,Image,type NodeMirror} from "@pocketjs/framework/components";
 import {getOps} from "@pocketjs/framework/host";
