@@ -1,3 +1,4 @@
+import {traceServiceWork,__setServiceTraceEnabled} from './service-trace.ts';
 import { cancelActiveTouches } from "@pocketjs/framework/gesture";
 import { dispatchAccessibilityAction } from "@pocketjs/framework/input";
 import { registerServicePump } from "@pocketjs/framework/services";
@@ -184,14 +185,14 @@ function validateKvKey(key: string): void {
 export const kv = Object.freeze({
   get<T = unknown>(key: string): T | undefined {
     validateKvKey(key);
-    const value = host()?.kvGet(key);
-    return value === undefined ? undefined : JSON.parse(value) as T;
+    return traceServiceWork("kv.get",()=>{const value = host()?.kvGet(key);
+    return value === undefined ? undefined : JSON.parse(value) as T;});
   },
   set(key: string, value: unknown): void {
     validateKvKey(key);
-    const encoded = JSON.stringify(value);
+    traceServiceWork("kv.set",()=>{const encoded = JSON.stringify(value);
     if (encoded === undefined) throw new Error("PodJS KV values must be JSON serializable");
-    if (host()?.kvSet(key, encoded) !== 0) throw new Error(`PodJS KV write failed for ${key}`);
+    if (host()?.kvSet(key, encoded) !== 0) throw new Error(`PodJS KV write failed for ${key}`);});
   },
   delete(key: string): boolean {
     validateKvKey(key);
@@ -217,6 +218,7 @@ export function __pumpPodEvents(): void {
   const events = JSON.parse(batch) as PodEvent[];
   for (const event of events) {
     if (event.t === "touchCancel" || (event.t === "lifecycle" && event.state !== "active")) cancelActiveTouches();
+    if ((event as {t:string}).t === 'diagnostic.serviceTrace') __setServiceTraceEnabled((event as unknown as {enabled?:boolean}).enabled===true);
     for (const handler of hostEventHandlers) handler(event as unknown as Record<string, unknown>);
     if (event.t === "accessibility.action") {
       dispatchAccessibilityAction(event.nodeId, event.action);

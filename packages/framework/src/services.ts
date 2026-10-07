@@ -155,12 +155,14 @@ export const silencePlayback={
   lease:(owner:string,active:boolean)=>hostOperation<SilenceState>("audio.silenceLease",{owner,active}).result,
 };
 
+/** traceLabel is a code-authored diagnostic call-site name, never user input.
+ * Hosts may ignore it; default operation/result semantics are unchanged. */
 export const sqlite = {
-  query(sql: string, params: readonly SqlValue[] = []): Promise<Record<string, unknown>[]> {
-    return hostOperation<Record<string, unknown>[]>("sql.query", { sql, params }).result;
+  query(sql: string, params: readonly SqlValue[] = [], traceLabel?:string): Promise<Record<string, unknown>[]> {
+    return hostOperation<Record<string, unknown>[]>("sql.query", { sql, params, ...(traceLabel?{traceLabel}:{}) }).result;
   },
-  async execute(sql: string, params: readonly SqlValue[] = []): Promise<void> {
-    await hostOperation("sql.execute", { sql, params }).result;
+  async execute(sql: string, params: readonly SqlValue[] = [], traceLabel?:string): Promise<void> {
+    await hostOperation("sql.execute", { sql, params, ...(traceLabel?{traceLabel}:{}) }).result;
   },
   async transaction(statements: readonly SqlStatement[]): Promise<void> {
     await hostOperation("sql.transaction", { statements }).result;

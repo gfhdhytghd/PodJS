@@ -127,9 +127,13 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                     rootSwipeEnabled = command.optBoolean("rootSwipeEnabled", true);
                     if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(!canSwipeDismiss());
                 }
+                else if ("diagnostic.serviceWork".equals(command.optString("t"))) {
+                    if(serviceResultTrace.enabled && command.optString("label").matches("[a-zA-Z][a-zA-Z0-9_.:-]{0,79}"))
+                        android.util.Log.i("PodJSService", "guest label="+command.optString("label")+" ms="+command.optLong("elapsedMs")+" exclusiveMs="+command.optLong("exclusiveMs"));
+                }
                 else if (command.optString("t").startsWith("service.")) {
                     if (serviceResultTrace.enabled) {
-                        if ("service.request".equals(command.optString("t"))) serviceResultTrace.request(command.optInt("id"),command.optString("method"));
+                        if ("service.request".equals(command.optString("t"))) serviceResultTrace.request(command.optInt("id"),command.optString("method"),command.optJSONObject("args")==null?null:command.optJSONObject("args").optString("traceLabel",null),command.optJSONObject("args")==null?null:command.optJSONObject("args").optString("sql",null));
                         else if ("service.cancel".equals(command.optString("t"))) serviceResultTrace.cancel(command.optInt("id"));
                     }
                     services.dispatch(command);
@@ -148,6 +152,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
 
     private void setHost(long handle) {
         host = handle;
+        serviceTraceGuestEnabled=false;
         hostLifetime = handle == 0 ? null : new HostLifetime(handle);
     }
     private void destroyHost() {
@@ -198,10 +203,11 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     // Every completion enters through a new main-looper job. A token identifies
     // the guest lifetime even if the allocator later reuses its native address.
     private final ServiceResultTrace serviceResultTrace;
+    private boolean serviceTraceGuestEnabled;
     private void postHostCompletion(HostLifetime owner, Runnable completion) {
         postHostCompletion(owner,completion,null);
     }
-    private void postHostCompletion(HostLifetime owner, Runnable completion, String category) {
+    private void postHostCompletion(HostLifetime owner, Runnable completion, ServiceResultTrace.Completion category) {
         if (owner == null) return;
         serviceHandler.post(() -> {
             if (!ownsHost(owner)) return;
@@ -221,13 +227,19 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         HostLifetime owner = hostLifetime;
         if (owner == null) return;
         byte[] bytes = event.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        String category=null;
+        ServiceResultTrace.Completion category=null;
         if(serviceResultTrace.enabled)try {
             JSONObject value=new JSONObject(event);
             String type=value.optString("t");
-            if("service.result".equals(type)||"browser.auth.status".equals(type))category=serviceResultTrace.result(value.optInt("id"),"service.result".equals(type));
+            if("service.result".equals(type)||"browser.auth.status".equals(type))category=serviceResultTrace.completion(value.optInt("id"),"service.result".equals(type),bytes.length,value.optJSONArray("value")==null?-1:value.optJSONArray("value").length());
         } catch(Exception ignored) { /* Diagnostics never block delivery. */ }
-        postHostCompletion(owner, () -> nativePostEvent(owner.handle, bytes),category);
+        postHostCompletion(owner, () -> {
+            if(serviceResultTrace.enabled&&!serviceTraceGuestEnabled) {
+                nativePostEvent(owner.handle,"{\"t\":\"diagnostic.serviceTrace\",\"enabled\":true}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                serviceTraceGuestEnabled=true;
+            }
+            nativePostEvent(owner.handle, bytes);
+        },category);
     }
     private void pumpServiceResults(HostLifetime owner) {
         if (Looper.myLooper() != Looper.getMainLooper()) throw new IllegalStateException("Service turns require the main looper");
