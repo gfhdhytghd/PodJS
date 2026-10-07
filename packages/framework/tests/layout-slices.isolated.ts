@@ -1,0 +1,84 @@
+import {expect,mock,test} from 'bun:test';
+import {createRoot,createSignal,createEffect,mapArray,onCleanup} from 'solid-js';
+const events:Record<string,unknown>[]=[],emitted:{t:string;id:number;method:string;args:{milliseconds?:number}}[]=[];
+(globalThis as any).pod={takeEvents:()=>events.length?JSON.stringify(events.splice(0)):undefined,emit:(line:string)=>emitted.push(JSON.parse(line)),capabilities:()=>JSON.stringify(['runtime.timer'])};
+mock.module('@pocketjs/framework/components',()=>({View:()=>null,Image:()=>null}));
+mock.module('@pocketjs/framework/host',()=>({getOps:()=>({})}));
+mock.module('@pocketjs/framework/gesture',()=>({cancelActiveTouches(){}}));
+mock.module('@pocketjs/framework/input',()=>({dispatchAccessibilityAction(){}}));
+mock.module('@pocketjs/framework/services',()=>({registerServicePump(){}}));
+// Import public package exports, rather than an application implementation.
+const {prepareTextLayout}=await import('@podjs/framework/text');
+const {createWindowRows,createIndexedWindowSource,createWindowedList,createWindowValue,visibleWindowRange}=await import('@podjs/framework/windowed-list');
+const {__pumpPodEvents}=await import('../src/watch.ts');
+const settle=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
+async function nextTurn(){const req=emitted.shift()!;expect(req).toMatchObject({t:'service.request',method:'runtime.delay',args:{milliseconds:0}});events.push({t:'service.result',id:req.id,ok:true,value:null});__pumpPodEvents();await settle();}
+type Row={key:number;top:number;height:number;retain:boolean;data:{baseline:number;caret:number}};
+function* fixture(count=513):Generator<Row,{height:number}> {let top=0;for(let i=0;i<count;i++){const height=20+i%3;yield {key:i,top,height,retain:true,data:{baseline:15+i%2,caret:i*2}};top+=height;}return {height:top};}
+const callbacks=(publish:(value:any)=>void)=>({key:(row:Row)=>row.key,entry:(row:Row)=>row,publish});
+test('default scheduler yields real runtime.delay(0), bounds rows and publishes a single coherent indexed snapshot',async()=>{
+ const expected=[...fixture()],published:any[]=[];
+ const task=prepareTextLayout(fixture(),callbacks(value=>published.push(value)));
+ expect(task.stats.rows).toBe(0);expect(published).toHaveLength(0);
+ while(emitted.length){const before=task.stats.rows;await nextTurn();expect(task.stats.rows-before).toBeLessThanOrEqual(16);expect(published.length).toBeLessThanOrEqual(1);}
+ await task.done;expect(published).toHaveLength(1);expect(published[0].entries).toEqual(expected);expect(published[0].layout.height).toBe(expected.reduce((sum,row)=>sum+row.height,0));
+ expect(task.stats.turns).toBeGreaterThan(30);expect(task.stats.rows).toBe(513);expect(task.stats.maxMs).toBeGreaterThanOrEqual(0);
+ for(const [index,row] of expected.entries())expect(published[0].indices.get(row.key)).toBe(index);
+});
+test('mid-task cancellation cancels the host operation, closes its iterator once and ignores late replies',async()=>{
+ let closes=0,published=0;function* rows(){try{yield* fixture();return {height:0};}finally{closes++;}}
+ const task=prepareTextLayout(rows(),callbacks(()=>published++));await nextTurn();const late=emitted.shift()!;task.cancel();task.cancel();expect(emitted.shift()).toMatchObject({t:'service.cancel',id:late.id});
+ events.push({t:'service.result',id:late.id,ok:true,value:null});__pumpPodEvents();await task.done;expect(closes).toBe(1);expect(published).toBe(0);expect(emitted).toHaveLength(0);
+});
+test('errors and duplicate keys fail closed and release the iterator without publishing',async()=>{
+ for(const mode of ['duplicate','throw','host-failure']){
+  let closes=0,published=0;function* rows(){yield* fixture(1);if(mode==='throw')throw Error('iterator failed');yield* fixture(1);return {height:0};}
+  const iterator=rows();const task=prepareTextLayout({next:()=>iterator.next(),return:()=>{closes++;return iterator.return({height:0});}},callbacks(()=>published++));const error=task.done.catch(value=>value);
+  if(mode==='host-failure'){const req=emitted.shift()!;events.push({t:'service.result',id:req.id,ok:false,code:'unavailable',message:'yield failed'});__pumpPodEvents();await settle();}else await nextTurn();
+  expect(await error).toBeInstanceOf(Error);expect(closes).toBe(1);expect(published).toBe(0);expect(emitted).toHaveLength(0);
+ }
+});
+test('explicit budgets stop work on the clock boundary and invalid options are rejected',async()=>{
+ let clock=0;const published:any[]=[];
+ const task=prepareTextLayout(fixture(20),{...callbacks(value=>published.push(value)),entry:(row:Row)=>{clock+=.2;return row;}},{clock:()=>clock,budgetMs:.5,rowLimit:16});
+ while(emitted.length){const before=task.stats.rows;await nextTurn();expect(task.stats.rows-before).toBeLessThanOrEqual(3);}
+ await task.done;expect(published).toHaveLength(1);expect(task.stats.maxMs).toBeCloseTo(.6);
+ for(const options of [{budgetMs:NaN},{budgetMs:0},{budgetMs:Infinity},{rowLimit:0},{rowLimit:1.5}])expect(()=>prepareTextLayout(fixture(),callbacks(()=>{}),options)).toThrow(RangeError);
+});
+test('keyed source replacement preserves retained history and only reads a bounded 10,000-row window',()=>{
+ const scope={},make=(height:number)=>{const rows=Array.from({length:10000},(_,i)=>({key:i,top:i*height,height,retain:true}));let reads=0;return {length:rows.length,scope,at:(i:number)=>{reads++;return rows[i];},indexOfKey:(key:unknown)=>typeof key==='number'?key:undefined,reads:()=>reads};};
+ const before=make(20),after=make(21),window=createWindowRows<NonNullable<ReturnType<typeof before.at>>>(24);
+ window(before,0,100);const previous=window(before,200,300),next=window(after,210,315);
+ for(const row of previous)expect(next.some(value=>value.key===row.key)).toBe(true);
+ expect(next.every(row=>row.top===row.key*21)).toBe(true);expect(after.reads()).toBeLessThan(100);
+ expect(window({...after,scope:{}},210,315).every(row=>row.top+row.height>=210&&row.top<=315)).toBe(true);
+});
+test('public window hook keeps Solid row owners, updates geometry/carets, suppresses equal rows and disposes on exit',async()=>{
+ let mounts=0,disposed=0,readings:{top:number;baseline:number;caret:number}[]=[],stop!:()=>void;
+ createRoot(dispose=>{
+  stop=dispose;const scope={},first=[...fixture(1)],[source,setSource]=createSignal(createIndexedWindowSource({entries:first,indices:new Map([[0,0]]),scope}));
+  // Production default equality and retention; no mock hook or keying logic.
+  const window=createWindowedList({source,lower:()=>0,upper:()=>100,retainRows:24});
+  const map=mapArray(window,item=>{mounts++;onCleanup(()=>disposed++);const row=createWindowValue(item.value);createEffect(()=>readings.push({top:row.top,baseline:row.data.baseline,caret:row.data.caret}));return item;});createEffect(()=>{map();});
+  queueMicrotask(()=>{
+   const original=window()[0],next={...first[0]!,top:3,height:22,data:{baseline:17,caret:9}};
+   setSource(createIndexedWindowSource({entries:[next],indices:new Map([[0,0]]),scope}));expect(window()[0]).toBe(original);
+   const count=readings.length;setSource(createIndexedWindowSource({entries:[{...next}],indices:new Map([[0,0]]),scope}));expect(readings.length).toBe(count);
+  });
+ });
+ await settle();expect(mounts).toBe(1);expect(disposed).toBe(0);expect(readings).toEqual([{top:0,baseline:15,caret:0},{top:3,baseline:17,caret:9}]);stop();expect(disposed).toBe(1);
+});
+test('indexed headers/footers and object keys keep placement and exact viewport boundaries without copying the body',()=>{
+ const key={},body={entries:[{key,top:0,height:20,retain:true}],indices:new Map([[key,0]]),scope:{}};
+ const source=createIndexedWindowSource(body,[{height:10,key:'header',retain:false}],[{height:30,key:'footer',retain:false}],{padding:2,gap:3});
+ expect(source.length).toBe(3);expect(source.at(0)?.top).toBe(2);expect(source.at(1)?.top).toBe(15);expect(source.at(-1)?.top).toBe(35);expect(source.at(-4)).toBeUndefined();expect(source.at(3)).toBeUndefined();expect(source.indexOfKey?.(key)).toBe(1);
+ expect(visibleWindowRange(source,12,3)).toBeNull();expect(visibleWindowRange(source,12,4)).toEqual({first:1,last:1});
+});
+
+
+test('reactive window data supports frozen snapshots and added/removed native fields',()=>{
+ const [current,setCurrent]=createSignal<Readonly<{text:string;baseline?:number}>>(Object.freeze({text:'same line'}));
+ const row=createWindowValue(current);expect(row.text).toBe('same line');expect(Object.keys(row)).toEqual(['text']);
+ setCurrent(Object.freeze({text:'same line',baseline:17}));expect(row.baseline).toBe(17);expect({...row}).toEqual({text:'same line',baseline:17});
+ setCurrent(Object.freeze({text:'same line'}));expect(Object.keys(row)).toEqual(['text']);expect(row.baseline).toBeUndefined();
+});
