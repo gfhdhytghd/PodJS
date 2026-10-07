@@ -435,3 +435,84 @@ independent-JVM termination at every emitted durability boundary. `TakeoverTest`
 also proves a partial backup pauses ACTIVATING with no active pointer and resumes
 without source detection. Physical Android durability, native functionality,
 same-UID Keystore continuity, release signing and installation remain PENDING.
+
+Before production package replacement, declare legacy WorkManager identities with the T3 configuration below. The internal WorkManager database is not switched by the active-generation pointer; compatibility is supplied by the host factory and post-admission hook, separately from the coordinator. The app release owner must also provide a higher-version compatible rescue plan; no reverse conversion or automatic rollback of post-ACTIVE user changes is implemented here.
+
+
+## T3: legacy WorkManager compatibility (2026-10-07)
+
+An application can declare public native scheduling identities in `pod.config.json`:
+
+```json
+{
+  "android": {
+    "workManagerTakeover": {
+      "nativeAppId": "com.example.watch",
+      "workerClasses": ["com.example.watch.SyncWorker"],
+      "uniqueWorkNames": ["native-sync"],
+      "tags": []
+    }
+  }
+}
+```
+
+The CLI validates bounded unique lists, class/identity syntax and rejects
+PodJS-owned worker classes/names/tags, then emits `androidWorkManagerTakeover`
+into `pod.manifest.json`. Nothing reads signing properties during this step.
+The declaration is effective only when the installed application ID equals
+`nativeAppId`; coexistence/rehearsal packages do not retire another package's work.
+
+Both Android and WearOS Applications supply `PodWorkManagerTakeover.factory`
+in their on-demand `Configuration.Provider`. Their manifests already remove the
+AndroidX WorkManager automatic initializer. This handles startup initiated by
+JobScheduler/BroadcastReceiver as well as Activity startup. Known obsolete class
+names create an inert `RetiredWorker`; every other class returns null and keeps
+the standard factory. The inert worker never constructs a native application,
+opens business stores, or initiates migration. Before ACTIVE it returns retry;
+after ACTIVE it cancels its own work ID and returns success. A one-shot may finish
+SUCCEEDED before cancellation, which is terminal; a periodic request is cancelled.
+No generated same-name Kotlin/Java class is needed because the configured factory
+maps the persisted class name before reflection.
+[WorkerFactory](https://developer.android.com/reference/androidx/work/WorkerFactory),
+[Configuration.Provider](https://developer.android.com/reference/androidx/work/Configuration.Provider).
+
+After successful admission, the host waits for `cancelUniqueWork` for each legacy
+name and `cancelAllWorkByTag` for explicit tags and all old class names (WorkManager
+adds the class tag automatically). The hook is after generation resolution in
+`PodTakeover.paths`, outside converters, coordinator and backup code. It runs on
+the existing cold-start admission IO executor before guest startup. Cached
+Activity admission also requires process-local cleanup completion; headless host
+admission uses the same hook. Failure blocks startup and retries cleanup, without
+turning ACTIVE back into import. No direct work DB mutation, destructive deletion,
+`cancelAllWork`, or global pruning is used in production.
+[WorkManager](https://developer.android.com/reference/androidx/work/WorkManager).
+
+Only `no_backup/podjs-workmanager-takeover` receives the lock and atomic synced
+receipt, keyed by admitted generation and a hash of the public declaration. The
+receipt is written only after every cancellation finishes and is read back before
+marking process completion. A crash before receipt replays safe cancellation;
+a receipt prevents repeated starts from cancelling work created after cleanup.
+Native source, generation snapshots, and T2 backup directories are untouched.
+Keep the legacy class mapping in future APKs: retained scheduler records may wake
+before Activity startup. Rescue/rollback must treat this receipt and the mutable
+WorkManager DB explicitly; cancellation cannot preserve a pre-ACTIVE scheduling
+snapshot or resurrect cancelled jobs.
+
+The debug cloud periodic task now uses `podjs-cloud-sync-6h` instead of the native
+unique name. The app retains its existing 6h/unmetered debug-only cloud policy and
+registers the new work only after admission; release keeps cloud disabled. Other
+PodJS one-shot/background/notification identities already have separate prefixes.
+The generic host does not decide native business-task equivalence: release owners
+must inventory all workers, historical names/tags, constraints and input formats,
+and declare every supported legacy identity.
+
+Device-free coverage is in `PodWorkManagerTakeoverTest` (Robolectric, real
+WorkManager/Room): persisted absent class, pre-ACTIVE retry without migration,
+ACTIVE stub termination including periodic self-cancel, unique/tag/class-tag
+cancellation, actual PodCloudWorker registration, preserved backup bytes, durable
+idempotence after process-cache reset, on-disk DB reopen, production asset loading,
+and native WorkManager 2.10.1 schema 23 to host 2.11.2 schema 24 migration. The
+synthetic schema fixture is extracted from the pinned 2.10.1 AAR's Room-generated
+creation SQL; its public artifact digest is recorded in the fixture. No device or
+real-user WorkManager DB is used. Physical same-package upgrade and scheduler
+wake ordering remain PENDING; test/build success is not production acceptance.

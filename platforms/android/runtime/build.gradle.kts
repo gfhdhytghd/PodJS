@@ -39,6 +39,7 @@ android {
         }
         externalNativeBuild { cmake { cppFlags += listOf("-std=c++20", "-fno-exceptions", "-fno-rtti") } }
     }
+    testOptions { unitTests.isIncludeAndroidResources = true }
     externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
     buildFeatures { prefab = true }
     sourceSets.getByName("androidTest").assets.srcDir(semanticTestAssets)
@@ -61,6 +62,10 @@ dependencies {
     implementation("androidx.media3:media3-ui:1.5.1")
     implementation("androidx.media3:media3-session:1.5.1")
     implementation("androidx.media3:media3-datasource-okhttp:1.5.1")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.16.1")
+    testImplementation("androidx.test:core:1.7.0")
+    testImplementation("androidx.work:work-testing:2.11.2")
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.security:security-crypto:1.1.0-alpha06")
     androidTestImplementation("junit:junit:4.13.2")

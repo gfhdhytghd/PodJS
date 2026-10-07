@@ -47,11 +47,15 @@ public final class PodTakeover {
     private static PodTakeoverAdmission.Paths paths(Context c,ProgressReporter progress) throws Exception {
         PodTakeoverAdmission admission=admissions.computeIfAbsent(c.getApplicationInfo().dataDir,
                 ignored -> new PodTakeoverAdmission());
-        return admission.paths(() -> {
+        PodTakeoverAdmission.Paths result=admission.paths(() -> {
             File root=sandbox(c);
             return PodTakeoverAdmission.Paths.resolve(coordinator(c,root,progress),
                     new File(root,"files/podjs"),new File(root,"databases/podjs.sqlite"));
         });
+        // Post-admission only: never change converters, source or backup directories.
+        if(!result.data.equals(new File(sandbox(c),"files/podjs")))
+            PodWorkManagerTakeover.afterAdmission(c,result.data.getParentFile().getName());
+        return result;
     }
     private static PodTakeoverAdmission.Paths paths(Context c) throws Exception {return paths(c,new ProgressReporter(c,null));}
     private static PodTakeoverAdmission.Paths requiredPaths(Context c) {
@@ -128,7 +132,7 @@ public final class PodTakeover {
      * this native view and returns. */
     public static boolean showRecoveryIfNeeded(android.app.Activity activity,Runnable admitted) {
         PodTakeoverAdmission cached=admissions.get(activity.getApplicationInfo().dataDir);
-        if(cached!=null&&cached.admitted()!=null) {
+        if(cached!=null&&cached.admitted()!=null&&PodWorkManagerTakeover.completedInProcess(activity,cached.admitted().data)) {
             android.util.Log.i("PodJSPerf","startup stage=admission cached=true");
             return false;
         }

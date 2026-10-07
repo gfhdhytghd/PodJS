@@ -156,6 +156,7 @@ async function build(target: Target, project?: ResolvedPodProject): Promise<Reso
     }} : {}),
     background,
     backgroundServices: project?.config.backgroundServices ?? [],
+    ...(project?.config.android?.workManagerTakeover ? { androidWorkManagerTakeover: project.config.android.workManagerTakeover } : {}),
     ...(Object.keys(assets).length ? { assets } : {}),
   };
   writeFileSync(join(out, "pod.manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);

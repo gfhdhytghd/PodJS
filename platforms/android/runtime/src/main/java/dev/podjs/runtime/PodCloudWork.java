@@ -12,7 +12,7 @@ import org.json.JSONObject;
 /** Debug-only cloud scheduling and one process-independent writer lease. No
  * credentials, account identity or app code are accepted in scheduling args. */
 final class PodCloudWork implements Closeable {
-    static final String NAME="watchrss-watch-cloud-sync-6h";
+    static final String NAME="podjs-cloud-sync-6h";
     static final String HANDLER="watchrss-cloud-sync";
     private final Context context;
     private RandomAccessFile leaseFile;
