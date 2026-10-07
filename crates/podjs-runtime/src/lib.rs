@@ -22,6 +22,7 @@ pub mod kv;
 pub mod accessibility_ffi;
 pub mod render_snapshot;
 pub mod byte_codecs;
+pub mod html;
 pub mod text_wrap;
 mod pak_reader;
 mod pak_integrity;
@@ -433,6 +434,7 @@ fn mount_pod(
 ) -> anyhow::Result<()> {
     guest.mount("pod", |ctx, ns| {
         byte_codecs::mount(ctx.clone(), &ns)?;
+        html::mount(ctx.clone(), &ns)?;
         text_wrap::mount(ctx.clone(), &ns, surface.clone())?;
         ns.set("decodeBase64", Function::new(ctx.clone(), decode_base64)?)?;
         ns.set("encodeBase64", Function::new(ctx.clone(), encode_base64)?)?;

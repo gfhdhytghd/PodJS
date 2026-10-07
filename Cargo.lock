@@ -379,6 +379,7 @@ dependencies = [
  "pocket-net",
  "pocket-ui-surface",
  "pocketjs-core",
+ "regex",
  "rquickjs",
  "serde",
  "serde_json",

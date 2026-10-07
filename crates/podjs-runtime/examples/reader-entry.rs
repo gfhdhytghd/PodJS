@@ -39,6 +39,7 @@ fn main() -> anyhow::Result<()> {
         )?;
         let pod = Object::new(ctx.clone())?;
         podjs_runtime::byte_codecs::mount(ctx.clone(), &pod)?;
+        podjs_runtime::html::mount(ctx.clone(), &pod)?;
         podjs_runtime::text_wrap::mount(ctx.clone(), &pod, surface.clone())?;
         ctx.globals().set("pod", pod)?;
         Ok(())
