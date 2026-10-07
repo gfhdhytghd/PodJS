@@ -5,6 +5,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./watch": "./src/watch.ts",
+    "./testing/bun-runtime": "./testing/bun-runtime.ts",
     "./targets": "./src/targets.ts",
     "./services": "./src/services.ts",
     "./sync-state": "./src/sync-state.ts",
