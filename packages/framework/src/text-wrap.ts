@@ -1,5 +1,5 @@
 export interface LayoutOptions {width:number;measure:(text:string)=>number;maxLines?:number}
-const lazyRegExpTest=(source:string,flags:string)=>{let re:RegExp|undefined;return (value:string)=>(re??=new RegExp(source,flags)).test(value);};
+import {lazyRegExpTest} from "./regexp.ts";
 // A small grapheme splitter for runtimes without Intl.Segmenter.
 function clusters(value: string): string[] { const out:string[]=[]; for(const cp of Array.from(value)) { const last=out[out.length-1]; const code=cp.codePointAt(0)!; if(last && (code===0x200d || code===0xfe0f || (code>=0x300 && code<=0x36f) || (code>=0x1ab0 && code<=0x1aff) || (code>=0x1dc0 && code<=0x1dff) || (code>=0x20d0 && code<=0x20ff))) out[out.length-1]+=cp; else if(last && last.endsWith("\u200d")) out[out.length-1]+=cp; else out.push(cp); } return out; }
 const cjk = lazyRegExpTest('[\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}\\p{Script=Hangul}\\u3000-\\u303f]','u');

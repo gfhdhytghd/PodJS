@@ -81,3 +81,5 @@ export function yieldWorkTurn():HostOperation<void> {
  const result=new Promise<void>((resolve,fail)=>{reject=fail;timer=setTimeout(resolve,1);});
  return {result,cancel(){clearTimeout(timer);reject(Error('work cancelled'));}};
 }
+
+export * from "./text-lines.ts";

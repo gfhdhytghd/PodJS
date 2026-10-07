@@ -3,3 +3,5 @@ export {ActivityStateHub} from './activity-state.ts';
 export {ScrollRestoration,validScrollSnapshot,type ScrollRow,type ScrollRows,type ScrollSnapshot} from './scroll-restoration.ts';
 
 export {AutoScrollController,type ScrollSink} from "./auto-scroll.ts";
+
+export {RouteStateProvider,routeState,restoredSignal,booleanState,stringState,finiteState,type RouteStateOwner,type RouteStateMemory} from './route-state.ts';
