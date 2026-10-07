@@ -32,10 +32,18 @@
     "./json": "./src/json.ts",
     "./text-compat": "./src/text-compat.ts",
     "./startup": "./src/startup.ts",
-    "./logging": "./src/logging.ts"
+    "./logging": "./src/logging.ts",
+    "./async": "./src/async.ts",
+    "./editing": "./src/editing.ts",
+    "./restorable-input": "./src/restorable-input.ts",
+    "./qr": "./src/qr.ts",
+    "./image-preview": "./src/image-preview.ts",
+    "./image-tiles": "./src/image-tiles.ts",
+    "./tiled-image": "./src/tiled-image.tsx"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",
-    "solid-js": "^1.9.9"
+    "solid-js": "^1.9.9",
+    "qrcode-generator": "1.4.4"
   }
 }
