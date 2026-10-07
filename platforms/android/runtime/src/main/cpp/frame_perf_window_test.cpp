@@ -1,3 +1,4 @@
+#include "renderer_diagnostics.h"
 #include "frame_perf_window.h"
 
 #include <cmath>
@@ -81,9 +82,42 @@ void spikesHaveStrictThresholdAndReset() {
   CHECK(summary.cadenceOver33 == 0);
 }
 
+void asynchronousDrawsDoNotIncreaseHostTicks() {
+  podjs_perf::FramePerfWindow window;
+  podjs_perf::WindowSummary summary;
+  podjs_perf::FrameSample host;
+  host.nativeTotalMs=2;host.handoffMs=0.1;host.queueReplaced=3;host.rendererLagFrames=4;
+  CHECK(!window.add(1000,1'000'000'000,host,&summary));
+  podjs_perf::FrameSample completed;
+  completed.gpuSubmitted=true;completed.presentWaitMs=25;completed.waitedForSlot=true;completed.inFlightFrames=2;
+  window.addDraw(completed);window.addDraw(completed);
+  host.queueReplaced=0;
+  CHECK(window.add(2100,1'016'666'667,host,&summary));
+  CHECK(summary.ticks==2 && summary.draws==2 && summary.slotReuses==2);
+  CHECK(summary.presentWait.max==25 && summary.nativeTotal.max==2);
+  CHECK(summary.handoff.max==0.1 && summary.queueReplaced==3 && summary.rendererLagFrames==4);
+}
+
+void laneTraceMergeRetainsBoundedSchemaAndContext() {
+  podjs_gpu::RendererTimingRecorder host, renderer;
+  CHECK(host.begin(2) && renderer.begin(2));
+  auto h=host.beginHostFrame(10,0);
+  auto r=renderer.beginHostFrame(10,1);
+  h.setFlags(int64_t{1}<<19);r.setFlags(int64_t{1}<<18);
+  h.finish(true);r.finish(true);
+  auto guest=host.scope(podjs_gpu::RendererTimingStage::Guest);guest.finish(true);
+  auto present=renderer.scope(podjs_gpu::RendererTimingStage::Present);present.finish(true);
+  auto merged=podjs_gpu::RendererTimingTrace::merge(host.end(),renderer.end());
+  CHECK(merged && merged->header[0]==1 && merged->header[1]==15);
+  CHECK(merged->header[2]==2 && merged->header[3]==2 && merged->header[4]==2);
+  CHECK(merged->data()[1]==10 && merged->data()[16]==10);
+}
+
 } // namespace
 
 int main() {
+  laneTraceMergeRetainsBoundedSchemaAndContext();
+  asynchronousDrawsDoNotIncreaseHostTicks();
   percentilesAndDrawOnlyStagesAreExact();
   cadenceCountsMissedVsyncsAndLifecycleReset();
   spikesHaveStrictThresholdAndReset();

@@ -1,7 +1,9 @@
 #pragma once
 // Host-only Android surface stand-in for the Vulkan synchronization test.
+
+#include <atomic>
 struct ANativeWindow {
-  int references = 1;
+  std::atomic<int> references{1};
 };
 inline void ANativeWindow_acquire(ANativeWindow *window) {
   ++window->references;

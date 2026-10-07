@@ -1,5 +1,10 @@
 # Android frame pipeline (K11)
 
+The two-slot ownership rules below remain in effect. Android hosts now execute
+this pipeline on the bounded renderer lane described in [render-thread.md](render-thread.md);
+the synchronous callback diagrams and timing boundaries below describe K11 before
+that handoff was introduced.
+
 This describes the `c/frame-pipeline` change from `watchrss-migration` 904a4fc
 (PocketJS 5509d23, host ABI 3). It applies to both Android watch hosts. OWW242
 60 fps acceptance is **PENDING**: this increment performs no device operations.

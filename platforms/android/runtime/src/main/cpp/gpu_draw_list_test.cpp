@@ -1,3 +1,4 @@
+#include "unused_snapshot_stubs.h"
 #include "gpu_draw_list.h"
 #include "vulkan_gpu.h"
 #include <bit>

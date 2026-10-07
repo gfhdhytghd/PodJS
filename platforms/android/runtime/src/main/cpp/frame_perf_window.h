@@ -33,6 +33,8 @@ struct FrameSample {
   bool waitedForSlot{};
   bool gpuSubmitted{};
   bool cpuSubmitted{};
+  double handoffMs{};
+  uint64_t queueReplaced{}, rendererLagFrames{};
 };
 
 struct WindowSummary {
@@ -62,6 +64,8 @@ struct WindowSummary {
   Distribution gpuRecord;
   Distribution queueSubmit;
   Distribution presentWait;
+  Distribution handoff;
+  uint64_t queueReplaced{}, rendererLagFrames{};
 };
 
 // Bounded by the one-second reporting interval in normal operation. Keeping the
@@ -100,28 +104,10 @@ public:
     ++ticks_;
     if (sample.nativeTotalMs > kTargetFrameMs)
       ++overBudget_;
-    if (sample.gpuSubmitted || sample.cpuSubmitted)
-      ++draws_;
-    if (sample.gpuSubmitted)
-      ++gpuDraws_;
-    if (sample.gpuSubmitted || sample.cpuSubmitted) {
-      if (sample.waitedForSlot)
-        ++slotReuses_;
-      maxInFlight_ = std::max(maxInFlight_, sample.inFlightFrames);
-      gpuDecode_.push_back(sample.gpuDecodeMs);
-      uploadFence_.push_back(sample.uploadFenceMs);
-      textureUpload_.push_back(sample.textureUploadMs);
-      frameFence_.push_back(sample.frameFenceMs);
-      acquire_.push_back(sample.acquireMs);
-      gpuRecord_.push_back(sample.gpuRecordMs);
-      queueSubmit_.push_back(sample.queueSubmitMs);
-      presentWait_.push_back(sample.presentWaitMs);
-      if (sample.uploadCount > 0)
-        ++uploadFrames_;
-      uploadBytes_ += sample.uploadBytes;
-    }
-    if (sample.cpuSubmitted)
-      ++cpuDraws_;
+    addDraw(sample);
+    handoff_.push_back(sample.handoffMs);
+    queueReplaced_ += sample.queueReplaced;
+    rendererLagFrames_ = std::max(rendererLagFrames_,sample.rendererLagFrames);
 
     if (nowMs - reportStartedMs_ < kReportIntervalMs || !out)
       return false;
@@ -152,9 +138,37 @@ public:
     out->gpuRecord = summarize(gpuRecord_);
     out->queueSubmit = summarize(queueSubmit_);
     out->presentWait = summarize(presentWait_);
+    out->handoff = summarize(handoff_);
+    out->queueReplaced=queueReplaced_; out->rendererLagFrames=rendererLagFrames_;
     clearSamples();
     reportStartedMs_ = nowMs;
     return true;
+  }
+
+  void addDraw(const FrameSample& sample) {
+    if (sample.gpuSubmitted || sample.cpuSubmitted)
+      ++draws_;
+    if (sample.gpuSubmitted)
+      ++gpuDraws_;
+    if (sample.gpuSubmitted || sample.cpuSubmitted) {
+      if (sample.waitedForSlot)
+        ++slotReuses_;
+      maxInFlight_ = std::max(maxInFlight_, sample.inFlightFrames);
+      gpuDecode_.push_back(sample.gpuDecodeMs);
+      uploadFence_.push_back(sample.uploadFenceMs);
+      textureUpload_.push_back(sample.textureUploadMs);
+      frameFence_.push_back(sample.frameFenceMs);
+      acquire_.push_back(sample.acquireMs);
+      gpuRecord_.push_back(sample.gpuRecordMs);
+      queueSubmit_.push_back(sample.queueSubmitMs);
+      presentWait_.push_back(sample.presentWaitMs);
+      if (sample.uploadCount > 0)
+        ++uploadFrames_;
+      uploadBytes_ += sample.uploadBytes;
+    }
+    if (sample.cpuSubmitted)
+      ++cpuDraws_;
+
   }
 
   // Lifecycle pauses are not dropped rendering frames. Keep accumulated window
@@ -207,7 +221,8 @@ private:
     acquire_.clear();
     gpuRecord_.clear();
     queueSubmit_.clear();
-    presentWait_.clear();
+    presentWait_.clear(); handoff_.clear();
+    queueReplaced_=rendererLagFrames_=0;
     ticks_ = draws_ = gpuDraws_ = cpuDraws_ = dropped_ = overBudget_ = 0;
     uploadFrames_ = slotReuses_ = maxInFlight_ = cadenceOver33_ = 0;
     uploadBytes_ = 0;
@@ -238,6 +253,8 @@ private:
   std::vector<double> gpuRecord_;
   std::vector<double> queueSubmit_;
   std::vector<double> presentWait_;
+  std::vector<double> handoff_;
+  uint64_t queueReplaced_{},rendererLagFrames_{};
 };
 
 } // namespace podjs_perf

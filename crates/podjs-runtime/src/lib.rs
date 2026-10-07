@@ -20,6 +20,7 @@ pub mod background;
 pub mod background_ffi;
 pub mod kv;
 pub mod accessibility_ffi;
+pub mod render_snapshot;
 mod pak_reader;
 mod pak_integrity;
 pub use pak_reader::PodPakReadAt;
@@ -1410,6 +1411,15 @@ pub extern "C" fn pod_runtime_snapshot(runtime: *mut PodRuntime, out: *mut PodDr
     let began = Instant::now();
     let mut hash = runtime.surface.with_ui(|ui| hash_words(&ui.draw().words));
     runtime.surface.with_ui(|ui| {
+        // Font-slot replacement is a resource revision even when geometry and
+        // virtual glyph ids do not change. Immutable snapshots must invalidate
+        // the output hash and renderer page identity together.
+        for (slot, version) in ui.font_resource_versions().iter().enumerate() {
+            if *version != 0 {
+                hash = (hash ^ slot as u64).wrapping_mul(0x100000001b3);
+                hash = (hash ^ version).wrapping_mul(0x100000001b3);
+            }
+        }
         for slot in 0..ui.texture_slot_count() as u32 {
             if let Some((handle, revision, _)) = ui.texture_at_versioned(slot) {
                 // Mix ordered identities and versions: XOR alone cancels simultaneous
@@ -3673,6 +3683,86 @@ mod tests {
         assert_eq!(pod_runtime_pump_service_results(runtime), OK);
         assert!(pod_runtime_poll_effect(runtime).is_null());
         pod_runtime_destroy(runtime);
+    }
+
+    #[test]
+    fn static_font_replacement_invalidates_draw_hash_and_pinned_glyph_epoch() {
+        use render_snapshot::*;
+        let target=CString::new("android-watch").unwrap();
+        let caps=CString::new("[]").unwrap();
+        let runtime=pod_runtime_create(&valid_config(&target,&caps));
+        let source=b"globalThis.frame = () => {};";
+        validate(runtime,"android-watch",b"pak",source,&[]);
+        assert_eq!(pod_runtime_eval_bundle(runtime,source.as_ptr(),source.len(),std::ptr::null()),OK);
+        let mut atlas=Vec::new();
+        atlas.extend_from_slice(&spec::font_atlas::MAGIC.to_le_bytes());
+        atlas.extend_from_slice(&spec::font_atlas::VERSION.to_le_bytes());
+        atlas.extend_from_slice(&1u16.to_le_bytes());
+        atlas.extend_from_slice(&[1,1,1,1,0,0,1,0]);
+        atlas.extend_from_slice(&('A' as u32).to_le_bytes());
+        atlas.extend_from_slice(&[0,0,1,0]);
+        atlas.push(63);
+        assert!(unsafe {&*runtime}.surface.with_ui(|ui|ui.load_font_atlas(&atlas)));
+        let mut draw=PodDrawList {words:std::ptr::null(),word_count:0,content_hash:0,frame_number:0,changed:0};
+        assert_eq!(pod_runtime_snapshot(runtime,&mut draw),OK);
+        let original_hash=draw.content_hash;
+        let snapshot=pod_runtime_pin_snapshot(runtime);
+        let old_epoch=unsafe {pod_render_snapshot_font_epoch(snapshot,0)};
+        assert_ne!(old_epoch,0);
+        *atlas.last_mut().unwrap()=127;
+        assert!(unsafe {&*runtime}.surface.with_ui(|ui|ui.load_font_atlas(&atlas)));
+        assert_eq!(pod_runtime_snapshot(runtime,&mut draw),OK);
+        assert_ne!(draw.content_hash,original_hash);assert_eq!(draw.changed,1);
+        let newer=pod_runtime_pin_snapshot(runtime);
+        assert_ne!(unsafe {pod_render_snapshot_font_epoch(newer,0)},old_epoch);
+        let mut cell=PodGlyphView {coverage:std::ptr::null(),byte_length:0};
+        assert_eq!(unsafe {pod_render_snapshot_glyph(snapshot,0,0,&mut cell)},OK);
+        assert_eq!(unsafe {slice::from_raw_parts(cell.coverage,cell.byte_length)},&[63]);
+        assert_eq!(unsafe {pod_render_snapshot_glyph(newer,0,0,&mut cell)},OK);
+        assert_eq!(unsafe {slice::from_raw_parts(cell.coverage,cell.byte_length)},&[127]);
+        unsafe {pod_render_snapshot_destroy(snapshot);pod_render_snapshot_destroy(newer);}
+        pod_runtime_destroy(runtime);
+    }
+
+    #[test]
+    fn pinned_render_snapshot_survives_revision_free_reuse_and_runtime_destroy() {
+        use render_snapshot::*;
+        let target=CString::new("android-watch").unwrap();
+        let caps=CString::new("[]").unwrap();
+        let runtime=pod_runtime_create(&valid_config(&target,&caps));
+        let source=b"globalThis.frame = () => {};";
+        validate(runtime,"android-watch",b"pak",source,&[]);
+        assert_eq!(pod_runtime_eval_bundle(runtime,source.as_ptr(),source.len(),std::ptr::null()),OK);
+        let original=[255u8,32,64,128];
+        let handle=pod_runtime_upload_rgba(runtime,original.as_ptr(),4,1,1);
+        assert!(handle>=0);
+        // Texture quad with native sampling; matches the reference CPU renderer.
+        runtime_mut(runtime).unwrap().draw_words=vec![4,handle as u32,0,1|(1<<16),0,0,1f32.to_bits(),1f32.to_bits(),0xffffffff];
+        runtime_mut(runtime).unwrap().draw_hash=123;
+        let bytes=(pod_runtime_logical_width(runtime)*pod_runtime_logical_height(runtime)*4) as usize;
+        let mut reference=vec![0;bytes];
+        assert_eq!(pod_runtime_render_rgba_transparent_incremental(runtime,1,reference.as_mut_ptr(),bytes),OK);
+        let pinned=pod_runtime_pin_snapshot(runtime);
+        assert!(!pinned.is_null());
+        let mut old=std::mem::MaybeUninit::<PodTextureView>::uninit();
+        assert_eq!(unsafe {pod_render_snapshot_texture(pinned,handle,old.as_mut_ptr())},OK);
+        let old=unsafe {old.assume_init()};
+        let old_address=old.pixels as usize;
+        let changed=[0u8,255,0,255];
+        assert_eq!(pod_runtime_update_rgba(runtime,handle,changed.as_ptr(),4),OK);
+        assert_eq!(pod_runtime_free_texture(runtime,handle),OK);
+        assert_ne!(pod_runtime_upload_rgba(runtime,changed.as_ptr(),4,1,1),handle);
+        pod_runtime_destroy(runtime);
+        // Ownership can move to another thread after the runtime is gone.
+        // Box is used here rather than sending the raw FFI pointer.
+        let pinned=unsafe {Box::from_raw(pinned)};
+        std::thread::spawn(move || {
+            assert_eq!(unsafe {slice::from_raw_parts(old_address as *const u8,4)},original);
+            let ptr=&*pinned as *const PodRenderSnapshot;
+            let mut actual=vec![0xff;bytes];
+            assert_eq!(unsafe {pod_render_snapshot_rgba(ptr,1,actual.as_mut_ptr(),bytes)},OK);
+            assert_eq!(actual,reference);
+        }).join().unwrap();
     }
 
     #[test]
