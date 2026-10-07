@@ -76,6 +76,8 @@ final class PodBrowserAuthStatus {
         private boolean ended;
         private boolean hasQr, verifying;
         private final JSONObject qrWait;
+        /** Host UI refresh after any state change (main thread). */
+        Runnable changed;
         Stream(Consumer<JSONObject> sink) { this(sink, null); }
         Stream(Consumer<JSONObject> sink, JSONObject qrWait) { this.sink = sink; this.qrWait = qrWait; }
         /** Data for the host-owned waiting UI; page loading never controls visibility. */
@@ -93,8 +95,8 @@ final class PodBrowserAuthStatus {
             else if ("cancelled".equals(type)) { ended = true; hasQr = false; }
             String key = "qrCleared".equals(type) ? "qr" : type;
             String encoded = event.toString();
-            if (encoded.equals(previous.put(key, encoded))) return;
-            sink.accept(event);
+            if (!encoded.equals(previous.put(key, encoded))) sink.accept(event);
+            if (changed != null) changed.run();
         }
         void accept(PodBrowserAuthStatus snapshot) {
             try {
@@ -108,6 +110,7 @@ final class PodBrowserAuthStatus {
             if (cancelled) emit(event("cancelled"));
             ended = true;
             previous.clear();
+            if (changed != null) changed.run();
         }
     }
 }

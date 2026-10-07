@@ -19,6 +19,9 @@ public final class BrowserQrWaitTest {
   stream.emit(PodBrowserAuthStatus.event("qrCleared"));assert events.size()==count;
   PodBrowserAuthStatus.Stream cancelled=new PodBrowserAuthStatus.Stream(events::add,new JSONObject().put("message","Wait"));
   cancelled.end(true);assert !cancelled.qrWaitStatus().getBoolean("visible");assert events.get(events.size()-1).getString("type").equals("cancelled");
+  int[] changes={0};PodBrowserAuthStatus.Stream observed=new PodBrowserAuthStatus.Stream(events::add,new JSONObject().put("message","W"));observed.changed=()->changes[0]++;
+  observed.emit(PodBrowserAuthStatus.event("pageState").put("loading",true));observed.emit(PodBrowserAuthStatus.event("pageState").put("loading",true));assert changes[0]==2;
+  observed.end(false);assert changes[0]==3;observed.end(false);assert changes[0]==3;
   System.out.println("Browser QR waiting state passed (legacy, loading=false, QR clear, verification, completion, cancellation)");
  }
 }

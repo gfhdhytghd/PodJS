@@ -67,6 +67,7 @@ public final class PodBrowserAuthServices implements AutoCloseable {
     private WebView webView;
     private ImageView qrOverlay;
     private ViewGroup qrMask;
+    private PodBrowserWaitView qrWaitView;
     private Runnable qrPoll;
     private String displayedQrData;
     private Callback pending;
@@ -189,6 +190,10 @@ public final class PodBrowserAuthServices implements AutoCloseable {
             FrameLayout browserArea = new FrameLayout(context);
             browserArea.addView(view, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            JSONObject qrWait = args.optJSONObject("qrWait");
+            PodBrowserWaitView waitView = withStatus && qrWait != null ? new PodBrowserWaitView(context) : null;
+            if (waitView != null) browserArea.addView(waitView, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             if (!qrExtractionScript.isEmpty()) {
                 FrameLayout mask = new FrameLayout(context);
                 mask.setBackgroundColor(Color.BLACK);
@@ -242,7 +247,17 @@ public final class PodBrowserAuthServices implements AutoCloseable {
             loginCompletion = args.optBoolean("completeOnLoginPanelHidden", false) ? new PodBrowserLoginCompletion() : null;
             completionOrigin = cookieOrigin;
             completionRequired = required;
-            statusStream = withStatus ? new PodBrowserAuthStatus.Stream(callback::status, args.optJSONObject("qrWait")) : null;
+            statusStream = withStatus ? new PodBrowserAuthStatus.Stream(callback::status, qrWait) : null;
+            qrWaitView = waitView;
+            if (statusStream != null && waitView != null) {
+                PodBrowserAuthStatus.Stream stream = statusStream;
+                stream.changed = () -> {
+                    if (qrWaitView != waitView) return;
+                    JSONObject wait = stream.qrWaitStatus();
+                    waitView.apply(wait.optBoolean("visible"), wait.optString("message"));
+                };
+                stream.changed.run();
+            }
             statusLabel = status;
             dialog = created;
             webView = view;
@@ -302,6 +317,8 @@ public final class PodBrowserAuthServices implements AutoCloseable {
         qrGeneration++;
         displayedQrData = null;
         statusLabel = null;
+        if (qrWaitView != null) qrWaitView.release();
+        qrWaitView = null;
         ImageView overlay = qrOverlay;
         qrOverlay = null;
         ViewGroup mask = qrMask;
