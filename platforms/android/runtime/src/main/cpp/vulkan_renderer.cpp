@@ -534,6 +534,14 @@ bool VulkanRenderer::createGraphicsResources() {
          logVkFailure("vkCreateGraphicsPipelines", result);
 }
 
+bool VulkanRenderer::drain() {
+  if (!device_) return false;
+  if (vkDeviceWaitIdle(device_) != VK_SUCCESS) { valid_=false; return false; }
+  for (uint32_t i=0;i<kFramesInFlight;++i) releaseFrame(i);
+  collectRetiredTextures();
+  return true;
+}
+
 void VulkanRenderer::replaceWindow(ANativeWindow* window, uint32_t width,
                                    uint32_t height) {
   if (device_) {
@@ -1253,7 +1261,7 @@ bool VulkanRenderer::submitRgba(const uint8_t* pixels, size_t byteLength,
   return true;
 }
 
-bool VulkanRenderer::submitDrawList(PodRuntime* runtime,
+bool VulkanRenderer::submitDrawList(GpuResourceSource runtime,
                                     const PodDrawList& list) {
   if (!valid_ || list.content_hash == lastHash_) return false;
   lastSubmitPerf_ = {};

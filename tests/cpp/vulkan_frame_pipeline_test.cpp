@@ -2,7 +2,11 @@
 // It checks live descriptor/image handles and byte-for-byte mapped buffer
 // snapshots. This is synchronization regression coverage, not a GPU/WSI
 // performance benchmark.
-#include "vulkan_renderer.h"
+#include "render_thread.h"
+#include <condition_variable>
+#include <mutex>
+#include <future>
+#include <thread>
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
@@ -11,6 +15,14 @@
 #include <utility>
 #include <vulkan/vulkan_android.h>
 
+// Gate present deterministically: tests do not use sleeps for ordering.
+static std::mutex presentMutex;
+static std::condition_variable presentWake;
+static bool blockPresent{}, enteredPresent{};
+static std::thread::id hostLane=std::this_thread::get_id();
+static std::atomic<int> snapshotPins{}, snapshotDrops{}, fallbackCalls{};
+static std::mutex pinMutex;
+static std::condition_variable pinWake;
 namespace mock {
 uint64_t counter = 1;
 template <class T> T make() { return reinterpret_cast<T>(++counter); }
@@ -597,6 +609,13 @@ vkMapMemory(VkDevice device, VkDeviceMemory memory, VkDeviceSize offset,
 
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL
 vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPresentInfo) {
+  {
+    std::unique_lock lock(presentMutex);
+    if(blockPresent) {
+      enteredPresent=true; presentWake.notify_all();
+      presentWake.wait(lock,[]{return !blockPresent;});
+    }
+  }
   assert(pPresentInfo->waitSemaphoreCount == 1);
   auto semaphore = *pPresentInfo->pWaitSemaphores;
   assert(semaphores.at(semaphore));
@@ -695,6 +714,7 @@ vkWaitForFences(VkDevice device, uint32_t fenceCount, const VkFence *pFences,
 static uint64_t textureRevision = 1;
 extern "C" int32_t pod_runtime_texture_for_handle(PodRuntime *, int32_t handle,
                                                   PodTextureView *out) {
+  assert(std::this_thread::get_id()==hostLane);
   static const uint8_t pixels[] = {0, 1};
   static const uint8_t palette[1024] = {0, 0, 255, 255, 0, 255, 0, 128};
   if (handle < 0x10000)
@@ -705,6 +725,7 @@ extern "C" int32_t pod_runtime_texture_for_handle(PodRuntime *, int32_t handle,
 }
 extern "C" int32_t pod_runtime_font(PodRuntime *, uint32_t slot,
                                     PodFontView *out) {
+  assert(std::this_thread::get_id()==hostLane);
   static const uint8_t pixels[] = {64, 128, 255, 32, 10, 20,
                                    30, 40,  1,   2,  3,  4};
   if (slot != 2)
@@ -713,6 +734,7 @@ extern "C" int32_t pod_runtime_font(PodRuntime *, uint32_t slot,
   return 0;
 }
 extern "C" uint64_t pod_runtime_font_epoch(PodRuntime *, uint32_t slot) {
+  assert(std::this_thread::get_id()==hostLane);
   return slot == 2 ? 77 : 0;
 }
 extern "C" int32_t pod_runtime_glyph(PodRuntime *runtime, uint32_t slot,
@@ -723,6 +745,47 @@ extern "C" int32_t pod_runtime_glyph(PodRuntime *runtime, uint32_t slot,
   *out = {font.bitmap + glyph * 4, 4};
   return 0;
 }
+struct PodRenderSnapshot {
+  std::vector<uint32_t> words;
+  uint64_t hash{}, revision{};
+  uint8_t texels[2]{0,1};
+  uint8_t palette[1024]{0,0,255,255,0,255,0,128};
+  uint8_t glyphs[12]{64,128,255,32,10,20,30,40,1,2,3,4};
+};
+extern "C" void pod_render_snapshot_destroy(PodRenderSnapshot* s) {if(s) {
+  {std::lock_guard lock(pinMutex);--snapshotPins;++snapshotDrops;}
+  pinWake.notify_all();delete s;
+}}
+extern "C" int32_t pod_render_snapshot_draw_list(const PodRenderSnapshot* s,PodDrawList* out) {
+  *out={s->words.data(),s->words.size(),s->hash,s->hash,1};return 0;
+}
+extern "C" int32_t pod_render_snapshot_texture(const PodRenderSnapshot* s,int32_t handle,PodTextureView* out) {
+  if(handle<0x10000)return 1;
+  *out={handle,s->revision,s->texels,2,2,1,5,s->palette,1024,0};return 0;
+}
+extern "C" int32_t pod_render_snapshot_font(const PodRenderSnapshot* s,uint32_t slot,PodFontView* out) {
+  if(slot!=2)return 1;*out={2,1,1,1,1,2,3,s->glyphs,12};return 0;
+}
+extern "C" uint64_t pod_render_snapshot_font_epoch(const PodRenderSnapshot*,uint32_t slot) {return slot==2?77:0;}
+extern "C" int32_t pod_render_snapshot_glyph(PodRenderSnapshot* s,uint32_t slot,uint32_t glyph,PodGlyphView* out) {
+  if(slot!=2||glyph>=3)return 1;*out={s->glyphs+glyph*4,4};return 0;
+}
+extern "C" int32_t pod_render_snapshot_rgba(const PodRenderSnapshot*,uint32_t,uint8_t* out,size_t n) {
+  assert(std::this_thread::get_id()!=hostLane);++fallbackCalls;std::fill(out,out+n,42);return 0;
+}
+static RenderThread::Snapshot pinned(const std::vector<uint32_t>& words,uint64_t hash) {
+  ++snapshotPins;return RenderThread::Snapshot(new PodRenderSnapshot{words,hash,textureRevision});
+}
+static void awaitPins(int count) {
+  std::unique_lock lock(pinMutex);
+  assert(pinWake.wait_for(lock,std::chrono::seconds(5),[&]{return snapshotPins==count;}));
+}
+static void gatePresent() {std::lock_guard lock(presentMutex);blockPresent=true;enteredPresent=false;}
+static void awaitPresent() {
+  std::unique_lock lock(presentMutex);
+  assert(presentWake.wait_for(lock,std::chrono::seconds(5),[]{return enteredPresent;}));
+}
+static void releasePresent() {std::lock_guard lock(presentMutex);blockPresent=false;presentWake.notify_all();}
 static uint32_t xy(int x, int y) {
   return uint16_t(x) | (uint32_t(uint16_t(y)) << 16);
 }
@@ -895,12 +958,76 @@ static void aFailedDrainDisablesTheRendererWithoutWaitingAnUnsubmittedFence() {
   failDrain = false;
 }
 
+static void boundedThreadHandoffAndLifecycle() {
+  ANativeWindow window;
+  {
+    RenderThread renderer(&window,32,32,32,32);
+    assert(renderer.valid());
+    gatePresent();
+    assert(renderer.handoff(pinned(image,101),101));
+    awaitPresent(); // owner is blocked inside present, with no queue lock held
+    const int dropped=snapshotDrops;
+    assert(renderer.handoff(pinned(glyph(1),102),102));
+    for(uint64_t i=103;i<=130;++i) assert(renderer.handoff(pinned(image,i),i));
+    auto poll=renderer.poll(130);
+    assert(poll.replaced==28 && snapshotDrops==dropped+28);
+    assert(snapshotPins==2); // executing + exactly one pending
+    // A queued lifecycle barrier cannot destroy resources until present exits.
+    auto detach=std::async(std::launch::async,[&]{renderer.replaceWindow(nullptr,0,0);});
+    // Wait-free handoff established above. The barrier itself must wait.
+    awaitPins(1); // pending was discarded, so the owner control is queued
+    assert(detach.wait_for(std::chrono::milliseconds(0))==std::future_status::timeout);
+    releasePresent();detach.get();
+    assert(snapshotPins==0 && !renderer.valid());
+    assert(!renderer.handoff(pinned(rect,131),131));
+    renderer.replaceWindow(&window,40,40);assert(renderer.valid());
+    acquireResult=VK_ERROR_OUT_OF_DATE_KHR;
+    gatePresent();
+    assert(renderer.handoff(pinned(rect,132),132));
+    awaitPresent(); releasePresent();
+    renderer.setPaused(true); // cancels pending or drains executing, both legal
+    assert(!renderer.handoff(pinned(rect,133),133));
+    renderer.setPaused(false);
+    // Force a decode failure; the worker must execute CPU fallback itself.
+    gatePresent();
+    auto before=fallbackCalls.load();
+    assert(renderer.handoff(pinned({999},134),134));
+    awaitPresent();
+    assert(fallbackCalls==before+1);
+    releasePresent();
+    renderer.setPaused(true);
+    assert(snapshotPins==0);
+    renderer.setPaused(false);
+    // Resize is acknowledged only after old present returns.
+    gatePresent();
+    assert(renderer.handoff(pinned(glyph(2),135),135));
+    awaitPresent();
+    assert(renderer.handoff(pinned(rect,136),136));
+    auto resized=std::async(std::launch::async,[&]{renderer.replaceWindow(&window,48,48);});
+    awaitPins(1);
+    assert(resized.wait_for(std::chrono::milliseconds(0))==std::future_status::timeout);
+    releasePresent();resized.get();
+    assert(snapshotPins==0);
+  }
+  assert(snapshotPins==0 && window.references==1);
+  auto renderer=std::make_unique<RenderThread>(&window,32,32,32,32);
+  gatePresent();
+  assert(renderer->handoff(pinned(rect,137),137));awaitPresent();
+  assert(renderer->handoff(pinned(image,138),138));
+  auto destroyed=std::async(std::launch::async,[&]{renderer.reset();});
+  awaitPins(1);
+  assert(destroyed.wait_for(std::chrono::milliseconds(0))==std::future_status::timeout);
+  releasePresent();destroyed.get();
+  assert(snapshotPins==0 && window.references==1);
+}
+
 int main() {
   twoPendingFramesKeepBuffersAndTexturesAlive();
   glyphRevisionsCpuFallbackAndSurfaceRecovery();
   errorsAfterAcquireConsumeSemaphoresBeforeFallback();
   textureBudgetIncludesAllInFlightVersions();
   aFailedDrainDisablesTheRendererWithoutWaitingAnUnsubmittedFence();
+  boundedThreadHandoffAndLifecycle();
   capMax = 2; // The surface is permitted to clamp minImageCount + 1.
   twoPendingFramesKeepBuffersAndTexturesAlive();
   std::puts("vulkan_frame_pipeline_test: all synchronization scenarios passed "

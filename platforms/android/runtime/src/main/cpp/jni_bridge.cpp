@@ -21,7 +21,7 @@
 #include "frame_perf_window.h"
 #include "podjs_runtime.h"
 #include "touch_snapshot_queue.h"
-#include "vulkan_renderer.h"
+#include "render_thread.h"
 
 static double monoMs() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 struct MappedAsset {
@@ -33,11 +33,11 @@ struct MappedAsset {
 };
 struct Host {
   podjs_perf::FramePerfWindow framePerf;
+  podjs_gpu::RendererTimingRecorder hostDiagnostics;
   PodRuntime* runtime{};
   MappedAsset pak;
-  std::unique_ptr<VulkanRenderer> renderer;
+  std::unique_ptr<RenderThread> renderer;
   TouchSnapshotQueue touches;
-  std::vector<uint8_t> framebuffer;
   std::vector<uint8_t> mediaPixels;
   std::vector<jint> mediaArgb;
   uint32_t width{};
@@ -233,7 +233,7 @@ const char* capabilities = "[\"input.touch\",\"input.rotary\",\"data.kv\",\"devi
   const uint32_t rasterWidth = host->logicalWidth * VulkanRenderer::kRasterScale;
   const uint32_t rasterHeight = host->logicalHeight * VulkanRenderer::kRasterScale;
   const double rendererBegan = monoMs();
-  host->renderer = std::make_unique<VulkanRenderer>(window, width, height, rasterWidth, rasterHeight); ANativeWindow_release(window);
+  host->renderer = std::make_unique<RenderThread>(window, width, height, rasterWidth, rasterHeight); ANativeWindow_release(window);
   const double rendererCreated = monoMs();
   // The normal GPU path never consumes the CPU RGBA fallback buffer.
   __android_log_print(ANDROID_LOG_INFO,"PodJSPerf",
@@ -392,8 +392,10 @@ extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeFr
 extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeBeginRendererTiming(JNIEnv*,jclass,jlong p,jint capacity) {
   auto* h = reinterpret_cast<Host*>(p);
   if (!h || !h->renderer || capacity < 1 || capacity > 4096) return JNI_FALSE;
+  if (h->hostDiagnostics.enabled()) return JNI_FALSE;
   if (!h->renderer->beginRendererTiming(static_cast<uint32_t>(capacity))) return JNI_FALSE;
-  h->diagnosticFrameSequence = 0;
+  if (!h->hostDiagnostics.begin(static_cast<uint32_t>(capacity))) { h->renderer->endRendererTiming(); return JNI_FALSE; }
+  // Sequence remains monotonic across diagnostic sessions and queued frames.
   return JNI_TRUE;
 }
 extern "C" JNIEXPORT jlongArray JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeEndRendererTiming(JNIEnv* env,jclass,jlong p) {
@@ -401,7 +403,8 @@ extern "C" JNIEXPORT jlongArray JNICALL Java_dev_podjs_runtime_PodRuntimeView_na
   if (!h || !h->renderer) return nullptr;
   // Detach first. Every subsequent return, including either allocation failure,
   // leaves native recording disabled and releases the former fixed buffer.
-  auto trace = h->renderer->endRendererTiming();
+  auto hostTrace = h->hostDiagnostics.end();
+  auto trace = podjs_gpu::RendererTimingTrace::merge(std::move(hostTrace),h->renderer->endRendererTiming());
   if (!trace) return nullptr;
   const size_t count = static_cast<size_t>(trace->header[3]);
   constexpr size_t headerSize = 7, fieldCount = 15;
@@ -420,77 +423,57 @@ extern "C" JNIEXPORT jlongArray JNICALL Java_dev_podjs_runtime_PodRuntimeView_na
 }
 static void renderFrame(Host* h, int64_t frameTimeNanos) {
   if (!h) return;
-  auto hostTiming = h->renderer->beginHostFrame(++h->diagnosticFrameSequence);
+  const uint64_t sequence = ++h->diagnosticFrameSequence;
+  auto hostTiming = h->hostDiagnostics.beginHostFrame(sequence,0);
   const double start = monoMs();
+  auto completions = h->renderer->poll(sequence);
   const auto& touches = h->touches.nextFrame();
   PodInputFrame in{sizeof(in),0,0,touches.data(),(uint32_t)touches.size(),h->rotary,0}; h->rotary=0;
-  auto guestTiming = h->renderer->diagnosticScope(podjs_gpu::RendererTimingStage::Guest);
+
+  auto guestTiming = h->hostDiagnostics.scope(podjs_gpu::RendererTimingStage::Guest);
   const int result = pod_runtime_frame(h->runtime,&in);
-  guestTiming.finish(result==0,result);
+
   if (result != 0 && !h->frameFailed) __android_log_print(ANDROID_LOG_ERROR,"PodJS","Frame failed: %s",pod_runtime_last_error());
+  guestTiming.finish(result==0,result);
   h->frameFailed = result != 0;
-  int64_t submittedFlags = 0;
+  bool queued=false;
   double snapshotMs = 0, submitMs = 0, gpuDecodeMs = 0,
       uploadFenceMs = 0, gpuUploadMs = 0, frameFenceMs = 0, acquireMs = 0,
       gpuRecordMs = 0, queueSubmitMs = 0, presentWaitMs = 0;
   uint64_t gpuUploadBytes = 0;
   uint32_t gpuUploadCount = 0, frameSlot = 0, inFlightFrames = 0;
   bool waitedForSlot = false;
-  bool gpuSubmitted = false, cpuSubmitted = false;
   if (result == 0) {
     PodDrawList list{};
     const double snapshotBegan = monoMs();
-    auto snapshotTiming = h->renderer->diagnosticScope(podjs_gpu::RendererTimingStage::Snapshot);
+
+    auto snapshotTiming = h->hostDiagnostics.scope(podjs_gpu::RendererTimingStage::Snapshot);
     const int snapshotResult = pod_runtime_snapshot(h->runtime,&list);
     snapshotMs = monoMs()-snapshotBegan;
-    snapshotTiming.finish(snapshotResult==0,snapshotResult);
+
     if (!snapshotResult && (list.changed || h->renderer->needsRedraw(list.content_hash))) {
-      const double beforeRaster = monoMs();
-      bool submitted = h->renderer->submitDrawList(h->runtime, list);
-      const auto gpuAttempt = h->renderer->lastSubmitPerf();
-      if (submitted) {
-        submittedFlags |= int64_t{1} << 16;
-        gpuSubmitted = true;
-      } else if (h->renderer->valid()) {
-        if (h->framebuffer.size() != h->renderer->rasterBytes()) {
-          const double allocationBegan = monoMs();
-          h->framebuffer.resize(h->renderer->rasterBytes());
-          __android_log_print(ANDROID_LOG_INFO,"PodJSPerf","cpuFallbackAllocate bytes=%llu elapsedMs=%.3f",
-              static_cast<unsigned long long>(h->framebuffer.size()),monoMs()-allocationBegan);
-        }
-        const bool rasterized = pod_runtime_render_rgba_transparent_incremental(h->runtime,VulkanRenderer::kRasterScale,h->framebuffer.data(),h->framebuffer.size())==0;
-        submitted = rasterized && h->renderer->submitRgba(h->framebuffer.data(),h->framebuffer.size(),list.content_hash);
-        if (submitted) { submittedFlags |= int64_t{1} << 17; cpuSubmitted = true; }
-      }
-      if (submitted) {
-        const auto &perf = h->renderer->lastSubmitPerf();
-        gpuDecodeMs = perf.decodeMs;
-        uploadFenceMs = perf.uploadFenceMs;
-        gpuUploadMs = perf.uploadMs;
-        frameFenceMs = perf.frameFenceMs;
-        acquireMs = perf.acquireMs;
-        gpuRecordMs = perf.recordMs;
-        queueSubmitMs = perf.queueSubmitMs;
-        presentWaitMs = perf.presentWaitMs;
-        gpuUploadBytes = perf.uploadBytes;
-        gpuUploadCount = perf.uploadCount;
-        frameSlot = perf.slotIndex;
-        inFlightFrames = perf.inFlightFrames;
-        waitedForSlot = perf.waitedForSlot;
-        if (cpuSubmitted) {
-          gpuDecodeMs += gpuAttempt.decodeMs;
-          uploadFenceMs += gpuAttempt.uploadFenceMs;
-          gpuUploadMs += gpuAttempt.uploadMs;
-          frameFenceMs += gpuAttempt.frameFenceMs;
-          acquireMs += gpuAttempt.acquireMs;
-          gpuRecordMs += gpuAttempt.recordMs;
-          queueSubmitMs += gpuAttempt.queueSubmitMs;
-          presentWaitMs += gpuAttempt.presentWaitMs;
-          waitedForSlot = waitedForSlot || gpuAttempt.waitedForSlot;
-        }
-      }
-      submitMs = monoMs()-beforeRaster;
+      const double pinBegan = monoMs();
+      RenderThread::Snapshot snapshot(pod_runtime_pin_snapshot(h->runtime));
+      snapshotMs += monoMs()-pinBegan;
+      const double handoffBegan = monoMs();
+      queued=h->renderer->handoff(std::move(snapshot), sequence);
+      submitMs = monoMs()-handoffBegan;
+
     }
+    snapshotTiming.finish(snapshotResult==0,snapshotResult);
+  }
+  for (const auto& done : completions.completed) {
+    const auto& p = done.perf;
+    podjs_perf::FrameSample draw{.gpuDecodeMs=p.decodeMs, .uploadFenceMs=p.uploadFenceMs,
+      .textureUploadMs=p.uploadMs, .frameFenceMs=p.frameFenceMs, .acquireMs=p.acquireMs,
+      .gpuRecordMs=p.recordMs, .queueSubmitMs=p.queueSubmitMs, .presentWaitMs=p.presentWaitMs,
+      .uploadBytes=p.uploadBytes, .uploadCount=p.uploadCount, .inFlightFrames=p.inFlightFrames,
+      .waitedForSlot=p.waitedForSlot, .gpuSubmitted=done.gpu, .cpuSubmitted=done.cpu};
+    h->framePerf.addDraw(draw);
+    gpuDecodeMs=p.decodeMs; uploadFenceMs=p.uploadFenceMs; gpuUploadMs=p.uploadMs;
+    frameFenceMs=p.frameFenceMs; acquireMs=p.acquireMs; gpuRecordMs=p.recordMs;
+    queueSubmitMs=p.queueSubmitMs; presentWaitMs=p.presentWaitMs; gpuUploadBytes=p.uploadBytes;
+    gpuUploadCount=p.uploadCount; frameSlot=p.slotIndex; inFlightFrames=p.inFlightFrames; waitedForSlot=p.waitedForSlot;
   }
   const double now=monoMs();
   PodRuntimePerfStats perf{};
@@ -506,7 +489,8 @@ static void renderFrame(Host* h, int64_t frameTimeNanos) {
         "gpuUploadBytes=%llu fontSlot=%d fontLoadMs=%.2f fontAsync=%d "
         "loadedFonts=%u pendingFonts=%u imageLoadMs=%.2f loadedImages=%u "
         "resourceGen=%llu frameSlot=%u inFlight=%u slotReuse=%d "
-        "acquireWaitMs=%.2f",
+        "acquireWaitMs=%.2f handoffMs=%.2f queueReplaced=%llu rendererLagFrames=%llu "
+        "rendererSeq=%llu hostSeq=%llu",
         static_cast<unsigned long long>(perf.frame_number), now - start,
         perf.guest_micros / 1000.0, perf.surface_tick_micros / 1000.0,
         snapshotMs, submitMs, gpuDecodeMs, uploadFenceMs, gpuUploadMs,
@@ -516,7 +500,10 @@ static void renderFrame(Host* h, int64_t frameTimeNanos) {
         perf.last_font_async, perf.loaded_font_slots, perf.pending_font_slots,
         perf.last_image_load_micros / 1000.0, perf.loaded_images,
         static_cast<unsigned long long>(perf.resource_generation), frameSlot,
-        inFlightFrames, waitedForSlot, acquireMs);
+        inFlightFrames, waitedForSlot, acquireMs,submitMs,(unsigned long long)completions.replaced,
+        (unsigned long long)completions.lagFrames,
+        (unsigned long long)(completions.completed.empty()?0:completions.completed.back().sequence),
+        (unsigned long long)sequence);
     h->lastResourceGeneration=perf.resource_generation;
   }
   podjs_perf::FrameSample sample{.nativeTotalMs = now - start,
@@ -535,8 +522,9 @@ static void renderFrame(Host* h, int64_t frameTimeNanos) {
                                  .uploadCount = gpuUploadCount,
                                  .inFlightFrames = inFlightFrames,
                                  .waitedForSlot = waitedForSlot,
-                                 .gpuSubmitted = gpuSubmitted,
-                                 .cpuSubmitted = cpuSubmitted};
+                                 .handoffMs = submitMs,
+                                 .queueReplaced = completions.replaced,
+                                 .rendererLagFrames = completions.lagFrames};
   podjs_perf::WindowSummary window{};
   if (h->framePerf.add(now,frameTimeNanos,sample,&window)) {
     PodGlyphCacheStats glyph{};
@@ -568,7 +556,8 @@ static void renderFrame(Host* h, int64_t frameTimeNanos) {
         "acquire=%.2f/%.2f/%.2f gpuRecord=%.2f/%.2f/%.2f "
         "queueSubmit=%.2f/%.2f/%.2f presentWait=%.2f/%.2f/%.2f slots=2 "
         "slotReuses=%u maxInFlight=%u acquireWait=%.2f/%.2f/%.2f "
-        "nativeOver33=%u jsOver33=%u cadenceOver33=%u",
+        "nativeOver33=%u jsOver33=%u cadenceOver33=%u "
+        "handoffMs=%.2f/%.2f/%.2f queueReplaced=%llu rendererLagFrames=%llu",
         window.windowMs, window.ticks, window.draws, window.gpuDraws,
         window.cpuDraws, window.dropped, window.overBudget, window.uploadFrames,
         static_cast<unsigned long long>(window.uploadBytes), total[0], total[1],
@@ -580,9 +569,11 @@ static void renderFrame(Host* h, int64_t frameTimeNanos) {
         submit[1], submit[2], present[0], present[1], present[2],
         window.slotReuses, window.maxInFlight, acquire[0], acquire[1],
         acquire[2], window.nativeOver33, window.jsOver33,
-        window.cadenceOver33);
+        window.cadenceOver33,window.handoff.p50,window.handoff.p95,window.handoff.max,
+        (unsigned long long)window.queueReplaced,(unsigned long long)window.rendererLagFrames);
   }
-  hostTiming.setFlags(submittedFlags);
+
+  hostTiming.setFlags(queued ? int64_t{1}<<19 : 0);
   hostTiming.finish(result==0,result);
 }
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeFrame(JNIEnv*,jclass,jlong p,jlong frameTimeNanos) {
@@ -592,7 +583,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativ
 extern "C" JNIEXPORT jstring JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePollNet(JNIEnv* env,jclass,jlong p){auto*h=reinterpret_cast<Host*>(p);if(!h)return nullptr;const char* line=pod_runtime_poll_net_command(h->runtime);return line?env->NewStringUTF(line):nullptr;}
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeCompleteHttp(JNIEnv* env,jclass,jlong p,jint handle,jint status,jstring url,jstring headers,jbyteArray body){auto*h=reinterpret_cast<Host*>(p);if(!h)return;const char*u=env->GetStringUTFChars(url,nullptr);const char*hs=env->GetStringUTFChars(headers,nullptr);jsize n=env->GetArrayLength(body);std::vector<uint8_t>b(n);env->GetByteArrayRegion(body,0,n,reinterpret_cast<jbyte*>(b.data()));pod_runtime_complete_http(h->runtime,handle,status,u,hs,b.data(),b.size());env->ReleaseStringUTFChars(url,u);env->ReleaseStringUTFChars(headers,hs);}
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeFailHttp(JNIEnv* env,jclass,jlong p,jint handle,jstring code,jstring message){auto*h=reinterpret_cast<Host*>(p);if(!h)return;const char*c=env->GetStringUTFChars(code,nullptr);const char*m=env->GetStringUTFChars(message,nullptr);pod_runtime_fail_http(h->runtime,handle,c,m);env->ReleaseStringUTFChars(code,c);env->ReleaseStringUTFChars(message,m);}
-extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeLifecycle(JNIEnv*,jclass,jlong p,jint s){auto*h=reinterpret_cast<Host*>(p);if(h){if(s==2){h->touches.clear();h->rotary=0;h->framePerf.resetCadence();}pod_runtime_set_lifecycle(h->runtime,s);}}
+extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeLifecycle(JNIEnv*,jclass,jlong p,jint s){auto*h=reinterpret_cast<Host*>(p);if(h){h->renderer->setPaused(s!=0);if(s==2){h->touches.clear();h->rotary=0;h->framePerf.resetCadence();}pod_runtime_set_lifecycle(h->runtime,s);}}
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeTheme(JNIEnv* env,jclass,jlong p,jstring theme){auto*h=reinterpret_cast<Host*>(p);if(!h)return;const char*t=env->GetStringUTFChars(theme,nullptr);pod_runtime_set_theme(h->runtime,t);env->ReleaseStringUTFChars(theme,t);}
 extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeBack(JNIEnv*,jclass,jlong p){
   auto*h=reinterpret_cast<Host*>(p);
@@ -607,7 +598,7 @@ extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeNa
 extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeCanGoBack(JNIEnv*,jclass,jlong p){
   auto*h=reinterpret_cast<Host*>(p); return h && (!h->navigationKnown || h->canGoBack) ? JNI_TRUE : JNI_FALSE;
 }
-extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeDestroy(JNIEnv*,jclass,jlong p){auto*h=reinterpret_cast<Host*>(p);if(h){pod_runtime_destroy(h->runtime);delete h;}}
+extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeDestroy(JNIEnv*,jclass,jlong p){auto*h=reinterpret_cast<Host*>(p);if(h){h->renderer.reset();pod_runtime_destroy(h->runtime);delete h;}}
 
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePostEvent(JNIEnv* env,jclass,jlong p,jbyteArray event){
   auto*h=reinterpret_cast<Host*>(p);if(!h)return;
@@ -693,7 +684,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativ
   out << ",\"vmaPssBytes\":";
   if (vma.found) out << vma.pssBytes; else out << "null";
   out << ",\"exactVma\":" << (vma.exact ? "true" : "false");
-  out << "},\"hostBuffers\":{\"framebufferCapacityBytes\":" << h->framebuffer.capacity()
+  out << "},\"hostBuffers\":{\"framebufferCapacityBytes\":" << h->renderer->fallbackCapacityBytes()
       << ",\"mediaPixelCapacityBytes\":" << h->mediaPixels.capacity()
       << ",\"mediaArgbCapacityBytes\":" << h->mediaArgb.capacity() * sizeof(jint) << "}}";
   return env->NewStringUTF(out.str().c_str());

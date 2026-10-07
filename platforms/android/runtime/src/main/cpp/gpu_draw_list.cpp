@@ -6,6 +6,19 @@
 extern "C" int32_t pod_runtime_texture_for_handle(PodRuntime *, int32_t,
                                                   PodTextureView *);
 
+int GpuResourceSource::texture(int32_t h, PodTextureView* out) const {
+  return snapshot ? pod_render_snapshot_texture(snapshot,h,out) : pod_runtime_texture_for_handle(runtime,h,out);
+}
+int GpuResourceSource::font(uint32_t s, PodFontView* out) const {
+  return snapshot ? pod_render_snapshot_font(snapshot,s,out) : pod_runtime_font(runtime,s,out);
+}
+uint64_t GpuResourceSource::epoch(uint32_t s) const {
+  return snapshot ? pod_render_snapshot_font_epoch(snapshot,s) : pod_runtime_font_epoch(runtime,s);
+}
+int GpuResourceSource::glyph(uint32_t s, uint32_t g, PodGlyphView* out) const {
+  return snapshot ? pod_render_snapshot_glyph(snapshot,s,g,out) : pod_runtime_glyph(runtime,s,g,out);
+}
+
 namespace {
 constexpr uint32_t RECT = 1, GRAD_RECT = 2, GLYPH_RUN = 3, TEX_QUAD = 4,
                    SCISSOR = 5, SCISSOR_POP = 6, TRI = 7, TEX_TRI = 8,
@@ -35,10 +48,10 @@ bool bad(GpuFrame *o, std::string *e, const char *m) {
   }
   return false;
 }
-bool copyImage(PodRuntime *runtime, uint32_t slot, GpuImage *out,
+bool copyImage(GpuResourceSource runtime, uint32_t slot, GpuImage *out,
                std::string *error) {
   PodTextureView v{};
-  if (pod_runtime_texture_for_handle(runtime, int32_t(slot), &v) != 0 ||
+  if (runtime.texture( int32_t(slot), &v) != 0 ||
       !v.pixels)
     return bad(nullptr, error, "texture unavailable");
   out->slot = slot;
@@ -129,13 +142,12 @@ bool GpuDecodeCache::inFlight(uint64_t key) const {
   return false;
 }
 
-void GpuDecodeCache::pruneStale(PodRuntime *runtime) {
+void GpuDecodeCache::pruneStale(GpuResourceSource runtime) {
   ++frame_;
   pages_.erase(std::remove_if(pages_.begin(), pages_.end(),
                               [&](const Page &p) {
                                 return !inFlight(p.image.stableKey) &&
-                                       pod_runtime_font_epoch(
-                                           runtime, p.image.slot) != p.epoch;
+                                       runtime.epoch( p.image.slot) != p.epoch;
                               }),
                pages_.end());
   entries_.erase(std::remove_if(entries_.begin(), entries_.end(),
@@ -143,7 +155,7 @@ void GpuDecodeCache::pruneStale(PodRuntime *runtime) {
     if ((entry.stableKey & (1ull << 63)) == 0) return false;
     PodTextureView current{};
     const auto handle = static_cast<int32_t>(static_cast<uint32_t>(entry.stableKey));
-    return pod_runtime_texture_for_handle(runtime, handle, &current) != 0 ||
+    return runtime.texture( handle, &current) != 0 ||
            current.revision != entry.revision;
   }), entries_.end());
 }
@@ -157,10 +169,10 @@ void GpuDecodeCache::finishFrame(GpuFrame *frame) {
   frame->images=std::move(unique);
 }
 
-bool GpuDecodeCache::get(PodRuntime *runtime, uint32_t slot, GpuImage *out,
+bool GpuDecodeCache::get(GpuResourceSource runtime, uint32_t slot, GpuImage *out,
                          std::string *error) {
   PodTextureView v{};
-  if (pod_runtime_texture_for_handle(runtime, int32_t(slot), &v) != 0)
+  if (runtime.texture( int32_t(slot), &v) != 0)
     return false;
   uint64_t key = (1ull << 63) | uint32_t(v.handle);
   for (auto &e : entries_)
@@ -190,16 +202,16 @@ bool GpuDecodeCache::get(PodRuntime *runtime, uint32_t slot, GpuImage *out,
   *out = std::move(fresh);
   return true;
 }
-bool GpuDecodeCache::getGlyph(PodRuntime *runtime, uint32_t slot,
+bool GpuDecodeCache::getGlyph(GpuResourceSource runtime, uint32_t slot,
                               uint32_t glyph, GpuImage *out,
                               std::string *error) {
   PodFontView f{};
-  if (pod_runtime_font(runtime, slot, &f) != 0 || !f.bitmap ||
+  if (runtime.font( slot, &f) != 0 || !f.bitmap ||
       glyph >= f.glyph_count)
     return bad(nullptr, error, "glyph unavailable");
   uint32_t density = std::max(1u, f.raster_density),
            width = f.cell_width * density, height = f.cell_height * density;
-  const uint64_t epoch=pod_runtime_font_epoch(runtime,slot);
+  const uint64_t epoch=runtime.epoch(slot);
   if(epoch) {
     auto output=[&](Page &p,size_t cell) {
       p.last=++clock_;p.pinned=frame_;*out=p.image;
@@ -232,7 +244,7 @@ bool GpuDecodeCache::getGlyph(PodRuntime *runtime, uint32_t slot,
       pages_.push_back(std::move(fresh));page=&pages_.back();
     }
     PodGlyphView cell{};
-    if(pod_runtime_glyph(runtime,slot,glyph,&cell)!=0||!cell.coverage||cell.byte_length!=size_t(width)*height) return bad(nullptr,error,"runtime glyph unavailable");
+    if(runtime.glyph(slot,glyph,&cell)!=0||!cell.coverage||cell.byte_length!=size_t(width)*height) return bad(nullptr,error,"runtime glyph unavailable");
     // Copy-on-write keeps the previous submitted frame immutable. Replicated
     // edge texels preserve single-cell clamp/bilinear sampling at UV 0 and 1.
     auto pixels=page->image.rgba.use_count()==1
@@ -285,12 +297,12 @@ bool GpuDecodeCache::getGlyph(PodRuntime *runtime, uint32_t slot,
   return true;
 }
 
-bool decodeGpuDrawList(PodRuntime *runtime, const PodDrawList &list,
+bool decodeGpuDrawList(GpuResourceSource runtime, const PodDrawList &list,
                        uint32_t scale, GpuFrame *out, std::string *error) {
   GpuDecodeCache cache;
   return decodeGpuDrawList(runtime, list, scale, out, &cache, error);
 }
-bool decodeGpuDrawList(PodRuntime *runtime, const PodDrawList &list,
+bool decodeGpuDrawList(GpuResourceSource runtime, const PodDrawList &list,
                        uint32_t scale, GpuFrame *out, GpuDecodeCache *cache,
                        std::string *error) {
   if (!runtime || !out || !list.words || scale == 0 || scale > 4)
@@ -519,7 +531,7 @@ bool decodeGpuDrawList(PodRuntime *runtime, const PodDrawList &list,
       uint32_t packed = w[i++], n = packed >> 16;
       uint32_t slot = packed & 255, color = w[i++];
       PodFontView font{};
-      if (pod_runtime_font(runtime, slot, &font) != 0)
+      if (runtime.font( slot, &font) != 0)
         return bad(out, error, "font unavailable");
       if (i + 2 * n > list.word_count)
         return bad(out, error, "truncated GLYPH_RUN glyphs");

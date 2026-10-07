@@ -30,13 +30,14 @@ class VulkanRenderer {
     return lastHash_ == 0 || contentHash != lastHash_;
   }
   size_t rasterBytes() const { return size_t{rasterWidth_} * rasterHeight_ * 4; }
+  bool drain();
   void replaceWindow(ANativeWindow* window, uint32_t width, uint32_t height);
 
   // CPU-rendered compatibility path.
   bool submitRgba(const uint8_t* pixels, size_t byteLength, uint64_t contentHash);
 
   // Canonical path: decode and rasterize the DrawList directly on the GPU.
-  bool submitDrawList(PodRuntime* runtime, const PodDrawList& list);
+  bool submitDrawList(GpuResourceSource runtime, const PodDrawList& list);
 
   struct SubmitPerf {
     double decodeMs{};

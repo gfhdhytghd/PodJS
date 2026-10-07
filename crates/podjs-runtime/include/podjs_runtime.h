@@ -374,6 +374,19 @@ int32_t pod_runtime_set_scroll_configuration(PodRuntime *runtime, float touch_sl
 const char *pod_runtime_receipt(PodRuntime *runtime);
 void pod_runtime_destroy(PodRuntime *runtime);
 
+// Immutable renderer handoff. Capture on the runtime lane after snapshot.
+// Independent of runtime lifetime; destruction requires exclusive ownership.
+// Caller-owned mapped PAK bytes must outlive all snapshots as well as runtime.
+typedef struct PodRenderSnapshot PodRenderSnapshot;
+PodRenderSnapshot* pod_runtime_pin_snapshot(PodRuntime* runtime);
+void pod_render_snapshot_destroy(PodRenderSnapshot* snapshot);
+int32_t pod_render_snapshot_draw_list(const PodRenderSnapshot*, PodDrawList*);
+int32_t pod_render_snapshot_texture(const PodRenderSnapshot*, int32_t, PodTextureView*);
+int32_t pod_render_snapshot_font(const PodRenderSnapshot*, uint32_t, PodFontView*);
+uint64_t pod_render_snapshot_font_epoch(const PodRenderSnapshot*, uint32_t);
+int32_t pod_render_snapshot_glyph(PodRenderSnapshot*, uint32_t, uint32_t, PodGlyphView*);
+int32_t pod_render_snapshot_rgba(const PodRenderSnapshot*, uint32_t, uint8_t*, size_t);
+
 #ifdef __cplusplus
 }
 #endif

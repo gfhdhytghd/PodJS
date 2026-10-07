@@ -1,6 +1,8 @@
 #pragma once
 
 #include <array>
+#include <algorithm>
+#include <vector>
 #include <bit>
 #include <cstdint>
 #include <limits>
@@ -56,6 +58,27 @@ struct RendererTimingTrace {
   // CLOCK_MONOTONIC start ns, CLOCK_MONOTONIC stop ns.
   std::array<int64_t, kHeaderFields> header{};
   const int64_t* data() const { return rows_.get(); }
+
+  // Two serialized recorders (guest and renderer) merge only after both stop.
+  // No shared writable trace rows cross the thread handoff.
+  static std::unique_ptr<RendererTimingTrace> merge(std::unique_ptr<RendererTimingTrace> a,
+                                                   std::unique_ptr<RendererTimingTrace> b) {
+    if(!a)return b;if(!b)return a;
+    std::vector<std::array<int64_t,kFieldCount>> rows;
+    for(const auto* trace : {a.get(),b.get()})
+      for(int64_t i=0;i<trace->header[3];++i) {
+        std::array<int64_t,kFieldCount> row;
+        std::copy_n(trace->data()+i*kFieldCount,kFieldCount,row.begin());rows.push_back(row);
+      }
+    std::stable_sort(rows.begin(),rows.end(),[](const auto& x,const auto& y){return x[4]<y[4];});
+    const size_t count=std::min(rows.size(),size_t(a->header[2]));
+    a->header[4]+=b->header[4]+rows.size()-count;
+    a->header[3]=count;
+    a->header[5]=std::min(a->header[5],b->header[5]);
+    a->header[6]=std::max(a->header[6],b->header[6]);
+    for(size_t i=0;i<count;++i) {rows[i][0]=i+1;std::copy(rows[i].begin(),rows[i].end(),a->rows_.get()+i*kFieldCount);}
+    return a;
+  }
 
  private:
   friend class RendererTimingRecorder;
