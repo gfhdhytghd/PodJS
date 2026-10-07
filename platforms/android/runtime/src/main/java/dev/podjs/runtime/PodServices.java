@@ -40,6 +40,11 @@ final class PodServices implements Closeable {
     static boolean memoryEnabled(Context context) {
         return PERF_TRACE || (context.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0;
     }
+    /** adb shell setprop log.tag.PodJSMem DEBUG before launch opts in.
+     * Release hosts still require the explicit source PERF_TRACE opt-in. */
+    static boolean memoryTraceEnabled(Context context) {
+        return PERF_TRACE || (memoryEnabled(context) && android.util.Log.isLoggable("PodJSMem", android.util.Log.DEBUG));
+    }
     private final PodTextRasterServices.Stats textBitmapStats;
     private java.util.function.Supplier<JSONObject> memoryProvider;
     void attachMemoryProvider(java.util.function.Supplier<JSONObject> provider){memoryProvider=provider;}

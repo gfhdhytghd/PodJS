@@ -1711,9 +1711,13 @@ fn numeric_sdk_memory(value: Value) -> Value {
         ("systemText", &["active","queued","cached","queueSlots","refs","listeners","textures","textureBytes","utf16Units","paragraphUtf16Units","keyUtf16Units","caretUnits"]),
         ("services", &["pending"]),
         ("watch", &["hostEvents","lifecycle","theme","back","axis"]),
-        ("tree", &["roots","retained","sweep","textures","sprites"]),
+        ("tree", &["mirrors","roots","retained","sweep","textures","sprites"]),
         ("frame", &["callbacks"]),
-        ("bench", &["errors","disposed","offset"]),
+        ("clock", &["timers"]),
+        ("solid", &["roots","owners","computations","signals","signalObservers"]),
+        ("gesture", &["contacts","recognizers","velocitySamples","contactOwners"]),
+        ("devtools", &["enabled","tapeFrames","touchRecords","touchWords","replayFrames"]),
+        ("bench", &["errors","disposed","offset","hit","owners","computations","timers","signalObservers","signals"]),
     ];
     let mut result = serde_json::Map::new();
     for (name, fields) in sources {
@@ -1733,6 +1737,12 @@ fn numeric_sdk_memory(value: Value) -> Value {
 /// Demand-only ownership snapshot. The host must serialize this with guest
 /// turns, exactly as it serializes texture/frame APIs. No GC is performed.
 impl PodRuntime {
+    #[cfg(feature = "memory-diagnostics")]
+    pub fn debug_run_gc(&self) { self.guest.debug_run_gc(); }
+
+    #[cfg(feature = "memory-diagnostics")]
+    pub fn debug_trace_gc(&self) { self.guest.debug_trace_gc(); }
+
     pub fn memory_stats(&self) -> Value {
         // Collect optional SDK registries outside the runtime mutex used by
         // JS_ComputeMemoryUsage. No text, keys, paths or URLs are recorded.
@@ -1748,7 +1758,7 @@ impl PodRuntime {
         let bridge = self.bridge.borrow();
         json!({
             "schema": 1, "frame": self.frame_number,
-            "quickjs": {"mallocBytes":q.malloc_size, "usedBytes":q.memory_used_size,
+            "quickjs": {"gcThresholdBytes":self.guest.gc_threshold(), "mallocBytes":q.malloc_size, "usedBytes":q.memory_used_size,
                 "mallocCount":q.malloc_count, "usedCount":q.memory_used_count,
                 "objects":q.obj_count, "objectBytes":q.obj_size,
                 "strings":q.str_count, "stringBytes":q.str_size,

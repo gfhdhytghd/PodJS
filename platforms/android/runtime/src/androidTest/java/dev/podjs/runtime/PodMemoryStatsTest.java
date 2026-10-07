@@ -18,6 +18,13 @@ public class PodMemoryStatsTest {
   assertFalse(PodServices.memoryEnabled(flags(false)));
   assertTrue(PodServices.memoryEnabled(flags(true)));
  }
+ @Test public void defaultTraceConstructionDoesNotScheduleEvenInDebug() {
+  java.util.concurrent.atomic.AtomicInteger calls=new java.util.concurrent.atomic.AtomicInteger();
+  new MemoryTraceScheduler().schedule((callback,delay)->calls.incrementAndGet(),()->fail("no default sample"));
+  assertEquals(0,calls.get());
+  assertFalse(PodServices.memoryTraceEnabled(flags(false)));
+  if(!android.util.Log.isLoggable("PodJSMem",android.util.Log.DEBUG))assertFalse(PodServices.memoryTraceEnabled(flags(true)));
+ }
  @Test public void realRasterBitmapsRecycleAndParagraphCacheHitsStayBounded()throws Exception{
   JSONObject paragraph=new JSONObject().put("text","memory ownership").put("widthPx",64).put("fontSizePx",14);
   PodParagraphLayout.Cache cache=new PodParagraphLayout.Cache();
