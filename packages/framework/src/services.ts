@@ -64,6 +64,7 @@ const methods: Record<string, PodCapabilityId> = {
   "audio.silenceState": "media.audio", "audio.silenceEnabled": "media.audio", "audio.silenceLease": "media.audio",
   "ui.toast": "system.toast",
   "http.download": "net.download",
+  "browser.challengeCookies": "system.browser.challenge", "browser.acquireChallengeCookies": "system.browser.challenge",
   "browser.open": "system.browser",
   "browser.openInApp": "system.browser.inApp",
   "browser.clearSiteData": "system.browser.siteData",
@@ -420,6 +421,19 @@ export const browser = {
       ? hostOperation<void>("browser.open", {url: browserUrl(url)})
       : hostOperation<void>("browser.openInApp", inAppBrowserArgs(url, options));
   },
+};
+export interface SiteChallengeOptions {
+  url:string;
+  /** Must also be used for the ordinary HTTP request; tokens may bind to it. */
+  userAgent:string;
+  /** Only these cookies leave CookieManager, never unrelated account cookies. */
+  cookieNames:readonly string[];
+  /** Queue plus WebView deadline, default 60s, maximum 120s. */
+  timeoutMs?:number;
+}
+export const browserChallenge = {
+  cookies:(args:SiteChallengeOptions):HostOperation<{cookie:string;origin:string}> => hostOperation("browser.challengeCookies",{...args}),
+  acquire:(args:SiteChallengeOptions):HostOperation<{cookie:string;origin:string}> => hostOperation("browser.acquireChallengeCookies",{...args}),
 };
 export type BrowserAuthStatus =
   | {type:"qr";kind:"login"|"secondVerify";imageBase64:string;mime:"image/png"|"image/jpeg"}

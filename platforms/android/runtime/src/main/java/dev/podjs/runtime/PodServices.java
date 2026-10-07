@@ -105,6 +105,7 @@ final class PodServices implements Closeable {
     private final PodInlineTextInput inlineText;
     private final PodImageServices images;
     private final PodBrowserAuthServices browserAuth;
+    private final PodSiteChallengeServices siteChallenge;
     private final PodHttpServices http;
     private final PodByteStreamServices byteStreams;
     private final PodWebSocketServices webSockets;
@@ -239,9 +240,10 @@ final class PodServices implements Closeable {
         Runnable timer;
         String method;
         volatile PodBrowserAuthServices.Callback authCallback;
+        volatile PodSiteChallengeServices.Callback challengeCallback;
         String videoSessionId;
     }
-    PodServices(Context context, Sink sink) { PodTakeover.requireReady(context); this.context = context; this.sink = sink; textBitmapStats=memoryEnabled(context)?new PodTextRasterServices.Stats():null; device = new PodDeviceServices(context); media = new PodMediaServices(context, event -> { if (!closed) sink.complete(event); }); videoDecoderBudget=new PodVideoDecoderBudget(PodVideoSessionServices.MAX_SESSIONS); video = new PodVideoServices(context,videoDecoderBudget); videoSessions=new PodVideoSessionServices(context,videoDecoderBudget); mediaSurfaces = new PodMediaSurfaceServices(context); inlineText = new PodInlineTextInput(context,event->{if(!closed)sink.complete(event);}); images = new PodImageServices(context); http = new PodHttpServices(context); byteStreams = new PodByteStreamServices(context); webSockets = new PodWebSocketServices(context,byteStreams); discovery = new PodDiscoveryServices(context); bleDiscovery = new PodBleDiscoveryServices(context); networks = new PodNetworkServices(context,event->{if(!closed)sink.complete(event);}); browser = new PodBrowserServices(context); browserAuth = new PodBrowserAuthServices(context); acoustic=new PodAcousticServices(context);guidedWifi=new PodGuidedWifiServices(context,acoustic);
+    PodServices(Context context, Sink sink) { PodTakeover.requireReady(context); this.context = context; this.sink = sink; textBitmapStats=memoryEnabled(context)?new PodTextRasterServices.Stats():null; device = new PodDeviceServices(context); media = new PodMediaServices(context, event -> { if (!closed) sink.complete(event); }); videoDecoderBudget=new PodVideoDecoderBudget(PodVideoSessionServices.MAX_SESSIONS); video = new PodVideoServices(context,videoDecoderBudget); videoSessions=new PodVideoSessionServices(context,videoDecoderBudget); mediaSurfaces = new PodMediaSurfaceServices(context); inlineText = new PodInlineTextInput(context,event->{if(!closed)sink.complete(event);}); images = new PodImageServices(context); http = new PodHttpServices(context); byteStreams = new PodByteStreamServices(context); webSockets = new PodWebSocketServices(context,byteStreams); discovery = new PodDiscoveryServices(context); bleDiscovery = new PodBleDiscoveryServices(context); networks = new PodNetworkServices(context,event->{if(!closed)sink.complete(event);}); browser = new PodBrowserServices(context); browserAuth = new PodBrowserAuthServices(context); siteChallenge = new PodSiteChallengeServices(context); acoustic=new PodAcousticServices(context);guidedWifi=new PodGuidedWifiServices(context,acoustic);
         acousticPermission=new PodBluetoothPermission(context,0x5045,new String[]{android.Manifest.permission.RECORD_AUDIO});
         guidedPermission=new PodBluetoothPermission(context,0x5046,android.os.Build.VERSION.SDK_INT>=33?new String[]{android.Manifest.permission.RECORD_AUDIO,android.Manifest.permission.ACCESS_FINE_LOCATION,android.Manifest.permission.NEARBY_WIFI_DEVICES}:new String[]{android.Manifest.permission.RECORD_AUDIO,android.Manifest.permission.ACCESS_FINE_LOCATION});
         notificationPermission=new PodNotificationPermission(context); bluetoothPermission=new PodBluetoothPermission(context); discoveryPermission=new PodBluetoothPermission(context,0x5044,PodBleDiscoveryServices.permissions()); location=new PodLocationServices(context); }
@@ -395,6 +397,15 @@ final class PodServices implements Closeable {
                 public void complete(JSONObject value) { if (requests.remove(id,request)) reply(id,true,value,null,null); }
                 public void fail(String code,String message) { if (requests.remove(id,request)) failure(id,code,message); }
             });
+            return;
+        }
+        if ("browser.challengeCookies".equals(method) || "browser.acquireChallengeCookies".equals(method)) {
+            request.challengeCallback = new PodSiteChallengeServices.Callback() {
+                public boolean isActive() { return !closed && requests.get(id) == request; }
+                public void complete(JSONObject value) { if (requests.remove(id,request)) reply(id,true,value,null,null); }
+                public void fail(String code,String message) { if (requests.remove(id,request)) failure(id,code,message); }
+            };
+            siteChallenge.dispatch(args,"browser.acquireChallengeCookies".equals(method),request.challengeCallback);
             return;
         }
         if ("browser.authorize".equals(method) || "browser.authorizeWithStatus".equals(method)) {
@@ -800,6 +811,7 @@ final class PodServices implements Closeable {
         video.cancel(request.method);
         if(request.method!=null&&request.method.startsWith("video.session."))videoSessions.cancel(request.videoSessionId);
         if (request.authCallback != null) browserAuth.cancel(request.authCallback);
+        if (request.challengeCallback != null) siteChallenge.cancel(request.challengeCallback);
         if("notifications.requestPermission".equals(request.method))main.post(notificationPermission::cancel);
         if("location.current".equals(request.method))main.post(location::cancel);
         if("rfcomm.requestPermission".equals(request.method))main.post(()->bluetoothPermission.cancel(id));
@@ -826,6 +838,7 @@ final class PodServices implements Closeable {
         imageWorkers.shutdownNow();
         images.close();
         browserAuth.close();
+        siteChallenge.close();
         main.post(browser::close);
         http.close();
         networks.close(); bleDiscovery.close(); discovery.close(); webSockets.close(); byteStreams.close();
