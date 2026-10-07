@@ -10,7 +10,7 @@ android {
     androidResources { noCompress += listOf("pak", "qbc") }
     namespace = "dev.podjs.androidwatch"; compileSdk = 36
     defaultConfig { applicationId = podAppId; minSdk = 30; targetSdk = 36; versionCode = podVersionCode; versionName = podVersionName; manifestPlaceholders["podAppName"] = podAppName; manifestPlaceholders["podAppTheme"] = podAppTheme; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
-    buildTypes { getByName("release") { isDebuggable = false } }
+    buildTypes { getByName("release") { isDebuggable = providers.gradleProperty("podReleaseDebuggable").map(String::toBooleanStrict).orElse(false).get() } }
     sourceSets["main"].assets.srcDir(podDistDir)
     providers.gradleProperty("podResDir").orNull?.let { sourceSets["main"].res.srcDir(it) }
     providers.gradleProperty("podTestAssetsDir").orNull?.let { sourceSets["androidTest"].assets.srcDir(it) }

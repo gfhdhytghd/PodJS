@@ -64,7 +64,7 @@ class SigningWorker {
                 temporary = Files.createTempFile(output.getParent(), ".pod-signed-", ".apk");
                 command.addAll(List.of("--out", temporary.toString(), "--v1-signing-enabled", "false",
                     "--v2-signing-enabled", "true", "--v3-signing-enabled", "true", "--v4-signing-enabled", "false",
-                    "--debuggable-apk-permitted", "false", "--alignment-preserved", "true"));
+                    "--debuggable-apk-permitted", "true".equals(options.get("debuggable")) ? "true" : "false", "--alignment-preserved", "true"));
                 if (options.containsKey("lineage")) {
                     command.addAll(List.of("--lineage", options.get("lineage"), "--rotation-min-sdk-version", options.getOrDefault("rotation-min-sdk", "28")));
                     signer(command, env, oldSigner(options), "POD_SIGN_OLD");
