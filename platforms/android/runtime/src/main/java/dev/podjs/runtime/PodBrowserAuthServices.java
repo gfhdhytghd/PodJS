@@ -242,7 +242,7 @@ public final class PodBrowserAuthServices implements AutoCloseable {
             loginCompletion = args.optBoolean("completeOnLoginPanelHidden", false) ? new PodBrowserLoginCompletion() : null;
             completionOrigin = cookieOrigin;
             completionRequired = required;
-            statusStream = withStatus ? new PodBrowserAuthStatus.Stream(callback::status) : null;
+            statusStream = withStatus ? new PodBrowserAuthStatus.Stream(callback::status, args.optJSONObject("qrWait")) : null;
             statusLabel = status;
             dialog = created;
             webView = view;

@@ -64,3 +64,11 @@ test("headless build gate executes once without host bootstrap and rejects other
   const f=fixture(`import * as api from '${denied}'; export default ()=>api;`);await expect(buildBackground({denied:f.entry},f.root)).rejects.toThrow('Background');
  }
 });
+
+test("headless Kotlin whitespace compatibility executes without host bootstrap and keeps unsafe subpaths denied",async()=>{
+ const {root,entry}=fixture("import {kotlinTrim} from '@podjs/framework/text-compat'; export default ()=>({control:kotlinTrim('\\u001c x \\u001f'),bom:kotlinTrim('\\ufeffx\\ufeff')});");
+ mkdirSync(join(root,'node_modules/@podjs'),{recursive:true});symlinkSync(new URL('../packages/framework',import.meta.url).pathname,join(root,'node_modules/@podjs/framework'),'dir');
+ const artifacts=await buildBackground({trim:entry},root),context:Record<string,any>={};runInNewContext(readFileSync(join(root,artifacts.trim!.file),'utf8'),context);
+ expect(JSON.parse(JSON.stringify(context.backgroundHandler()))).toEqual({control:'x',bom:'\ufeffx\ufeff'});expect(context.pod).toBeUndefined();expect(context.frame).toBeUndefined();
+ const denied=fixture("import * as api from '@podjs/framework/text-compat/unsafe'; export default ()=>api;");await expect(buildBackground({denied:denied.entry},denied.root)).rejects.toThrow('Background');
+});
