@@ -3,14 +3,29 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "paths": { "@podjs/companion/*": ["./platforms/harmony/companion/*"] },
+    "paths": {
+      "@podjs/companion/*": [
+        "./platforms/harmony/companion/*"
+      ]
+    },
     "strict": true,
     "noEmit": true,
     "jsx": "preserve",
     "jsxImportSource": "solid-js",
     "allowImportingTsExtensions": true,
     "skipLibCheck": true,
-    "types": ["bun"]
+    "types": [
+      "bun"
+    ]
   },
-  "include": ["packages/**/*.ts", "packages/**/*.tsx", "apps/**/*.ts", "apps/**/*.tsx", "tests/**/*.ts"]
+  "include": [
+    "packages/**/*.ts",
+    "packages/**/*.tsx",
+    "apps/**/*.ts",
+    "apps/**/*.tsx",
+    "tests/**/*.ts"
+  ],
+  "exclude": [
+    "packages/cli/templates/**"
+  ]
 }

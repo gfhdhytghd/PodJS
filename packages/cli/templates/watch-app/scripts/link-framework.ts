@@ -6,13 +6,18 @@ import frameworkPath from "./framework.json";
 // owner registry require the checkout's single runtime instance.
 const root = resolve(import.meta.dir, frameworkPath);
 const app = resolve(import.meta.dir, "..");
+function frameworkSolid() {
+  try { return dirname(Bun.resolveSync("solid-js/package.json", resolve(root, "packages/framework"))); }
+  catch { return undefined; }
+}
 for (const [name, source] of [
   ["@podjs/framework", "packages/framework"],
   ["@pocketjs/framework", "vendor/pocketjs"],
-  ["solid-js", "node_modules/solid-js"],
-]) {
-  const target = resolve(root, source), link = resolve(app, "node_modules", name);
-  if (!existsSync(target)) throw new Error(`Install framework dependencies first: ${name}`);
+  ["solid-js", null],
+] as const) {
+  // Solid is whichever copy the framework package itself resolves.
+  const target = source ? resolve(root, source) : frameworkSolid(), link = resolve(app, "node_modules", name);
+  if (!target || !existsSync(target)) throw new Error(`Install framework dependencies first: ${name}`);
   if (existsSync(link) && realpathSync(link) === realpathSync(target)) continue;
   try {
     if (lstatSync(link).isSymbolicLink()) unlinkSync(link);

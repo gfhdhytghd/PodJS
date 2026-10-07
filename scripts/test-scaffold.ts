@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 const root = resolve(import.meta.dir, "..");
 const temp = mkdtempSync(join(tmpdir(), "pod-scaffold-"));
 const app = join(temp, "Round app with spaces");
@@ -11,8 +11,9 @@ function run(command: string[], cwd = root) {
 }
 function verify(project: string) {
   run(["bun", "install", "--offline"], project);
-  for (const [name, path] of [["@pocketjs/framework", "vendor/pocketjs"], ["@podjs/framework", "packages/framework"], ["solid-js", "node_modules/solid-js"]]) {
-    if (realpathSync(join(project, "node_modules", name!)) !== realpathSync(join(root, path!))) throw new Error(`Runtime instance mismatch: ${name}`);
+  for (const [name, path] of [["@pocketjs/framework", "vendor/pocketjs"], ["@podjs/framework", "packages/framework"], ["solid-js", null]] as const) {
+    const expected = path ? join(root, path) : dirname(Bun.resolveSync("solid-js/package.json", join(root, "packages/framework")));
+    if (realpathSync(join(project, "node_modules", name)) !== realpathSync(expected)) throw new Error(`Runtime instance mismatch: ${name}`);
   }
   run(["bun", "run", "typecheck"], project);
   run(["bun", "run", "test"], project);
