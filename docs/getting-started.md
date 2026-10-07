@@ -151,7 +151,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/media-surface` | Host-backed image/video surface components and lifecycle. |
 | `@podjs/framework/bytes` | Portable UTF-8, byte and Base64 codecs. |
 | `@podjs/framework/async-bytes` | Chunked/yielding byte codecs for bounded guest work. |
-| `@podjs/framework/watch-ui` | Progress, round QR geometry, swipe action cards and confirmation dialogs. |
+| `@podjs/framework/watch-ui` | Progress, round-safe geometry (QR layout, top blocks), swipe action cards and confirmation dialogs. |
 | `@podjs/framework/navigation` | BackMotion, ScrollRestoration, activity/route state and automatic scrolling. |
 | `@podjs/framework/windowed-list` | Keyed bounded visible-row selection and indexed header/body/footer sources. |
 | `@podjs/framework/keyed-memo` | Caller-owned memoized values with explicit dependency identity and clearing. |
