@@ -54,13 +54,13 @@ impl KvStore {
         let root=path.parent().expect("KV parent");std::fs::create_dir_all(root)?;
         let lock=OpenOptions::new().create(true).truncate(false).read(true).write(true).open(root.join("podjs-kv.lock"))?;
         self.lock(&lock)?;
-        let bytes=match File::open(path) {
+        let (bytes,existed)=match File::open(path) {
             Ok(file)=>{
                 let mut bytes=Vec::new();file.take((self.quota+1) as u64).read_to_end(&mut bytes)?;
                 if bytes.len()>self.quota {return Err(io::Error::other("KV quota exceeded"));}
-                bytes
+                (bytes,true)
             },
-            Err(error) if error.kind()==io::ErrorKind::NotFound=>b"{}".to_vec(),
+            Err(error) if error.kind()==io::ErrorKind::NotFound=>(b"{}".to_vec(),false),
             Err(error)=>return Err(error),
         };
         // Compare actual bytes while holding the same cross-process lock. No
@@ -80,11 +80,17 @@ impl KvStore {
         let persisted=if write {
             let next=serde_json::to_vec(&values)?;
             if next.len()>self.quota {return Err(io::Error::other("KV quota exceeded"));}
-            let tmp=root.join("podjs-kv.tmp");
-            let mut file=File::create(&tmp)?;file.write_all(&next)?;file.sync_all()?;
-            self.check_budget()?;
-            std::fs::rename(tmp,path)?;
-            File::open(root)?.sync_all()?;
+            // The authoritative file was reloaded under the cross-process lock.
+            // Repeated state checkpoints need no durable replacement when the
+            // canonical bytes are already identical. Changed values still use
+            // the same synchronous file+directory durability boundary.
+            if !existed || next!=bytes {
+                let tmp=root.join("podjs-kv.tmp");
+                let mut file=File::create(&tmp)?;file.write_all(&next)?;file.sync_all()?;
+                self.check_budget()?;
+                std::fs::rename(tmp,path)?;
+                File::open(root)?.sync_all()?;
+            }
             next
         } else {bytes};
         self.memory=values;self.cached_bytes=Some(persisted);
@@ -150,6 +156,31 @@ pub fn background_services(root:PathBuf, allowed:std::collections::HashSet<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] #[cfg(unix)] fn identical_checkpoint_keeps_inode_and_observes_other_handles() {
+        use std::os::unix::fs::MetadataExt;
+        let root=std::env::temp_dir().join(format!("podjs-kv-noop-{}",std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path=root.join("podjs-kv.json");
+        let mut first=KvStore::open(root.to_str());
+        let value=serde_json::json!({"title":"汉字😀","values":[null,1,true]});
+        first.set("checkpoint".into(),value.clone()).unwrap();
+        let bytes=std::fs::read(&path).unwrap();let inode=std::fs::metadata(&path).unwrap().ino();
+        for _ in 0..50 {first.set("checkpoint".into(),value.clone()).unwrap();}
+        assert_eq!(std::fs::read(&path).unwrap(),bytes);
+        assert_eq!(std::fs::metadata(&path).unwrap().ino(),inode);
+        let mut second=KvStore::open(root.to_str());
+        second.set("other".into(),Value::from(17)).unwrap();
+        first.set("checkpoint".into(),value.clone()).unwrap();
+        assert_eq!(first.get("other").unwrap(),Some(Value::from(17)));
+        second.set("checkpoint".into(),Value::Null).unwrap();
+        first.set("checkpoint".into(),value.clone()).unwrap();
+        assert_eq!(second.get("checkpoint").unwrap(),Some(value));
+        assert!(first.delete("checkpoint").unwrap());
+        let inode=std::fs::metadata(&path).unwrap().ino();
+        assert!(!first.delete("checkpoint").unwrap());
+        assert_eq!(std::fs::metadata(&path).unwrap().ino(),inode);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test] fn background_handler_shares_foreground_data() {
         let root=std::env::temp_dir().join(format!("podjs-kv-bg-{}",std::process::id()));
         std::fs::create_dir_all(&root).unwrap();

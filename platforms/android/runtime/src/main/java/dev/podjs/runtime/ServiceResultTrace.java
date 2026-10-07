@@ -70,8 +70,9 @@ final class ServiceResultTrace {
     static final class Completion {
         final int id, bytes, rows;
         final String method, label;
-        Completion(int id,String method,String label,int bytes,int rows) {
-            this.id=id;this.method=method;this.label=label;this.bytes=bytes;this.rows=rows;
+        final long requestedNs;
+        Completion(int id,String method,String label,int bytes,int rows,long requestedNs) {
+            this.id=id;this.method=method;this.label=label;this.bytes=bytes;this.rows=rows;this.requestedNs=requestedNs;
         }
     }
     private final LinkedHashMap<Integer,String[]> exact = new LinkedHashMap<>();
@@ -125,20 +126,20 @@ final class ServiceResultTrace {
             java.util.zip.CRC32 crc=new java.util.zip.CRC32();crc.update(query.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             safe="sql-"+Long.toHexString(crc.getValue());
         }
-        exact.put(id,new String[]{exactMethod(method),safe});
+        exact.put(id,new String[]{exactMethod(method),safe,Long.toString(System.nanoTime())});
     }
     Completion completion(int id,boolean terminal,int bytes,int rows) {
         if(!enabled)return null;
         if(terminal)pending.remove(id);
         String[] meta=terminal?exact.remove(id):exact.get(id);
-        return new Completion(id,meta==null?"other":meta[0],meta==null?"unlabelled":meta[1],bytes,rows);
+        return new Completion(id,meta==null?"other":meta[0],meta==null?"unlabelled":meta[1],bytes,rows,meta==null?0:Long.parseLong(meta[2]));
     }
     String finish(Completion result,long elapsedNs) {
         if(!enabled||result==null)return null;
         completed++;if(elapsedNs>SLOW_NS)slow++;
         if(logs>=MAX_LOGS)return null;
         logs++;
-        return "completion id="+result.id+" method="+result.method+" label="+result.label+" bytes="+result.bytes+" rows="+result.rows+" ns="+elapsedNs+" completed="+completed+" slow="+slow+" logs="+logs+(logs==MAX_LOGS?" capped=true":"");
+        return "completion id="+result.id+" method="+result.method+" label="+result.label+" bytes="+result.bytes+" rows="+result.rows+" ns="+elapsedNs+" roundTripNs="+(result.requestedNs==0?-1:System.nanoTime()-result.requestedNs)+" completed="+completed+" slow="+slow+" logs="+logs+(logs==MAX_LOGS?" capped=true":"");
     }
     int pendingCount() { return pending.size(); }
     long completedCount() { return completed; }

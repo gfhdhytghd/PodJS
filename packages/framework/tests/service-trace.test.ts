@@ -17,7 +17,7 @@ test('opt-in nested spans subtract traced children and never emit function data'
  (globalThis as any).pod={emit:(line:string)=>records.push(JSON.parse(line))};
  __setServiceTraceEnabled(true);
  try{expect(traceServiceWork('sql.map',()=>{now+=2;traceServiceWork('sql.decode',()=>{now+=3;});now+=5;return 'private body';})).toBe('private body');
-  expect(records).toEqual([{t:'diagnostic.serviceWork',label:'sql.decode',elapsedMs:3,exclusiveMs:3},{t:'diagnostic.serviceWork',label:'sql.map',elapsedMs:10,exclusiveMs:7}]);
+  expect(records).toEqual([{t:'diagnostic.serviceWork',label:'sql.decode',elapsedMs:3,exclusiveMs:3,beginEpochMs:2,endEpochMs:5},{t:'diagnostic.serviceWork',label:'sql.map',elapsedMs:10,exclusiveMs:7,beginEpochMs:0,endEpochMs:10}]);
   traceServiceWork('private body with spaces',()=>{});expect(records).toHaveLength(2);
  }finally{Date.now=clock;}
 });

@@ -51,3 +51,18 @@ adoption, and `secure.total` the entire secure operation. A missing file has no
 key/decrypt stages. Only fixed labels and integers are logged (4096 stage cap);
 there are no keys, values, paths or errors. Guest continuations run later on the
 main looper: a long `completion method=secure.get` does not establish slow AEAD.
+
+Opted-in Android hosts also record a bounded 128 DOWN/UP/CANCEL (non-MOVE)
+input events with numeric action, MotionEvent `eventMs`, application `receivedMs`
+(uptime) and `epochMs`. MOVE events consume no quota. Align the application wall
+clock with the measurement clock and retain the synchronization uncertainty;
+`receivedMs-eventMs` is dispatch delay, not ADB process startup. Completion
+`roundTripNs` measures dispatch-to-end-of-completion (including dependent guest
+jobs); `ns` remains completion-turn wall time. A lost/cancelled request uses -1
+for its unknown round trip. These two durations overlap and must not be added.
+`prepareTextLayout` accepts an optional fixed `traceLabel` for synchronous
+iterator/adoption work in each slice, excluding host timer waits/publication.
+Guest records carry numeric `beginEpochMs`/`endEpochMs` sampled in the guest,
+so delayed host-effect draining does not move the span's placement on the
+measurement timeline. Keep millisecond clock precision and host clock alignment
+uncertainty in the report; these are wall timestamps, not CPU cycle counters.
