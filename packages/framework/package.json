@@ -15,7 +15,9 @@
     "./debug-memory": "./src/debug-memory.ts",
     "./text": "./src/text.tsx",
     "./media-surface": "./src/media-surface.tsx",
-    "./bytes": "./src/bytes.ts"
+    "./bytes": "./src/bytes.ts",
+    "./watch-ui": "./src/watch-ui.ts",
+    "./navigation": "./src/navigation.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",
