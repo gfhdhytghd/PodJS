@@ -12,3 +12,19 @@ export function rectInsideCircle(rect: QrRect, layout: Pick<SafeQrLayout, "cx" |
   const radius = layout.radius - margin;
   return [[rect.x, rect.y], [rect.x + rect.width, rect.y], [rect.x, rect.y + rect.height], [rect.x + rect.width, rect.y + rect.height]].every(([x, y]) => Math.hypot(x - layout.cx, y - layout.cy) <= radius + 1e-6);
 }
+
+export interface SafeTopBlockOptions { margin?: number; minTop?: number; maxWidth?: number; minWidth?: number }
+/** Highest centered block whose four corners stay inside the round viewport. Its width is the
+ * circle's chord at the block's top edge (capped by maxWidth); `measure` returns the block height
+ * for a width, so wrapped text grows taller as the chord narrows. Returns undefined if nothing fits. */
+export function safeTopBlock(width: number, height: number, measure: (width: number) => number, options: SafeTopBlockOptions = {}): QrRect | undefined {
+  const { margin = 2, minTop = 0, maxWidth = width, minWidth = 1 } = options;
+  const cx = width / 2, cy = height / 2, radius = Math.min(width, height) / 2, inner = radius - margin;
+  for (let y = Math.max(minTop, cy - inner); y <= cy; y++) {
+    const blockWidth = Math.floor(Math.min(maxWidth, 2 * Math.sqrt(Math.max(0, inner * inner - (cy - y) ** 2))));
+    if (blockWidth < minWidth) continue;
+    const rect = { x: cx - blockWidth / 2, y, width: blockWidth, height: measure(blockWidth) };
+    if (rectInsideCircle(rect, { cx, cy, radius }, margin)) return rect;
+  }
+  return undefined;
+}
