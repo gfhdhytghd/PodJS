@@ -9,7 +9,7 @@ android {
     androidResources { noCompress += listOf("pak", "qbc") }
     namespace = "dev.podjs.wear"; compileSdk = 36
     defaultConfig { applicationId = podAppId; minSdk = 30; targetSdk = 36; versionCode = podVersionCode; versionName = podVersionName; manifestPlaceholders["podAppName"] = podAppName; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
-    buildTypes { getByName("release") { isDebuggable = false } }
+    buildTypes { getByName("release") { isDebuggable = providers.gradleProperty("podReleaseDebuggable").map(String::toBooleanStrict).orElse(false).get() } }
     sourceSets["main"].assets.srcDir(podDistDir)
     providers.gradleProperty("podTestSourceDir").orNull?.let { sourceSets["androidTest"].java.srcDir(it) }
 }

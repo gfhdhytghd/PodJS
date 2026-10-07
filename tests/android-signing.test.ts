@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { androidBuildTool, androidPackagePlan, rotateAndroidSigning, signAndroidApk } from "../packages/cli/src/android-signing.ts";
+import { androidBuildTool, androidPackagePlan, androidPackageOptions, rotateAndroidSigning, signAndroidApk } from "../packages/cli/src/android-signing.ts";
 import { POD_TARGETS } from "../packages/framework/src/targets.ts";
 import { resolvePodProject } from "../packages/cli/src/project.ts";
 
@@ -111,4 +111,35 @@ test.skipIf(!toolsAvailable)("passwords stay out of argv and hostile signer outp
   const success = Bun.spawnSync(["java", worker, "rotate", "--apksigner", fake, "--old-properties", oldProperties, "--properties", newProperties, "--out", join(root, "fake.lineage")], {stdout:"pipe",stderr:"pipe"});
   expect(success.exitCode).toBe(0);
   expect(success.stdout.toString()+success.stderr.toString()).not.toContain(password);
+}, 15000);
+
+
+test("verification options default to safe release policy and validate overrides", () => {
+  expect(androidPackageOptions(true, {keystoreProperties: newProperties})).toEqual({debuggable:false, versionCode:undefined});
+  expect(androidPackageOptions(true, {keystoreProperties:newProperties}, true, "3")).toEqual({debuggable:true, versionCode:3});
+  for (const invalid of [0, -1, 2.5, "2e1", "01", "", 2100000001]) {
+    expect(() => androidPackageOptions(true, undefined, false, invalid)).toThrow("--version-code");
+  }
+  expect(() => androidPackageOptions(false, {keystoreProperties:newProperties}, true)).toThrow("--debuggable requires");
+  expect(() => androidPackageOptions(true, undefined, true)).toThrow("--debuggable requires");
+});
+
+test("real package CLI rejects unsafe options before building", () => {
+  const cli = resolve(import.meta.dir, "../packages/cli/src/cli.ts");
+  for (const args of [["--debuggable"], ["--release", "--debuggable"], ["--version-code", "0"], ["--version-code", "2.5"]]) {
+    const result = Bun.spawnSync(["bun", cli, "package", "--target=android-watch", ...args], {stdout:"pipe",stderr:"pipe"});
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stdout.toString()).not.toContain("pod: built");
+  }
+  expect(run(["bun", cli, "package", "--help"])).toContain("--version-code");
+});
+
+test.skipIf(!toolsAvailable)("debuggable signing requires explicit verification opt-in", () => {
+  const manifest = join(root, "debug-verify.xml"), input = join(root, "debug-unsigned.apk"), output = join(root, "debug-signed.apk");
+  writeFileSync(manifest, '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.example.verify" android:versionCode="3"><uses-sdk android:minSdkVersion="30" android:targetSdkVersion="36"/><application android:debuggable="true"/></manifest>');
+  run([androidBuildTool("aapt2"), "link", "--manifest", manifest, "-I", join(sdk!, "platforms/android-36/android.jar"), "-o", input]);
+  expect(() => signAndroidApk(input, output, {keystoreProperties:newProperties})).toThrow("Android signing failed");
+  signAndroidApk(input, output, {keystoreProperties:newProperties, lineage, lineageSignerProperties:oldProperties}, true);
+  expect(run([androidBuildTool("apksigner"), "verify", "--verbose", "--print-certs", output])).toContain("CN=Temporary new");
+  expect(run([androidBuildTool("aapt2"), "dump", "badging", output])).toContain("application-debuggable");
 }, 15000);

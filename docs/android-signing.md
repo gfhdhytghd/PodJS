@@ -16,7 +16,7 @@ The default `pod package --target=android-watch --project=/absolute/project` beh
 bun packages/cli/src/cli.ts package --release --target=android-watch --project=/absolute/project
 ```
 
-Output: `dist/projects/<appId>/packages/android-watch/app-release.apk` in the framework checkout (or `wearos-watch` for that target). The APK is zipaligned before signing, and verified before publication. Both v2 and v3 are enabled; v1 and v4 are disabled. Signing refuses a debuggable APK. The Gradle release build does not contain a signing configuration or credential values.
+Output: `dist/projects/<appId>/packages/android-watch/app-release.apk` in the framework checkout (or `wearos-watch` for that target). The APK is zipaligned before signing, and verified before publication. Both v2 and v3 are enabled; v1 and v4 are disabled. Signing refuses a debuggable APK unless `--release --debuggable` is explicitly selected. The Gradle release build does not contain a signing configuration or credential values.
 
 The external Java properties file must have `storeFile`, `storePassword`, `keyAlias`, and `keyPassword`. Java `Properties.load` syntax applies, including escapes and continuation lines. `storeFile` is relative to the **properties file's directory**, or absolute. Paths in `android.signing` are relative to the Pod project, or absolute. The CLI resolves paths but never reads credential files. Passwords are read only by an isolated Java worker and passed to apksigner through its child environment. Passwords are never included in command arguments; all signing tool output and credential-reader exceptions are suppressed, including on failures. Only fixed success/failure messages are public. The worker needs Java 17 or newer; tool discovery uses the newest installed stable Android SDK build-tools under `ANDROID_SDK_ROOT` or `ANDROID_HOME`.
 
@@ -60,3 +60,18 @@ apksigner lineage --in /private/app.lineage --print-certs
 Certificate and lineage checks establish signing continuity. A data-preserving upgrade on the target device remains a separate acceptance step. Release builds also disable host features gated by `ApplicationInfo.FLAG_DEBUGGABLE` and `application.buildInfo().debugBuild`; review app debug gates and any explicit source profiling overrides before release.
 
 References: [Android apksigner](https://developer.android.com/tools/apksigner), [apksigner signing options](https://android.googlesource.com/platform/tools/apksig/+/master/src/apksigner/java/com/android/apksigner/help_sign.txt).
+
+## Temporary data-verification packages
+
+`package --release --debuggable` retains the release build type, signing identity and rotation policy, changing only the debuggable flag. It requires configured `android.signing`. **Do not publish this APK:** debugging access and debug-only host/app gates are enabled. Ordinary `--release` remains non-debuggable, including after a verification build.
+
+`--version-code N` overrides the project versionCode in memory for one Android packaging invocation, including generated build metadata; it never edits pod.config.json. N must be an integer from 1 through 2100000000.
+
+A device acceptance owner can stop an installed debuggable app, record a protected data digest, install a non-debuggable release, then install a higher-version release-signed debuggable verification APK without launching either. The verification APK restores run-as access for the after digest. Require strict before/after equality. Afterwards install a higher-version ordinary non-debuggable release before launching or measuring performance. Keep application ID, signer/lineage and content consistent across the chain. A refused step must stop the chain; never uninstall, clear data or downgrade to recover automatically. This procedure proves preservation across installation, not data/schema changes caused by later app startup.
+
+```sh
+bun packages/cli/src/cli.ts package --release --version-code 2 --target=android-watch --project=/absolute/project
+# Retain the APK outside the packaged asset directory before the next invocation.
+bun packages/cli/src/cli.ts package --release --debuggable --version-code 3 --target=android-watch --project=/absolute/project
+bun packages/cli/src/cli.ts package --release --version-code 4 --target=android-watch --project=/absolute/project
+```

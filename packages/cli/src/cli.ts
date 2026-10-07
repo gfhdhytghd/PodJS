@@ -7,7 +7,7 @@ import { POD_TARGETS, type PodTargetProfile } from "../../framework/src/targets.
 import { resolvePodProject, type ResolvedPodProject } from "./project.ts";
 import { buildBackground } from "./background-build.ts";
 import { syncProjectAssets } from "./project-assets.ts";
-import { androidPackagePlan, signAndroidApk, rotateAndroidSigning, type RotateOptions } from "./android-signing.ts";
+import { androidPackagePlan, androidPackageOptions, signAndroidApk, rotateAndroidSigning, type RotateOptions } from "./android-signing.ts";
 import { buildPakIntegrity } from "./pak-integrity.ts";
 
 const ROOT = resolve(import.meta.dir, "../../..");
@@ -161,8 +161,13 @@ function test(): void {
   run(["bun", "run", "test"]);
 }
 
-async function packageTarget(target: Target, project?: ResolvedPodProject, release = false): Promise<void> {
+async function packageTarget(target: Target, project?: ResolvedPodProject, release = false, debuggable = false, versionCode?: unknown): Promise<void> {
   if (release && target !== "android-watch" && target !== "wearos-watch") fail("--release currently requires an Android target");
+  if ((debuggable || versionCode !== undefined) && target !== "android-watch" && target !== "wearos-watch") fail("--debuggable and --version-code require an Android target");
+  const overrides = androidPackageOptions(release, project?.androidSigning, debuggable, versionCode);
+  // Change only the resolved in-memory configuration, before generating build metadata.
+  if (project && overrides.versionCode !== undefined) project.config.versionCode = overrides.versionCode;
+  if (debuggable) console.warn("pod: verification-only debuggable release APK; DO NOT PUBLISH");
   await build(target, project);
   if (target === "android-watch" || target === "wearos-watch") {
     run(["bash", "scripts/build-android-runtime.sh"]);
@@ -170,13 +175,15 @@ async function packageTarget(target: Target, project?: ResolvedPodProject, relea
     const gradleArgs = project ? [`-PpodDistDir=${join(project.output, target)}`, `-PpodAppId=${project.config.appId}`, `-PpodAppName=${project.config.name}`, `-PpodVersionName=${project.config.versionName}`, `-PpodVersionCode=${project.config.versionCode}`,
       ...(project.androidResources ? [`-PpodResDir=${project.androidResources}`] : []),
       ...(project.androidTheme ? [`-PpodAppTheme=${project.androidTheme}`] : [])] : [];
+    gradleArgs.push(`-PpodReleaseDebuggable=${overrides.debuggable}`);
+    if (!project && overrides.versionCode !== undefined) gradleArgs.push(`-PpodVersionCode=${overrides.versionCode}`);
     const plan = androidPackagePlan(release, project?.androidSigning);
     run(["./gradlew", ...gradleArgs, ...plan.tasks.map(task => `${app}:${task}`), ":runtime:assembleRelease"], join(ROOT, "platforms/android"));
     if (plan.release && project?.androidSigning) {
       const module = target === "android-watch" ? "android/app" : "wearos/app";
       // Keep APKs outside the directory Gradle packages as runtime assets.
       const output = join(project.output, "packages", target, "app-release.apk");
-      signAndroidApk(join(ROOT, "platforms", module, "build/outputs/apk/release", `${app.slice(1)}-release-unsigned.apk`), output, project.androidSigning);
+      signAndroidApk(join(ROOT, "platforms", module, "build/outputs/apk/release", `${app.slice(1)}-release-unsigned.apk`), output, project.androidSigning, overrides.debuggable);
       console.log(`pod: release APK -> ${output}`);
     }
   } else if (target === "watchos-watch") {
@@ -212,6 +219,8 @@ interface TargetOptions {
   target?: string;
   project?: string;
   release?: boolean;
+  debuggable?: boolean;
+  versionCode?: string | number;
 }
 
 const cli = cac("pod");
@@ -236,9 +245,11 @@ cli
   .command("package [target]", "Build and package a watch target")
   .option("--target <target>", "Watch target (can also be passed positionally)")
   .option("--project <path>", "Project directory or pod.config.json")
-  .option("--release", "Build a non-debuggable release APK using android.signing")
+  .option("--release", "Build a release APK using android.signing (non-debuggable by default)")
+  .option("--debuggable", "Verification-only release APK; DO NOT PUBLISH (requires --release)")
+  .option("--version-code <N>", "Override Android versionCode for this package invocation")
   .action(async (target: string | undefined, options: TargetOptions) => {
-    await packageTarget(targetArg(target, options.target), projectOption(options.project), options.release);
+    await packageTarget(targetArg(target, options.target), projectOption(options.project), options.release, options.debuggable, options.versionCode);
   });
 
 cli
