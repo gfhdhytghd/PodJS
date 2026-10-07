@@ -45,3 +45,10 @@ provenance and the Apache-2.0 notice are retained in `src/text-compat.ts`.
 
 Tests include fixed raw Float-bit results from the real 1.7.1 AARs. Those fixtures
 are offline host evidence, not live font rendering acceptance.
+
+Identical KV checkpoints compare canonical serialized bytes to the authoritative
+file read under the existing cross-process lock. If those bytes are identical,
+they preserve the file instead of repeating its write, fsync, rename and directory
+fsync. Missing files and changed/noncanonical bytes retain the original durable
+commit path. Other handles' changes are still reloaded on every operation;
+there is no delayed write or process-local stale-value shortcut.

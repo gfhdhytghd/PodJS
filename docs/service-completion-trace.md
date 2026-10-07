@@ -42,3 +42,18 @@ An optional third `traceServiceWork` argument records a nonnegative integer
 `units` only. Supply lengths/counts with a fixed code-authored label; never pass
 content or sensitive identifiers. KV exposes nested `kv.encode` and `kv.write`
 spans; write units are encoded UTF-16 length (not UTF-8 bytes).
+
+Opted-in Android hosts also record a bounded 128 DOWN/UP/CANCEL (non-MOVE)
+input events with numeric action, MotionEvent `eventMs`, application `receivedMs`
+(uptime) and `epochMs`. MOVE events consume no quota. Align the application wall
+clock with the measurement clock and retain the synchronization uncertainty;
+`receivedMs-eventMs` is dispatch delay, not ADB process startup. Completion
+`roundTripNs` measures dispatch-to-end-of-completion (including dependent guest
+jobs); `ns` remains completion-turn wall time. A lost/cancelled request uses -1
+for its unknown round trip. These two durations overlap and must not be added.
+`prepareTextLayout` accepts an optional fixed `traceLabel` for synchronous
+iterator/adoption work in each slice, excluding host timer waits/publication.
+Guest records carry numeric `beginEpochMs`/`endEpochMs` sampled in the guest,
+so delayed host-effect draining does not move the span's placement on the
+measurement timeline. Keep millisecond clock precision and host clock alignment
+uncertainty in the report; these are wall timestamps, not CPU cycle counters.

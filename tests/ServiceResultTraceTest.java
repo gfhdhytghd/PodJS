@@ -23,10 +23,13 @@ public final class ServiceResultTraceTest {
         String precise=trace.finish(completion,1);
         check(precise.contains("method=sql.execute")&&precise.contains("label=reader.markRead")&&precise.contains("bytes=57")&&precise.contains("rows=-1"));
         check(!precise.contains("private"));check(trace.pendingCount()==0);
+        check(completion.requestedNs>0 && precise.contains("roundTripNs="));
         trace.request(8,"sql.query",null,"SELECT private_text");
         check(trace.finish(trace.completion(8,true,100,30),1).contains("label=sql-"));
         trace.request(9,"sql.query","private text","SELECT secret");trace.cancel(9);
-        check(trace.completion(9,true,0,0).method.equals("other"));
+        ServiceResultTrace.Completion cancelled=trace.completion(9,true,0,0);
+        check(cancelled.method.equals("other") && cancelled.requestedNs==0);
+        check(trace.finish(cancelled,1).contains("roundTripNs=-1"));
         check(release.completion(1,true,1,1)==null);
         System.out.println("ServiceResultTraceTest PASS");
     }

@@ -129,7 +129,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                 }
                 else if ("diagnostic.serviceWork".equals(command.optString("t"))) {
                     if(serviceResultTrace.enabled && command.optString("label").matches("[a-zA-Z][a-zA-Z0-9_.:-]{0,79}"))
-                        android.util.Log.i("PodJSService", "guest label="+command.optString("label")+" ms="+command.optLong("elapsedMs")+" exclusiveMs="+command.optLong("exclusiveMs")+(command.has("units")?" units="+command.optLong("units"):""));
+                        android.util.Log.i("PodJSService", "guest label="+command.optString("label")+" ms="+command.optLong("elapsedMs")+" exclusiveMs="+command.optLong("exclusiveMs")+" beginEpochMs="+command.optLong("beginEpochMs")+" endEpochMs="+command.optLong("endEpochMs")+(command.has("units")?" units="+command.optLong("units"):""));
                 }
                 else if (command.optString("t").startsWith("service.")) {
                     if (serviceResultTrace.enabled) {
@@ -489,7 +489,13 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
             pumpServicesWhileSuspended();
     }
 
+    private int tracedInputs;
     @Override public boolean onTouchEvent(MotionEvent event) {
+        if (serviceResultTrace.enabled && event.getActionMasked() != MotionEvent.ACTION_MOVE && tracedInputs++ < 128) {
+            android.util.Log.i("PodJSService", "input action=" + event.getActionMasked()
+                + " eventMs=" + event.getEventTime() + " receivedMs=" + android.os.SystemClock.uptimeMillis()
+                + " epochMs=" + System.currentTimeMillis());
+        }
         if (host == 0) return false;
         if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
             nativePostEvent(host, "{\"t\":\"touchCancel\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8));

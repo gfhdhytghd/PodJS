@@ -1,4 +1,5 @@
 import {delay,type HostOperation} from './services.ts';
+import {traceServiceWork} from './service-trace.ts';
 
 export interface TextLayoutSnapshot<Layout,Entry,Key> {
  readonly layout:Layout;
@@ -14,6 +15,8 @@ export interface TextLayoutSliceOptions {
  clock?:()=>number;
  yieldTurn?:()=>HostOperation<unknown>;
  onSlice?:(ms:number,rows:number)=>void;
+ /** Fixed code-authored diagnostic label; default tracing remains disabled. */
+ traceLabel?:string;
 }
 /** Prepare shaped paragraph rows, prefixes and a stable-key index in bounded
  * host turns. The caller's iterator owns geometry; a single completed snapshot
@@ -46,14 +49,15 @@ export function prepareTextLayout<Row,Layout,Entry,Key>(steps:Iterator<Row,Layou
     pending=yieldTurn();try{await pending.result;}catch(error){if(cancelled)return;throw error;}finally{pending=undefined;}
     if(cancelled)return;
     const began=clock();let count=0,finished:IteratorResult<Row,Layout>|undefined;
-    while(!cancelled){
+    const collect=()=>{while(!cancelled){
      const next=steps.next();
      if(next.done){finished=next;closed=true;break;}
      const key=callbacks.key(next.value);
      if(indices.has(key))throw new Error('Duplicate text layout row key');
      indices.set(key,entries.length);entries.push(callbacks.entry(next.value));count++;stats.rows++;
      if(count>=limit||clock()-began>=budget)break;
-    }
+    }};
+    if(options.traceLabel)traceServiceWork(options.traceLabel,collect);else collect();
     const elapsed=clock()-began;stats.turns++;stats.maxMs=Math.max(stats.maxMs,elapsed);options.onSlice?.(elapsed,count);
     if(cancelled)return;
     if(!finished?.done&&preview&&!previewed&&entries.length>=preview.rows){
