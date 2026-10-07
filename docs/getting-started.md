@@ -182,6 +182,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/text-carets` | Preserve caret map identity when row positions are unchanged. |
 | `@podjs/framework/text-lines` | Pure line breaking, measured titles and UI text layout helpers. |
 | `@podjs/framework/text-anchor` | UTF-16 anchors that keep the same text visible across font or width changes. |
+| `@podjs/framework/site-challenge` | Bounded HTTP retry after native WebView script-cookie challenges, with matching user-agent cache and cancellation. |
 | `@podjs/framework/http-request` | Single-request HTTP parser with a whole-request deadline and bounded buffers. |
 | `@podjs/framework/theme-schedule` | Calendar-based local day/night theme policy. |
 | `@podjs/framework/telemetry` | Configurable daily cumulative counters, capture upload scheduling and actual active-playback battery samples. |
