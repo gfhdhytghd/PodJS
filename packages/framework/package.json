@@ -63,7 +63,6 @@
     "./request-policy": "./src/request-policy.ts",
     "./browser-qr-wait": "./src/browser-qr-wait.ts",
     "./round-layout": "./src/safe-qr-layout.ts",
-    "./round-layout": "./src/safe-qr-layout.ts",
     "./site-challenge": "./src/site-challenge.ts"
   },
   "dependencies": {
