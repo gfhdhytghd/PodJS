@@ -47,6 +47,7 @@ const methods: Record<string, PodCapabilityId> = {
   "acoustic.wifi.connect":"debug.acoustic", "acoustic.wifi.request":"debug.acoustic", "acoustic.wifi.close":"debug.acoustic",
   "app.finishTask": "host.lifecycle",
   "takeover.status": "host.takeover",
+  "debug.external.subscribe":"host.lifecycle", "debug.external.unsubscribe":"host.lifecycle", "debug.external.reply":"host.lifecycle",
   "app.buildInfo": "host.lifecycle",
   "cloud.schedule":"host.lifecycle", "cloud.cancel":"host.lifecycle", "cloud.acquire":"host.lifecycle", "cloud.release":"host.lifecycle",
   "debug.memoryStats": "host.lifecycle",
@@ -748,3 +749,18 @@ export const debugAcoustic = Object.freeze({
 // Realm-local foreground scheduler; pure codecs also work in headless bundles.
 // Match the runtime.timer minimum on Android, including portable codec jobs.
 (globalThis as {__podYieldCodecTurn?:()=>Promise<void>}).__podYieldCodecTurn=()=>delay(1).result;
+
+export interface DebugExternalEvent {deadline?:number;id:number;kind:'intent'|'dump';action:string;extras:Record<string,string|number|boolean>;args:string[]}
+export const debugExternal={
+ async listen(handler:(event:DebugExternalEvent)=>Promise<{code?:number;data?:string}>):Promise<()=>void>{
+  if(!(await application.buildInfo()).debugBuild)throw new HostServiceError('unavailable','Debug external interface unavailable');
+  let closed=false;
+  const off=__onHostEvent(event=>{
+   if(closed||event.t!=='debug.external'||typeof event.id!=='number')return;
+   if(typeof event.deadline!=='number'||event.deadline<=Date.now())return;
+   void Promise.resolve().then(()=>{if(closed||Number(event.deadline)<=Date.now())throw new Error("Debug request expired");return handler(event as unknown as DebugExternalEvent);}).catch(()=>({code:2,data:'debug_action_failed'})).then(result=>hostOperation('debug.external.reply',{id:event.id,...result}).result).catch(()=>{});
+  });
+  try{await hostOperation('debug.external.subscribe',{}).result;}catch(error){off();throw error;}
+  return ()=>{closed=true;off();void hostOperation('debug.external.unsubscribe',{}).result.catch(()=>{});};
+ }
+};

@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import {writeDebugExternal} from './debug-external.ts';
 import { existsSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
@@ -181,6 +182,11 @@ async function packageTarget(target: Target, project?: ResolvedPodProject, relea
       ...(project.androidResources ? [`-PpodResDir=${project.androidResources}`] : []),
       ...(project.androidTheme ? [`-PpodAppTheme=${project.androidTheme}`] : []),
       `-PpodCleartextTraffic=${project.androidCleartextTraffic === true}`] : [];
+    if(project){
+      const debugDir=join(project.output,"debug-external",target);
+      writeDebugExternal(debugDir,project.config.android?.debugExternal,target==="android-watch"?"dev.podjs.androidwatch.MainActivity":"dev.podjs.wear.MainActivity");
+      gradleArgs.push(`-PpodDebugExternalDir=${debugDir}`);
+    }
     gradleArgs.push(`-PpodReleaseDebuggable=${overrides.debuggable}`);
     if (!project && overrides.versionCode !== undefined) gradleArgs.push(`-PpodVersionCode=${overrides.versionCode}`);
     const plan = androidPackagePlan(release, project?.androidSigning);
