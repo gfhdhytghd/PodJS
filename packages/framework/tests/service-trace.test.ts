@@ -26,3 +26,9 @@ test('failed diagnostics preserve returns and product errors',()=>{
  expect(traceServiceWork('sql.map',()=>42)).toBe(42);
  expect(()=>traceServiceWork('sql.map',()=>{throw Error('product failure');})).toThrow('product failure');
 });
+test('size metadata is numeric only and invalid values are omitted',()=>{
+ const records:any[]=[];(globalThis as any).pod={emit:(line:string)=>records.push(JSON.parse(line))};
+ __setServiceTraceEnabled(true);
+ traceServiceWork('storage.write',()=>{},4096);traceServiceWork('storage.write',()=>{},NaN);
+ expect(records[0].units).toBe(4096);expect(records[1].units).toBeUndefined();
+});
