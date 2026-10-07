@@ -1,7 +1,8 @@
 //! Shared foreground/background KV. Each operation reloads under an OS file
 //! lock, so separate handles/processes cannot overwrite a stale snapshot.
 use std::{collections::BTreeMap, fs::{File, OpenOptions}, io::{self, Read, Write}, path::PathBuf};
-use serde_json::Value;
+use serde_json::{Value, value::{RawValue, to_raw_value}};
+type Values = BTreeMap<String, Box<RawValue>>;
 
 #[cfg(unix)]
 fn exclusive_lock(file:&File)->io::Result<()> {
@@ -15,10 +16,10 @@ fn exclusive_lock(file:&File)->io::Result<()> {
 #[cfg(not(unix))]
 fn exclusive_lock(file:&File)->io::Result<()> {file.lock()}
 
-pub struct KvStore { memory:BTreeMap<String,Value>, path:Option<PathBuf>, quota:usize, budget:Option<(std::time::Instant,crate::background::Cancellation)> }
+pub struct KvStore { memory:Values, cached_bytes:Option<Vec<u8>>, path:Option<PathBuf>, quota:usize, budget:Option<(std::time::Instant,crate::background::Cancellation)> }
 impl KvStore {
     pub fn open(data_dir:Option<&str>) -> Self {
-        Self {memory:BTreeMap::new(),path:data_dir.map(|root|PathBuf::from(root).join("podjs-kv.json")),quota:4*1024*1024,budget:None}
+        Self {memory:BTreeMap::new(),cached_bytes:None,path:data_dir.map(|root|PathBuf::from(root).join("podjs-kv.json")),quota:4*1024*1024,budget:None}
     }
     fn check_budget(&self)->io::Result<()> {
         if self.budget.as_ref().is_some_and(|(deadline,cancel)|std::time::Instant::now()>=*deadline || cancel.is_cancelled()) {
@@ -40,7 +41,7 @@ impl KvStore {
         }
         #[cfg(not(unix))] {Err(io::Error::new(io::ErrorKind::Unsupported,"Bounded KV locks unavailable"))}
     }
-    fn operation<T>(&mut self, write:bool, action:impl FnOnce(&mut BTreeMap<String,Value>)->io::Result<T>) -> io::Result<T> {
+    fn operation<T>(&mut self, write:bool, action:impl FnOnce(&mut Values)->io::Result<T>) -> io::Result<T> {
         self.check_budget()?;
         let Some(path)=&self.path else {
             let mut next=self.memory.clone(); let result=action(&mut next)?;
@@ -50,33 +51,52 @@ impl KvStore {
         let root=path.parent().expect("KV parent");std::fs::create_dir_all(root)?;
         let lock=OpenOptions::new().create(true).truncate(false).read(true).write(true).open(root.join("podjs-kv.lock"))?;
         self.lock(&lock)?;
-        let mut values=match File::open(path) {
+        let bytes=match File::open(path) {
             Ok(file)=>{
                 let mut bytes=Vec::new();file.take((self.quota+1) as u64).read_to_end(&mut bytes)?;
                 if bytes.len()>self.quota {return Err(io::Error::other("KV quota exceeded"));}
-                serde_json::from_slice::<BTreeMap<String,Value>>(&bytes)?
+                bytes
             },
-            Err(error) if error.kind()==io::ErrorKind::NotFound=>BTreeMap::new(),
+            Err(error) if error.kind()==io::ErrorKind::NotFound=>b"{}".to_vec(),
             Err(error)=>return Err(error),
         };
+        // Compare actual bytes while holding the same cross-process lock. No
+        // mtime/inode shortcut: external same-length edits must be observed.
+        // Unrelated values remain canonical raw JSON instead of repeatedly
+        // allocating and serializing their entire object graphs on every key.
+        let mut values=if self.cached_bytes.as_deref()==Some(bytes.as_slice()) {
+            std::mem::take(&mut self.memory)
+        } else {
+            let decoded:BTreeMap<String,Value>=serde_json::from_slice(&bytes)?;
+            decoded.into_iter().map(|(key,value)|Ok((key,to_raw_value(&value)?)))
+                .collect::<Result<Values,serde_json::Error>>()?
+        };
+        self.cached_bytes=None; // Failed mutations cannot poison a later read.
         let result=action(&mut values)?;
         self.check_budget()?;
-        if write {
-            let bytes=serde_json::to_vec(&values)?;
-            if bytes.len()>self.quota {return Err(io::Error::other("KV quota exceeded"));}
+        let persisted=if write {
+            let next=serde_json::to_vec(&values)?;
+            if next.len()>self.quota {return Err(io::Error::other("KV quota exceeded"));}
             let tmp=root.join("podjs-kv.tmp");
-            let mut file=File::create(&tmp)?;file.write_all(&bytes)?;file.sync_all()?;
+            let mut file=File::create(&tmp)?;file.write_all(&next)?;file.sync_all()?;
             self.check_budget()?;
             std::fs::rename(tmp,path)?;
             File::open(root)?.sync_all()?;
-        }
+            next
+        } else {bytes};
+        self.memory=values;self.cached_bytes=Some(persisted);
         Ok(result) // File drop releases lock on every exit, including errors.
     }
-    pub fn get(&mut self,key:&str)->io::Result<Option<Value>> {self.operation(false,|values|Ok(values.get(key).cloned()))}
+    pub fn get(&mut self,key:&str)->io::Result<Option<Value>> {
+        self.operation(false,|values|values.get(key).map(|raw|serde_json::from_str(raw.get()).map_err(io::Error::from)).transpose())
+    }
+    pub fn get_json(&mut self,key:&str)->io::Result<Option<String>> {
+        self.operation(false,|values|Ok(values.get(key).map(|raw|raw.get().to_owned())))
+    }
     pub fn keys(&mut self)->io::Result<Vec<String>> {self.operation(false,|values|Ok(values.keys().cloned().collect()))}
     pub fn set(&mut self,key:String,value:Value)->io::Result<()> {
         if key.is_empty() || key.len()>128 {return Err(io::Error::other("Invalid KV key"));}
-        self.operation(true,|values|{values.insert(key,value);Ok(())})
+        self.operation(true,|values|{values.insert(key,to_raw_value(&value)?);Ok(())})
     }
     pub fn delete(&mut self,key:&str)->io::Result<bool> {self.operation(true,|values|Ok(values.remove(key).is_some()))}
 }
@@ -143,6 +163,43 @@ mod tests {
         assert_eq!(store.set("never".into(),Value::Null).unwrap_err().kind(),io::ErrorKind::TimedOut);
         assert!(!root.join("podjs-kv.json").exists());
         drop(held);std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test] fn canonical_disk_bytes_and_key_results_match_value_reference() {
+        let root=std::env::temp_dir().join(format!("podjs-kv-diff-{}-{:?}",std::process::id(),std::thread::current().id()));
+        std::fs::create_dir_all(&root).unwrap();
+        // Deliberately noncanonical initial JSON, Unicode, numeric spellings,
+        // duplicate keys and a large unrelated value as on the watch.
+        let seed=format!(r#"{{"z":{{"z":1e0,"a":-0.0}},"text":"汉字😀\n","same":1,"same":2,"large":"{}"}}"#, "x".repeat(830_000));
+        std::fs::write(root.join("podjs-kv.json"),seed.as_bytes()).unwrap();
+        let mut oracle:BTreeMap<String,Value>=serde_json::from_str(&seed).unwrap();
+        let mut store=KvStore::open(root.to_str());
+        for _ in 0..3 {
+            for (key,value) in &oracle {
+                assert_eq!(store.get(key).unwrap().as_ref(),Some(value));
+                assert_eq!(store.get_json(key).unwrap(),Some(serde_json::to_string(value).unwrap()));
+            }
+        }
+        for (key,value) in [("reader",serde_json::json!({"z":[null,true,1.5],"a":"网页😀"})),("text",Value::Null),("reader",Value::from("new"))] {
+            oracle.insert(key.into(),value.clone());store.set(key.into(),value).unwrap();
+            assert_eq!(std::fs::read(root.join("podjs-kv.json")).unwrap(),serde_json::to_vec(&oracle).unwrap());
+            let mut reopened=KvStore::open(root.to_str());
+            for (key,value) in &oracle {assert_eq!(reopened.get(key).unwrap().as_ref(),Some(value));}
+        }
+        assert!(store.delete("reader").unwrap());oracle.remove("reader");
+        assert_eq!(std::fs::read(root.join("podjs-kv.json")).unwrap(),serde_json::to_vec(&oracle).unwrap());
+        // Equal-length external replacements invalidate the byte cache.
+        std::fs::write(root.join("podjs-kv.json"),br#"{"external":11}"#).unwrap();
+        assert_eq!(store.get("external").unwrap(),Some(Value::from(11)));
+        std::fs::write(root.join("podjs-kv.json"),br#"{"external":22}"#).unwrap();
+        assert_eq!(store.get("external").unwrap(),Some(Value::from(22)));
+        assert_eq!(store.get("large").unwrap(),None);
+        // A failed quota write neither replaces disk nor leaks into the cache.
+        store.quota=32;let before=std::fs::read(root.join("podjs-kv.json")).unwrap();
+        assert!(store.set("oversized".into(),Value::from("x".repeat(100))).is_err());
+        assert_eq!(std::fs::read(root.join("podjs-kv.json")).unwrap(),before);
+        assert_eq!(store.get("oversized").unwrap(),None);
+        assert_eq!(store.get("external").unwrap(),Some(Value::from(22)));
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[test] fn independently_opened_handles_merge_and_observe_changes() {
         let root=std::env::temp_dir().join(format!("podjs-kv-{}-{:?}",std::process::id(),std::thread::current().id()));

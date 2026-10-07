@@ -526,9 +526,8 @@ fn mount_pod(
             Function::new(ctx.clone(), move |key: String| {
                 store
                     .borrow_mut()
-                    .get(&key)
+                    .get_json(&key)
                     .ok().flatten()
-                    .and_then(|v| serde_json::to_string(&v).ok())
             })?,
         )?;
 
