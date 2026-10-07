@@ -140,6 +140,8 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/targets` | Target profiles, host ABI and capability identifiers. |
 | `@podjs/framework/services` | Cancellable native operations for files, network, input, media, text, crypto and platform services. |
 | `@podjs/framework/sync-state` | Versioned companion saved-state clocks, merge and persistence rules. |
+| `@podjs/framework/request-policy` | `RequestFilter`, `createRequestAllowlist`: generic request rejection hooks; app owns keys and rejection replies. |
+| `@podjs/framework/browser-qr-wait` | `BrowserQrWait`, `browserQrWaitStatus`, `BrowserQrWaitOptions`, `BrowserQrWaitStatus`: configurable QR waiting state independent of page loading; no UI rendering. |
 | `@podjs/framework/sync-framing` | Bounded wire frame encoding/decoding for companion transports. |
 | `@podjs/framework/sync-messages` | Companion message wire protocol and acknowledgement helpers. |
 | `@podjs/framework/platform-services` | Background scheduling, notification and companion/file-transfer service interfaces. |
@@ -162,7 +164,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/xml` | Generic XML parsing and document navigation. |
 | `@podjs/framework/json` | Bounded JSON projection without materializing unused fields. |
 | `@podjs/framework/json-numbers` | JSON parsing that keeps lexical number tokens (`1` vs `1.0`). |
-| `@podjs/framework/text-compat` | Compatibility text policies, kept independent of application labels. |
+| `@podjs/framework/text-compat` | Compatibility text policies including `kotlinTrim` (JVM whitespace), kept independent of application labels. |
 | `@podjs/framework/startup` | JS phase tracing, content-ready gates and startup exit interpolation. |
 | `@podjs/framework/startup-overlay` | Startup overlay that stays until its exit frame finishes while content mounts. |
 | `@podjs/framework/logging` | Configurable redaction and serialized persistent FileLogger with caller-owned storage ports. |

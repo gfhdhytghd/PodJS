@@ -29,6 +29,12 @@
  * Float(1.05) * 100 rounds below 105, so it shares key 104 with 1.04.
  */
 
+/** Kotlin/JVM Char.isWhitespace = Character.isWhitespace || isSpaceChar.
+ * Includes U+001C..U+001F, excludes U+0085, U+180E and U+FEFF. */
+export function kotlinTrim(value: string): string {
+  return value.replace(/^[\u0009-\u000d\u001c-\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+|[\u0009-\u000d\u001c-\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/g, "");
+}
+
 const f32 = Math.fround;
 const COMMON_SP = [8, 10, 12, 14, 18, 20, 24, 30, 100];
 const BASE_TABLES: ReadonlyArray<readonly [number, readonly number[]]> = [

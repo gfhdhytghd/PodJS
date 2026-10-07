@@ -427,11 +427,15 @@ export type BrowserAuthStatus =
   | {type:"pageState";loading:boolean;loginPanelVisible?:boolean}
   | {type:"verifying";active:boolean}
   | {type:"cancelled"};
+import {BrowserQrWait,type BrowserQrWaitOptions,type BrowserQrWaitStatus} from './browser-qr-wait.ts';
 export interface BrowserAuthOptions {
   url:string; cookieOrigin:string; requiredCookieNames:readonly string[]; userAgent?:string;
   /** Legacy: data-image string/null. With onStatus: also accepts an atomic status snapshot. */
   qrExtractionScript?:string;
   onStatus?:(status:BrowserAuthStatus)=>void;
+  /** Optional waiting state for QR extraction. Hosts/UI may render it; never tied to page loading. */
+  qrWait?:BrowserQrWaitOptions;
+  onQrWait?:(status:BrowserQrWaitStatus)=>void;
   /** Opt in to completion after an observed login panel disappears, verification ends,
    * and required cookies exist. Older hosts retain their manual Done action. */
   completeOnLoginPanelHidden?:boolean;
@@ -451,15 +455,22 @@ function isBrowserAuthStatus(value:unknown):value is BrowserAuthStatus {
 }
 export const browserAuth = {
   authorize(args:BrowserAuthOptions): HostOperation<{cookie:string;origin:string}> {
-    const {onStatus,...wire}=args;
-    if(onStatus===undefined)return hostOperation("browser.authorize",wire);
-    if(typeof onStatus!=="function")throw new HostServiceError("invalid_argument","onStatus must be a function");
+    const {onStatus,onQrWait,...wire}=args;
+    if(onStatus===undefined&&onQrWait===undefined&&args.qrWait===undefined)return hostOperation("browser.authorize",wire);
+    if(onStatus!==undefined&&typeof onStatus!=="function")throw new HostServiceError("invalid_argument","onStatus must be a function");
+    if(onQrWait!==undefined&&typeof onQrWait!=="function")throw new HostServiceError("invalid_argument","onQrWait must be a function");
+    const wait=new BrowserQrWait(args.qrWait);
     let cancelled=false;
-    return serviceOperation("browser.authorizeWithStatus",wire,value=>{
+    const publish=(status:BrowserQrWaitStatus)=>{try{onQrWait?.(status);}catch{ /* Observers must not change authorization settlement. */ }};
+    publish(wait.status);
+    const operation=serviceOperation<{cookie:string;origin:string}>("browser.authorizeWithStatus",wire,value=>{
       if(cancelled||!hasCapability("system.browser.auth.status")||!isBrowserAuthStatus(value))return;
       if(value.type==="cancelled")cancelled=true;
-      onStatus(value);
+      publish(wait.update(value));
+      onStatus?.(value);
     });
+    const finish=()=>{cancelled=true;publish(wait.finish());};
+    return {result:operation.result.then(value=>{finish();return value;},error=>{finish();throw error;}),cancel:()=>{operation.cancel();finish();}};
   },
 };
 /** Read-only snapshot of the native Douyin selectors. No cookie-based auto-completion. */

@@ -10,7 +10,7 @@ const emitted: Record<string, unknown>[] = [];
 };
 
 const api = await import("../src/watch.ts");
-const { battery, debugPerformance, application, sharing, displayPower, silencePlayback, HostServiceError, hostOperation, sqlite, browser, mediaVolume, speech, timeInput, textInput, textLayout, fileChunks, uri, rfcomm, tcp, byteStreams, webSockets, discovery, onNetworkChange } = await import("../src/services.ts");
+const { battery, debugPerformance, application, sharing, displayPower, silencePlayback, HostServiceError, hostOperation, sqlite, browser, browserAuth, mediaVolume, speech, timeInput, textInput, textLayout, fileChunks, uri, rfcomm, tcp, byteStreams, webSockets, discovery, onNetworkChange } = await import("../src/services.ts");
 const host = (globalThis as unknown as { pod: { capabilities: () => string } }).pod;
 
 beforeEach(() => {
@@ -641,4 +641,22 @@ test("browser state requires the new capability and preserves explicit opt-in on
 test("delay clamps to the host timer range so yields never send 0ms", async () => {
   const { hostDelayMilliseconds } = await import("../src/services.ts");
   expect([0, 0.2, -5, Number.NaN, 7.5, 999999].map(hostDelayMilliseconds)).toEqual([1, 1, 1, 1, 8, 120000]);
+});
+
+for(const terminal of ['success','error','cancel'] as const)test(`browser QR wait wire and callback terminate on ${terminal}, ignoring late statuses`,async()=>{
+ host.capabilities=()=>JSON.stringify(['system.browser.auth','system.browser.auth.status']);
+ const waits:unknown[]=[],statuses:unknown[]=[];
+ const operation=browserAuth.authorize({url:'https://example.com',cookieOrigin:'https://example.com',requiredCookieNames:['sid'],qrExtractionScript:'null',qrWait:{message:'Wait for QR'},onQrWait:s=>waits.push(s),onStatus:s=>statuses.push(s)});
+ const request=emitted.at(-1)!;
+ expect(request).toMatchObject({method:'browser.authorizeWithStatus',args:{qrWait:{message:'Wait for QR'}}});
+ expect((request.args as object)).not.toHaveProperty('onQrWait');
+ const status=(value:unknown)=>{events.push({t:'browser.auth.status',id:request.id,value});api.__pumpPodEvents();};
+ status({type:'pageState',loading:false});expect(waits.at(-1)).toEqual({visible:true,message:'Wait for QR'});
+ status({type:'verifying',active:true});expect(waits.at(-1)).toEqual({visible:false,message:'Wait for QR'});
+ status({type:'verifying',active:false});expect(waits.at(-1)).toEqual({visible:true,message:'Wait for QR'});
+ if(terminal==='cancel')operation.cancel();
+ else {events.push(terminal==='success'?{t:'service.result',id:request.id,ok:true,value:{cookie:'sid=x',origin:'https://example.com'}}:{t:'service.result',id:request.id,ok:false,error:{code:'webview_load_-7',message:'failure'}});api.__pumpPodEvents();}
+ if(terminal==='success')await expect(operation.result).resolves.toMatchObject({origin:'https://example.com'});else await expect(operation.result).rejects.toThrow();
+ expect(waits.at(-1)).toEqual({visible:false,message:'Wait for QR'});const count=statuses.length;
+ status({type:'qrCleared'});expect(statuses).toHaveLength(count);expect(waits.at(-1)).toEqual({visible:false,message:'Wait for QR'});
 });

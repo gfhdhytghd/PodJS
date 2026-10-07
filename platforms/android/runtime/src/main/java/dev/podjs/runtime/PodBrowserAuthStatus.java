@@ -74,10 +74,23 @@ final class PodBrowserAuthStatus {
         private final Consumer<JSONObject> sink;
         private final Map<String, String> previous = new HashMap<>();
         private boolean ended;
-        Stream(Consumer<JSONObject> sink) { this.sink = sink; }
+        private boolean hasQr, verifying;
+        private final JSONObject qrWait;
+        Stream(Consumer<JSONObject> sink) { this(sink, null); }
+        Stream(Consumer<JSONObject> sink, JSONObject qrWait) { this.sink = sink; this.qrWait = qrWait; }
+        /** Data for the host-owned waiting UI; page loading never controls visibility. */
+        JSONObject qrWaitStatus() {
+            try { return new JSONObject().put("visible", qrWait != null && !hasQr && !verifying && !ended)
+                    .put("message", qrWait == null ? "" : qrWait.optString("message", "")); }
+            catch (org.json.JSONException error) { throw new IllegalStateException(error); }
+        }
         void emit(JSONObject event) {
             if (ended) return;
             String type = event.optString("type");
+            if ("qr".equals(type) && !verifying) hasQr = true;
+            else if ("qrCleared".equals(type)) hasQr = false;
+            else if ("verifying".equals(type)) { verifying = event.optBoolean("active"); if (verifying) hasQr = false; }
+            else if ("cancelled".equals(type)) { ended = true; hasQr = false; }
             String key = "qrCleared".equals(type) ? "qr" : type;
             String encoded = event.toString();
             if (encoded.equals(previous.put(key, encoded))) return;
