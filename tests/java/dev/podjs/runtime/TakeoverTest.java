@@ -218,7 +218,23 @@ public final class TakeoverTest {
         }
         check(child.waitFor(10,TimeUnit.SECONDS));check(child.exitValue()==0);
     }
+    static void backupPublication()throws Exception {
+        File sandbox=Files.createTempDirectory("takeover-backup-publication-").toFile();
+        File db=new File(sandbox,"databases/watchrss.db");db.getParentFile().mkdirs();Files.writeString(db.toPath(),"native fixture");
+        File root=new File(sandbox,"files/package-takeover");AtomicBoolean interrupt=new AtomicBoolean(true);
+        PodTakeoverCoordinator.Publisher publisher=new PodTakeoverCoordinator.Publisher(){
+            public void beforePublish(File g)throws Exception {
+                new dev.podjs.takeover.NativeBackup(sandbox,b->{if(b.equals("backup-move-0")&&interrupt.getAndSet(false))throw new IOException("interrupted");},File::getUsableSpace).prepare(g.getName(),40,HASH);
+            }
+        };
+        PodTakeoverCoordinator c=new PodTakeoverCoordinator(root,source,new Converter(),p->{},publisher);
+        Properties state=c.run();check(state.getProperty("phase").equals("PAUSED"));check(state.getProperty("resumePhase").equals("ACTIVATING"));check(!new File(root,"active").exists());
+        c=new PodTakeoverCoordinator(root,()->{throw new AssertionError("resume must use journal after native rename");},new Converter(),p->{},publisher);
+        check(c.run().getProperty("phase").equals("ACTIVE"));check(!db.exists());
+        new dev.podjs.takeover.NativeBackup(sandbox).verify(state.getProperty("generation"));
+    }
     public static void main(String[] args)throws Exception {
+        backupPublication();
         if(args.length>0){check(new PodTakeoverCoordinator(new File(args[0]),source,new Converter()).run().getProperty("phase").equals("ACTIVE"));return;}
         podjsOnlyIsNotNative();terminalAdmissionCache();concurrentAdmission();noSourceNeverWrites();restartEveryPhase();failures();fresh();atomicPointer();publicationGapAndCorruption();activationRechecksGates();concurrency();System.out.println("takeover JVM: PASS (terminal admission cache, concurrent single resolution, no-source zero writes, phase restart, pause/block, atomic pointer, thread/process locks)");
     }

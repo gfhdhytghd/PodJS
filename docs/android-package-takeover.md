@@ -348,3 +348,90 @@ WatchRSS's T1 full oracle lives in the app repository and validates all imported
 The 2026-10-07 physical rehearsal was stopped by the device charging-screen safety gate after DETECTED/SNAPSHOTTED/COPYING. No physical ACTIVE, second launch, interruption recovery, guest render or same-UID Keystore claim is established. Linux private-copy replay passes with the expected isolated missing-key differences and is explicitly not Android crypto/font/device acceptance. See the app's `docs/takeover-readiness.md` and `docs/takeover-rehearsal.md`.
 
 Before production package replacement, handle existing WorkManager records and obsolete native worker class names. The internal WorkManager database is not switched by the active-generation pointer, and native class-name compatibility is not provided by this coordinator. The shared unique periodic-work name alone is insufficient evidence. The app release owner must also provide a higher-version compatible rescue plan; no reverse conversion or automatic rollback of post-ACTIVE user changes is implemented here.
+
+## T2 original-byte backups and native recovery (2026-10-07)
+
+The production coordinator now invokes a host-only `Publisher.beforePublish`
+**after** the final complete converter verification and **before** writing the
+activation receipt/ACTIVE pointer. `PodTakeoverBackup` seals raw native data using
+`dev.podjs.takeover.NativeBackup`, a device-free Java engine also shipped verbatim
+in native recovery packages. An interrupted backup leaves ACTIVATING paused; no
+guest/storage consumer is admitted. Converter resume uses its immutable copies,
+so it does not require the original paths to remain present after sealing starts.
+
+The backup is `files/.podjs-takeover-backup/G/{manifest,seal,data,ready}`. Private
+Properties manifests inventory every original file and empty directory: original
+relative path, backup-relative path, type, length and SHA-256, source versionCode,
+its provenance, generation and public signing-certificate SHA-256. The canonical
+sorted, length-prefixed manifest digest is bound to a seal and to the generation's
+`native-backup-receipt` before publication. This detects corruption, not a malicious
+UID owner who rewrites both manifest and seals; it is not a portable signed backup.
+Never log or upload manifests. Android Keystore keys are neither exportable files
+nor part of this inventory; **no native alias is created, deleted or rotated**.
+
+Inventory covers all children of `databases` (including raw WAL/SHM and native
+WorkManager databases), `shared_prefs`, `files` (including DataStore and unknown
+native directories), and `no_backup`. Reserved PodJS roots are excluded:
+`files/podjs`, `files/package-takeover`, `files/.podjs-*`, `databases/podjs.sqlite*`
+(exact main/sidecar namespace), and `no_backup/podjs-*`. Native writers/providers
+must remain unopened during sealing. The Android hosts already remove automatic
+WorkManager initialization. Caches, `app_webview`, code_cache, OS/Keystore state
+outside those four roots are not a full sandbox export; WebView-cookie/platform
+acceptance remains a separate release gate. Source converter snapshots still
+exist until explicitly purged; no runtime reads or writes the raw backup payload.
+
+The immutable plan/seal is fsynced before moving anything. Each top-level native
+child is atomically renamed inside the same sandbox, retaining inode/raw bytes
+without another payload copy. Both source and destination present, unknown files,
+links, malformed plans or hash mismatch fail closed. Restart checks every planned
+root at its unique original/backup location before finishing the remaining moves.
+There is no cross-device copy fallback. Existing conservative 3x+32 MiB converter
+space preflight remains; backup adds a conservative metadata reserve of
+1 MiB+2 KiB/entry. Metadata ENOSPC becomes PAUSED(space_insufficient); it does not
+publish a pointer or delete an unmoved source. Rename saves **additional** backup
+payload space, not the existing conversion snapshot/candidate cost.
+
+App declaration (Android/Wear CLI packages propagate these into manifest metadata):
+
+```json
+"android": { "takeover": { "sourceVersionCode": 40 } }
+```
+
+Missing/invalid source version refuses publication. The declared code must come
+from the release owner's actual source-install ledger; Android PackageManager at
+this point reports the **new PodJS** version, so it is not proof of the prior native
+code. The manifest explicitly labels that provenance. No automatic expiry exists.
+After successful public-beta acceptance the owner can ship a higher version with
+`purgeBackupAfter: <positive versionCode>`. Cold ACTIVE admission checks the current
+installed code; only an explicit threshold at/below it authorizes cleanup. All
+retained generations, including interrupted purge trash, are handled under the
+admission lock. `NativeBackup.purge(G)` validates a ready backup, records a durable
+purge ticket, atomically renames it out of the recovery namespace, then deletes it
+with restartable steps. `purgeImportSnapshots(G)` separately removes fixed
+converter-only duplicate payloads (Room snapshot/progress, store sources/results,
+file sources), retaining active DB/KV/secure/files and admission metadata. Archived
+post-PodJS user data under `.podjs-recovered` has a separate retention policy and is
+not erased by backup cleanup. Nothing invokes these APIs from guest code.
+
+Native recovery runs in `Application.attachBaseContext`, before providers/native
+stores. It locks the sandbox, selects the current journal/ACTIVE generation (or
+last completed recovery), checks certificate, plan and raw bytes, and can finish
+an interrupted seal. It needs additional free space for a staged native copy plus
+metadata because the original backup is retained on every restore/failure. It
+copies/fsyncs/verifies all planned roots **before** moving live PodJS/conflicting
+roots into `files/.podjs-recovered/G/`. A durable archive phase then permits each
+staged root to be atomically installed at its original path. Completion is written
+only after full verification. This is a journaled multi-root transaction, not a
+single filesystem atomic operation: all providers/processes must use the startup
+lock and fail-closed gate. A restart distinguishes staged, archived and installed
+roots, and a completion marker protects subsequent native user writes. Failure
+never mutates backup bytes and never opens empty replacement stores. Post-ACTIVE
+PodJS additions are archived, **not reverse-converted or merged** into native data.
+
+`NativeBackupTest` uses synthetic roots, verifies byte/inode/WAL/SHM/empty-directory
+preservation, repeat takeover/recovery, default retention, cleanup isolation,
+low-space/certificate/symlink/manifest/payload failures, and exception plus real
+independent-JVM termination at every emitted durability boundary. `TakeoverTest`
+also proves a partial backup pauses ACTIVATING with no active pointer and resumes
+without source detection. Physical Android durability, native functionality,
+same-UID Keystore continuity, release signing and installation remain PENDING.

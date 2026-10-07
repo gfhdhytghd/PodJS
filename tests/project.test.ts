@@ -19,6 +19,13 @@ const base = { entry: "main.tsx", appId: "com.example.demo", versionName: "1.2.3
 const defaults = { fontRegular: "font.ttf", fontBold: "font.ttf", outputRoot: "/tmp/pod-dist" };
 
 describe("external project config", () => {
+  test("native backup retention defaults to keep and purge requires an explicit version", () => {
+    expect(resolvePodProject(fixture(base), POD_TARGETS, defaults).config.android?.takeover).toBeUndefined();
+    expect(resolvePodProject(fixture({...base, android:{takeover:{sourceVersionCode:40}}}), POD_TARGETS, defaults).config.android?.takeover).toEqual({sourceVersionCode:40});
+    expect(resolvePodProject(fixture({...base, android:{takeover:{sourceVersionCode:40,purgeBackupAfter:1010}}}), POD_TARGETS, defaults).config.android?.takeover?.purgeBackupAfter).toBe(1010);
+    for(const takeover of [null,[],{sourceVersionCode:0},{sourceVersionCode:40,purgeBackupAfter:true},{sourceVersionCode:40,purgeBackupAfter:0},{sourceVersionCode:40,purgeBackupAfter:1.5},{sourceVersionCode:40,purgeBackupAfter:2147483648},{sourceVersionCode:40,purge:true}])
+      expect(() => resolvePodProject(fixture({...base,android:{takeover}}), POD_TARGETS, defaults)).toThrow("android.takeover");
+  });
   test("background service grants are explicit and bounded", () => {
     expect(resolvePodProject(fixture(base),POD_TARGETS,defaults).config.backgroundServices).toEqual([]);
     expect(resolvePodProject(fixture({...base,backgroundServices:["kv.get","kv.set"]}),POD_TARGETS,defaults).config.backgroundServices).toEqual(["kv.get","kv.set"]);
