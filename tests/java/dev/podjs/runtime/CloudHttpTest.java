@@ -44,9 +44,35 @@ public final class CloudHttpTest {
             if(TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-start)>1000)throw new AssertionError("deadline did not disconnect");
             if(Arrays.stream(root.list()).anyMatch(p->p.contains(".download-")||p.equals("oversize")||p.equals("stall")))throw new AssertionError("leaked partial output");
         }
+        closeOffCallerThread(root,base);
         dualStackFallback(root,server.getAddress().getPort());
         }finally{server.stop(0);executor.shutdownNow();for(File file:root.listFiles())file.delete();root.delete();}
-        System.out.println("PASS: file POST 4 MiB, bounded response, redirect refusal, path confinement, call deadline, charset, temporary cleanup, dual-stack fallback (loopback only)");
+        System.out.println("PASS: file POST 4 MiB, bounded response, redirect refusal, path confinement, call deadline, charset, temporary cleanup, off-caller idle socket close, dual-stack fallback (loopback only)");
+    }
+    private static void closeOffCallerThread(File root,String base)throws Exception{
+        Thread caller=Thread.currentThread();
+        java.util.concurrent.atomic.AtomicBoolean armed=new java.util.concurrent.atomic.AtomicBoolean(),closedOnCaller=new java.util.concurrent.atomic.AtomicBoolean();
+        CountDownLatch socketClosed=new CountDownLatch(1);
+        SocketFactory sockets=new SocketFactory(){
+            public Socket createSocket(){return new Socket(){
+                @Override public synchronized void close()throws IOException{
+                    if(armed.get()) {closedOnCaller.set(Thread.currentThread()==caller);socketClosed.countDown();}
+                    super.close();
+                }
+            };}
+            public Socket createSocket(String h,int p)throws IOException{return new Socket(h,p);}
+            public Socket createSocket(String h,int p,InetAddress l,int lp)throws IOException{return new Socket(h,p,l,lp);}
+            public Socket createSocket(InetAddress h,int p)throws IOException{return new Socket(h,p);}
+            public Socket createSocket(InetAddress h,int p,InetAddress l,int lp)throws IOException{return new Socket(h,p,l,lp);}
+        };
+        OkHttpClient client=new OkHttpClient.Builder().socketFactory(sockets).build();
+        PodHttpServices http=new PodHttpServices(new android.content.Context(),client);
+        http.execute("http.download",new JSONObject().put("url",base+"/text").put("path","close-thread").put("text",true));
+        if(client.connectionPool().idleConnectionCount()==0)throw new AssertionError("fixture must retain a real idle connection");
+        armed.set(true);http.close();http.close();
+        if(!socketClosed.await(5,TimeUnit.SECONDS))throw new AssertionError("idle connection not released");
+        if(closedOnCaller.get())throw new AssertionError("HTTP pool eviction performs socket I/O on lifecycle caller");
+        if(!client.dispatcher().executorService().awaitTermination(5,TimeUnit.SECONDS))throw new AssertionError("HTTP cleanup executor leaked");
     }
     private static void dualStackFallback(File root,int port)throws Exception{
         java.util.concurrent.atomic.AtomicInteger ipv6Attempts=new java.util.concurrent.atomic.AtomicInteger(),closedAttempts=new java.util.concurrent.atomic.AtomicInteger();
