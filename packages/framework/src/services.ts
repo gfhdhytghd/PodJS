@@ -735,3 +735,6 @@ export const debugAcoustic = Object.freeze({
  request:(session:number,endpoint:{host:string;port:number;token:string;path:'pullRemoteInput'|'pushFavorites'|'pushWatchLater';body?:string})=>hostOperation<Record<string,unknown>>('acoustic.wifi.request',{session,...endpoint}),
  close:(session:number)=>hostOperation<void>('acoustic.wifi.close',{session}),
 });
+
+// Realm-local foreground scheduler; pure codecs also work in headless bundles.
+(globalThis as {__podYieldCodecTurn?:()=>Promise<void>}).__podYieldCodecTurn=()=>delay(0).result;

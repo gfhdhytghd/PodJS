@@ -21,6 +21,8 @@ pub mod background_ffi;
 pub mod kv;
 pub mod accessibility_ffi;
 pub mod render_snapshot;
+pub mod byte_codecs;
+pub mod text_wrap;
 mod pak_reader;
 mod pak_integrity;
 pub use pak_reader::PodPakReadAt;
@@ -430,6 +432,8 @@ fn mount_pod(
     guest_files_root: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     guest.mount("pod", |ctx, ns| {
+        byte_codecs::mount(ctx.clone(), &ns)?;
+        text_wrap::mount(ctx.clone(), &ns, surface.clone())?;
         ns.set("decodeBase64", Function::new(ctx.clone(), decode_base64)?)?;
         ns.set("encodeBase64", Function::new(ctx.clone(), encode_base64)?)?;
         ns.set("decodeUtf8", Function::new(ctx.clone(), decode_utf8)?)?;
