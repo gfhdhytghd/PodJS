@@ -59,7 +59,8 @@
     "./media-volume": "./src/media-volume.ts",
     "./private-response": "./src/private-response.ts",
     "./preview-session": "./src/preview-session.ts",
-    "./text-match": "./src/text-match.ts"
+    "./text-match": "./src/text-match.ts",
+    "./round-layout": "./src/safe-qr-layout.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",

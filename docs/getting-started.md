@@ -191,6 +191,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/private-response` | Owned private-file lifecycle plus raw-byte/strict encoded-chunk readers; caller supplies allocation policy, ports, limits and errors. |
 | `@podjs/framework/preview-session` | Session/sequence publication, tail coalescing and expiry; caller supplies data conversion and timeout policy. |
 | `@podjs/framework/text-match` | UTF-16 match ranges and measured segment/line geometry, including wrapped matches. |
+| `@podjs/framework/round-layout` | Dependency-free round-screen geometry: QR layout, `rectInsideCircle`, `safeTopBlock`. |
 
 Additional guides: [gates/volume/response/preview/matching](private-response-preview.md),
 [UI/navigation](watch-ui-navigation.md),
