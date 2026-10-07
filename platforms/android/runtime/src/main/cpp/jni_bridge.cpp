@@ -208,7 +208,10 @@ extern "C" JNIEXPORT jlong JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeC
   if (std::string(t) != "android-watch" && std::string(t) != "wearos-watch") { fail(env, "PodJS target mismatch"); return 0; }
   ANativeWindow* window = ANativeWindow_fromSurface(env, surface);
 const char* capabilities = "[\"input.touch\",\"input.rotary\",\"data.kv\",\"device.haptics\",\"host.lifecycle\",\"host.theme\",\"display.round\",\"input.back\",\"net.http\",\"data.fs\",\"data.sqlite\",\"text.layout\",\"text.raster\",\"text.environment\",\"input.text\",\"input.text.state\",\"input.time\",\"device.location\",\"data.secure\",\"crypto.basic\",\"data.files.chunks\",\"data.uri\",\"media.audio\",\"debug.acoustic\",\"media.tts\",\"media.tts.spectrum\",\"media.video\",\"media.video.sessions\",\"runtime.timer\",\"display.power\",\"system.toast\",\"data.images\",\"system.browser.auth\",\"system.browser.auth.status\",\"net.download\",\"net.rfcomm\",\"net.tcp\",\"net.stream\",\"net.websocket\",\"net.discovery\",\"system.browser\",\"system.browser.siteData\",\"system.browser.availability\",\"system.browser.inApp\",\"system.browser.inApp.state\",\"system.share\",\"background.scheduled\",\"notification.local\",\"companion.sync.state\",\"companion.sync.message\",\"companion.sync.file\",\"host.takeover\"]";
-  PodRuntimeConfig config{sizeof(config), t, PODJS_RUNTIME_ABI_VERSION, 3, (uint32_t)width, (uint32_t)height,
+  // Positional fields: struct_size, target_id, host_abi, raster_density, ... raster_density must
+  // match the CLI build density (packages/cli/src/cli.ts); host ABI lives in the macro, not here.
+  constexpr uint32_t kRasterDensity = 2;
+  PodRuntimeConfig config{sizeof(config), t, PODJS_RUNTIME_ABI_VERSION, kRasterDensity, (uint32_t)width, (uint32_t)height,
       density, POD_DISPLAY_ROUND, 0, 0, 0, 0, d, capabilities};
   const double runtimeBegan = monoMs();
   auto host = std::make_unique<Host>(); host->runtime = pod_runtime_create(&config);

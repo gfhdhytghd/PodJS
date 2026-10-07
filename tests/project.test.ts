@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { POD_TARGETS } from "../packages/framework/src/targets.ts";
@@ -121,4 +121,15 @@ test("font preload hints are bounded unique slots", () => {
   expect(resolvePodProject(fixture({...base,resources:{preloadFontSlots:[2,1,22]}}),POD_TARGETS,defaults).config.resources?.preloadFontSlots).toEqual([2,1,22]);
   for (const preloadFontSlots of [null,1,[1,1],[-1],[64],[1.5],Array.from({length:9},(_,i)=>i)])
     expect(() => resolvePodProject(fixture({...base,resources:{preloadFontSlots}}),POD_TARGETS,defaults)).toThrow("preloadFontSlots");
+});
+
+test("android host raster density matches the CLI build density", () => {
+  const root = new URL("..", import.meta.url).pathname;
+  const jni = readFileSync(`${root}platforms/android/runtime/src/main/cpp/jni_bridge.cpp`, "utf8");
+  const cli = readFileSync(`${root}packages/cli/src/cli.ts`, "utf8");
+  const host = Number(jni.match(/constexpr uint32_t kRasterDensity = (\d+);/)?.[1]);
+  const build = Number(cli.match(/const density = target === "android-watch"[^?]*\? (\d+)/)?.[1]);
+  expect(host).toBe(2);
+  expect(host).toBe(build);
+  expect(jni).toMatch(/PODJS_RUNTIME_ABI_VERSION, kRasterDensity,/);
 });
