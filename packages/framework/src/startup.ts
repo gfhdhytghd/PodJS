@@ -71,3 +71,5 @@ export function createFirstScreenGate(options: FirstScreenGateOptions = {}) {
   }
   return { ready, wait, dispose };
 }
+
+export {STARTUP_EXIT_DURATION_MS, startupExitFrame, type StartupExitFrame} from "./startup-transition.ts";
