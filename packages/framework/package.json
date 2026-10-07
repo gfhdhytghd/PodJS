@@ -25,7 +25,9 @@
     "./windowed-list": "./src/windowed-list.ts",
     "./keyed-memo": "./src/keyed-memo.ts",
     "./image": "./src/image.tsx",
-    "./service-trace": "./src/service-trace.ts"
+    "./service-trace": "./src/service-trace.ts",
+    "./html": "./src/html.ts",
+    "./html-slices": "./src/html-slices.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",

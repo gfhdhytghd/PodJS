@@ -125,3 +125,17 @@ test('cancel after the first prefix closes work and suppresses all later publica
  events.push({t:'service.result',id:late.id,ok:true,value:null});__pumpPodEvents();await task.done;
  expect(prefixes).toBe(1);expect(final).toBe(0);
 });
+
+test('HTML fragments use default valid host timers and cancellation releases native jobs',async()=>{
+ const {requestHtmlFragment}=await import('../src/html-slices.ts');
+ const pod=(globalThis as any).pod;let releases=0,published:any;
+ Object.assign(pod,{htmlBegin:()=>1,htmlAppend:()=>true,htmlNext:()=>[true,[[0,'p',[],''],[1,'',[],'body']]],htmlCancel:()=>releases++});
+ try{
+  const work=requestHtmlFragment('<p>body</p>',value=>published=value);
+  while(emitted.length)await nextTurn();await work.done;
+  expect(published.children[0].children).toEqual(['body']);expect(releases).toBe(1);
+  let late=0;const cancelled=requestHtmlFragment('<p>body</p>',()=>late++,{rowLimit:1});
+  await nextTurn();const request=emitted.shift()!;cancelled.cancel();expect(emitted.shift()).toMatchObject({t:'service.cancel',id:request.id});
+  events.push({t:'service.result',id:request.id,ok:true,value:null});__pumpPodEvents();await settle();await cancelled.done;expect(late).toBe(0);expect(releases).toBe(2);
+ }finally{for(const key of ['htmlBegin','htmlAppend','htmlNext','htmlCancel'])delete pod[key];}
+});

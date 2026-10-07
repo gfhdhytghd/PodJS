@@ -14,6 +14,7 @@ memory-diagnostics = ["pocket-mod/memory-diagnostics"]
 anyhow.workspace = true
 base64 = "0.22"
 log.workspace = true
+regex = "1"
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 sha2 = "0.10.9"

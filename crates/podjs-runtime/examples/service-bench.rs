@@ -25,6 +25,7 @@ fn main() -> anyhow::Result<()> {
         let pod = Object::new(ctx.clone())?;
         if std::env::var("PODJS_BENCH_PORTABLE").as_deref() != Ok("1") {
             podjs_runtime::byte_codecs::mount(ctx.clone(), &pod)?;
+            podjs_runtime::html::mount(ctx.clone(), &pod)?;
             // Synthetic metric parity fixture, not an Android font measurement.
             pod.set(
                 "wrapAtlasTextChunk",
