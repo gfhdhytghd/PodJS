@@ -278,6 +278,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
         long servicesBegan = PodStartupTrace.now();
         services = new PodServices(context, this::receiveServiceEvent);
+        services.enableDeviceServiceTrace(serviceResultTrace.enabled);
         if(PodServices.memoryEnabled(context))services.attachMemoryProvider(()->{
             if(host==0)return null;
             try {JSONObject stats=new JSONObject(nativeMemoryStats(host));stats.put("pid",android.os.Process.myPid());stats.put("networkRequests",requests.size());return stats;}

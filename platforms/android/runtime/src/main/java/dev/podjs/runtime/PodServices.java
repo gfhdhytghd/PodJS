@@ -91,6 +91,7 @@ final class PodServices implements Closeable {
     private final ExecutorService textWorker = Executors.newSingleThreadExecutor();
     private final ConcurrentHashMap<Integer, Request> requests = new ConcurrentHashMap<>();
     private final PodDeviceServices device;
+    void enableDeviceServiceTrace(boolean enabled){device.enableServiceTrace(enabled);}
     private final PodMediaServices media;
     private PodScreenServices screen;
     private final PodDebugPerformance debugPerformance = new PodDebugPerformance();

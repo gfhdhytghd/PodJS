@@ -42,3 +42,12 @@ An optional third `traceServiceWork` argument records a nonnegative integer
 `units` only. Supply lengths/counts with a fixed code-authored label; never pass
 content or sensitive identifiers. KV exposes nested `kv.encode` and `kv.write`
 spans; write units are encoded UTF-16 length (not UTF-8 bytes).
+
+Worker-side `host phase=secure.* id=<requestId> ns=<duration>` records are separate
+from completion records, under the same debuggable/explicit opt-in gate.
+`secure.lock` covers JVM/OS lock acquisition, `secure.key` alias lookup/creation,
+`secure.read` encrypted file IO, `secure.decrypt` AEAD, `secure.json` UTF-8/JSON
+adoption, and `secure.total` the entire secure operation. A missing file has no
+key/decrypt stages. Only fixed labels and integers are logged (4096 stage cap);
+there are no keys, values, paths or errors. Guest continuations run later on the
+main looper: a long `completion method=secure.get` does not establish slow AEAD.

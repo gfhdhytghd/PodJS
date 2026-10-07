@@ -35,6 +35,7 @@ interface PodHost {
   kvSet(key: string, value: string): number;
   kvDelete(key: string): number;
   kvKeys(): string;
+  kvApply?(mutations:string):number;
 }
 
 type AxisHandler = (delta: number) => void;
@@ -182,24 +183,49 @@ function validateKvKey(key: string): void {
   }
 }
 
+type KvMutation={op:'set';key:string;value:unknown}|{op:'delete';key:string};
+let kvBatch:Map<string,string|undefined>|undefined;
 export const kv = Object.freeze({
+  /** Explicit synchronous transaction. Nested calls share staged reads/writes.
+   * Old hosts execute the callback with legacy per-write persistence. */
+  batch<T>(work:()=>T):T {
+    const apply=host()?.kvApply;
+    if(!apply||kvBatch)return work();
+    const staged=new Map<string,string|undefined>();kvBatch=staged;
+    let result:T;
+    try {result=work();if(result&&typeof (result as {then?:unknown}).then==='function')throw new TypeError('PodJS KV batch callback must be synchronous');}
+    finally {kvBatch=undefined;}
+    if(staged.size){const mutations:KvMutation[]=[...staged].map(([key,value])=>value===undefined?{op:'delete',key}:{op:'set',key,value:JSON.parse(value)});
+      const encoded=JSON.stringify(mutations);
+      if(traceServiceWork('kv.batchWrite',()=>apply.call(host(),encoded),encoded.length)!==0)throw new Error('PodJS KV batch write failed');
+    }
+    return result;
+  },
   get<T = unknown>(key: string): T | undefined {
     validateKvKey(key);
-    return traceServiceWork("kv.get",()=>{const value = host()?.kvGet(key);
+    return traceServiceWork("kv.get",()=>{const value = kvBatch?.has(key)?kvBatch.get(key):host()?.kvGet(key);
     return value === undefined ? undefined : JSON.parse(value) as T;});
   },
   set(key: string, value: unknown): void {
     validateKvKey(key);
     traceServiceWork("kv.set",()=>{const encoded = traceServiceWork("kv.encode",()=>JSON.stringify(value));
     if (encoded === undefined) throw new Error("PodJS KV values must be JSON serializable");
+    if(kvBatch){kvBatch.set(key,encoded);return;}
     if (traceServiceWork("kv.write",()=>host()?.kvSet(key, encoded),encoded.length) !== 0) throw new Error(`PodJS KV write failed for ${key}`);});
   },
   delete(key: string): boolean {
     validateKvKey(key);
+    if(kvBatch){const exists=kvBatch.has(key)?kvBatch.get(key)!==undefined:host()?.kvGet(key)!==undefined;kvBatch.set(key,undefined);return exists;}
     return host()?.kvDelete(key) === 0;
   },
   keys(): string[] {
-    return JSON.parse(host()?.kvKeys() ?? "[]") as string[];
+    const original=JSON.parse(host()?.kvKeys() ?? "[]") as string[];
+    if(!kvBatch)return original;
+    const keys=new Set<string>(original);
+    for(const [key,value]of kvBatch){if(value===undefined)keys.delete(key);else keys.add(key);}
+    // Rust string ordering compares Unicode scalar values (UTF-8), while
+    // JS default sort compares UTF-16 code units for supplementary characters.
+    return [...keys].sort((a,b)=>{let i=0,j=0;while(i<a.length&&j<b.length){const left=a.codePointAt(i)!,right=b.codePointAt(j)!;if(left!==right)return left-right;i+=left>0xffff?2:1;j+=right>0xffff?2:1;}return a.length-b.length;});
   },
 });
 
