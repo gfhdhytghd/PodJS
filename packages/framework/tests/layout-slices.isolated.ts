@@ -12,11 +12,11 @@ const {prepareTextLayout}=await import('@podjs/framework/text');
 const {createWindowRows,createIndexedWindowSource,createWindowedList,createWindowValue,visibleWindowRange}=await import('@podjs/framework/windowed-list');
 const {__pumpPodEvents}=await import('../src/watch.ts');
 const settle=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
-async function nextTurn(){const req=emitted.shift()!;expect(req).toMatchObject({t:'service.request',method:'runtime.delay',args:{milliseconds:0}});events.push({t:'service.result',id:req.id,ok:true,value:null});__pumpPodEvents();await settle();}
+async function nextTurn(){const req=emitted.shift()!;expect(req).toMatchObject({t:'service.request',method:'runtime.delay',args:{milliseconds:1}});events.push({t:'service.result',id:req.id,ok:true,value:null});__pumpPodEvents();await settle();}
 type Row={key:number;top:number;height:number;retain:boolean;data:{baseline:number;caret:number}};
 function* fixture(count=513):Generator<Row,{height:number}> {let top=0;for(let i=0;i<count;i++){const height=20+i%3;yield {key:i,top,height,retain:true,data:{baseline:15+i%2,caret:i*2}};top+=height;}return {height:top};}
 const callbacks=(publish:(value:any)=>void)=>({key:(row:Row)=>row.key,entry:(row:Row)=>row,publish});
-test('default scheduler yields real runtime.delay(0), bounds rows and publishes a single coherent indexed snapshot',async()=>{
+test('default scheduler yields real runtime.delay(1), bounds rows and publishes a single coherent indexed snapshot',async()=>{
  const expected=[...fixture()],published:any[]=[];
  const task=prepareTextLayout(fixture(),callbacks(value=>published.push(value)));
  expect(task.stats.rows).toBe(0);expect(published).toHaveLength(0);
@@ -24,6 +24,28 @@ test('default scheduler yields real runtime.delay(0), bounds rows and publishes 
  await task.done;expect(published).toHaveLength(1);expect(published[0].entries).toEqual(expected);expect(published[0].layout.height).toBe(expected.reduce((sum,row)=>sum+row.height,0));
  expect(task.stats.turns).toBeGreaterThan(30);expect(task.stats.rows).toBe(513);expect(task.stats.maxMs).toBeGreaterThanOrEqual(0);
  for(const [index,row] of expected.entries())expect(published[0].indices.get(row.key)).toBe(index);
+});
+test('default layout and byte codecs complete through Android timer validation and real macrotasks',async()=>{
+ const {encodeUtf8Async,encodeBase64Async,decodeBase64Async,decodeUtf8Async}=await import('../src/async-bytes.ts');
+ let complete=false,failure:unknown,turns=0;const published:any[]=[];
+ const work=(async()=>{
+  await prepareTextLayout(fixture(35),callbacks(value=>published.push(value))).done;
+  const text='中🙂'.repeat(3000),bytes=await encodeUtf8Async(text);
+  const base64=await encodeBase64Async(bytes);expect(await decodeBase64Async(base64)).toEqual(bytes);
+  expect(await decodeUtf8Async(bytes)).toBe(text);
+ })().catch(error=>{failure=error;}).finally(()=>{complete=true;});
+ while(!complete){
+  await new Promise(resolve=>setTimeout(resolve,1));
+  for(const req of emitted.splice(0)){
+   expect(req.method).toBe('runtime.delay');turns++;
+   // Exactly PodServices' contract, rather than accepting arbitrary SDK requests.
+   const ms=req.args.milliseconds!;
+   if(ms<1||ms>120000)events.push({t:'service.result',id:req.id,ok:false,code:'invalid_argument',message:'Timer delay must be 1..120000ms'});
+   else {await new Promise(resolve=>setTimeout(resolve,ms));events.push({t:'service.result',id:req.id,ok:true,value:null});}
+   __pumpPodEvents();
+  }
+ }
+ await work;expect(failure).toBeUndefined();expect(published).toHaveLength(1);expect(published[0].entries).toHaveLength(35);expect(turns).toBeGreaterThan(12);
 });
 test('mid-task cancellation cancels the host operation, closes its iterator once and ignores late replies',async()=>{
  let closes=0,published=0;function* rows(){try{yield* fixture();return {height:0};}finally{closes++;}}

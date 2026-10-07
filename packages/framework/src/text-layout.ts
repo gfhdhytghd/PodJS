@@ -25,7 +25,9 @@ export interface TextLayoutSliceOptions {
 export function prepareTextLayout<Row,Layout,Entry,Key>(steps:Iterator<Row,Layout>,
  callbacks:{key:(row:Row)=>Key;entry:(row:Row)=>Entry;publish:(snapshot:TextLayoutSnapshot<Layout,Entry,Key>)=>void},
  options:TextLayoutSliceOptions={}) {
- const clock=options.clock??Date.now,yieldTurn=options.yieldTurn??(()=>delay(0));
+ // Android runtime.timer accepts 1..120000ms; zero is a rejected request,
+ // so every default slice must use the minimum valid host timer.
+ const clock=options.clock??Date.now,yieldTurn=options.yieldTurn??(()=>delay(1));
  const budget=options.budgetMs??.5,limit=options.rowLimit??16;
  if(!Number.isFinite(budget)||budget<=0||!Number.isSafeInteger(limit)||limit<1)throw new RangeError('Invalid text layout slice budget');
  const entries:Entry[]=[],indices=new Map<Key,number>(),stats:TextLayoutSliceStats={turns:0,maxMs:0,rows:0};
