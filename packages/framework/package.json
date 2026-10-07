@@ -31,7 +31,8 @@
     "./xml": "./src/xml.ts",
     "./json": "./src/json.ts",
     "./text-compat": "./src/text-compat.ts",
-    "./startup": "./src/startup.ts"
+    "./startup": "./src/startup.ts",
+    "./logging": "./src/logging.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",
