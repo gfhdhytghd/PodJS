@@ -7,6 +7,7 @@ import { POD_TARGETS, type PodTargetProfile } from "../../framework/src/targets.
 import { resolvePodProject, type ResolvedPodProject } from "./project.ts";
 import { buildBackground } from "./background-build.ts";
 import { syncProjectAssets } from "./project-assets.ts";
+import { androidPackagePlan, signAndroidApk, rotateAndroidSigning, type RotateOptions } from "./android-signing.ts";
 import { buildPakIntegrity } from "./pak-integrity.ts";
 
 const ROOT = resolve(import.meta.dir, "../../..");
@@ -160,7 +161,8 @@ function test(): void {
   run(["bun", "run", "test"]);
 }
 
-async function packageTarget(target: Target, project?: ResolvedPodProject): Promise<void> {
+async function packageTarget(target: Target, project?: ResolvedPodProject, release = false): Promise<void> {
+  if (release && target !== "android-watch" && target !== "wearos-watch") fail("--release currently requires an Android target");
   await build(target, project);
   if (target === "android-watch" || target === "wearos-watch") {
     run(["bash", "scripts/build-android-runtime.sh"]);
@@ -168,7 +170,15 @@ async function packageTarget(target: Target, project?: ResolvedPodProject): Prom
     const gradleArgs = project ? [`-PpodDistDir=${join(project.output, target)}`, `-PpodAppId=${project.config.appId}`, `-PpodAppName=${project.config.name}`, `-PpodVersionName=${project.config.versionName}`, `-PpodVersionCode=${project.config.versionCode}`,
       ...(project.androidResources ? [`-PpodResDir=${project.androidResources}`] : []),
       ...(project.androidTheme ? [`-PpodAppTheme=${project.androidTheme}`] : [])] : [];
-    run(["./gradlew", ...gradleArgs, `${app}:assembleDebug`, `${app}:bundleRelease`, ":runtime:assembleRelease"], join(ROOT, "platforms/android"));
+    const plan = androidPackagePlan(release, project?.androidSigning);
+    run(["./gradlew", ...gradleArgs, ...plan.tasks.map(task => `${app}:${task}`), ":runtime:assembleRelease"], join(ROOT, "platforms/android"));
+    if (plan.release && project?.androidSigning) {
+      const module = target === "android-watch" ? "android/app" : "wearos/app";
+      // Keep APKs outside the directory Gradle packages as runtime assets.
+      const output = join(project.output, "packages", target, "app-release.apk");
+      signAndroidApk(join(ROOT, "platforms", module, "build/outputs/apk/release", `${app.slice(1)}-release-unsigned.apk`), output, project.androidSigning);
+      console.log(`pod: release APK -> ${output}`);
+    }
   } else if (target === "watchos-watch") {
     if (!capture(["xcodebuild", "-version"])) fail("watchOS packaging must run on the configured Mac");
     run([
@@ -201,6 +211,7 @@ function projectOption(path?: string): ResolvedPodProject | undefined {
 interface TargetOptions {
   target?: string;
   project?: string;
+  release?: boolean;
 }
 
 const cli = cac("pod");
@@ -225,13 +236,32 @@ cli
   .command("package [target]", "Build and package a watch target")
   .option("--target <target>", "Watch target (can also be passed positionally)")
   .option("--project <path>", "Project directory or pod.config.json")
+  .option("--release", "Build a non-debuggable release APK using android.signing")
   .action(async (target: string | undefined, options: TargetOptions) => {
-    await packageTarget(targetArg(target, options.target), projectOption(options.project));
+    await packageTarget(targetArg(target, options.target), projectOption(options.project), options.release);
+  });
+
+cli
+  .command("signing <action>", "Create a private Android signing certificate lineage")
+  .option("--new-properties <path>", "New signer keystore.properties (passwords read in a subprocess)")
+  .option("--out <path>", "New lineage path; an existing file is never replaced")
+  .option("--old-properties <path>", "Old signer keystore.properties")
+  .option("--old-debug-keystore <path>", "Old standard Android debug keystore (explicit opt-in)")
+  .option("--old-keystore <path>", "Old keystore with credentials supplied by environment references")
+  .option("--old-key-alias <alias>", "Old key alias")
+  .option("--old-store-pass-env <name>", "Old store password variable name; default POD_OLD_STORE_PASSWORD")
+  .option("--old-key-pass-env <name>", "Old key password variable name; default POD_OLD_KEY_PASSWORD")
+  .action((action: string, options: RotateOptions) => {
+    if (action !== "rotate") fail("signing action must be rotate");
+    if (!options.newProperties || !options.out) fail("signing rotate requires --new-properties and --out");
+    rotateAndroidSigning(options);
+    console.log(`pod: lineage -> ${resolve(options.out)}`);
   });
 
 cli.help();
 cli.version("0.1.0");
 cli.addEventListener("command:*", event => {
+  if (process.argv.some(arg => ["--help", "-h", "--version", "-v"].includes(arg))) return;
   fail(`unknown command: ${(event as CustomEvent<string>).detail}`);
 });
 
@@ -239,6 +269,6 @@ if (process.argv.length === 2) {
   doctor();
 } else {
   cli.parse(process.argv, { run: false });
-  await cli.runMatchedCommand();
+  if (!process.argv.includes("--help") && !process.argv.includes("-h") && !process.argv.includes("--version") && !process.argv.includes("-v")) await cli.runMatchedCommand();
 
 }
