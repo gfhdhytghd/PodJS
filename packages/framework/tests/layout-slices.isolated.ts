@@ -112,7 +112,7 @@ test('reactive window data supports frozen snapshots and added/removed native fi
 test('one immutable first prefix precedes complete geometry through the default host scheduler',async()=>{
  const prefixes:any[]=[],final:any[]=[];
  const task=prepareTextLayout(fixture(200),{...callbacks(value=>final.push(value)),preview:{rows:8,publish:value=>prefixes.push(value)}});
- await nextTurn();expect(prefixes).toHaveLength(1);expect(final).toHaveLength(0);
+ for(let turns=0;!prefixes.length&&turns<16;turns++)await nextTurn();expect(prefixes).toHaveLength(1);expect(final).toHaveLength(0);
  const count=prefixes[0].entries.length;expect(count).toBeGreaterThanOrEqual(8);
  while(emitted.length)await nextTurn();await task.done;
  expect(prefixes).toHaveLength(1);expect(prefixes[0].entries).toHaveLength(count);expect(prefixes[0].indices.size).toBe(count);

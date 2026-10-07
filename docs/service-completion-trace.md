@@ -32,3 +32,8 @@ Clear the log property before recreating the final release View. Recording
 metadata adds diagnostic overhead; release acceptance must use the default-off
 configuration. Method labels identify callbacks, not necessarily the cause of
 all work reached from a callback.
+
+XML preparation exposes `xml.nativeStep` synchronous spans. Upload and flat-row
+adoption are 4096-unit/byte pieces; the default scheduler yields a host timer
+between slices. These spans exclude the timer wait and do not include all work
+in the enclosing completion.
