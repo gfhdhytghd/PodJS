@@ -32,3 +32,8 @@ large-input callers should schedule each call as a separate unit of work.
 Rust mount points are shared by foreground, background and the offline QuickJS
 service-bench example. `xml.nativeStep` can be traced only through the existing
 explicit default-off diagnostic gate; no document text enters diagnostic logs.
+
+The offline `service-bench` example accepts `PODJS_BENCH_KV_DIR` for a private
+scratch directory. It mounts the real `KvStore` get/set wire contract, including
+locking and atomic fsync/rename. Never point this option at a production data
+root. Host-disk timing cannot establish Android/eMMC performance.
