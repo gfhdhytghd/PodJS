@@ -166,7 +166,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/startup` | JS phase tracing, content-ready gates and startup exit interpolation. |
 | `@podjs/framework/startup-overlay` | Startup overlay that stays until its exit frame finishes while content mounts. |
 | `@podjs/framework/logging` | Configurable redaction and serialized persistent FileLogger with caller-owned storage ports. |
-| `@podjs/framework/async` | SerialWriteQueue for ordered bridge writes and explicit flush barriers. |
+| `@podjs/framework/async` | SerialWriteQueue, cancellable bounded final-write waits and target-identity exit coalescing. |
 | `@podjs/framework/editing` | Pure editing/hit-test helpers for text input. |
 | `@podjs/framework/restorable-input` | Restore native input state with explicit application ownership. |
 | `@podjs/framework/qr` | QR encoding and generic QR geometry/data helpers. |
@@ -186,8 +186,14 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/theme-schedule` | Calendar-based local day/night theme policy. |
 | `@podjs/framework/telemetry` | Configurable daily cumulative counters, capture upload scheduling and actual active-playback battery samples. |
 | `@podjs/framework/disclosure` | Persistent initial acknowledgement and per-route confirmation state, without UI or network access. |
+| `@podjs/framework/build-gate` | `FailClosedGate`: once-only asynchronous capability acceptance; caller supplies the predicate. |
+| `@podjs/framework/media-volume` | Float crown volume guard and serialized controller; caller supplies the full profile and media ports. |
+| `@podjs/framework/private-response` | Owned private-file lifecycle plus raw-byte/strict encoded-chunk readers; caller supplies allocation policy, ports, limits and errors. |
+| `@podjs/framework/preview-session` | Session/sequence publication, tail coalescing and expiry; caller supplies data conversion and timeout policy. |
+| `@podjs/framework/text-match` | UTF-16 match ranges and measured segment/line geometry, including wrapped matches. |
 
-Additional guides: [UI/navigation](watch-ui-navigation.md),
+Additional guides: [gates/volume/response/preview/matching](private-response-preview.md),
+[UI/navigation](watch-ui-navigation.md),
 [actions](watch-actions.md), [cache](cache.md),
 [activity/logging](activity-and-file-logging.md),
 [text/list/stream](text-list-and-stream.md),

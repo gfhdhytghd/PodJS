@@ -54,7 +54,12 @@
     "./http-request": "./src/http-request.ts",
     "./startup-overlay": "./src/startup-overlay.tsx",
     "./telemetry": "./src/telemetry.ts",
-    "./disclosure": "./src/disclosure.ts"
+    "./disclosure": "./src/disclosure.ts",
+    "./build-gate": "./src/build-gate.ts",
+    "./media-volume": "./src/media-volume.ts",
+    "./private-response": "./src/private-response.ts",
+    "./preview-session": "./src/preview-session.ts",
+    "./text-match": "./src/text-match.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",

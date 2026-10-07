@@ -54,3 +54,13 @@ test("headless JSON numeric tokens execute without a host and keep UI denied",as
   const f=fixture(`import * as api from '${denied}'; export default ()=>api;`);await expect(buildBackground({denied:f.entry},f.root)).rejects.toThrow('Background');
  }
 });
+
+test("headless build gate executes once without host bootstrap and rejects other U10 entrypoints",async()=>{
+ const {root,entry}=fixture("import {FailClosedGate} from '@podjs/framework/build-gate'; export default async()=>{const gate=new FailClosedGate(value=>value===true);const before=gate.allowed;const first=gate.initialize(async()=>true);const same=gate.initialize(async()=>false)===first;await first;return {before,same,allowed:gate.allowed};};");
+ mkdirSync(join(root,'node_modules/@podjs'),{recursive:true});symlinkSync(new URL('../packages/framework',import.meta.url).pathname,join(root,'node_modules/@podjs/framework'),'dir');
+ const artifacts=await buildBackground({gate:entry},root),context:Record<string,any>={};runInNewContext(readFileSync(join(root,artifacts.gate!.file),'utf8'),context);
+ expect(JSON.parse(JSON.stringify(await context.backgroundHandler()))).toEqual({before:false,same:true,allowed:true});expect(context.pod).toBeUndefined();expect(context.frame).toBeUndefined();
+ for(const denied of ['@podjs/framework/build-gate/unsafe','@podjs/framework/private-response','@podjs/framework/preview-session','@podjs/framework/media-volume','@podjs/framework/text-match','@podjs/framework/services','@podjs/framework/startup-overlay']){
+  const f=fixture(`import * as api from '${denied}'; export default ()=>api;`);await expect(buildBackground({denied:f.entry},f.root)).rejects.toThrow('Background');
+ }
+});
