@@ -2,7 +2,7 @@ import {expect, test} from 'bun:test';
 import {mkdtempSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {validateWorkManagerTakeover, type WorkManagerTakeoverConfig} from '../packages/cli/src/workmanager-takeover.ts';
+import {manifestWorkManagerTakeover, validateWorkManagerTakeover, type WorkManagerTakeoverConfig} from '../packages/cli/src/workmanager-takeover.ts';
 import {resolvePodProject} from '../packages/cli/src/project.ts';
 import {POD_TARGETS} from '../packages/framework/src/targets.ts';
 
@@ -21,4 +21,9 @@ test('legacy configuration survives project resolution without opening signing c
 test('rejects malformed identities, unbounded lists and PodJS-owned work', () => {
   for(const invalid of [null,[],{}, {...config,nativeAppId:'bad/id'}, {...config,nativeAppId:'a.B$'}, {...config,workerClasses:[]}, {...config,workerClasses:['dev.podjs.runtime.PodCloudWorker']}, {...config,uniqueWorkNames:['podjs-cloud-sync-6h']}, {...config,tags:['podjs:notification']}, {...config,workerClasses:['a.B','a.B']}, {...config,tags:['bad\nvalue']}, {...config,tags:Array.from({length:65},(_,i)=>`tag${i}`)}, {...config,uniqueWorkNames:[],tags:[]}, {...config,unknown:true}])
     expect(()=>validateWorkManagerTakeover(invalid)).toThrow('workManagerTakeover');
+});
+test('only the package replacing the native app carries the takeover manifest entry', () => {
+  expect(manifestWorkManagerTakeover('com.example.old',config)).toEqual(config);
+  expect(manifestWorkManagerTakeover('com.example.old.podjs',config)).toBeUndefined();
+  expect(manifestWorkManagerTakeover('com.example.old',undefined)).toBeUndefined();
 });

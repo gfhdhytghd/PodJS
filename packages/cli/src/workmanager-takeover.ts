@@ -27,3 +27,8 @@ export function validateWorkManagerTakeover(raw: unknown): WorkManagerTakeoverCo
   if (!workerClasses.length || !(uniqueWorkNames.length || tags.length)) return invalid();
   return {nativeAppId: value.nativeAppId, workerClasses, uniqueWorkNames, tags};
 }
+
+/** Only the package that replaces the native app retires its workers; coexisting packages ship nothing. */
+export function manifestWorkManagerTakeover(appId: string, config?: WorkManagerTakeoverConfig): WorkManagerTakeoverConfig | undefined {
+  return config?.nativeAppId === appId ? config : undefined;
+}
