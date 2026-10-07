@@ -80,7 +80,11 @@ WSI, as required to avoid releasing surfaces that the driver still references;
 ordinary Choreographer handoff never waits for that barrier.
 
 Pause cancels pending work, waits for executing work, drains submitted slots and
-retires pins. Resume re-enables acceptance only with an attached valid surface.
+retires pins. Resume re-enables acceptance only with an attached valid surface. Both the
+producer accepted hash and the worker presentation hash are invalidated at the
+pause/resume barrier, so the next unchanged guest snapshot is actually submitted
+rather than acknowledged and skipped. This also applies to the initial lifecycle
+control after background boot.
 Acquired-image abort, OUT_OF_DATE, SURFACE_LOST and present error recovery execute
 on the worker and retain K11's semaphore consumption/rebuild ordering. FIFO and
 per-image render-finished semaphores remain unchanged. Shutdown stops acceptance,
