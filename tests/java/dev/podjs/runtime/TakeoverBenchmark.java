@@ -81,14 +81,15 @@ public final class TakeoverBenchmark {
                 if(blocker==null){
                     String app=System.getenv().getOrDefault("WATCHRSS_APP_SOURCE","/home/wilf/data/OPPO_Develop/PodJS_WatchRSS");
                     File output=new File(generation,"oracle-result.json");
-                    ProcessBuilder oracle=new ProcessBuilder("python3",new File(app,"scripts/migration/takeover_oracle.py").toString(),"--native",source.toString(),"--candidate",generation.toString());
+                    String oraclePath=System.getenv().getOrDefault("PODJS_TAKEOVER_ORACLE",new File(app,"scripts/migration/takeover_oracle.py").toString());
+                    ProcessBuilder oracle=new ProcessBuilder("python3",oraclePath,"--native",source.toString(),"--candidate",generation.toString());
                     oracle.environment().put("PYTHONDONTWRITEBYTECODE","1");
                     Process process=oracle.redirectOutput(output).redirectError(ProcessBuilder.Redirect.DISCARD).start();
                     int result=process.waitFor();
-                    if(result!=0)throw new AssertionError("private_core_oracle_failed");
+                    if(output.length()==0)throw new AssertionError("private_core_oracle_failed");
                     org.json.JSONObject checked=PodStoreConverter.json(output);
-                    if(!checked.getBoolean("pass"))throw new AssertionError("private_core_oracle_failed");
                     System.out.println("takeover_benchmark core_oracle="+checked.toString());
+                    if(result!=0||!checked.getBoolean("pass"))throw new AssertionError("private_core_oracle_failed");
                 }
             }
             long copying=roomCopy+roomCopyVerify+fileCopy;
