@@ -119,7 +119,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         if(Files.isDirectory(file.toPath(),LinkOption.NOFOLLOW_LINKS)) {
             File[] children=file.listFiles();if(children==null)throw new IOException("inventory_unreadable");
             for(File child:children){String p=path+"/"+child.getName();
-                if(p.equals("files/package-takeover")||p.equals("files/podjs")||p.equals("files/datastore"))continue;
+                if(p.equals("files/package-takeover")||p.equals("files/podjs")||p.equals("files/datastore")||p.startsWith("files/.podjs-"))continue;
                 walk(p,out);
             }
         }else out.put(path,measure(file).put("category",category(path)));

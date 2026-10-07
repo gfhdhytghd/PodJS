@@ -3,6 +3,8 @@
   <uses-feature android:name="android.hardware.vulkan.version" android:version="0x00401000" android:required="true" />
   <uses-permission android:name="android.permission.INTERNET" />
   <application android:name="dev.podjs.androidwatch.PodApplication" android:theme="${podAppTheme}" android:label="${podAppName}" android:usesCleartextTraffic="${podCleartextTraffic}">
+    <meta-data android:name="dev.podjs.takeover.sourceVersionCode" android:value="${podTakeoverSourceVersionCode}" />
+    <meta-data android:name="dev.podjs.takeover.purgeBackupAfter" android:value="${podTakeoverPurgeBackupAfter}" />
     <activity android:name=".MainActivity" android:screenOrientation="portrait" android:exported="true">
       <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
     </activity>

@@ -43,14 +43,23 @@ public final class PodTakeoverCoordinator {
     }
     public interface Probe { Source detect() throws Exception; }
     public interface Checkpoint { void saved(Phase phase); default void published() {} }
+    public interface Publisher {
+        void beforePublish(File generation) throws Exception;
+        default void afterActive(File generation) throws Exception {}
+    }
+    private static final Publisher NO_PUBLISHER=g -> {};
+    private final Publisher publisher;
     private static final Object PROCESS_LOCK = new Object();
     private final File root;
     private final Probe probe;
     private final Converter converter;
     private final Checkpoint checkpoint;
-    public PodTakeoverCoordinator(File root, Probe probe, Converter converter) { this(root,probe,converter,p -> {}); }
+    public PodTakeoverCoordinator(File root, Probe probe, Converter converter) { this(root,probe,converter,p -> {},NO_PUBLISHER); }
     PodTakeoverCoordinator(File root, Probe probe, Converter converter, Checkpoint checkpoint) {
-        this.root=root; this.probe=probe; this.converter=converter; this.checkpoint=checkpoint;
+        this(root,probe,converter,checkpoint,NO_PUBLISHER);
+    }
+    PodTakeoverCoordinator(File root, Probe probe, Converter converter, Checkpoint checkpoint,Publisher publisher) {
+        this.root=root; this.probe=probe; this.converter=converter; this.checkpoint=checkpoint;this.publisher=publisher;
     }
     public Properties run() throws Exception {
         synchronized (PROCESS_LOCK) {
@@ -81,7 +90,7 @@ public final class PodTakeoverCoordinator {
                 }
                 if (!"1".equals(p.getProperty("protocol"))) throw new IOException("protocol_unsupported");
                 Phase phase=Phase.valueOf(p.getProperty("phase"));
-                if (phase==Phase.ACTIVE) { validatePointer(p); converter.active(generation(p.getProperty("generation"))); return p; }
+                if (phase==Phase.ACTIVE) { validatePointer(p); converter.active(generation(p.getProperty("generation"))); publisher.afterActive(generation(p.getProperty("generation")));return p; }
                 if (phase==Phase.BLOCKED) return p;
                 if (!converter.version().equals(p.getProperty("converter"))) {
                     p.setProperty("reason","converter_changed_candidate_retained"); save(p,Phase.BLOCKED); return p;
@@ -124,6 +133,7 @@ public final class PodTakeoverCoordinator {
                                 if (blocked(p,generation)) return p;
                                 if (!p.getProperty("receipt","").equals(converter.verify(generation))) throw new IOException("receipt_changed");
                                 if (!converter.complete()) throw new IOException("converters_incomplete");
+                                publisher.beforePublish(generation);
                                 Properties activation=new Properties();
                                 activation.setProperty("generation",p.getProperty("generation"));
                                 activation.setProperty("receipt",p.getProperty("receipt"));
@@ -137,7 +147,7 @@ public final class PodTakeoverCoordinator {
                                 checkpoint.published();
                                 validatePointer(p);
                                 phase=Phase.ACTIVE; break;
-                            case ACTIVE: validatePointer(p); converter.active(generation); return p;
+                            case ACTIVE: validatePointer(p); converter.active(generation);publisher.afterActive(generation);return p;
                             default: throw new IOException("phase_invalid");
                         }
                         save(p,phase);

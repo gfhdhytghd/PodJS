@@ -48,7 +48,7 @@ export interface PodProjectConfig {
   /** Omit duplicate function source strings, retaining error locations.
    * Opt in only if Function.toString source introspection is unused. */
   bytecode?: { stripSource: boolean };
-  android?: { debugExternal?: DebugExternalConfig; resources?: string; theme?: string; cleartextTraffic?: boolean; signing?: AndroidSigning };
+  android?: { debugExternal?: DebugExternalConfig; resources?: string; theme?: string; cleartextTraffic?: boolean; signing?: AndroidSigning; takeover?: { sourceVersionCode: number; purgeBackupAfter?: number } };
 }
 
 export interface ResolvedPodProject {
@@ -209,6 +209,14 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
       if (typeof candidate.cleartextTraffic !== "boolean") invalid("android.cleartextTraffic must be a boolean");
       androidCleartextTraffic = candidate.cleartextTraffic;
       android.cleartextTraffic = androidCleartextTraffic;
+    }
+    if (candidate.takeover !== undefined) {
+      const t = candidate.takeover as Record<string, unknown>;
+      if (!t || typeof t !== "object" || Array.isArray(t)) invalid("android.takeover must be an object");
+      if (Object.keys(t).some(k => !["sourceVersionCode", "purgeBackupAfter"].includes(k))) invalid("unknown android.takeover option");
+      if (!Number.isInteger(t.sourceVersionCode) || (t.sourceVersionCode as number) < 1 || (t.sourceVersionCode as number) > 2147483647) invalid("android.takeover.sourceVersionCode must be a positive Android version code");
+      if (t.purgeBackupAfter !== undefined && (!Number.isInteger(t.purgeBackupAfter) || (t.purgeBackupAfter as number) < 1 || (t.purgeBackupAfter as number) > 2147483647)) invalid("android.takeover.purgeBackupAfter must be a positive Android version code");
+      android.takeover = { sourceVersionCode: t.sourceVersionCode as number, ...(t.purgeBackupAfter === undefined ? {} : { purgeBackupAfter: t.purgeBackupAfter as number }) };
     }
     if (candidate.signing !== undefined) {
       const signing = candidate.signing as Record<string, unknown>;

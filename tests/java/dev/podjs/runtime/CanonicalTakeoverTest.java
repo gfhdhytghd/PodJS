@@ -112,7 +112,30 @@ public final class CanonicalTakeoverTest {
             rejects(()->PodTakeoverAdmission.Paths.resolve(coordinator(root,new ArrayList<>()),new File(root,"files/podjs"),new File(root,"databases/podjs.sqlite")),"active_store_missing");
         }finally{StoreTest.remove(holder);StoreTest.remove(real);}
     }
+    static void completeBundleBackupAndRecovery()throws Exception {
+        File sandbox=FileTakeoverTest.fixture();
+        try {
+            String original=PodRoomV18Converter.hash(new File(sandbox,"databases/watchrss.db"));
+            StoreTest.write(new File(sandbox,"no_backup/native-bookkeeping"),"native".getBytes());
+            java.util.concurrent.atomic.AtomicBoolean interrupted=new java.util.concurrent.atomic.AtomicBoolean();
+            PodTakeoverCoordinator.Publisher publisher=g -> new dev.podjs.takeover.NativeBackup(sandbox,b->{
+                if(b.equals("backup-move-0")&&!interrupted.getAndSet(true))throw new IOException("interrupted");
+            },File::getUsableSpace).prepare(g.getName(),40,"a".repeat(64));
+            PodTakeoverCoordinator c=new PodTakeoverCoordinator(new File(sandbox,"files/package-takeover"),
+                ()->PodTakeoverSource.detect(sandbox,true),FileTakeoverTest.composite(sandbox,b->{},new StoreTest.Crypto()),p->{},publisher);
+            Properties state=c.run();check(state.getProperty("phase").equals("PAUSED"),"backup pauses complete bundle");
+            check(!new File(sandbox,"files/package-takeover/active").exists(),"partial backup cannot publish");
+            c=new PodTakeoverCoordinator(new File(sandbox,"files/package-takeover"),
+                ()->{throw new AssertionError("must resume from private snapshots");},FileTakeoverTest.composite(sandbox,b->{},new StoreTest.Crypto()),p->{},publisher);
+            state=c.run();check(state.getProperty("phase").equals("ACTIVE"),"complete bundle resumes after source rename");
+            File g=c.activeGeneration(state);StoreTest.write(new File(g,"podjs/files/new-user-note"),"post-ACTIVE".getBytes());
+            new dev.podjs.takeover.NativeBackup(sandbox).restore(g.getName(),"a".repeat(64));
+            check(original.equals(PodRoomV18Converter.hash(new File(sandbox,"databases/watchrss.db"))),"native database original bytes restored");
+            check(Files.readString(new File(sandbox,"files/.podjs-recovered/"+g.getName()+"/files/package-takeover/generations/"+g.getName()+"/podjs/files/new-user-note").toPath()).equals("post-ACTIVE"),"new user data archived");
+        }finally{StoreTest.remove(sandbox);}
+    }
     public static void main(String[] args)throws Exception {
+        completeBundleBackupAndRecovery();
         fresh();nativeConversion();internalLinks();
         System.out.println("CanonicalTakeoverTest PASS: root/ancestor aliases, empty and PodJS-only NONE zero writes, DETECTED-to-ACTIVE conversion, canonical admission/restart, internal source/control/store links rejected");
     }

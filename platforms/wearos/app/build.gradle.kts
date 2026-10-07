@@ -10,6 +10,10 @@ android {
     androidResources { noCompress += listOf("pak", "qbc") }
     namespace = "dev.podjs.wear"; compileSdk = 36
     defaultConfig { applicationId = podAppId; minSdk = 30; targetSdk = 36; versionCode = podVersionCode; versionName = podVersionName; manifestPlaceholders["podAppName"] = podAppName; manifestPlaceholders["podCleartextTraffic"] = podCleartextTraffic; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+    defaultConfig {
+        manifestPlaceholders["podTakeoverSourceVersionCode"] = providers.gradleProperty("podTakeoverSourceVersionCode").map(String::toInt).orElse(0).get()
+        manifestPlaceholders["podTakeoverPurgeBackupAfter"] = providers.gradleProperty("podTakeoverPurgeBackupAfter").map(String::toInt).orElse(0).get()
+    }
     buildTypes { getByName("release") { isDebuggable = providers.gradleProperty("podReleaseDebuggable").map(String::toBooleanStrict).orElse(false).get() } }
     providers.gradleProperty("podDebugExternalDir").orNull?.let { directory ->
         sourceSets["debug"].manifest.srcFile("$directory/AndroidManifest.xml")

@@ -35,7 +35,7 @@ public final class PodTakeover {
                         progress.phase(phase);
                         if ((c.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)
                             android.util.Log.i("PodTakeoverPhase", phase.name());
-                    });
+                    },new PodTakeoverBackup(c,sandbox));
     }
     private static PodTakeoverCoordinator coordinator(Context c,File sandbox) {
         return coordinator(c,sandbox,new ProgressReporter(c,null));

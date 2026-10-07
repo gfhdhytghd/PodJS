@@ -37,7 +37,8 @@ final class PodTakeoverSource {
         if(!unlocked)block="user_locked";
         long bytes=Math.addExact(Math.addExact(size(db),size(new File(db+"-wal"))),size(new File(sandbox,"shared_prefs")));
         for(File parent:new File[]{files,new File(sandbox,"cache")})if(parent.exists())for(File child:children(parent))
-            if(!child.getName().equals("package-takeover")&&!child.getName().equals("podjs"))bytes=Math.addExact(bytes,size(child));
+            if(!child.getName().equals("package-takeover")&&!child.getName().equals("podjs")&&!child.getName().startsWith(".podjs-"))bytes=Math.addExact(bytes,size(child));
+        bytes=Math.addExact(bytes,size(new File(sandbox,"no_backup")));
         long required=Math.addExact(Math.multiplyExact(bytes,3),32L*1024*1024);
         PodTakeoverCoordinator.Source result=new PodTakeoverCoordinator.Source(true,block,schema,required,sandbox.getUsableSpace());
         result.inventory.putAll(inventory);return result;

@@ -181,7 +181,9 @@ async function packageTarget(target: Target, project?: ResolvedPodProject, relea
     const gradleArgs = project ? [`-PpodDistDir=${join(project.output, target)}`, `-PpodAppId=${project.config.appId}`, `-PpodAppName=${project.config.name}`, `-PpodVersionName=${project.config.versionName}`, `-PpodVersionCode=${project.config.versionCode}`,
       ...(project.androidResources ? [`-PpodResDir=${project.androidResources}`] : []),
       ...(project.androidTheme ? [`-PpodAppTheme=${project.androidTheme}`] : []),
-      `-PpodCleartextTraffic=${project.androidCleartextTraffic === true}`] : [];
+      `-PpodCleartextTraffic=${project.androidCleartextTraffic === true}`,
+      `-PpodTakeoverSourceVersionCode=${project.config.android?.takeover?.sourceVersionCode ?? 0}`,
+      `-PpodTakeoverPurgeBackupAfter=${project.config.android?.takeover?.purgeBackupAfter ?? 0}`] : [];
     if(project){
       const debugDir=join(project.output,"debug-external",target);
       writeDebugExternal(debugDir,project.config.android?.debugExternal,target==="android-watch"?"dev.podjs.androidwatch.MainActivity":"dev.podjs.wear.MainActivity");
