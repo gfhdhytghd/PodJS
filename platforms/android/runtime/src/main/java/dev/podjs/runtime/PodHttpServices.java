@@ -8,7 +8,9 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.net.HttpURLConnection;
+import okhttp3.*;
+import okio.BufferedSink;
+import java.util.concurrent.TimeUnit;
 import java.net.URI;
 import java.net.URL;
 import java.nio.file.Files;
@@ -20,7 +22,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** Streaming HTTP download service. This helper is intentionally not wired into the bridge. */
+/** Bounded streaming HTTP with dual-stack connection racing and cancellable calls. */
 public final class PodHttpServices implements AutoCloseable {
     private static final int MAX_REDIRECTS = 5;
     private static final int BUFFER_SIZE = 32 * 1024;
@@ -28,15 +30,19 @@ public final class PodHttpServices implements AutoCloseable {
     private static final long MAX_BYTES = 64L * 1024 * 1024;
     private static final int DEFAULT_TIMEOUT_MS = 30_000;
     private final File root;
+    private final OkHttpClient client;
     private final Map<Integer, AtomicBoolean> cancellations = new ConcurrentHashMap<>();
-    private final Map<Integer, HttpURLConnection> connections = new ConcurrentHashMap<>();
+    private final Map<Integer, Call> connections = new ConcurrentHashMap<>();
     private final Object cancellationLock = new Object();
     private final java.util.Set<File> temporaryFiles = new java.util.HashSet<>();
     private volatile boolean closed;
     private final java.util.concurrent.ScheduledExecutorService deadlines=java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
     private final java.util.concurrent.atomic.AtomicInteger internalIds=new java.util.concurrent.atomic.AtomicInteger(-1);
 
-    public PodHttpServices(Context context) {
+    public PodHttpServices(Context context) { this(context,new OkHttpClient.Builder().fastFallback(true).followRedirects(false).followSslRedirects(false).build()); }
+
+    PodHttpServices(Context context,OkHttpClient client) {
+        this.client=client;
         if (context == null) throw new IllegalArgumentException("context_required");
         File base = PodTakeover.filesRoot(context);
         if (!base.exists() && !base.mkdirs()) throw new IllegalStateException("service_root_unavailable");
@@ -64,13 +70,13 @@ public final class PodHttpServices implements AutoCloseable {
         boolean changed;
         synchronized (cancellationLock) {
             changed = flag.compareAndSet(false, true);
-            HttpURLConnection connection = connections.get(requestId);
-            if (connection != null) connection.disconnect();
+            Call connection = connections.get(requestId);
+            if (connection != null) connection.cancel();
         }
         return changed;
     }
 
-    @Override public void close() { synchronized (cancellationLock) { closed = true; deadlines.shutdownNow(); for (File file : temporaryFiles) file.delete(); temporaryFiles.clear(); for (Map.Entry<Integer, AtomicBoolean> entry : cancellations.entrySet()) { entry.getValue().set(true); HttpURLConnection connection = connections.get(entry.getKey()); if (connection != null) connection.disconnect(); } } }
+    @Override public void close() { synchronized (cancellationLock) { closed = true; deadlines.shutdownNow(); for (File file : temporaryFiles) file.delete(); temporaryFiles.clear();client.connectionPool().evictAll();client.dispatcher().executorService().shutdown(); for (Map.Entry<Integer, AtomicBoolean> entry : cancellations.entrySet()) { entry.getValue().set(true); Call connection = connections.get(entry.getKey()); if (connection != null) connection.cancel(); } } }
 
     void discard(JSONObject result) {
         synchronized (cancellationLock) {
@@ -101,39 +107,46 @@ public final class PodHttpServices implements AutoCloseable {
         File parent = target.getParentFile();
         if (!parent.exists() && !parent.mkdirs()) throw new IOException("parent_unavailable");
         File tmp = new File(parent, target.getName() + ".download-" + System.nanoTime());
-        HttpURLConnection connection = null;
+        Call connection = null;Response response = null;
         try (FileOutputStream out = new FileOutputStream(tmp)) {
             URL current = checkedUrl(rawUrl);
             int redirects = 0;
             while (true) {
                 if (closed || cancelled.get()) throw new IOException("download_cancelled");
-                connection = (HttpURLConnection) current.openConnection();
-                int requestId = args.optInt("requestId", 0);
-                if (requestId != 0) connections.put(requestId, connection);
-                connection.setInstanceFollowRedirects(false);
-                connection.setConnectTimeout(timeout); connection.setReadTimeout(readTimeout);
-                connection.setRequestMethod(method);
-                for (Map.Entry<String, String> header : headers.entrySet()) connection.setRequestProperty(header.getKey(), header.getValue());
-                if("POST".equals(method)||"PATCH".equals(method)){
-                    connection.setDoOutput(true);connection.setFixedLengthStreamingMode(bodyFile==null?requestBody.length:bodyFile.length());
-                    try(java.io.OutputStream request=connection.getOutputStream()){
-                        if(bodyFile==null)request.write(requestBody);
-                        else try(FileInputStream input=new FileInputStream(bodyFile)){
-                            byte[] block=new byte[BUFFER_SIZE];int n;long sent=0,expected=bodyFile.length();
-                            while((n=input.read(block))!=-1){if(closed||cancelled.get())throw new IOException("download_cancelled");sent+=n;if(sent>expected)throw new IOException("request_body_changed");request.write(block,0,n);}
-                            if(sent!=expected)throw new IOException("request_body_changed");
+                final File uploadFile=bodyFile;final byte[] uploadBytes=requestBody;
+                RequestBody body=null;
+                if("POST".equals(method)||"PATCH".equals(method))body=new RequestBody(){
+                    public MediaType contentType(){return null;}
+                    public long contentLength(){return uploadFile==null?uploadBytes.length:uploadFile.length();}
+                    public boolean isOneShot(){return true;}
+                    public void writeTo(BufferedSink sink)throws IOException{
+                        if(closed||cancelled.get())throw new IOException("download_cancelled");
+                        if(uploadFile==null){sink.write(uploadBytes);return;}
+                        long expected=uploadFile.length(),sent=0;
+                        try(FileInputStream input=new FileInputStream(uploadFile)){
+                            byte[] block=new byte[BUFFER_SIZE];int n;
+                            while((n=input.read(block))!=-1){if(closed||cancelled.get())throw new IOException("download_cancelled");sent+=n;if(sent>expected)throw new IOException("request_body_changed");sink.write(block,0,n);}
                         }
+                        if(sent!=expected)throw new IOException("request_body_changed");
                     }
+                };
+                Request.Builder request=new Request.Builder().url(current).method(method,body);
+                for(Map.Entry<String,String> header:headers.entrySet())request.header(header.getKey(),header.getValue());
+                connection=client.newBuilder().connectTimeout(timeout,TimeUnit.MILLISECONDS).readTimeout(readTimeout,TimeUnit.MILLISECONDS).writeTimeout(timeout,TimeUnit.MILLISECONDS).build().newCall(request.build());
+                synchronized(cancellationLock){
+                    if(closed||cancelled.get())throw new IOException("download_cancelled");
+                    connections.put(args.getInt("requestId"),connection);
                 }
-                int status = connection.getResponseCode();
+                response=connection.execute();
+                int status=response.code();
                 if (status < 300 || status > 399) {
                     boolean success = status >= 200 && status < 300;
                     if (!success && !args.optBoolean("acceptHttpErrors", false)) throw new IOException("http_status:" + status);
                     long length = 0;
                     if (!"HEAD".equals(method)) {
-                        java.io.InputStream responseStream = success ? connection.getInputStream() : connection.getErrorStream();
+                        java.io.InputStream responseStream = response.body()==null?null:response.body().byteStream();
                         try (java.io.InputStream in = responseStream == null ? new java.io.ByteArrayInputStream(new byte[0]) : responseStream) {
-                            if(args.optBoolean("text",false)) length=copyText(in,out,connection.getContentType(),maxBytes,cancelled);
+                            if(args.optBoolean("text",false)) length=copyText(in,out,response.header("Content-Type"),maxBytes,cancelled);
                             else {
                             byte[] buffer = new byte[BUFFER_SIZE]; int n;
                             while ((n = in.read(buffer)) != -1) {
@@ -153,10 +166,10 @@ public final class PodHttpServices implements AutoCloseable {
                         temporaryFiles.removeIf(file -> !file.exists());
                         if(temporary)temporaryFiles.add(target);else temporaryFiles.remove(target);
                     }
-                    return result(status, connection, current, target, length);
+                    return result(status, response, current, target, length);
                 }
                 if(!args.optBoolean("followRedirects",true))throw new IOException("redirect_disabled");
-                String location = connection.getHeaderField("Location");
+                String location = response.header("Location");
                 if (location == null || ++redirects > MAX_REDIRECTS) throw new IOException("redirect_limit");
                 URL next = checkedUrl(current.toURI().resolve(location).toURL().toString());
                 if (!origin(current).equals(origin(next))) {
@@ -165,9 +178,9 @@ public final class PodHttpServices implements AutoCloseable {
                 }
                 if("POST".equals(method)&&(status==301||status==302||status==303)){method="GET";requestBody=new byte[0];bodyFile=null;headers.remove("content-type");}
                 current = next;
-                connection.disconnect(); connection = null;
+                response.close();response=null;connection=null;
             }
-        } finally { if (connection != null) connection.disconnect(); if (tmp.exists()) tmp.delete(); }
+        } finally {if(response!=null)response.close();if(connection!=null)connection.cancel();if(tmp.exists())tmp.delete();}
     }
 
     /** Decode response text using its BOM/declared charset and store bounded UTF-8 bytes. */
@@ -199,9 +212,9 @@ public final class PodHttpServices implements AutoCloseable {
         return written[0];
     }
 
-    private JSONObject result(int status, HttpURLConnection c, URL url, File target, long size) throws Exception {
+    private JSONObject result(int status, Response c, URL url, File target, long size) throws Exception {
         JSONObject headers = new JSONObject();
-        for (Map.Entry<String, List<String>> e : c.getHeaderFields().entrySet()) {
+        for (Map.Entry<String, List<String>> e : c.headers().toMultimap().entrySet()) {
             if (e.getKey() != null) headers.put(e.getKey(), e.getValue() == null ? "" : String.join(", ", e.getValue()));
         }
         return new JSONObject().put("status", status).put("headers", headers).put("url", url.toString()).put("path", relative(target)).put("size", size);

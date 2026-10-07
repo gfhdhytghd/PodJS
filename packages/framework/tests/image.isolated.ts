@@ -216,3 +216,12 @@ test("finished byte-upload cleanup does not delete its output again on texture e
  const release=bindRemoteImage({url:"once",filePath:"source",width:2,height:1},{id:nextNode++});await tick();
  release();releaseRetainedRemoteImages();await tick();expect(removedFiles.filter(x=>x==="images/a.rgba")).toHaveLength(1);
 });
+
+test("onSize remount receives intrinsic dimensions once without a second live-map publication",async()=>{
+ const first={id:nextNode++},replacement={id:nextNode++};let endFirst=()=>{},endReplacement=()=>{},firstCalls=0,replacementCalls=0;
+ const props={source:{url:"remount",filePath:"notes/owned.png"},loader,width:205,height:100,fit:"contain" as const};
+ endFirst=loader.bind(props,first as never,(w,h)=>{firstCalls++;endFirst();endReplacement=loader.bind({...props,height:101},replacement as never,()=>replacementCalls++);});
+ await tick();await tick();expect(firstCalls).toBe(1);expect(replacementCalls).toBe(1);
+ expect(calls.filter(c=>c[0]==="uploadTexture")).toHaveLength(1);expect(calls.filter(c=>c[0]==="freeTexture")).toHaveLength(0);
+ endReplacement();loader.releaseRetained();expect(calls.filter(c=>c[0]==="freeTexture")).toHaveLength(1);
+});
