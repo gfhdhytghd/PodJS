@@ -39,7 +39,8 @@
     "./qr": "./src/qr.ts",
     "./image-preview": "./src/image-preview.ts",
     "./image-tiles": "./src/image-tiles.ts",
-    "./tiled-image": "./src/tiled-image.tsx"
+    "./tiled-image": "./src/tiled-image.tsx",
+    "./cache": "./src/cache.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",
