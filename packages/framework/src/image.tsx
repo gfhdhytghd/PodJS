@@ -146,7 +146,12 @@ export function createImageLoader<S extends ImageSource>(options:ImageLoaderOpti
       if (entry.cancelled) { getOps().freeTexture?.(handle); return; }
       entry.handle = handle;
       entry.sourceWidth=decoded.sourceWidth??decoded.width;entry.sourceHeight=decoded.sourceHeight??decoded.height;
-      for (const [node,callbacks] of entry.nodes) {getOps().setImage(node.id, handle);callbacks.onSize?.(entry.sourceWidth,entry.sourceHeight);}
+      // Size callbacks may synchronously replace virtualized rows. A replacement
+      // is delivered by bind(), not revisited by this completion's Map iterator.
+      for (const [node,callbacks] of [...entry.nodes]) {
+        if(entry.nodes.get(node)!==callbacks)continue;
+        getOps().setImage(node.id, handle);callbacks.onSize?.(entry.sourceWidth,entry.sourceHeight);
+      }
     } catch (error) {
       if (!entry.cancelled) {entry.error=error;logConsole.warn('RemoteImage request failed');for(const callbacks of entry.nodes.values())callbacks.onError?.(error);}
     } finally {
