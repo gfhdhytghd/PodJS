@@ -12,6 +12,14 @@ android {
     namespace = "dev.podjs.androidwatch"; compileSdk = 36
     defaultConfig { applicationId = podAppId; minSdk = 30; targetSdk = 36; versionCode = podVersionCode; versionName = podVersionName; manifestPlaceholders["podAppName"] = podAppName; manifestPlaceholders["podCleartextTraffic"] = podCleartextTraffic; manifestPlaceholders["podAppTheme"] = podAppTheme; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     buildTypes { getByName("release") { isDebuggable = providers.gradleProperty("podReleaseDebuggable").map(String::toBooleanStrict).orElse(false).get() } }
+    providers.gradleProperty("podDebugExternalDir").orNull?.let { directory ->
+        sourceSets["debug"].manifest.srcFile("$directory/AndroidManifest.xml")
+        sourceSets["debug"].java.srcDir("$directory/java")
+        if (providers.gradleProperty("podReleaseDebuggable").orElse("false").get() == "true") {
+            sourceSets["release"].manifest.srcFile("$directory/AndroidManifest.xml")
+            sourceSets["release"].java.srcDir("$directory/java")
+        }
+    }
     sourceSets["main"].assets.srcDir(podDistDir)
     providers.gradleProperty("podResDir").orNull?.let { sourceSets["main"].res.srcDir(it) }
     providers.gradleProperty("podTestAssetsDir").orNull?.let { sourceSets["androidTest"].assets.srcDir(it) }

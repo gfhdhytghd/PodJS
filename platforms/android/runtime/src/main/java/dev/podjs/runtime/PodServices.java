@@ -20,6 +20,7 @@ import java.util.concurrent.Future;
 
 /** Version 1 asynchronous service transport, scoped to one guest lifetime. */
 final class PodServices implements Closeable {
+    private java.util.function.Consumer<String> debugExternalSink;
     interface Sink { void complete(String event); }
     private final Context context;
     final PodActivityState activityState = new PodActivityState();
@@ -439,6 +440,17 @@ final class PodServices implements Closeable {
             if (requests.remove(id,request)) reply(id,true,PodTakeover.status(context),null,null);
             return;
         }
+        if (method.startsWith("debug.external.")) {
+            if (!requests.remove(id,request)) return;
+            try {
+                if ((context.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)==0) throw new SecurityException();
+                Class<?> bridge=Class.forName("dev.podjs.debug.PodDebugExternal");
+                if(debugExternalSink==null)debugExternalSink=value->main.post(()->{if(!closed)sink.complete(value);});
+                Object value=bridge.getMethod("execute",Context.class,String.class,JSONObject.class,java.util.function.Consumer.class).invoke(null,context,method,args,debugExternalSink);
+                reply(id,true,value,null,null);
+            } catch(Exception error) { failure(id,"unavailable","Debug external interface unavailable"); }
+            return;
+        }
         if ("app.buildInfo".equals(method)) {
             if (!requests.remove(id, request)) return;
             try {
@@ -789,6 +801,7 @@ final class PodServices implements Closeable {
     }
     @Override public void close() {
         closed=true;
+        if(debugExternalSink!=null)try {Class.forName("dev.podjs.debug.PodDebugExternal").getMethod("close",java.util.function.Consumer.class).invoke(null,debugExternalSink);}catch(Exception ignored){} finally{debugExternalSink=null;}
         acoustic.close();guidedWifi.close();acousticWorkers.shutdownNow();
         main.post(()->{acousticPermission.cancel();guidedPermission.cancel();});
         main.post(notificationPermission::cancel);

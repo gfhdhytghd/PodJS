@@ -1,3 +1,4 @@
+import {validateDebugExternal,type DebugExternalConfig} from './debug-external.ts';
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import type { PodTargetProfile } from "../../framework/src/targets.ts";
@@ -47,7 +48,7 @@ export interface PodProjectConfig {
   /** Omit duplicate function source strings, retaining error locations.
    * Opt in only if Function.toString source introspection is unused. */
   bytecode?: { stripSource: boolean };
-  android?: { resources?: string; theme?: string; cleartextTraffic?: boolean; signing?: AndroidSigning };
+  android?: { debugExternal?: DebugExternalConfig; resources?: string; theme?: string; cleartextTraffic?: boolean; signing?: AndroidSigning };
 }
 
 export interface ResolvedPodProject {
@@ -192,6 +193,7 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
     if (!value.android || typeof value.android !== "object" || Array.isArray(value.android)) invalid("android must be an object");
     const candidate = value.android as Record<string, unknown>;
     android = {};
+    if(candidate.debugExternal!==undefined)android.debugExternal=validateDebugExternal(candidate.debugExternal);
     if (candidate.resources !== undefined) {
       const resourcesPath = stringField(candidate.resources, "android.resources");
       androidResources = resolve(root, resourcesPath);
