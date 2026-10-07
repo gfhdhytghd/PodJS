@@ -7,10 +7,6 @@ Choreographer continues to drive the guest on Android's main thread. FIFO acquir
 frame fences, upload preparation, command recording, queue submission, and present
 run on the renderer thread. A blocking WSI call delays that thread's consumer,
 while the guest lane can continue processing input and producing newer snapshots.
-The main callback harvests successful GPU or CPU submissions and invalidates the
-TextureView so Android traverses the view after asynchronous output completes.
-An idle poll or a skipped snapshot does not invalidate the view or request another
-renderer submission. Submission completion is not a physical display acknowledgment.
 
 ## Immutable handoff
 
