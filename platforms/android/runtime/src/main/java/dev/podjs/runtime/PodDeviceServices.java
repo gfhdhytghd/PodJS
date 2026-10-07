@@ -55,6 +55,8 @@ public final class PodDeviceServices implements AutoCloseable {
     private final File secureFile;
     private final SecureRandom random = new SecureRandom();
     private boolean closed;
+    private DeviceServiceTrace secureTrace=new DeviceServiceTrace(false,line->{});
+    synchronized void enableServiceTrace(boolean enabled){secureTrace=new DeviceServiceTrace(enabled,line->android.util.Log.i("PodJSService",line));}
     private long nextTextReader;
     private final java.util.Map<String,java.io.BufferedReader> textReaders = new java.util.HashMap<>();
     private final java.util.Set<File> temporaryFiles = new java.util.HashSet<>();
@@ -129,41 +131,57 @@ public final class PodDeviceServices implements AutoCloseable {
     // Foreground and background own separate service instances. Reload/update
     // the encrypted map under an OS lock so unrelated keys cannot be lost.
     private JSONObject secureOperation(String method,JSONObject args) throws Exception {
-        synchronized(SECURE_LOCK){
+        long total=secureTrace.begin(),waiting=total;int id=args.optInt("requestId",-1);
+        try{synchronized(SECURE_LOCK){
             try(java.io.RandomAccessFile file=new java.io.RandomAccessFile(new File(secureFile.getParentFile(),"secure.store.lock"),"rw");
                 java.nio.channels.FileLock lock=file.getChannel().lock()){
+                secureTrace.end("secure.lock",waiting,id);
                 if("secure.get".equals(method))return secureGet(args);
                 if("secure.set".equals(method))return secureSet(args);
                 return secureDelete(args);
             }
-        }
+        }}finally{secureTrace.end("secure.total",total,id);}
     }
     private JSONObject secureGet(JSONObject a) throws Exception {
-        JSONObject values = readSecure(); String key = required(a, "key");
+        JSONObject values = readSecure(a.optInt("requestId",-1)); String key = required(a, "key");
         JSONObject out = new JSONObject(); out.put("exists", values.has(key));
         if (values.has(key)) out.put("value", values.getString(key));
         return out;
     }
     private JSONObject secureSet(JSONObject a) throws Exception {
         String key = required(a, "key"); String value = required(a, "value");
-        JSONObject values = readSecure(); values.put(key, value); writeSecure(values);
+        JSONObject values = readSecure(a.optInt("requestId",-1)); values.put(key, value); writeSecure(values);
         return new JSONObject().put("ok", true);
     }
     private JSONObject secureDelete(JSONObject a) throws Exception {
-        JSONObject values = readSecure(); boolean removed = values.remove(required(a, "key")) != null;
+        JSONObject values = readSecure(a.optInt("requestId",-1)); boolean removed = values.remove(required(a, "key")) != null;
         if (removed) writeSecure(values); return new JSONObject().put("deleted", removed);
     }
-    private JSONObject readSecure() throws Exception {
+    private JSONObject readSecure(int id) throws Exception {
         if (!secureFile.isFile()) return new JSONObject();
-        return readSecureFile(secureFile, getKey(SECURE_ALIAS));
+        long began=secureTrace.begin();SecretKey key;
+        try{key=getKey(SECURE_ALIAS);}finally{secureTrace.end("secure.key",began,id);}
+        return readSecureFile(secureFile,key,secureTrace,id);
     }
     /** Shared production decoder for private candidate verification; does not open/create aliases. */
     static JSONObject readSecureFile(File file, SecretKey key) throws Exception {
-        return decodeSecureBytes(readAll(file, MAX_CHUNK_BYTES + 64), key);
+        return readSecureFile(file,key,new DeviceServiceTrace(false,line->{}),-1);
+    }
+    static JSONObject readSecureFile(File file,SecretKey key,DeviceServiceTrace trace,int id) throws Exception {
+        long began=trace.begin();byte[] bytes;
+        try{bytes=readAll(file,MAX_CHUNK_BYTES+64);}finally{trace.end("secure.read",began,id);}
+        return decodeSecureBytes(bytes,key,trace,id);
     }
     static JSONObject decodeSecureBytes(byte[] all, SecretKey key) throws Exception {
+        return decodeSecureBytes(all,key,new DeviceServiceTrace(false,line->{}),-1);
+    }
+    static JSONObject decodeSecureBytes(byte[] all,SecretKey key,DeviceServiceTrace trace,int id) throws Exception {
         if (all.length < 28 || all.length > MAX_CHUNK_BYTES + 64) throw new IOException("secure_store_corrupt");
-        return new JSONObject(new String(decryptWithKey(key, all), StandardCharsets.UTF_8));
+        long began=trace.begin();byte[] plain;
+        try{plain=decryptWithKey(key,all);}finally{trace.end("secure.decrypt",began,id);}
+        began=trace.begin();
+        try{return new JSONObject(new String(plain,StandardCharsets.UTF_8));}
+        finally{Arrays.fill(plain,(byte)0);trace.end("secure.json",began,id);}
     }
     private void writeSecure(JSONObject values) throws Exception {
         byte[] encrypted = encryptWithKey(getKey(SECURE_ALIAS), values.toString().getBytes(StandardCharsets.UTF_8));

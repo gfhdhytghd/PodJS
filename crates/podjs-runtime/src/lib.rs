@@ -561,6 +561,12 @@ fn mount_pod(
             })?,
         )?;
 
+        let store = kv.clone();
+        ns.set("kvApply", Function::new(ctx.clone(), move |encoded:String| -> i32 {
+            let Ok(mutations)=serde_json::from_str::<Vec<kv::KvMutation>>(&encoded) else {return 1;};
+            if store.borrow_mut().apply(mutations).is_ok(){0}else{1}
+        })?)?;
+
         let store = kv;
         ns.set(
             "kvKeys",

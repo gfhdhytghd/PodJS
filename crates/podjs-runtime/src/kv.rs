@@ -3,6 +3,9 @@
 use std::{collections::BTreeMap, fs::{File, OpenOptions}, io::{self, Read, Write}, path::PathBuf};
 use serde_json::{Value, value::{RawValue, to_raw_value}};
 type Values = BTreeMap<String, Box<RawValue>>;
+#[derive(serde::Deserialize)]
+#[serde(tag="op", rename_all="lowercase", deny_unknown_fields)]
+pub enum KvMutation { Set {key:String,value:Value}, Delete {key:String} }
 
 #[cfg(unix)]
 fn exclusive_lock(file:&File)->io::Result<()> {
@@ -97,6 +100,17 @@ impl KvStore {
     pub fn set(&mut self,key:String,value:Value)->io::Result<()> {
         if key.is_empty() || key.len()>128 {return Err(io::Error::other("Invalid KV key"));}
         self.operation(true,|values|{values.insert(key,to_raw_value(&value)?);Ok(())})
+    }
+    /// Explicit synchronous SDK batch: validate all mutations before one commit.
+    pub fn apply(&mut self,mutations:Vec<KvMutation>)->io::Result<()> {
+        if mutations.len()>1024 {return Err(io::Error::other("Too many KV mutations"));}
+        for mutation in &mutations {let key=match mutation {KvMutation::Set{key,..}|KvMutation::Delete{key}=>key};
+            if key.is_empty()||key.len()>128 {return Err(io::Error::other("Invalid KV key"));}
+        }
+        self.operation(true,|values|{for mutation in mutations {match mutation {
+            KvMutation::Set{key,value}=>{values.insert(key,to_raw_value(&value)?);},
+            KvMutation::Delete{key}=>{values.remove(&key);},
+        }}Ok(())})
     }
     pub fn delete(&mut self,key:&str)->io::Result<bool> {self.operation(true,|values|Ok(values.remove(key).is_some()))}
 }
@@ -199,6 +213,19 @@ mod tests {
         assert_eq!(std::fs::read(root.join("podjs-kv.json")).unwrap(),before);
         assert_eq!(store.get("oversized").unwrap(),None);
         assert_eq!(store.get("external").unwrap(),Some(Value::from(22)));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test] fn batch_commits_once_and_rejects_without_poisoning_disk() {
+        let root=std::env::temp_dir().join(format!("podjs-kv-batch-{}",std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();let mut store=KvStore::open(root.to_str());
+        let before=br#"{"other":"unchanged","value":0}"#;std::fs::write(root.join("podjs-kv.json"),before).unwrap();
+        store.apply(vec![KvMutation::Set{key:"value".into(),value:serde_json::json!({"nested":[-0.0,"汉😀"]})},KvMutation::Set{key:"temporary".into(),value:Value::Null},KvMutation::Delete{key:"temporary".into()}]).unwrap();
+        let value=store.get("value").unwrap().unwrap();assert_eq!(value,serde_json::json!({"nested":[-0.0,"汉😀"]}));assert_eq!(store.get("other").unwrap(),Some(Value::from("unchanged")));
+        let committed=std::fs::read(root.join("podjs-kv.json")).unwrap();
+        assert!(store.apply(vec![KvMutation::Set{key:"valid".into(),value:Value::Null},KvMutation::Delete{key:"".into()}]).is_err());
+        store.quota=committed.len();assert!(store.apply(vec![KvMutation::Delete{key:"value".into()},KvMutation::Set{key:"large".into(),value:Value::from("x".repeat(512))}]).is_err());
+        assert_eq!(std::fs::read(root.join("podjs-kv.json")).unwrap(),committed);assert_eq!(store.get("value").unwrap(),Some(value));
+        assert!(serde_json::from_str::<Vec<KvMutation>>(r#"[{"op":"set","key":"x","value":1,"extra":true}]"#).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test] fn independently_opened_handles_merge_and_observe_changes() {

@@ -153,3 +153,24 @@ test("font metrics preserve atlas units and tolerate older hosts",()=>{
     host.fontMetrics=()=>"{}";expect(api.getFontMetrics(1)).toBeUndefined();
   }finally{delete host.fontMetrics;}
 });
+
+test('explicit KV batch stages JSON snapshots and commits once; callback/host failures propagate',()=>{
+ const host=(globalThis as any).pod,old=host.kvApply,commits:string[]=[];
+ host.kvApply=(wire:string)=>{commits.push(wire);for(const row of JSON.parse(wire)){if(row.op==='set')values.set(row.key,JSON.stringify(row.value));else values.delete(row.key);}return 0;};
+ try{
+  values.clear();api.kv.set('counter',0);
+  const result=api.kv.batch(()=>{
+   const input={n:1};api.kv.set('counter',input);input.n=99;
+   expect(api.kv.get<unknown>('counter')).toEqual({n:1});expect(JSON.parse(values.get('counter')!)).toBe(0);
+   api.kv.batch(()=>{api.kv.set('other','汉字😀');api.kv.set('counter',{n:2});});
+   expect(api.kv.keys()).toEqual(['counter','other']);expect(api.kv.delete('other')).toBe(true);expect(api.kv.delete('absent')).toBe(false);
+   return 17;
+  });
+  api.kv.batch(()=>{api.kv.set('😀',1);api.kv.set('\ue000',2);expect(api.kv.keys()).toEqual(['counter','\ue000','😀']);api.kv.delete('😀');api.kv.delete('\ue000');});
+  expect(result).toBe(17);expect(commits).toHaveLength(2);expect(api.kv.get<unknown>('counter')).toEqual({n:2});expect(api.kv.keys()).toEqual(['counter']);
+  expect(()=>api.kv.batch(()=>{api.kv.set('counter',3);throw Error('caller failure');})).toThrow('caller failure');expect(commits).toHaveLength(2);expect(api.kv.get<unknown>('counter')).toEqual({n:2});
+  host.kvApply=()=>1;expect(()=>api.kv.batch(()=>api.kv.set('counter',4))).toThrow('batch write failed');expect(api.kv.get<unknown>('counter')).toEqual({n:2});
+  expect(()=>api.kv.batch(()=>Promise.resolve())).toThrow('must be synchronous');
+  host.kvApply=undefined;api.kv.batch(()=>api.kv.set('counter',5));expect(api.kv.get<unknown>('counter')).toBe(5);
+ }finally{host.kvApply=old;values.clear();}
+});

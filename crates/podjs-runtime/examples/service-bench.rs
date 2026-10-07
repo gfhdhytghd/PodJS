@@ -51,6 +51,15 @@ fn main() -> anyhow::Result<()> {
         // This uses the same locked/fsync/rename store and wire values as mount_pod.
         if let Ok(root) = std::env::var("PODJS_BENCH_KV_DIR") {
             let store = std::rc::Rc::new(std::cell::RefCell::new(podjs_runtime::kv::KvStore::open(Some(&root))));
+            let apply = store.clone();
+            pod.set("kvApply",Function::new(ctx.clone(),move |encoded:String| -> i32 {
+                let Ok(mutations)=serde_json::from_str::<Vec<podjs_runtime::kv::KvMutation>>(&encoded) else {return 1;};
+                if apply.borrow_mut().apply(mutations).is_ok(){0}else{1}
+            })?)?;
+            let delete=store.clone();
+            pod.set("kvDelete",Function::new(ctx.clone(),move |key:String| -> i32 {if delete.borrow_mut().delete(&key).unwrap_or(false){0}else{1}})?)?;
+            let keys=store.clone();
+            pod.set("kvKeys",Function::new(ctx.clone(),move || serde_json::to_string(&keys.borrow_mut().keys().unwrap_or_default()).unwrap_or_else(|_|"[]".into()))?)?;
             let get = store.clone();
             pod.set("kvGet", Function::new(ctx.clone(), move |key:String| get.borrow_mut().get_json(&key).ok().flatten())?)?;
             pod.set("kvSet", Function::new(ctx.clone(), move |key:String,value:String| -> i32 {
