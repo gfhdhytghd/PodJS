@@ -12,7 +12,7 @@ its measurer. Keep each input paragraph small and schedule between paragraphs.
 
 `@podjs/framework/text-layout` exposes `prepareTextLayout` without importing
 text rendering. It consumes an iterator with the existing default scheduler:
-`runtime.delay(0)`, 0.5ms work budget and at most 16 steps per turn. A single
+`runtime.delay(1)`, 0.5ms work budget and at most 16 steps per turn. A single
 iterator step must be bounded. Cancellation closes the iterator, cancels a
 pending timer and suppresses late publication. The final coherent snapshot
 contains rows and their key index; it can feed `createIndexedWindowSource`.

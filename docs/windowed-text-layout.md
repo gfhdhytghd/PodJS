@@ -1,7 +1,7 @@
 # Sliced text layouts and stable windowed lists
 
 `@podjs/framework/text` exports `prepareTextLayout`. It consumes an iterator of
-already shaped rows and yields through the real `runtime.delay(0)` service before
+already shaped rows and yields through the real `runtime.delay(1)` service before
 each bounded turn. An application supplies its row identity, entry adapter and
 publication callback. Geometry, font selection and business data remain with the
 caller; the scheduler has no reader preset or application-specific row types.

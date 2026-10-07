@@ -737,4 +737,5 @@ export const debugAcoustic = Object.freeze({
 });
 
 // Realm-local foreground scheduler; pure codecs also work in headless bundles.
-(globalThis as {__podYieldCodecTurn?:()=>Promise<void>}).__podYieldCodecTurn=()=>delay(0).result;
+// Match the runtime.timer minimum on Android, including portable codec jobs.
+(globalThis as {__podYieldCodecTurn?:()=>Promise<void>}).__podYieldCodecTurn=()=>delay(1).result;
