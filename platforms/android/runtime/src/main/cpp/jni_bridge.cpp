@@ -53,7 +53,7 @@ struct Host {
   uint64_t diagnosticFrameSequence = 0;
   uint64_t lastResourceGeneration = 0;
 };
-static void renderFrame(Host* h, int64_t frameTimeNanos = 0);
+static bool renderFrame(Host* h, int64_t frameTimeNanos = 0);
 static void fail(JNIEnv* env, const char* message) { jclass c = env->FindClass("java/lang/IllegalStateException"); env->ThrowNew(c, message); }
 
 extern "C" JNIEXPORT jint JNICALL Java_dev_podjs_runtime_PodSyncGuestFiles_publishNoReplace(
@@ -421,8 +421,8 @@ extern "C" JNIEXPORT jlongArray JNICALL Java_dev_podjs_runtime_PodRuntimeView_na
   env->SetLongArrayRegion(result,0,static_cast<jsize>(length),values.get());
   return env->ExceptionCheck()?nullptr:result;
 }
-static void renderFrame(Host* h, int64_t frameTimeNanos) {
-  if (!h) return;
+static bool renderFrame(Host* h, int64_t frameTimeNanos) {
+  if (!h) return false;
   const uint64_t sequence = ++h->diagnosticFrameSequence;
   auto hostTiming = h->hostDiagnostics.beginHostFrame(sequence,0);
   const double start = monoMs();
@@ -575,9 +575,10 @@ static void renderFrame(Host* h, int64_t frameTimeNanos) {
 
   hostTiming.setFlags(queued ? int64_t{1}<<19 : 0);
   hostTiming.finish(result==0,result);
+  return std::any_of(completions.completed.begin(),completions.completed.end(),[](const auto& frame){return frame.gpu || frame.cpu;});
 }
-extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeFrame(JNIEnv*,jclass,jlong p,jlong frameTimeNanos) {
-  renderFrame(reinterpret_cast<Host*>(p),frameTimeNanos);
+extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeFrame(JNIEnv*,jclass,jlong p,jlong frameTimeNanos) {
+  return renderFrame(reinterpret_cast<Host*>(p),frameTimeNanos) ? JNI_TRUE : JNI_FALSE;
 }
 extern "C" JNIEXPORT jstring JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePollEffect(JNIEnv* env,jclass,jlong p){auto*h=reinterpret_cast<Host*>(p);if(!h)return nullptr;const char* line=pod_runtime_poll_effect(h->runtime);return line?env->NewStringUTF(line):nullptr;}
 extern "C" JNIEXPORT jstring JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePollNet(JNIEnv* env,jclass,jlong p){auto*h=reinterpret_cast<Host*>(p);if(!h)return nullptr;const char* line=pod_runtime_poll_net_command(h->runtime);return line?env->NewStringUTF(line):nullptr;}

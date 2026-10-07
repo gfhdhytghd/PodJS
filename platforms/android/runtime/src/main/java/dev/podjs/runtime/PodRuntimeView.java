@@ -73,7 +73,9 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                     nativeAccessibilityEnabled(host, enabled); accessibilityEnabled = enabled;
                     if (!enabled) accessibility.clear();
                 }
-                nativeFrame(host, frameTime);
+                // Worker presentation completes after the producer callback.
+                // Schedule a TextureView traversal when harvested output changes.
+                if (nativeFrame(host, frameTime)) invalidate();
                 long nativeDone = android.os.SystemClock.elapsedRealtimeNanos();
                 if (enabled) {
                     byte[] semantics = nativeAccessibilitySnapshot(host, accessibilityMetadata);
@@ -684,7 +686,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private static native void nativeInput(long host, int[] ids, float[] xy, int count, int rotaryMilliDegrees);
     private static native void nativePumpServices(long host);
     private static native void nativePumpServiceResults(long host);
-    private static native void nativeFrame(long host, long frameTimeNanos);
+    private static native boolean nativeFrame(long host, long frameTimeNanos);
     private static native boolean nativeBeginRendererTiming(long host,int capacity);
     private static native long[] nativeEndRendererTiming(long host);
     private static native int nativeMediaTexture(long host,int handle,int[] argb,int width,int height,boolean linear);
