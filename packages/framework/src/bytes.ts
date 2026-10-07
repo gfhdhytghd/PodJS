@@ -1,4 +1,6 @@
 /** Portable byte codecs plus an optional host-accelerated chunk decoder. */
+export {encodeUtf8,utf8EncodeChunks,encodeBase64,base64EncodeChunks,decodeBase64,base64DecodeChunks} from './byte-codecs.ts';
+export type {SurrogatePolicy} from './byte-codecs.ts';
 export {base64ToBytes,bytesToBase64,stringToUtf8,utf8ToString} from "../../../vendor/pocketjs/framework/src/bytes.ts";
 
 import {utf8ToString} from "../../../vendor/pocketjs/framework/src/bytes.ts";
@@ -24,3 +26,6 @@ export function decodeUtf8Chunk(bytes:Uint8Array,start=0,options:Utf8ChunkOption
   if(options.fallback)return options.fallback(bytes,start);
   return {text:utf8ToString(bytes.subarray(start,end)),next:end};
 }
+
+export {encodeUtf8Async,decodeUtf8Async,encodeBase64Async,decodeBase64Async} from './async-bytes.ts';
+export type {CodecWorkOptions} from './async-bytes.ts';

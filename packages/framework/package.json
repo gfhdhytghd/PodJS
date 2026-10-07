@@ -14,11 +14,15 @@
     "./background-handler": "./src/background-handler.ts",
     "./debug-memory": "./src/debug-memory.ts",
     "./text": "./src/text.tsx",
+    "./text-layout": "./src/text-layout.ts",
+    "./text-wrap": "./src/text-wrap.ts",
     "./media-surface": "./src/media-surface.tsx",
     "./bytes": "./src/bytes.ts",
+    "./async-bytes": "./src/async-bytes.ts",
     "./watch-ui": "./src/watch-ui.ts",
     "./navigation": "./src/navigation.ts",
     "./windowed-list": "./src/windowed-list.ts",
+    "./keyed-memo": "./src/keyed-memo.ts",
     "./image": "./src/image.tsx"
   },
   "dependencies": {
