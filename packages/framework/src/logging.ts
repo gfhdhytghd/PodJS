@@ -67,3 +67,5 @@ export class FileLogger {
  clearLogs():Promise<void>{return this.serial(async()=>{await this.file.replace('');});}
  flush():Promise<void>{return this.serial(async()=>{});}
 }
+
+export {BoundedLineBuffer,type LineBufferOptions} from "./log-buffer.ts";

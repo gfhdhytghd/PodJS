@@ -161,8 +161,10 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/html-slices` | Incremental/cancellable HTML fragment parsing. |
 | `@podjs/framework/xml` | Generic XML parsing and document navigation. |
 | `@podjs/framework/json` | Bounded JSON projection without materializing unused fields. |
+| `@podjs/framework/json-numbers` | JSON parsing that keeps lexical number tokens (`1` vs `1.0`). |
 | `@podjs/framework/text-compat` | Compatibility text policies, kept independent of application labels. |
 | `@podjs/framework/startup` | JS phase tracing, content-ready gates and startup exit interpolation. |
+| `@podjs/framework/startup-overlay` | Startup overlay that stays until its exit frame finishes while content mounts. |
 | `@podjs/framework/logging` | Configurable redaction and serialized persistent FileLogger with caller-owned storage ports. |
 | `@podjs/framework/async` | SerialWriteQueue for ordered bridge writes and explicit flush barriers. |
 | `@podjs/framework/editing` | Pure editing/hit-test helpers for text input. |
@@ -179,6 +181,9 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/text-environment` | Native text environment lookup and font selection helpers. |
 | `@podjs/framework/text-carets` | Preserve caret map identity when row positions are unchanged. |
 | `@podjs/framework/text-lines` | Pure line breaking, measured titles and UI text layout helpers. |
+| `@podjs/framework/text-anchor` | UTF-16 anchors that keep the same text visible across font or width changes. |
+| `@podjs/framework/http-request` | Single-request HTTP parser with a whole-request deadline and bounded buffers. |
+| `@podjs/framework/theme-schedule` | Calendar-based local day/night theme policy. |
 
 Additional guides: [UI/navigation](watch-ui-navigation.md),
 [actions](watch-actions.md), [cache](cache.md),
