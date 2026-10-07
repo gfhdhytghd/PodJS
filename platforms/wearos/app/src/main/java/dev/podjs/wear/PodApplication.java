@@ -6,7 +6,7 @@ import dev.podjs.runtime.PodStartupTrace;
 
 public final class PodApplication extends Application implements Configuration.Provider {
     @Override public Configuration getWorkManagerConfiguration() {
-        return new Configuration.Builder().build();
+        return new Configuration.Builder().setWorkerFactory(dev.podjs.runtime.PodWorkManagerTakeover.factory(this)).build();
     }
     @Override public void onCreate() {
         long began = PodStartupTrace.now();

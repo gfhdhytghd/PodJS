@@ -4,10 +4,10 @@ import android.app.Application;
 import androidx.work.Configuration;
 import dev.podjs.runtime.PodStartupTrace;
 
-/** Initialize WorkManager at its first host scheduler call, with default config. */
+/** Initialize WorkManager at its first host scheduler call, with legacy worker compatibility. */
 public final class PodApplication extends Application implements Configuration.Provider {
     @Override public Configuration getWorkManagerConfiguration() {
-        return new Configuration.Builder().build();
+        return new Configuration.Builder().setWorkerFactory(dev.podjs.runtime.PodWorkManagerTakeover.factory(this)).build();
     }
     @Override public void onCreate() {
         long began = PodStartupTrace.now();
