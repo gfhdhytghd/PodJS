@@ -1,4 +1,4 @@
-# Reader memory attribution (K12)
+# Reader memory attribution (K12 / K13)
 
 K12 investigates the reported same-PID reader NativeHeap increase after K11.
 Host ownership metrics are not Android PSS, GPU performance or device acceptance.
@@ -8,8 +8,10 @@ No device commands are run by wrss-c. Device acceptance remains **PENDING**.
 
 Android `debug.memoryStats` returns a demand-only JSON snapshot. The SDK exposes
 `debugMemoryStats()` in `@podjs/framework/services` and `@podjs/framework/debug-memory`.
-Debug/PERF_TRACE view-owned hosts also write one `PodJSMem` JSON log line after
-at least one second between completed samples. Release hosts reject the method;
+Automatic `PodJSMem` tracing is disabled by default, including debuggable
+builds. Explicit `PERF_TRACE` or `log.tag.PodJSMem=DEBUG` (debuggable hosts only)
+opts into one sample after at least one second between completed samples.
+Demand-only `debug.memoryStats` remains available in debug builds. Release hosts reject the method;
 no periodic callback, bitmap counter object, heap scan or log is scheduled there.
 There is no new frame hook or allocator/GC policy in the production runtime.
 The pre-existing `PERF_TRACE` constant in `PodServices` is the explicit source
@@ -78,7 +80,7 @@ Bytes from these categories must not be blindly summed. Live resources,
 resource content, vector capacity, mmap residency, Vulkan allocations and
 allocator totals have different semantics and several overlap.
 
-## Offline probe
+## Original K12 offline probe
 
 The new `reader-memory` Rust example loads a real, validated app pak with mmap,
 then runs the production PodRuntime, QuickJS Guest, Rust retained UI surface,
@@ -258,3 +260,127 @@ Interpret growing owners before choosing a fix:
   not attributed that memory. Next investigate Android StaticLayout/Minikin,
   font/typeface and driver/native allocator ownership with the matching process.
   Do not label it a QuickJS leak or “fixed” based only on cache/texture gauges.
+
+
+## K13 retention root and fix
+
+Full WatchRSS with restored home/list/reader routes reproduces the device-like
+object/array slope; ReaderBody alone does not. Android touch crosses JNI as
+contact snapshots (`PodTouch` -> packed contacts and hit IDs), not pointer JSON.
+The upgraded probe drives that path with actual task04 swipe timings, compiles
+real styles, and passes rotary/back through the host JSON event pump. Java,
+Vulkan, network, paragraph shaping and raster/image pixels remain simulated or
+absent. The fixture remains archived article 407, not device article 411.
+
+The default Solid universal compiler emits conditional component props as
+`get active() { return memo(() => !!props.active())() && ...; }`. Imperative
+frame/input reads create another computation. With no current owner, the memo
+stays subscribed in the source signal's `observers`; nested memos retain owned
+computation and source/observer slot arrays too. Navigation changing that signal
+must revisit the accumulated observers synchronously.
+
+The compiler now lowers **conditional component attributes** to plain getters
+through Solid's existing zero-argument IIFE lowering. The IIFE is consumed at
+compile time. Getter consumers' normal effects track the original expression;
+no memo is created on every read. Conditional **child** memoization is preserved,
+including branch identity when a truthy condition changes value. The browser
+playground shares this compiler plugin. Vue/Octane settings are unchanged.
+No product turn forces GC or raises its threshold. Compiler-source hashing
+invalidates stale transform caches.
+
+The regression uses the production default compiler/plugin and real Solid.
+Six rounds of 900 imperative reads do not increase work on signal updates.
+It checks prop values, reactive branch changes, cleanup and child reuse. Removing
+the compiler plugin fails: 902 source reads on the first signal change versus
+at most 2 after repair. Debug owner tracking is also tested through its real,
+zero-argument/default API: it registers no owner/cleanup by default and removes
+its root on disposal after explicit debug installation.
+
+Receipts: [memory-retention-data.json](memory-retention-data.json). Both runs use
+the final SDK graph counters. The before bench omits the compiler repair; the
+after bench uses the same default plugin as product builds. All six rounds use
+natural GC. Explicit live GC runs only **after** round 6, with the app still
+mounted, so it tests reachability separately from full-root disposal.
+
+| Phase | Before objects / arrays | After objects / arrays | Before / after computations | Before / after signal observers |
+|---|---:|---:|---:|---:|
+| Round 1 | 86988 / 37315 | 66720 / 5197 | 10653 / 1157 | 10640 / 972 |
+| Round 2 | 143476 / 67771 | 25130 / 3947 | 19329 / 1157 | 19316 / 972 |
+| Round 3 | 199946 / 98227 | 25254 / 4037 | 28005 / 1157 | 27992 / 972 |
+| Round 4 | 256464 / 128683 | 25378 / 4127 | 36681 / 1157 | 36668 / 972 |
+| Round 5 | 312914 / 159139 | 25502 / 4217 | 45357 / 1157 | 45344 / 972 |
+| Round 6 | 369432 / 189595 | 25626 / 4307 | 54033 / 1157 | 54020 / 972 |
+| Live manual GC | 369394 / 189595 | 25478 / 4307 | 54033 / 1157 | 54020 / 972 |
+
+Before used 63.57 MB after six rounds and still 63.57 MB after live GC: these
+objects remain reachable. After used 12.58 MB / 12.56 MB respectively. Fully
+stopping the app and clearing the probe handle makes both old and new graphs
+collectable; post-disposal collection is not proof of a live-path repair.
+The fixed six-visit same-realm replay retains 27 owners / 1188 computations /
+994 observers on visits 2–6 (the saved-progress resume banner changes the first
+visit's normal UI). Every exit reports zero registered roots/owners/computations/
+observers, frame callbacks and pending host promises. Its final explicit GC
+leaves 5204 objects / 601 arrays / 9.60 MB of loaded code, fixtures and font state.
+
+`native.sdk.solid` walks registered render owners plus ancestor `owner`, `owned`
+and dependency `sources`/`observers` links on demand. ContentApp registers its
+real current owner only after the debug build-info gate, and unregisters on
+cleanup. Detached roots without a path to this graph are outside the census.
+`services.pending` counts real host service promises, not every engine promise;
+QuickJS has no public arbitrary-promise census here. `clock.timers`, gesture
+contacts/recognizers/velocity histories/contact owners, devtools tape records
+and native tree mirrors are actual demand-only gauges. No guest sample history
+is retained. Six uninterrupted rounds hold 223 mirrors, six recognizers, zero
+ended contacts/velocity samples, zero timers and zero pending host promises.
+Devtools retains a bounded 36000-frame flight recorder: these swipes add 90 touch
+arrays per round, versus roughly 30456 arrays per round of the leak.
+
+GC diagnostics require Cargo feature `memory-diagnostics` plus explicit
+`--gc=1`, `--gc-live=1` or `--gc-trace=1`. Trace flags are off even in a diagnostic
+build until requested. Count upstream `GC: size=` lines in the raw log: the
+paired runs recorded 7 before / 3 after automatic collections. Round-6 thresholds
+were 120123552 / 23686728 bytes. Thresholds are read, not changed. Manual/trace
+methods are absent from default product builds.
+
+```sh
+cargo run -p podjs-runtime --features memory-diagnostics --example reader-memory -- \
+  --bundle=/path/app-scoped-final.js --html=/path/article.html --timing=/path/t04-scroll-timing.json \
+  --package=dist/projects/com.lightningstudio.watchrss.podjs/android-watch \
+  --app=1 --rounds=6 --sweep=0 --assert-retention=1 --gc=1 --gc-live=1 --gc-trace=1 --out=/tmp/after.jsonl
+```
+
+`--visits=1` performs six mount/dispose cycles in the same realm. Touch is the
+default; `--input=controller` retains the legacy control comparison. The explicit
+bench build switch `--conditional-memos=1` omits the new compiler plugin to
+recreate the old behavior; product/default builds do not use that switch.
+
+## ANR evidence boundary and device handoff
+
+MEM1 APK SHA-256 `3f7bbcaf71ec8c348bfdfdb5f790f8f33ae7c8644963d168896631fb4b2f7673`
+and the unstripped main-checkout ARMv7 library share ELF Build ID
+`3ab9917a1c23948ab0f241957246c087528b2a92`. NDK llvm-addr2line maps the 20:04
+ANR PC `0x289ff0` to `JS_ConcatString2`; disassembly shows the allocator call.
+QuickJS C was built without source lines (`quickjs.c:0`). This is evidence of
+QuickJS allocation, not a stack proof that GC itself caused that ANR.
+
+The 17:15 PC `0x243ea4` belongs to an APK with library offset `0x1bf8000`.
+Archived K10 zipalign logs have that offset; later K11/MEM1 APKs differ. The exact
+old APK/unstripped library is not retained among the inspected build outputs.
+Do not use another revision's `js_typed_array_constructor`/`JS_CallInternal`
+mapping as if it symbolized the old ANR. That mapping remains **PENDING**.
+
+Both growing synchronous signal propagation and a default UI-thread O(heap)
+scan have now been removed. The sampled PC alone cannot attribute all ANRs or
+prove their absence after repair. Reader cleanup's existing save/flush path is
+asynchronous; its exit guard already has a bounded timeout. No new synchronous
+wait, forced collection or serialization workaround is added.
+
+Wrss-perf should rebuild/package matching app/framework/vendor commits, retain
+APK hash and both stripped/unstripped Build IDs, then run six task04 rounds plus
+reader -> list -> repeated BACK and six exit/reentry cycles in one PID. First
+verify a **default debug** launch emits no automatic PodJSMem samples. Then
+explicitly enable the log tag for before/after diagnostic runs and disable it
+for frame-performance/cold-start acceptance. Require observer/array curves to
+plateau, no ANR/input timeout, scrolling >=58 fps / <=2% jank and cold startup
+<=2.5s. Demand-only memoryStats must still work. Device acceptance stays PENDING;
+wrss-c does not operate the device.

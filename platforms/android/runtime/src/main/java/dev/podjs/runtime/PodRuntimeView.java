@@ -380,11 +380,10 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         PodStartupTrace.stage("finishBoot", began);
     }
 
-    /** Debug/PERF_TRACE only. No periodic callback, heap scan, bitmap counter
-     * allocation or log serialization is scheduled for release builds. */
+    /** Explicit trace opt-in only; normal debug installs have no periodic heap walk. */
     private void startMemoryTrace(final HostLifetime owner) {
-        if(!PodServices.memoryEnabled(getContext()))return;
-        serviceHandler.postDelayed(new Runnable(){
+        final MemoryTraceScheduler trace = new MemoryTraceScheduler(PodServices.memoryTraceEnabled(getContext()));
+        trace.schedule(serviceHandler::postDelayed, new Runnable(){
             @Override public void run(){
                 if(owner!=hostLifetime||detached)return;
                 try {services.collectMemoryStats(value->{
@@ -392,14 +391,14 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                         if(value!=null)android.util.Log.i("PodJSMem",value.toString());
                         // Schedule after delivery so a busy text worker cannot
                         // accumulate samples or starve paragraph/raster jobs.
-                        serviceHandler.postDelayed(this,1000);
+                        trace.schedule(serviceHandler::postDelayed,this);
                     }
                 });}catch(RuntimeException unavailable){
                     android.util.Log.w("PodJSMem","sample unavailable");
-                    if(owner==hostLifetime&&!detached)serviceHandler.postDelayed(this,1000);
+                    if(owner==hostLifetime&&!detached)trace.schedule(serviceHandler::postDelayed,this);
                 }
             }
-        },1000);
+        });
     }
 
     @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture texture) {

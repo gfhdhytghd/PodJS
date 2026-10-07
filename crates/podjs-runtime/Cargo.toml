@@ -7,6 +7,9 @@ license.workspace = true
 [lib]
 crate-type = ["rlib", "staticlib", "cdylib"]
 
+[features]
+memory-diagnostics = ["pocket-mod/memory-diagnostics"]
+
 [dependencies]
 anyhow.workspace = true
 base64 = "0.22"

@@ -59,7 +59,7 @@ impl Mapping {
 impl Drop for Mapping {fn drop(&mut self){unsafe{libc::munmap(self.base,self.len);}}}
 struct Owner {runtime:*mut PodRuntime,dir:PathBuf}
 impl Drop for Owner {fn drop(&mut self){pod_runtime_destroy(self.runtime);let _=fs::remove_dir_all(&self.dir);}}
-struct Probe {owner:Owner,mapping:Mapping,clock:f64,meta:Value,delays:BTreeMap<i64,f64>,services:BTreeMap<String,u64>,output:File}
+struct Probe {owner:Owner,mapping:Mapping,clock:f64,meta:Value,delays:BTreeMap<i64,f64>,services:BTreeMap<String,u64>,output:File,touch:Option<PodTouch>}
 impl Probe {
     fn reply(&self,id:i64,value:Value)->Result<()> {event(self.owner.runtime,json!({"t":"service.result","id":id,"ok":true,"value":value}))}
     fn fail(&self,id:i64)->Result<()> {event(self.owner.runtime,json!({"t":"service.result","id":id,"ok":false,"code":"probe_unavailable","message":"Not provided by offline probe"}))}
@@ -94,6 +94,8 @@ impl Probe {
                         let path=self.rgba("text",id,width,height)?;
                         self.reply(id,json!({"path":path,"width":width,"height":height,"carets":carets}))?;
                     }
+                    "app.activityState.write"=>self.reply(id,Value::Null)?,
+                    "text.measure"=>self.reply(id,json!({"widthPx":a["text"].as_str().unwrap_or("").chars().count() as f64*a["fontSizePx"].as_f64().unwrap_or(14.0)}))?,
                     "text.layout"=>self.reply(id,paragraph(a)?)?,
                     "text.layoutBatch"=>{
                         let values=a["paragraphs"].as_array().context("paragraph batch")?.iter().map(paragraph).collect::<Result<Vec<_>>>()?;
@@ -113,7 +115,7 @@ impl Probe {
                     }
                     "file.stat"=>self.reply(id,json!({"file":true,"size":512}))?,
                     "file.mkdir"=>self.reply(id,json!({"created":true}))?,
-                    "runtime.delay"=>{self.delays.insert(id,self.clock+a["ms"].as_f64().unwrap_or(0.0));}
+                    "runtime.delay"=>{self.delays.insert(id,self.clock+a["milliseconds"].as_f64().unwrap_or(0.0));}
                     _=>self.fail(id)?,
                 }
             }
@@ -133,7 +135,7 @@ impl Probe {
         let due:Vec<_>=self.delays.iter().filter(|(_,t)|**t<=self.clock).map(|(id,_)|*id).collect();
         for id in due {self.delays.remove(&id);self.reply(id,Value::Null)?;}
         let frame=PodInputFrame{struct_size:std::mem::size_of::<PodInputFrame>() as u32,buttons:0,analog:0x8080,
-            touches:std::ptr::null(),touch_count:0,rotary_primary_millidegrees:0,rotary_secondary_millidegrees:0};
+            touches:self.touch.as_ref().map_or(std::ptr::null(),|t|t as *const PodTouch),touch_count:if self.touch.is_some(){1}else{0},rotary_primary_millidegrees:0,rotary_secondary_millidegrees:0};
         ok(pod_runtime_frame(self.owner.runtime,&frame))?;
         self.drain()
     }
@@ -157,8 +159,8 @@ fn main()->Result<()> {
     let package=PathBuf::from(arg("package",""));
     let mapped=Mapping::open(package.join("main.pak"))?;
     let mut manifest:Value=serde_json::from_slice(&fs::read(package.join("pod.manifest.json"))?)?;
-    let bundle=format!("globalThis.__readerFixture={};\n{source}",json!({"html":html}));
-    let mut caps=json!(["input.touch","data.kv","text.raster","text.environment","data.files.chunks","data.images","runtime.timer","host.lifecycle"]);
+    let bundle=format!("globalThis.__readerFixture={};\n{source}",json!({"html":html,"screen":arg("screen","0")=="1","app":arg("app","0")=="1"}));
+    let mut caps=json!(["input.touch","data.kv","text.raster","text.environment","data.files.chunks","data.images","runtime.timer","host.lifecycle","input.rotary","input.back","app.activityState"]);
     let paragraphs=arg("paragraph-layout","1")=="1";
     if paragraphs {caps.as_array_mut().unwrap().push(json!("text.layout"));}
     manifest["bundleHash"]=json!(hash(bundle.as_bytes()));manifest["bytecode"]=Value::Null;manifest["capabilities"]=caps.clone();
@@ -173,6 +175,10 @@ fn main()->Result<()> {
         data_dir:root.as_ptr(),capabilities_json:capabilities.as_ptr()};
     let runtime=pod_runtime_create(&config);ensure!(!runtime.is_null(),"{}",error());
     let owner=Owner{runtime,dir};
+    if arg("gc-trace","0")=="1" {
+        #[cfg(feature = "memory-diagnostics")] unsafe{&*runtime}.debug_trace_gc();
+        #[cfg(not(feature = "memory-diagnostics"))] anyhow::bail!("gc-trace requires memory-diagnostics feature");
+    }
     // Mapping was declared before owner and is moved after owner in Probe:
     // runtime/font workers are always destroyed before munmap, including errors.
     let mapping=mapped.bytes();
@@ -180,46 +186,79 @@ fn main()->Result<()> {
     let manifest=CString::new(manifest.to_string())?;ok(pod_runtime_validate_package(runtime,manifest.as_ptr()))?;
     ok(pod_runtime_eval_bundle(runtime,bundle.as_ptr(),bundle.len(),std::ptr::null()))?;
     let pak_bytes=mapping.len();
-    let mut probe=Probe{owner,mapping:mapped,clock:0.0,meta:Value::Null,delays:BTreeMap::new(),services:BTreeMap::new(),output:File::create(arg("out","/tmp/reader-memory.jsonl"))?};
+    let mut probe=Probe{owner,mapping:mapped,clock:0.0,meta:Value::Null,delays:BTreeMap::new(),services:BTreeMap::new(),output:File::create(arg("out","/tmp/reader-memory.jsonl"))?,touch:None};
     probe.drain()?;probe.warm(80)?;
     ensure!(probe.meta["layoutHeight"].as_f64().is_some(),"reader fixture did not publish metadata");
     let height=probe.meta["layoutHeight"].as_f64().unwrap();
-    writeln!(probe.output,"{}",json!({"host":"Linux production PodRuntime/QuickJS/Rust surface; synthetic service layout/raster/image pixels; style 0; no Java/Vulkan",
+    writeln!(probe.output,"{}",json!({"host":"Linux production PodRuntime/QuickJS/Rust surface; synthetic service layout/raster/image pixels; compiled styles; no Java/Vulkan",
         "fixture":probe.meta,"htmlFnv":hash(html.as_bytes()),"timeline":timeline,"syntheticParagraphLayout":paragraphs,"pakBytes":pak_bytes}))?;
     probe.sample("reader-before",0)?;
     let rounds:usize=arg("rounds","20").parse()?;ensure!((1..=100).contains(&rounds),"rounds must be 1..100");
     let ticks=(timeline["elapsedSeconds"].as_f64().context("timeline duration")?*60.0).ceil() as usize;
     let gestures=timeline["gestures"].as_array().context("timeline gestures")?;
+    let touch_input=arg("input","touch")=="touch";
+    let visits=arg("visits","0")=="1";
+    let assert_retention=arg("assert-retention","0")=="1";
+    let mut baseline:Option<Value>=None;
     for round in 1..=rounds {
-        probe.step("scroll",json!({"offset":(height-2200.0).max(0.0)}))?;probe.warm(60)?;
+        if visits&&round>1 {probe.step("restart",Value::Null)?;probe.warm(80)?;}
+        probe.step("scroll",json!({"offset":height*0.5}))?;probe.warm(60)?;
         let mut current:Option<usize>=None;
         for tick in 0..ticks {
             let elapsed=tick as f64/60.0;
             // Match the existing reader-scroll bench's 250 ms swipe and the
             // captured start timestamps (end timestamps include host overhead).
             let next=gestures.iter().position(|g|{let start=g["startSeconds"].as_f64().unwrap();elapsed>=start&&elapsed<start+0.25});
-            if next!=current {
+            if !touch_input && next!=current {
                 if let Some(i)=current {probe.step("end",json!({"velocity":if gestures[i]["direction"]=="up"{500}else{-500}}))?;}
                 if next.is_some(){probe.step("begin",Value::Null)?;}
                 current=next;
             }
-            if let Some(i)=current {probe.step("drag",json!({"delta":if gestures[i]["direction"]=="up"{500.0/60.0}else{-500.0/60.0}}))?;}
+            if touch_input {
+                probe.touch=next.map(|i| {let g=&gestures[i];let fraction=((elapsed-g["startSeconds"].as_f64().unwrap())/0.25).clamp(0.0,1.0);
+                    PodTouch{id:0,x:116.5,y:(if g["direction"]=="up"{190.0-130.0*fraction}else{60.0+130.0*fraction}) as f32}});
+            }
+            if !touch_input {if let Some(i)=current {probe.step("drag",json!({"delta":if gestures[i]["direction"]=="up"{500.0/60.0}else{-500.0/60.0}}))?;}}
             probe.frame()?;
             if tick%60==59 {probe.sample("scroll",round)?;}
         }
         if let Some(i)=current {probe.step("end",json!({"velocity":if gestures[i]["direction"]=="up"{500}else{-500}}))?;}
-        probe.warm(10)?;probe.sample("round-end",round)?;
+        probe.touch=None;
+        probe.warm(10)?;let end=probe.sample("round-end",round)?;
+        if assert_retention&&!visits {
+            let counts=json!({"computations":end["sdk"]["bench"]["computations"],"observers":end["sdk"]["bench"]["signalObservers"],
+                "frame":end["sdk"]["frame"],"gesture":end["sdk"]["gesture"],"tree":end["sdk"]["tree"],"nodes":end["surface"]["nodes"],"timers":end["sdk"]["clock"],"pending":end["sdk"]["services"]});
+            ensure!(counts["computations"].as_u64().is_some(),"Solid diagnostics missing");
+            if let Some(initial)=&baseline {ensure!(&counts==initial,"retention registries drifted: {initial} -> {counts}");}else{baseline=Some(counts);}
+        }
+        if visits {probe.step("stop",Value::Null)?;probe.warm(80)?;let closed=probe.sample("visit-end",round)?;
+            if assert_retention {ensure!(closed["sdk"]["bench"]["computations"]==0&&closed["sdk"]["bench"]["signalObservers"]==0&&closed["sdk"]["frame"]["callbacks"]==0&&closed["sdk"]["services"]["pending"]==0,"visit owners/callbacks/services did not dispose");}}
+    }
+    if arg("gc-live","0")=="1" {
+        probe.sample("before-live-gc",0)?;
+        #[cfg(feature = "memory-diagnostics")] {unsafe{&*runtime}.debug_run_gc();probe.sample("after-live-gc",0)?;}
+        #[cfg(not(feature = "memory-diagnostics"))] anyhow::bail!("live GC requires memory-diagnostics feature");
     }
     if arg("sweep","1")=="1" {
         for lap in 1..=5 {for direction in [false,true] {for i in 0..100 {
             let position=if direction{99-i}else{i};probe.step("scroll",json!({"offset":height*position as f64/99.0}))?;probe.warm(4)?;
         }}probe.sample("full-sweep",lap)?;}
     }
+    // Exercise Android event JSON through takeEvents; ordinary touch uses
+    // PodInputFrame snapshots, not an invented JSON pointer event.
+    event(runtime,json!({"t":"input.scroll","vertical":-1.0,"uptimeMs":probe.clock,"source":4194304}))?;
+    event(runtime,json!({"t":"axis","axis":0,"delta":1000}))?;
+    event(runtime,json!({"t":"back"}))?;
+    probe.warm(2)?;
     probe.step("stop",Value::Null)?;probe.warm(80)?;let stopped=probe.sample("after-stop",0)?;
     probe.warm(3600)?;let idle=probe.sample("after-idle-60s",0)?;
     for sample in [&stopped,&idle] {
         ensure!(sample["sdk"]["systemText"]["cached"]==0&&sample["sdk"]["systemText"]["active"]==0&&sample["sdk"]["systemText"]["queueSlots"]==0,"text lifecycle did not drain");
         ensure!(sample["sdk"]["bench"]["errors"]==0,"reader reported fixture errors");
+    }
+    if arg("gc","0")=="1" {
+        #[cfg(feature = "memory-diagnostics")] {unsafe{&*runtime}.debug_run_gc();probe.sample("after-manual-gc",0)?;}
+        #[cfg(not(feature = "memory-diagnostics"))] anyhow::bail!("manual GC requires memory-diagnostics feature");
     }
     drop(probe);
     Ok(())
