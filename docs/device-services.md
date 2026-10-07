@@ -60,3 +60,13 @@ require a matching runtime library with `pod_runtime_pump_service_results`.
 `file.write` with `atomicReplace` (the default) and secure-store snapshots allocate a unique temporary file in the target directory. Writing, flushing, descriptor sync, and stream close finish before publication. Cleanup covers failures in every phase and deletes only that call's allocated path, preserving other files. A cleanup error is attached as a suppressed exception when another error is already being reported. Errors before publication leave the existing target unchanged.
 
 The existing fallback to a non-atomic replacement when the filesystem rejects `ATOMIC_MOVE` is preserved; that fallback does not provide an atomicity guarantee for errors during the move itself. JVM tests exercise actual partial-write, descriptor-sync, and move failures, injected flush/close failures, combined errors, and cleanup failure without recursive deletion. The production class and tests compile against Android API 36; device fault injection has not been performed.
+
+### Battery capacity
+
+`battery.percent()` from `@podjs/framework/services` requires `device.battery`.
+Android and WearOS return the actual `BatteryManager.BATTERY_PROPERTY_CAPACITY`
+integer (0..100), including zero. Missing or out-of-range system values return
+`null`; an older or other host without the capability returns `unsupported`.
+No synthetic capacity or additional permission is used. This is a point sample,
+not an energy measurement. `ActiveBatterySession` can group actual active-playback
+segments; applications own endpoint, validation, and reporting policy.

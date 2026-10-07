@@ -184,6 +184,8 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/text-anchor` | UTF-16 anchors that keep the same text visible across font or width changes. |
 | `@podjs/framework/http-request` | Single-request HTTP parser with a whole-request deadline and bounded buffers. |
 | `@podjs/framework/theme-schedule` | Calendar-based local day/night theme policy. |
+| `@podjs/framework/telemetry` | Configurable daily cumulative counters, capture upload scheduling and actual active-playback battery samples. |
+| `@podjs/framework/disclosure` | Persistent initial acknowledgement and per-route confirmation state, without UI or network access. |
 
 Additional guides: [UI/navigation](watch-ui-navigation.md),
 [actions](watch-actions.md), [cache](cache.md),

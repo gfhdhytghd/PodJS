@@ -52,7 +52,9 @@
     "./theme-schedule": "./src/theme-schedule.ts",
     "./json-numbers": "./src/json-numbers.ts",
     "./http-request": "./src/http-request.ts",
-    "./startup-overlay": "./src/startup-overlay.tsx"
+    "./startup-overlay": "./src/startup-overlay.tsx",
+    "./telemetry": "./src/telemetry.ts",
+    "./disclosure": "./src/disclosure.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",
