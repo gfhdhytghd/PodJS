@@ -10,7 +10,7 @@ const emitted: Record<string, unknown>[] = [];
 };
 
 const api = await import("../src/watch.ts");
-const { debugPerformance, application, sharing, displayPower, silencePlayback, HostServiceError, hostOperation, sqlite, browser, mediaVolume, speech, timeInput, textInput, textLayout, fileChunks, uri, rfcomm, tcp, byteStreams, webSockets, discovery, onNetworkChange } = await import("../src/services.ts");
+const { battery, debugPerformance, application, sharing, displayPower, silencePlayback, HostServiceError, hostOperation, sqlite, browser, mediaVolume, speech, timeInput, textInput, textLayout, fileChunks, uri, rfcomm, tcp, byteStreams, webSockets, discovery, onNetworkChange } = await import("../src/services.ts");
 const host = (globalThis as unknown as { pod: { capabilities: () => string } }).pod;
 
 beforeEach(() => {
@@ -19,6 +19,12 @@ beforeEach(() => {
 afterEach(() => { events.length = 0; emitted.length = 0; });
 
 describe("host services", () => {
+  test('battery capacity is capability gated and preserves unavailable null',async()=>{
+    await expect(battery.percent()).rejects.toMatchObject({code:'unsupported'});expect(emitted).toHaveLength(0);
+    host.capabilities=()=>JSON.stringify(['device.battery']);
+    for(const value of [0,76,100,null]){const result=battery.percent(),request=emitted.at(-1)!;expect(request).toMatchObject({method:'battery.percent',args:{}});events.push({t:'service.result',id:request.id,ok:true,value});api.__pumpPodEvents();await expect(result).resolves.toBe(value);}
+  });
+
   test("inline text changes are scoped to the opened session and stop on close",async()=>{
     const changes:string[]=[];let submits=0;
     const pending=textInput.openInline("旧词",{x:18,y:44,width:197,height:56},value=>changes.push(value),()=>submits++);

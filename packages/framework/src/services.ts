@@ -85,6 +85,7 @@ const methods: Record<string, PodCapabilityId> = {
   "text.layout": "text.layout", "text.layoutBatch": "text.layout", "text.measure": "text.layout", "text.raster": "text.raster", "text.environment": "text.environment",
   "input.time": "input.time",
   "location.current": "device.location",
+  "battery.percent": "device.battery",
   "crypto.ecdhPublicKey": "crypto.basic", "crypto.ecdhUnwrap": "crypto.basic", "crypto.hkdfSha256": "crypto.basic",
   "crypto.largeAesGcmEncrypt": "crypto.basic", "crypto.largeAesGcmDecrypt": "crypto.basic", "crypto.gzip": "crypto.basic", "crypto.gunzip": "crypto.basic",
   "crypto.rsaOaepSha256": "crypto.basic", "crypto.random": "crypto.basic", "crypto.hash": "crypto.basic", "crypto.hmacSha256": "crypto.basic", "crypto.aesGcmEncrypt": "crypto.basic", "crypto.aesGcmDecrypt": "crypto.basic", "crypto.encrypt": "crypto.basic", "crypto.decrypt": "crypto.basic",
@@ -764,3 +765,6 @@ export const debugExternal={
   return ()=>{closed=true;off();void hostOperation('debug.external.unsubscribe',{}).result.catch(()=>{});};
  }
 };
+
+/** Actual system capacity, or null when the device cannot report it. */
+export const battery = Object.freeze({percent:():Promise<number|null>=>hostOperation<number|null>("battery.percent",{}).result});

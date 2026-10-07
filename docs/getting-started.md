@@ -179,6 +179,8 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/text-environment` | Native text environment lookup and font selection helpers. |
 | `@podjs/framework/text-carets` | Preserve caret map identity when row positions are unchanged. |
 | `@podjs/framework/text-lines` | Pure line breaking, measured titles and UI text layout helpers. |
+| `@podjs/framework/telemetry` | Configurable daily cumulative counters, capture upload scheduling and actual active-playback battery samples. |
+| `@podjs/framework/disclosure` | Persistent initial acknowledgement and per-route confirmation state, without UI or network access. |
 
 Additional guides: [UI/navigation](watch-ui-navigation.md),
 [actions](watch-actions.md), [cache](cache.md),

@@ -47,7 +47,9 @@
     "./variable-list": "./src/variable-list.tsx",
     "./text-environment": "./src/text-environment.ts",
     "./text-carets": "./src/text-carets.ts",
-    "./text-lines": "./src/text-lines.ts"
+    "./text-lines": "./src/text-lines.ts",
+    "./telemetry": "./src/telemetry.ts",
+    "./disclosure": "./src/disclosure.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",

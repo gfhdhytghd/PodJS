@@ -451,6 +451,14 @@ final class PodServices implements Closeable {
             } catch(Exception error) { failure(id,"unavailable","Debug external interface unavailable"); }
             return;
         }
+        if ("battery.percent".equals(method)) {
+            try {
+                android.os.BatteryManager manager = (android.os.BatteryManager)context.getSystemService(Context.BATTERY_SERVICE);
+                int level = manager == null ? -1 : manager.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY);
+                if(requests.remove(id,request))reply(id,true,level >= 0 && level <= 100 ? level : JSONObject.NULL,null,null);
+            } catch(Exception error) { if(requests.remove(id,request))reply(id,true,JSONObject.NULL,null,null); }
+            return;
+        }
         if ("app.buildInfo".equals(method)) {
             if (!requests.remove(id, request)) return;
             try {
