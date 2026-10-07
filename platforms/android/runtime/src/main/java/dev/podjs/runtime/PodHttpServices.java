@@ -76,7 +76,28 @@ public final class PodHttpServices implements AutoCloseable {
         return changed;
     }
 
-    @Override public void close() { synchronized (cancellationLock) { closed = true; deadlines.shutdownNow(); for (File file : temporaryFiles) file.delete(); temporaryFiles.clear();client.connectionPool().evictAll();client.dispatcher().executorService().shutdown(); for (Map.Entry<Integer, AtomicBoolean> entry : cancellations.entrySet()) { entry.getValue().set(true); Call connection = connections.get(entry.getKey()); if (connection != null) connection.cancel(); } } }
+    @Override public void close() {
+        final List<Call> activeCalls;
+        synchronized (cancellationLock) {
+            if (closed) return;
+            closed = true;
+            deadlines.shutdownNow();
+            for (File file : temporaryFiles) file.delete();
+            temporaryFiles.clear();
+            for (AtomicBoolean flag : cancellations.values()) flag.set(true);
+            activeCalls = new java.util.ArrayList<>(connections.values());
+        }
+        // Lifecycle teardown runs on Android's main thread. TLS socket close
+        // may write close_notify, so release transport resources on the owned
+        // dispatcher executor after synchronously closing the publication gate.
+        java.util.concurrent.ExecutorService cleanup = client.dispatcher().executorService();
+        cleanup.execute(() -> {
+            try {
+                for (Call connection : activeCalls) connection.cancel();
+                client.connectionPool().evictAll();
+            } finally { cleanup.shutdown(); }
+        });
+    }
 
     void discard(JSONObject result) {
         synchronized (cancellationLock) {

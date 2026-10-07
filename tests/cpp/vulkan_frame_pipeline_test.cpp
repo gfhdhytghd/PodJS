@@ -1021,7 +1021,61 @@ static void boundedThreadHandoffAndLifecycle() {
   assert(snapshotPins==0 && window.references==1);
 }
 
+
+// A paused TextureView can lose its last composed buffer without changing
+// guest draw words. Reopening acceptance must produce an actual presentation.
+static void unchangedSnapshotAfterPauseIsPresented() {
+  ANativeWindow window{};
+  RenderThread renderer(&window,32,32,32,32);
+  gatePresent();
+  assert(renderer.handoff(pinned(rect,401),401));
+  awaitPresent();releasePresent();
+  renderer.setPaused(true);
+  renderer.poll(401);
+  renderer.setPaused(false);
+  assert(renderer.needsRedraw(401));
+  assert(renderer.handoff(pinned(rect,401),402));
+  awaitPins(0);
+  auto resumed=renderer.poll(402);
+  assert(resumed.completed.count==1);
+  assert(resumed.completed.back().gpu || resumed.completed.back().cpu);
+}
+
+
+static void emptyReplacedAndDetachedSnapshotsRecover() {
+  ANativeWindow window{};
+  RenderThread renderer(&window,32,32,32,32);
+  gatePresent();
+  assert(renderer.handoff(pinned(rect,501),501));awaitPresent();
+  // Only the newest snapshot survives; discarded transparent frames release
+  // their pins immediately, without poisoning the next accepted content hash.
+  const auto before=snapshotDrops.load();
+  assert(renderer.handoff(pinned({},502),502));
+  assert(renderer.handoff(pinned(rect,503),503));
+  assert(snapshotDrops==before+1);
+  releasePresent();awaitPins(0);
+  assert(!renderer.needsRedraw(503));
+  renderer.poll(503);
+  // An actually consumed empty list uses the existing CPU clear path. A later
+  // nonempty snapshot must still be accepted and presented.
+  const auto cpuBefore=fallbackCalls.load();
+  gatePresent();assert(renderer.handoff(pinned({},504),504));
+  awaitPresent();assert(fallbackCalls==cpuBefore+1);releasePresent();awaitPins(0);
+  gatePresent();assert(renderer.handoff(pinned(rect,505),505));
+  awaitPresent();releasePresent();awaitPins(0);
+  assert(renderer.poll(505).completed.back().gpu);
+  renderer.replaceWindow(nullptr,0,0);
+  assert(!renderer.handoff(pinned(rect,505),506));
+  renderer.replaceWindow(&window,32,32);
+  assert(renderer.needsRedraw(505));
+  gatePresent();assert(renderer.handoff(pinned(rect,505),507));
+  awaitPresent();releasePresent();awaitPins(0);
+  assert(renderer.poll(507).completed.back().gpu);
+}
+
 int main() {
+  emptyReplacedAndDetachedSnapshotsRecover();
+  unchangedSnapshotAfterPauseIsPresented();
   twoPendingFramesKeepBuffersAndTexturesAlive();
   glyphRevisionsCpuFallbackAndSurfaceRecovery();
   errorsAfterAcquireConsumeSemaphoresBeforeFallback();

@@ -58,6 +58,7 @@ void RenderThread::setPaused(bool paused) {
   control([this,paused] {
     paused_=paused;
     if(paused) renderer_->drain();
+    renderer_->invalidateContent();
     valid_=renderer_->valid();
   });
 }
@@ -140,10 +141,10 @@ void RenderThread::run() {
       completed_.push(result);
     }
     __android_log_print(ANDROID_LOG_DEBUG,"PodJSRenderer",
-        "frame seq=%llu rendererTotalMs=%.2f gpuDecodeMs=%.2f textureUploadMs=%.2f "
+        "frame seq=%llu hash=%llu words=%zu rendererTotalMs=%.2f gpuDecodeMs=%.2f textureUploadMs=%.2f "
         "frameFenceMs=%.2f acquireMs=%.2f gpuRecordMs=%.2f queueSubmitMs=%.2f presentWaitMs=%.2f "
         "gpuUploads=%u gpuUploadBytes=%llu frameSlot=%u inFlight=%u slotReuse=%d gpu=%d cpu=%d rendererLagFrames=%llu",
-        (unsigned long long)result.sequence,result.totalMs,result.perf.decodeMs,result.perf.uploadMs,
+        (unsigned long long)result.sequence,(unsigned long long)list.content_hash,list.word_count,result.totalMs,result.perf.decodeMs,result.perf.uploadMs,
         result.perf.frameFenceMs,result.perf.acquireMs,result.perf.recordMs,result.perf.queueSubmitMs,result.perf.presentWaitMs,
         result.perf.uploadCount,(unsigned long long)result.perf.uploadBytes,result.perf.slotIndex,result.perf.inFlightFrames,
         result.perf.waitedForSlot,result.gpu,result.cpu,(unsigned long long)result.lagFrames);

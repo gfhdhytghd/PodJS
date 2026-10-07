@@ -31,6 +31,8 @@ class VulkanRenderer {
   }
   size_t rasterBytes() const { return size_t{rasterWidth_} * rasterHeight_ * 4; }
   bool drain();
+  // Presentation can be discarded while paused even when guest words are unchanged.
+  void invalidateContent() { lastHash_ = 0; }
   void replaceWindow(ANativeWindow* window, uint32_t width, uint32_t height);
 
   // CPU-rendered compatibility path.
