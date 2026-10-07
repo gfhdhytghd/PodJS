@@ -20,9 +20,9 @@ test('default scheduler yields real runtime.delay(1), bounds rows and publishes 
  const expected=[...fixture()],published:any[]=[];
  const task=prepareTextLayout(fixture(),callbacks(value=>published.push(value)));
  expect(task.stats.rows).toBe(0);expect(published).toHaveLength(0);
- while(emitted.length){const before=task.stats.rows;await nextTurn();expect(task.stats.rows-before).toBeLessThanOrEqual(16);expect(published.length).toBeLessThanOrEqual(1);}
+ while(emitted.length){const before=task.stats.rows;await nextTurn();expect(task.stats.rows-before).toBeLessThanOrEqual(64);expect(published.length).toBeLessThanOrEqual(1);}
  await task.done;expect(published).toHaveLength(1);expect(published[0].entries).toEqual(expected);expect(published[0].layout.height).toBe(expected.reduce((sum,row)=>sum+row.height,0));
- expect(task.stats.turns).toBeGreaterThan(30);expect(task.stats.rows).toBe(513);expect(task.stats.maxMs).toBeGreaterThanOrEqual(0);
+ expect(task.stats.turns).toBeGreaterThan(7);expect(task.stats.rows).toBe(513);expect(task.stats.maxMs).toBeGreaterThanOrEqual(0);
  for(const [index,row] of expected.entries())expect(published[0].indices.get(row.key)).toBe(index);
 });
 test('default layout and byte codecs complete through Android timer validation and real macrotasks',async()=>{
@@ -103,4 +103,21 @@ test('reactive window data supports frozen snapshots and added/removed native fi
  const row=createWindowValue(current);expect(row.text).toBe('same line');expect(Object.keys(row)).toEqual(['text']);
  setCurrent(Object.freeze({text:'same line',baseline:17}));expect(row.baseline).toBe(17);expect({...row}).toEqual({text:'same line',baseline:17});
  setCurrent(Object.freeze({text:'same line'}));expect(Object.keys(row)).toEqual(['text']);expect(row.baseline).toBeUndefined();
+});
+
+test('one immutable first prefix precedes complete geometry through the default host scheduler',async()=>{
+ const prefixes:any[]=[],final:any[]=[];
+ const task=prepareTextLayout(fixture(200),{...callbacks(value=>final.push(value)),preview:{rows:8,publish:value=>prefixes.push(value)}});
+ await nextTurn();expect(prefixes).toHaveLength(1);expect(final).toHaveLength(0);
+ const count=prefixes[0].entries.length;expect(count).toBeGreaterThanOrEqual(8);
+ while(emitted.length)await nextTurn();await task.done;
+ expect(prefixes).toHaveLength(1);expect(prefixes[0].entries).toHaveLength(count);expect(prefixes[0].indices.size).toBe(count);
+ expect(final).toHaveLength(1);expect(final[0].entries).toEqual([...fixture(200)]);
+ expect(final[0].entries.slice(0,count)).toEqual(prefixes[0].entries);
+});
+test('cancel after the first prefix closes work and suppresses all later publication',async()=>{
+ let prefixes=0,final=0;const task=prepareTextLayout(fixture(200),{...callbacks(()=>final++),preview:{rows:1,publish:()=>prefixes++}});
+ await nextTurn();const late=emitted.shift()!;task.cancel();expect(emitted.shift()).toMatchObject({t:'service.cancel',id:late.id});
+ events.push({t:'service.result',id:late.id,ok:true,value:null});__pumpPodEvents();await task.done;
+ expect(prefixes).toBe(1);expect(final).toBe(0);
 });

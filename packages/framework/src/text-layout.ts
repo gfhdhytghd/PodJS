@@ -17,21 +17,27 @@ export interface TextLayoutSliceOptions {
 }
 /** Prepare shaped paragraph rows, prefixes and a stable-key index in bounded
  * host turns. The caller's iterator owns geometry; a single completed snapshot
- * is published for a windowed consumer. No partially built source is exposed.
+ * is published for a windowed consumer. An optional first prefix can be
+ * published once for immediate display; later work never mutates that prefix.
  * An iterator step must itself be bounded: a single indivisible shaping call
  * cannot be preempted by this scheduler. Cancellation closes the iterator and
  * cancels the outstanding runtime.delay; late replies never publish.
  */
 export function prepareTextLayout<Row,Layout,Entry,Key>(steps:Iterator<Row,Layout>,
- callbacks:{key:(row:Row)=>Key;entry:(row:Row)=>Entry;publish:(snapshot:TextLayoutSnapshot<Layout,Entry,Key>)=>void},
+ callbacks:{key:(row:Row)=>Key;entry:(row:Row)=>Entry;publish:(snapshot:TextLayoutSnapshot<Layout,Entry,Key>)=>void;
+  preview?:{rows:number;publish:(snapshot:Pick<TextLayoutSnapshot<Layout,Entry,Key>,"entries"|"indices">)=>void}},
  options:TextLayoutSliceOptions={}) {
  // Android runtime.timer accepts 1..120000ms; zero is a rejected request,
  // so every default slice must use the minimum valid host timer.
  const clock=options.clock??Date.now,yieldTurn=options.yieldTurn??(()=>delay(1));
- const budget=options.budgetMs??.5,limit=options.rowLimit??16;
+ // 64 cheap steps avoid a host roundtrip for every 16 scan/row operations.
+ // The 1ms wall limit still applies to expensive steps and coarse host clocks.
+ const budget=options.budgetMs??1,limit=options.rowLimit??64;
+ const preview=callbacks.preview;
+ if(preview&&(!Number.isSafeInteger(preview.rows)||preview.rows<1))throw new RangeError('Invalid text layout preview size');
  if(!Number.isFinite(budget)||budget<=0||!Number.isSafeInteger(limit)||limit<1)throw new RangeError('Invalid text layout slice budget');
  const entries:Entry[]=[],indices=new Map<Key,number>(),stats:TextLayoutSliceStats={turns:0,maxMs:0,rows:0};
- let cancelled=false,closed=false,pending:HostOperation<unknown>|undefined;
+ let previewed=false,cancelled=false,closed=false,pending:HostOperation<unknown>|undefined;
  const close=()=>{if(!closed){closed=true;steps.return?.();}};
  const done=(async()=>{
   try{
@@ -49,6 +55,10 @@ export function prepareTextLayout<Row,Layout,Entry,Key>(steps:Iterator<Row,Layou
      if(count>=limit||clock()-began>=budget)break;
     }
     const elapsed=clock()-began;stats.turns++;stats.maxMs=Math.max(stats.maxMs,elapsed);options.onSlice?.(elapsed,count);
+    if(cancelled)return;
+    if(!finished?.done&&preview&&!previewed&&entries.length>=preview.rows){
+     previewed=true;preview.publish({entries:entries.slice(),indices:new Map(indices)});
+    }
     if(cancelled)return;
     if(finished?.done){callbacks.publish({layout:finished.value,entries,indices});return;}
    }
