@@ -241,7 +241,7 @@ export function RemoteImage<S extends ImageSource>(props: RemoteImageProps<S>) {
   });
   const rect=()=>imageFitRect(props.width,props.height,size().width,size().height,props.fit);
   return props.fit && props.fit!=="stretch"
-    ? <View class={props.class} style={{width:props.width,height:props.height}}><View style={{position:"relative",overflow:"hidden",width:props.width,height:props.height}}><Image ref={value => { node = value; }} style={{position:"absolute",insetL:rect().left,insetT:rect().top,width:rect().width,height:rect().height}} /></View></View>
+    ? <View class={props.class} style={{width:props.width,height:props.height}}><View style={{posType:0,overflow:1,width:props.width,height:props.height}}><Image ref={value => { node = value; }} style={{posType:1,insetL:rect().left,insetT:rect().top,width:rect().width,height:rect().height}} /></View></View>
     : <Image ref={value=>{node=value;}} class={props.class} style={{width:props.width,height:props.height}}/>;
 }
 

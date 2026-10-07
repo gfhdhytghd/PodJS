@@ -10,6 +10,7 @@ import { syncProjectAssets } from "./project-assets.ts";
 import { androidPackagePlan, androidPackageOptions, signAndroidApk, rotateAndroidSigning, type RotateOptions } from "./android-signing.ts";
 import { buildPakIntegrity } from "./pak-integrity.ts";
 
+import { findUnknownStyleProps } from "./style-props-check.ts";
 const ROOT = resolve(import.meta.dir, "../../..");
 type Target = PodTargetProfile["id"];
 
@@ -80,6 +81,10 @@ async function build(target: Target, project?: ResolvedPodProject): Promise<Reso
     const unsupported = project.config.capabilities.filter(capability => !profile.capabilities.includes(capability as never));
     if (unsupported.length) fail(`project requires capabilities unavailable on ${target}: ${unsupported.join(", ")}`);
   }
+  // Unknown inline style keys throw inside the renderer and abort every frame on device.
+  const styleRoots=[join(ROOT,"packages/framework/src"),...(project?[join(project.root,"src")]:[])].filter(path=>existsSync(path));
+  const unknownStyles=findUnknownStyleProps(styleRoots);
+  if(unknownStyles.length) fail(`unknown inline style props (see PocketJS spec PROP):\n${unknownStyles.map(item=>`  ${item.file}:${item.line} ${item.key}`).join("\n")}`);
   const glyphOption=project?.config.resources?.glyphCache;
   let glyphCache=glyphOption;
   if(glyphOption?.warmCharsFile&&project) {
