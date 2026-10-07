@@ -29,7 +29,9 @@
     "./html": "./src/html.ts",
     "./html-slices": "./src/html-slices.ts",
     "./xml": "./src/xml.ts",
-    "./json": "./src/json.ts"
+    "./json": "./src/json.ts",
+    "./text-compat": "./src/text-compat.ts",
+    "./startup": "./src/startup.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",

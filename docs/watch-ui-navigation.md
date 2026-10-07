@@ -25,3 +25,20 @@ it even on rejection or exception. A negative handle means failure, not fallback
 Without support, upload returns null and the caller retains ownership: read the
 bytes, upload via host ops, and clean up its temporary file. Never remove the
 original source image as part of decoder-file cleanup.
+
+## Round QR layout preset
+
+`@podjs/framework/watch-ui` also exports `safeQrLayout(width, height)` and
+`rectInsideCircle(rect, {cx, cy, radius}, margin = 1)`, plus `QrRect` and
+`SafeQrLayout`. These are pure geometry helpers; they neither encode QR data nor
+allocate textures. The layout is a 233-unit compatibility preset scaled to the
+smaller viewport dimension, centered in the viewport. It returns title, QR,
+status and action rectangles plus scale/circle metadata. The preset contains
+no labels, colors or business payload. Other screen structures can supply their
+own rectangles to `rectInsideCircle`; do not force them into this preset.
+
+The containment check tests all four corners, uses a 1e-6 tolerance and interprets
+margin in viewport units. Pass `layout.scale` for a one-preset-unit inset. Existing
+numeric behavior (including the layout's minimum diameter of 1) is retained;
+callers should provide finite positive display dimensions. Layout tests do not
+establish that a rendered QR is scannable.
