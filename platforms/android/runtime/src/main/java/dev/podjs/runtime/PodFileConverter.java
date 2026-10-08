@@ -13,6 +13,15 @@ import org.json.*;
 /** Host-only fixed file snapshot. No links, source mutations, or whole-file media buffers.
  * Paths and content hashes live only in private receipts, never the public journal. */
 public final class PodFileConverter implements PodTakeoverCoordinator.Converter {
+    /** Carries only an allowlisted category; never a path or an arbitrary message. */
+    static final class FileFailure extends IOException {
+        final String category,exceptionClass;
+        FileFailure(String category,Exception error) {
+            super(error.getMessage()!=null&&error.getMessage().matches("[a-z0-9_]{1,64}")?error.getMessage():null);
+            this.category=category;this.exceptionClass=error.getClass().getName();setStackTrace(error.getStackTrace());
+        }
+    }
+    private FileFailure failure(String path,Exception error){return error instanceof FileFailure?(FileFailure)error:new FileFailure(classify(path),error);}
     public interface Hook { void saved(String boundary) throws Exception; }
     public interface ProgressHook { void copied(long bytes); }
     public interface FontReader { void load(File file, int faces) throws Exception; }
@@ -114,7 +123,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         // Native TestAppContainer.createTestSettingsRepository: exact public prefixes + UUID.
         // Preserve these isolated synthetic stores privately; never merge their settings.
         if(p.matches("files/(add-rss-activity|bili-channel-info|bili-smoke|common-smoke|douyin-channel-info|douyin-smoke|home-feed-list-activity|oobe-activity|settings-activity)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.preferences_pb"))return "private-test-state";
-        if(p.equals("files/profileinstaller_profileWrittenFor_lastUpdateTime.dat"))return "platform-metadata";
+        if(dev.podjs.takeover.TakeoverDigest.platformMetadata(p))return "platform-metadata";
         if(p.startsWith("files/offline/bili/")||p.matches("cache/(douyin_preload|bili_stream_cache|rss_images|douyin_preview_snapshots|updates)/.+")||p.matches("cache/tts_[0-9]+\\.mp3"))return "refetchable";
         return "unknown-user-content";
     }
@@ -150,6 +159,16 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         return out;
     }
     private void walk(String path,SortedMap<String,JSONObject> out)throws Exception {
+        // These exact platform-owned files may appear, disappear or change during launch.
+        // They remain in NativeBackup, but are neither business payload nor imported assets.
+        if(dev.podjs.takeover.TakeoverDigest.platformMetadata(path)) {
+            // A metadata name never exempts source links or directories containing user data.
+            try {File metadata=safe(sandbox,path);if(Files.isDirectory(metadata.toPath(),LinkOption.NOFOLLOW_LINKS))throw new IOException("file_not_regular");}
+            catch(Exception error){throw failure(path,error);}return;
+        }
+        try { walkFile(path,out); } catch(Exception error){throw failure(path,error);}
+    }
+    private void walkFile(String path,SortedMap<String,JSONObject> out)throws Exception {
         File file=safe(sandbox,path);if(!Files.exists(file.toPath(),LinkOption.NOFOLLOW_LINKS))return;
         if(Files.isDirectory(file.toPath(),LinkOption.NOFOLLOW_LINKS)) {
             File[] children=file.listFiles();if(children==null)throw new IOException("inventory_unreadable");
@@ -163,11 +182,16 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         File manifest=new File(g,"files-snapshot.json");
         if(manifest.exists()){resume(g,PodTakeoverCoordinator.Phase.SNAPSHOTTED);return;}
         SortedMap<String,JSONObject> entries=inventory();
-        for(Map.Entry<String,JSONObject> e:entries.entrySet())copyFile(safe(sandbox,e.getKey()),safe(new File(g,"files-source"),e.getKey()),e.getValue(),"snapshot");
+        for(Map.Entry<String,JSONObject> e:entries.entrySet())try {
+            copyFile(safe(sandbox,e.getKey()),safe(new File(g,"files-source"),e.getKey()),e.getValue(),"snapshot");
+        }catch(Exception error){throw failure(e.getKey(),error);}
         syncDirtyDirectories();
         SortedMap<String,JSONObject> after=inventory();
-        if(!entries.keySet().equals(after.keySet()))throw new IOException("file_inventory_changed");
-        for(String p:entries.keySet())if(!same(entries.get(p),after.get(p)))throw new IOException("file_source_changed");
+        if(!entries.keySet().equals(after.keySet())) {
+            SortedSet<String> changed=new TreeSet<>(entries.keySet());changed.addAll(after.keySet());
+            for(String p:changed)if(entries.containsKey(p)!=after.containsKey(p))throw failure(p,new IOException("file_inventory_changed"));
+        }
+        for(String p:entries.keySet())if(!same(entries.get(p),after.get(p)))throw failure(p,new IOException("file_source_changed"));
         PodStoreConverter.json(manifest,new JSONObject().put("version",version()).put("entries",new JSONObject(entries)));
         hook.saved("snapshot");
     }
@@ -177,16 +201,19 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
     }
     public void resume(File g,PodTakeoverCoordinator.Phase phase)throws Exception {
         JSONObject entries=entries(g);
-        for(String p:names(entries))if(!classify(p).equals(entries.getJSONObject(p).getString("category"))||!same(measure(safe(new File(g,"files-source"),p)),entries.getJSONObject(p)))throw new IOException("file_snapshot_changed");
+        for(String p:names(entries))try {
+            if(!classify(p).equals(entries.getJSONObject(p).getString("category"))||!same(measure(safe(new File(g,"files-source"),p)),entries.getJSONObject(p)))throw new IOException("file_snapshot_changed");
+        }catch(Exception error){throw failure(p,error);}
     }
     public void copy(File g)throws Exception {
         resume(g,PodTakeoverCoordinator.Phase.COPYING);
         Files.createDirectories(safe(g,"podjs/files").toPath());JSONObject entries=entries(g);
         for(String p:names(entries))if(classify(p).equals("asset")){
-            copyFile(safe(new File(g,"files-source"),p),safe(new File(g,"podjs/files"),p.substring(6)),entries.getJSONObject(p),"copy");
+            try {copyFile(safe(new File(g,"files-source"),p),safe(new File(g,"podjs/files"),p.substring(6)),entries.getJSONObject(p),"copy");}
+            catch(Exception error){throw failure(p,error);}
             JSONObject receipt=new JSONObject().put("path",p).put("size",entries.getJSONObject(p).getLong("size")).put("sha256",entries.getJSONObject(p).getString("sha256")).put("complete",true);
             File record=safe(new File(g,"files-completed"),PodStoreConverter.slot(p)+".json");
-            if(record.exists()) {if(!receipt.toString().equals(PodStoreConverter.json(record).toString()))throw new IOException("file_receipt_changed");}
+            if(record.exists()) {if(!receipt.toString().equals(PodStoreConverter.json(record).toString()))throw failure(p,new IOException("file_receipt_changed"));}
             else PodStoreConverter.json(record,receipt);
             hook.saved("file");
         }
@@ -198,16 +225,16 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
     }
     private static void block(JSONObject r,String reason)throws Exception{r.getJSONArray("blockers").put(reason);}
     private static void degraded(JSONObject r,String kind,String path)throws Exception{r.getJSONArray("degraded").put(new JSONObject().put("kind",kind).put("path",path));}
-    private boolean exists(File g,String p)throws Exception{return safe(new File(g,"podjs/files"),p).isFile();}
+    private boolean exists(File g,String p)throws Exception{try{return safe(new File(g,"podjs/files"),p).isFile();}catch(Exception error){throw failure("files/"+p,error);}}
     private boolean asset(File g,String dir,JSONObject row,String name)throws Exception {
-        String path=dir+"/"+row.getString(name);File f=safe(new File(g,"podjs/files"),path);
+        String path=dir+"/"+row.getString(name);try {File f=safe(new File(g,"podjs/files"),path);
         if(!f.exists())return false;
-        JSONObject actual=measure(f);if(actual.getLong("size")!=row.getLong("byteCount")||!actual.getString("sha256").equals(row.getString("sha256").toLowerCase(Locale.ROOT)))throw new IOException("asset_catalog_mismatch");return true;
+        JSONObject actual=measure(f);if(actual.getLong("size")!=row.getLong("byteCount")||!actual.getString("sha256").equals(row.getString("sha256").toLowerCase(Locale.ROOT)))throw new IOException("asset_catalog_mismatch");return true;}catch(Exception error){throw failure("files/"+path,error);}
     }
     private JSONObject report(File g)throws Exception {
         JSONObject entries=entries(g),r=new JSONObject().put("version",version()).put("blockers",new JSONArray()).put("degraded",new JSONArray()).put("derivedSync","empty-rebuild-before-export");
         JSONObject classes=new JSONObject();
-        for(String p:names(entries)) {
+        for(String p:names(entries)) try {
             String c=classify(p);classes.put(c,classes.optInt(c)+1);
             if(c.equals("asset")){
                 JSONObject receipt=PodStoreConverter.json(safe(new File(g,"files-completed"),PodStoreConverter.slot(p)+".json"));
@@ -218,7 +245,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
             else if(c.equals("platform-metadata")&&entries.getJSONObject(p).getLong("size")!=8)block(r,"platform_metadata_invalid");
             else if(c.equals("unknown-user-content"))block(r,"unknown_user_files");
             else if(c.equals("cloud-unverified"))block(r,"cloud_cache_binding_unverified");
-        }
+        }catch(Exception error){throw failure(p,error);}
         r.put("classes",classes);
         try(PodRoomV18Converter.Db refs=factory.open(new File(g,"room-progress.sqlite"))) {
             for(Map<String,Object> row:refs.query("SELECT * FROM content_reference ORDER BY item_id,kind")) {

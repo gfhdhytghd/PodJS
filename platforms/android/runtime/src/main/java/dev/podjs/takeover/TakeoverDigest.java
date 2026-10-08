@@ -9,6 +9,11 @@ import java.util.*;
 /** Metadata digest projection; never changes the shared recovery protocol. */
 public final class TakeoverDigest {
     public static final String[] ROOTS={"databases","files","shared_prefs","no_backup"};
+    public static final String FILES_WITHOUT_PLATFORM_METADATA="files_without_platform_metadata";
+    /** Exact paths from androidx.profileinstaller 1.3.0; no wildcard metadata exemption. */
+    public static boolean platformMetadata(String path) {
+        return "files/profileinstaller_profileWrittenFor_lastUpdateTime.dat".equals(path)||"files/profileInstalled".equals(path);
+    }
     private TakeoverDigest() {}
     private static void require(boolean valid)throws IOException {if(!valid)throw new IOException("digest_invalid");}
     private static String hex(byte[] b) {
@@ -100,7 +105,11 @@ public final class TakeoverDigest {
         }
         List<String> out=new ArrayList<>();
         for(Map.Entry<String,SortedMap<String,String[]>> root:roots.entrySet())out.add(digestLine(root.getValue(),phase,generation,root.getKey()));
-        out.add(digestLine(all,phase,generation,"manifest"));return out;
+        out.add(digestLine(all,phase,generation,"manifest"));
+        SortedMap<String,String[]> business=new TreeMap<>(TakeoverDigest::utf8Compare);
+        for(Map.Entry<String,String[]> entry:roots.get("files").entrySet())
+            if(!platformMetadata("files/"+entry.getKey()))business.put(entry.getKey(),entry.getValue());
+        out.add(digestLine(business,phase,generation,FILES_WITHOUT_PLATFORM_METADATA));return out;
     }
     private static int utf8Compare(String left,String right) {
         byte[] a=left.getBytes(java.nio.charset.StandardCharsets.UTF_8),b=right.getBytes(java.nio.charset.StandardCharsets.UTF_8);

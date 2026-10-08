@@ -48,6 +48,28 @@ public class PodWorkManagerTakeoverTest {
         return request;
     }
     WorkInfo.State state(UUID id)throws Exception{return work.getWorkInfoById(id).get(5,TimeUnit.SECONDS).getState();}
+    @Test public void trustedSandboxAliasAcceptedButInternalReceiptLinkRejected()throws Exception {
+        java.nio.file.Path temporary=Files.createTempDirectory("workmanager-alias-");
+        java.nio.file.Path real=Files.createDirectory(temporary.resolve("real")),alias=temporary.resolve("alias");
+        Files.createSymbolicLink(alias,real);
+        Context fixture=new android.content.ContextWrapper(context) {
+            @Override public android.content.pm.ApplicationInfo getApplicationInfo(){android.content.pm.ApplicationInfo info=new android.content.pm.ApplicationInfo(context.getApplicationInfo());info.dataDir=alias.toString();return info;}
+            @Override public File getNoBackupFilesDir(){return alias.resolve("no_backup").toFile();}
+        };
+        try {
+            String generation="g-"+UUID.randomUUID();
+            PodWorkManagerTakeover.retire(fixture,generation,legacy,work);
+            java.nio.file.Path receipt=real.resolve("no_backup/podjs-workmanager-takeover/"+generation+"-"+legacy.fingerprint+".done");
+            assertTrue(Files.isRegularFile(receipt));
+            java.nio.file.Path lock=receipt.getParent().resolve("lock");Files.delete(lock);Files.createSymbolicLink(lock,receipt);
+            try{PodWorkManagerTakeover.retire(fixture,"g-"+UUID.randomUUID(),legacy,work);fail("internal link");}
+            catch(java.io.IOException expected){assertEquals("legacy_receipt_symlink",expected.getMessage());}
+        }finally{
+            try(java.util.stream.Stream<java.nio.file.Path> paths=Files.walk(temporary)) {
+                for(java.nio.file.Path path:(Iterable<java.nio.file.Path>)paths.sorted(Comparator.reverseOrder())::iterator)Files.delete(path);
+            }
+        }
+    }
     @Test public void pendingLegacyRecordUsesFactoryInsteadOfMissingClassAndCannotStartMigration()throws Exception {
         OneTimeWorkRequest request=old("unlisted-native-tag");work.enqueue(request).getResult().get();
         TestDriver driver=WorkManagerTestInitHelper.getTestDriver(context);

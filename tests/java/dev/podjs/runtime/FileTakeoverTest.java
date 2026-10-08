@@ -165,6 +165,45 @@ public final class FileTakeoverTest {
             check(nativeBefore.equals(CanonicalTakeoverTest.tree(source,true)),"resumed source unchanged");
         }finally{StoreTest.remove(source);}
     }
+    static void platformMetadataAndUserMutation()throws Exception {
+        File source=fixture(true),target=new File(source,"files/package-takeover");
+        try {
+            File marker=new File(source,"files/profileinstaller_profileWrittenFor_lastUpdateTime.dat");
+            // Exact metadata paths only, regardless of bytes/length; unknown lookalikes remain data.
+            StoreTest.write(new File(source,"files/profileInstalled"),new byte[24]);
+            File verificationMarker=new File(source,"files/profileInstalled");
+            int[] writes={0};
+            PodTakeoverConverters converters=composite(source,b->{if(b.equals("snapshot.part")) {
+                StoreTest.write(marker,new byte[++writes[0]]);
+                Files.deleteIfExists(verificationMarker.toPath());
+            }},new StoreTest.Crypto());
+            Properties active=new PodTakeoverCoordinator(target,probe,converters).run();
+            check(active.getProperty("phase").equals("ACTIVE"),"metadata mutations never block business snapshot");
+            JSONObject entries=PodStoreConverter.json(new File(generation(target,active),"files-snapshot.json")).getJSONObject("entries");
+            check(!entries.has("files/profileInstalled")&&!entries.has("files/profileinstaller_profileWrittenFor_lastUpdateTime.dat"),"metadata excluded");
+            check(marker.length()==writes[0]&&writes[0]>0,"platform wrote during snapshot");
+            check(!new File(generation(target,active),"files-source/files/profileinstaller_profileWrittenFor_lastUpdateTime.dat").exists(),"metadata not snapshotted or imported");
+        }finally{StoreTest.remove(source);}
+        for(String path:new String[]{"files/profileInstalled.user","files/nested/profileInstalled","files/profileinstaller_profileWrittenFor_lastUpdateTime.dat.user"}) {
+            source=fixture();target=root();try {
+                StoreTest.write(new File(source,path),new byte[]{1});check(run(source,target).getProperty("phase").equals("BLOCKED"),"lookalike still user data");
+            }finally{StoreTest.remove(source);StoreTest.remove(target);}
+        }
+        source=fixture(true);target=new File(source,"files/package-takeover");
+        try {
+            File body=new File(source,"files/article_content/fixture.txt");
+            // Two failed generations, as on v1000/v1001. Both stay byte-for-byte retained.
+            PodTakeoverConverters broken=composite(source,b->{if(b.equals("snapshot.part"))Files.writeString(body.toPath(),"changed-"+System.nanoTime());},new StoreTest.Crypto());
+            Properties first=new PodTakeoverCoordinator(target,probe,broken).run();
+            check(first.getProperty("phase").equals("PAUSED")&&first.getProperty("resumePhase").equals("DETECTED"),"user mutation pauses first candidate");
+            File old=generation(target,first);Map<String,String> oldBytes=StoreTest.digests(old);
+            Properties second=new PodTakeoverCoordinator(target,probe,broken).run();
+            check(second.getProperty("phase").equals("PAUSED")&&!first.getProperty("generation").equals(second.getProperty("generation")),"second failed candidate");
+            File newer=generation(target,second);Map<String,String> newerBytes=StoreTest.digests(newer);
+            Properties active=run(source,target);check(active.getProperty("phase").equals("ACTIVE"),"two PAUSED generations resume to ACTIVE");
+            check(oldBytes.equals(StoreTest.digests(old))&&newerBytes.equals(StoreTest.digests(newer)),"both failed candidates retained");
+        }finally{StoreTest.remove(source);}
+    }
     public static void main(String[] args)throws Exception {
         if(args.length>0&&args[0].equals("crash")) {
             File source=new File(args[1]),root=new File(args[2]);String boundary=args[3];
@@ -174,6 +213,7 @@ public final class FileTakeoverTest {
                 public void published(){if(boundary.equals("published"))Runtime.getRuntime().halt(91);}
             }).run();throw new AssertionError("missing crash: "+boundary);
         }
+        platformMetadataAndUserMutation();
         v1000PausedCompletedPhases();
         migratedNativeV18ForwardRetry();
         v1000PausedSnapshotForwardRetry();
@@ -193,7 +233,7 @@ public final class FileTakeoverTest {
         // Native recovers a missing account key to logged-out; preserve source and publish other data.
         File account=fixture();StoreTest.xml(account,"watchrss_account_state","<string name=\"state_json\">synthetic-invalid</string>");File target=root();StoreTest.Crypto badCrypto=new StoreTest.Crypto();badCrypto.unavailable=true;
         p=new PodTakeoverCoordinator(target,probe,composite(account,b->{},badCrypto)).run();check(p.getProperty("phase").equals("ACTIVE"),"native reauth fallback");check(new File(target,"active").exists(),"other data published");StoreTest.remove(account);StoreTest.remove(target);
-        for(String path:new String[]{"files/imports/book.txt","files/watch-cloud-cache/snapshot","files/article_content/fixture.txt","files/bili-smoke-user.preferences_pb","files/other-00000000-0000-0000-0000-000000000000.preferences_pb","files/profileinstaller_profileWrittenFor_lastUpdateTime.dat"}) {
+        for(String path:new String[]{"files/imports/book.txt","files/watch-cloud-cache/snapshot","files/article_content/fixture.txt","files/bili-smoke-user.preferences_pb","files/other-00000000-0000-0000-0000-000000000000.preferences_pb"}) {
             File s=fixture();if(path.endsWith("fixture.txt"))Files.delete(new File(s,path).toPath());else StoreTest.write(new File(s,path),new byte[]{1});target=root();p=run(s,target);check(p.getProperty("phase").equals("BLOCKED"),"missing/unknown/cloud blocks: "+p);check(!new File(target,"active").exists(),"no blocked pointer");StoreTest.remove(s);StoreTest.remove(target);
         }
         // A recognized synthetic store is parsed during COPY. Malformed protobuf

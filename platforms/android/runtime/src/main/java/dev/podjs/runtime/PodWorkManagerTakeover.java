@@ -106,7 +106,9 @@ public final class PodWorkManagerTakeover {
     private static void retireLocked(Context c,String generation,Config config,WorkManager work)throws Exception {
         if(!generation.matches("g-[A-Za-z0-9-]+"))throw new IOException("legacy_generation_invalid");
         String key=key(c,generation,config);if(completed.contains(key))return;
-        File root=new File(c.getNoBackupFilesDir(),"podjs-workmanager-takeover");
+        // Context's trusted dataDir may itself be an Android mount alias. Resolve it once,
+        // just like converters; internal receipt links below are still rejected.
+        File root=new File(PodTakeover.sandbox(c),"no_backup/podjs-workmanager-takeover");
         if(Files.isSymbolicLink(root.toPath())||!root.getCanonicalFile().equals(root.getAbsoluteFile()))throw new IOException("legacy_receipt_symlink");
         if(!root.mkdirs()&&!root.isDirectory())throw new IOException("legacy_receipt_unavailable");
         File lock=new File(root,"lock"),receipt=new File(root,generation+"-"+config.fingerprint+".done");

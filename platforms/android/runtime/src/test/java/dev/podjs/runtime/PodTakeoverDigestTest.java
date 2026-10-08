@@ -26,6 +26,25 @@ public class PodTakeoverDigestTest {
         Properties db=new Properties();db.setProperty("sourceDigest","f".repeat(64)+":absent");
         PodTakeoverCoordinator.atomic(new File(g,"snapshot.properties"),db);return g;
     }
+    @Test public void platformDifferenceRetainsFullEvidenceAndStrictSubset()throws Exception {
+        Path sandbox=Files.createTempDirectory("digest-platform-");
+        try {
+            File g=generation(sandbox);
+            Path marker=sandbox.resolve("files/profileinstaller_profileWrittenFor_lastUpdateTime.dat");
+            Files.write(marker,new byte[8]);
+            Files.write(sandbox.resolve("files/profileInstalled"),new byte[24]);
+            Files.write(sandbox.resolve("files/profileInstalled.user"),new byte[]{7});
+            List<String> before=TakeoverDigest.digestManifest(PodTakeoverBackup.snapshot(sandbox.toFile(),g),"SNAPSHOTTED",g.getName());
+            Files.write(marker,new byte[]{1,2,3});
+            new NativeBackup(sandbox.toFile()).prepare(g.getName(),40,"f".repeat(64));
+            List<String> after=TakeoverDigest.activeLines(sandbox.toFile(),g.getName());
+            assertNotEquals(before.get(1).replace("SNAPSHOTTED","ACTIVE"),after.get(1));
+            assertEquals(before.get(5).replace("SNAPSHOTTED","ACTIVE"),after.get(5));
+            assertArrayEquals(new byte[]{1,2,3},Files.readAllBytes(sandbox.resolve(NativeBackup.BACKUP+"/g-unit/data/files/profileinstaller_profileWrittenFor_lastUpdateTime.dat")));
+            assertTrue(after.get(5).contains("\"files\":1"));
+            try{PodTakeoverBackup.verifySnapshot(sandbox.toFile(),g);fail("full equality must not be fabricated");}catch(IOException expected){}
+        }finally{remove(sandbox);}
+    }
     @Test public void releaseLogIsStableEmptyAndPrivateAndBackedBySealedPlan()throws Exception {
         Path sandbox=Files.createTempDirectory("digest-test-");
         try {
@@ -49,7 +68,7 @@ public class PodTakeoverDigestTest {
             Files.delete(sandbox.resolve(NativeBackup.BACKUP+"/g-unit/data/files/nested/private-cookie-account.txt"));
             assertEquals(active,TakeoverDigest.activeLines(sandbox.toFile(),g.getName()));
             ShadowLog.clear();PodTakeoverBackup.emit(snapshot);PodTakeoverBackup.emit(active);
-            assertEquals(10,ShadowLog.getLogsForTag("PodTakeoverDigest").size());
+            assertEquals(12,ShadowLog.getLogsForTag("PodTakeoverDigest").size());
             for(ShadowLog.LogItem log:ShadowLog.getLogsForTag("PodTakeoverDigest")) {
                 JSONObject json=new JSONObject(log.msg);assertEquals(6,json.length());
                 for(String value:new String[]{"private","cookie","account","synthetic",".txt",".bin","cache"})assertFalse(log.msg.contains(value));
@@ -90,7 +109,7 @@ public class PodTakeoverDigestTest {
             Files.createDirectories(sandbox.resolve("no_backup"));Files.write(sandbox.resolve("no_backup/private.bin"),new byte[]{4});
             new NativeBackup(sandbox.toFile()).prepare("g-unit",40,"f".repeat(64));
             Path base=sandbox.resolve(NativeBackup.BACKUP+"/g-unit");
-            assertEquals(5,TakeoverDigest.activeLines(sandbox.toFile(),"g-unit").size());
+            assertEquals(6,TakeoverDigest.activeLines(sandbox.toFile(),"g-unit").size());
             for(String name:new String[]{"manifest","seal","ready"}) {
                 Path file=base.resolve(name);byte[] good=Files.readAllBytes(file);
                 Files.write(file,"sha256=bad\n".getBytes());

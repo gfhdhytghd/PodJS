@@ -12,6 +12,7 @@ sqlite=${SQLITE_JDBC_JAR:-$(find "$HOME/.gradle/caches/modules-2/files-2.1/org.x
 slf4j=${SLF4J_JAR:-$(find "$HOME/.gradle/caches/modules-2/files-2.1/org.slf4j/slf4j-api/1.7.30" -name '*.jar' -print -quit)}
 cp="$work:$json:$sqlite:$slf4j:platforms/android/runtime/src/main/resources"
 javac -cp "$cp" -d "$work" \
+  platforms/android/runtime/src/main/java/dev/podjs/takeover/{NativeBackup,TakeoverDigest}.java \
   platforms/android/runtime/src/main/java/dev/podjs/runtime/{PodTakeoverCoordinator,PodRoomV18Converter,PodTakeoverConverters,PodFileConverter,PodPreferenceReader,PodStoreConverter,PodStoreMappings,PodStorePolicy}.java \
   tests/java/dev/podjs/runtime/{StoreTest,RoomV18Test,TakeoverBenchmark}.java
 java -ea -cp "$cp" dev.podjs.runtime.TakeoverBenchmark "$@"

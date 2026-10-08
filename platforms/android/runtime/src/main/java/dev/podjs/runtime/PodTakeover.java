@@ -66,6 +66,7 @@ public final class PodTakeover {
         // Post-admission only: never change converters, source or backup directories.
         if(!result.data.equals(new File(sandbox(c),"files/podjs")))
             PodWorkManagerTakeover.afterAdmission(c,result.data.getParentFile().getName());
+        PodProfileInstaller.afterAdmission(c);
         return result;
     }
     private static PodTakeoverAdmission.Paths paths(Context c) throws Exception {return paths(c,new ProgressReporter(c,null));}

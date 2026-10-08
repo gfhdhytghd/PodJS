@@ -47,6 +47,7 @@ android {
 }
 
 dependencies {
+    implementation("androidx.profileinstaller:profileinstaller:1.3.0")
     implementation("com.squareup.okhttp3:okhttp:5.3.2")
     implementation("com.google.crypto.tink:tink-android:1.8.0")
     implementation("androidx.metrics:metrics-performance:1.0.0-beta01")

@@ -13,6 +13,17 @@ import static org.junit.Assert.*;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk=30)
 public class PodTakeoverDiagnosticsTest {
+    @Test public void fixedCodeAndCategoryWithoutPrivateMessages()throws Exception {
+        IOException mismatch=new IOException("file_copy_mismatch");
+        mismatch.setStackTrace(new StackTraceElement[]{new StackTraceElement("dev.podjs.runtime.PodFileConverter","copyFile","PodFileConverter.java",96)});
+        String line=PodTakeoverDiagnostics.line("DETECTED",new PodFileConverter.FileFailure("platform-metadata",mismatch));
+        assertTrue(line.endsWith(" code=file_copy_mismatch category=platform-metadata"));
+        assertTrue(line.contains("#copyFile:96"));
+        for(String message:new String[]{"/private/path","token=secret","a".repeat(65),"UpperCase","bad\nmessage",""})
+            assertFalse(PodTakeoverDiagnostics.line("DETECTED",new IOException(message)).contains(" code="));
+        assertTrue(PodTakeoverDiagnostics.line("DETECTED",new IOException("a".repeat(64))).endsWith(" code="+"a".repeat(64)));
+        assertFalse(PodTakeoverDiagnostics.line("DETECTED",new PodFileConverter.FileFailure("asset",new IOException("/private/path"))).contains("private"));
+    }
     @Test public void pausedReleaseHasOneSafeLineAndNoThrowable()throws Exception {
         File root=Files.createTempDirectory("paused-log-").toFile();
         IOException secret=new IOException("https://secret.invalid/token private-key-value",new IOException("private cause"));
