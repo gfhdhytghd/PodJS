@@ -32,6 +32,16 @@ describe("safe top block", () => {
       expect(block.x + block.width / 2).toBeCloseTo(width / 2);
     });
   }
+  test("prefers the block whose bottom edge is highest, not the highest top", () => {
+    // 300px of text: very narrow chords near the top wrap into a tall column.
+    const text = (width: number) => 12 + Math.ceil(300 / Math.max(1, width - 20)) * 14;
+    const block = safeTopBlock(233, 233, text, { minTop: 4, maxWidth: 217 })!;
+    for (let y = 4; y < 116; y++) {
+      const other = safeTopBlock(233, 233, text, { minTop: y, maxWidth: 217 });
+      if (other) expect(block.y + block.height).toBeLessThanOrEqual(other.y + other.height);
+    }
+    expect(block.height).toBeLessThan(100);
+  });
   test("respects maxWidth and reports when nothing fits", () => {
     expect(safeTopBlock(233, 233, () => 10, { maxWidth: 40 })!.width).toBeLessThanOrEqual(40);
     expect(safeTopBlock(233, 233, () => 400)).toBeUndefined();
