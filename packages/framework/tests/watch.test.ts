@@ -174,3 +174,31 @@ test('explicit KV batch stages JSON snapshots and commits once; callback/host fa
   host.kvApply=undefined;api.kv.batch(()=>api.kv.set('counter',5));expect(api.kv.get<unknown>('counter')).toBe(5);
  }finally{host.kvApply=old;values.clear();}
 });
+
+test('lifecycle checkpoints commit immediately before observers and across an enclosing KV batch',()=>{
+ const host=(globalThis as any).pod,old=host.kvApply;
+ host.kvApply=(wire:string)=>{for(const row of JSON.parse(wire)){if(row.op==='set')values.set(row.key,JSON.stringify(row.value));else values.delete(row.key);}return 0;};
+ const reasons:string[]=[],remove=api.onLifecycleCheckpoint(reason=>{reasons.push(reason);api.kv.set('latest',{offset:419});});
+ const observe=api.onLifecycleChange(state=>{if(state!=='active')expect(JSON.parse(values.get('latest')!)).toEqual({offset:419});});
+ try {
+  api.kv.batch(()=>{
+   api.kv.set('before',1);
+   events.push({t:'lifecycle',state:'inactive'});services.runServicePumps();
+   // Still inside the batch and before any Promise continuation.
+   expect(JSON.parse(values.get('before')!)).toBe(1);
+   expect(JSON.parse(values.get('latest')!)).toEqual({offset:419});
+   api.kv.set('after',2);
+  });
+  expect(JSON.parse(values.get('after')!)).toBe(2);
+  events.push({t:'lifecycle',state:'background'},{t:'checkpoint',reason:'screen-off'},{t:'lifecycle',state:'active'});
+  services.runServicePumps();expect(reasons).toEqual(['inactive','background','screen-off']);
+  remove();events.push({t:'checkpoint',reason:'screen-off'});services.runServicePumps();expect(reasons).toHaveLength(3);
+ }finally {remove();observe();host.kvApply=old;}
+});
+
+test('one failing lifecycle owner still commits other synchronous snapshots and reports failure',()=>{
+ const stopBad=api.onLifecycleCheckpoint(()=>{throw Error('snapshot failed');});
+ const stopGood=api.onLifecycleCheckpoint(()=>api.kv.set('healthy',42));
+ try {events.push({t:'checkpoint',reason:'screen-off'});expect(()=>services.runServicePumps()).toThrow('snapshot failed');expect(JSON.parse(values.get('healthy')!)).toBe(42);}
+ finally {stopBad();stopGood();}
+});

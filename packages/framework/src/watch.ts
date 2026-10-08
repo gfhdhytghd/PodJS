@@ -45,13 +45,15 @@ type BackHandler = () => boolean | void;
 
 const axisHandlers = new Map<RelativeAxisId, Set<AxisHandler>>();
 const lifecycleHandlers = new Set<LifecycleHandler>();
+export type CheckpointReason = "inactive" | "background" | "screen-off";
+const checkpointHandlers = new Set<(reason:CheckpointReason)=>void>();
 const themeHandlers = new Set<ThemeHandler>();
 const backHandlers: BackHandler[] = [];
 let navigationState: NavigationState = Object.freeze({ canGoBack: false });
 const hostEventHandlers = new Set<(event: Record<string, unknown>) => void>();
 /** Demand-only listener ownership; no per-event accounting. */
 export function watchResourceCounts() {
- return {hostEvents:hostEventHandlers.size,lifecycle:lifecycleHandlers.size,theme:themeHandlers.size,
+ return {hostEvents:hostEventHandlers.size,lifecycle:lifecycleHandlers.size+checkpointHandlers.size,theme:themeHandlers.size,
   back:backHandlers.length,axis:[...axisHandlers.values()].reduce((n,v)=>n+v.size,0)};
 }
 /** Internal shared event fanout; services must not drain the host queue themselves. */
@@ -127,6 +129,19 @@ export function hasCapability(capability: PodCapabilityId): boolean {
   return capabilities().includes(capability);
 }
 
+/** Synchronous durability boundary, before observers can suspend/dispose UI owners.
+ * Callbacks must snapshot live state and use synchronous storage, never await IO.
+ * KV writes (including an enclosing batch) are committed before event delivery returns. */
+export function onLifecycleCheckpoint(handler:(reason:CheckpointReason)=>void):()=>void {
+  return subscribe(checkpointHandlers,handler);
+}
+function checkpoint(reason:CheckpointReason):void {
+  let failure:unknown;
+  try {kv.batch(()=>{
+    for(const handler of checkpointHandlers)try {handler(reason);}catch(error){failure??=error;}
+  });} finally {kv.flush();}
+  if(failure)throw failure;
+}
 export function lifecycle(): LifecycleState { return lifecycleState; }
 export function onLifecycleChange(handler: LifecycleHandler): () => void {
   return subscribe(lifecycleHandlers, handler);
@@ -185,7 +200,17 @@ function validateKvKey(key: string): void {
 
 type KvMutation={op:'set';key:string;value:unknown}|{op:'delete';key:string};
 let kvBatch:Map<string,string|undefined>|undefined;
+function commitKv(staged:Map<string,string|undefined>):void {
+  if(!staged.size)return;
+  const mutations:KvMutation[]=[...staged].map(([key,value])=>value===undefined?{op:'delete',key}:{op:'set',key,value:JSON.parse(value)});
+  const encoded=JSON.stringify(mutations);
+  if(traceServiceWork('kv.batchWrite',()=>host()!.kvApply!(encoded),encoded.length)!==0)throw new Error('PodJS KV batch write failed');
+  staged.clear();
+}
 export const kv = Object.freeze({
+  /** Commit staged values now. Unbatched writes are already durable. A later
+   * callback failure cannot roll back this explicit checkpoint boundary. */
+  flush():void {if(kvBatch)commitKv(kvBatch);},
   /** Explicit synchronous transaction. Nested calls share staged reads/writes.
    * Old hosts execute the callback with legacy per-write persistence. */
   batch<T>(work:()=>T):T {
@@ -195,10 +220,7 @@ export const kv = Object.freeze({
     let result:T;
     try {result=work();if(result&&typeof (result as {then?:unknown}).then==='function')throw new TypeError('PodJS KV batch callback must be synchronous');}
     finally {kvBatch=undefined;}
-    if(staged.size){const mutations:KvMutation[]=[...staged].map(([key,value])=>value===undefined?{op:'delete',key}:{op:'set',key,value:JSON.parse(value)});
-      const encoded=JSON.stringify(mutations);
-      if(traceServiceWork('kv.batchWrite',()=>apply.call(host(),encoded),encoded.length)!==0)throw new Error('PodJS KV batch write failed');
-    }
+    commitKv(staged);
     return result;
   },
   get<T = unknown>(key: string): T | undefined {
@@ -233,6 +255,7 @@ type PodEvent =
   | ({t:"input.scroll"} & RawScrollInput)
   | { t: "axis"; axis: RelativeAxisId; delta: number }
   | { t: "lifecycle"; state: LifecycleState }
+  | { t: "checkpoint"; reason: "screen-off" }
   | { t: "theme"; theme: SystemTheme }
   | { t: "back" }
   | { t: "touchCancel" }
@@ -245,6 +268,8 @@ export function __pumpPodEvents(): void {
   for (const event of events) {
     if (event.t === "touchCancel" || (event.t === "lifecycle" && event.state !== "active")) cancelActiveTouches();
     if ((event as {t:string}).t === 'diagnostic.serviceTrace') __setServiceTraceEnabled((event as unknown as {enabled?:boolean}).enabled===true);
+    if(event.t === "lifecycle" && event.state !== "active")checkpoint(event.state);
+    else if(event.t === "checkpoint" && event.reason === "screen-off")checkpoint("screen-off");
     for (const handler of hostEventHandlers) handler(event as unknown as Record<string, unknown>);
     if (event.t === "accessibility.action") {
       dispatchAccessibilityAction(event.nodeId, event.action);

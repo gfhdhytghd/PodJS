@@ -28,3 +28,18 @@ Every commit retains file and directory fsync, including byte-identical values.
 Commit reloads and validates actual bytes under the existing OS lock; it does
 not use an mtime or guest-only persistent value cache. Batch reduces the number
 of commits without deferring persistence beyond the synchronous call.
+
+`kv.flush()` explicitly commits the current staged mutations, even inside a
+batch; unbatched writes already commit immediately. Work after this boundary
+forms another batch. A later callback failure cannot undo an explicit flush.
+
+`onLifecycleCheckpoint(callback)` from `@podjs/framework/watch` runs synchronous
+snapshot owners on `inactive` (Android pause), `background` (stop), and host
+`screen-off` checkpoints before ordinary lifecycle observers suspend owners.
+Its KV writes commit before delivery returns, including an enclosing batch.
+Callbacks must use synchronous storage; queuing a Promise or SQL service request
+does not provide this guarantee. Android's screen-off receiver pumps a nonvisual
+guest turn inline, independently of display leases. Cleanup the subscription with
+the owning component. Arbitrary termination without any checkpoint event is not
+covered. A snapshot error still lets the other checkpoint owners commit, then
+propagates through the service pump.

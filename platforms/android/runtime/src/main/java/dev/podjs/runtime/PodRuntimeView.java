@@ -61,6 +61,17 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private float rotaryRemainder;
     private boolean active = true;
     private int lifecycleState;
+    private boolean screenCheckpointRegistered;
+    private final android.content.BroadcastReceiver screenCheckpoint = new android.content.BroadcastReceiver() {
+        @Override public void onReceive(Context context, android.content.Intent intent) {
+            if (!android.content.Intent.ACTION_SCREEN_OFF.equals(intent.getAction()) || host == 0) return;
+            nativePostEvent(host, "{\"t\":\"checkpoint\",\"reason\":\"screen-off\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            // SCREEN_OFF can precede Activity.onPause. Run a nonvisual guest turn
+            // inline so durable checkpoints complete before this receiver returns.
+            nativePumpServices(host);
+            drainHostEffects(false);
+        }
+    };
     private final ExecutorService network = Executors.newCachedThreadPool();
     private final Map<Integer, HttpURLConnection> requests = new ConcurrentHashMap<>();
     private final FrameTimingWindow javaFramePerf = new FrameTimingWindow();
@@ -298,6 +309,12 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     @Override protected void onAttachedToWindow() {
         super.onAttachedToWindow();
         detached = false;
+        if (!screenCheckpointRegistered) {
+            android.content.IntentFilter filter = new android.content.IntentFilter(android.content.Intent.ACTION_SCREEN_OFF);
+            if (android.os.Build.VERSION.SDK_INT >= 33) getContext().registerReceiver(screenCheckpoint, filter, Context.RECEIVER_NOT_EXPORTED);
+            else getContext().registerReceiver(screenCheckpoint, filter);
+            screenCheckpointRegistered = true;
+        }
         if (getParent() instanceof ViewGroup) {
             services.attachVideo((ViewGroup) getParent());
             services.attachMediaSurfaces((ViewGroup)getParent(),new PodMediaSurfaceServices.TextureSink(){
@@ -466,6 +483,10 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     }
 
     @Override protected void onDetachedFromWindow() {
+        if (screenCheckpointRegistered) {
+            getContext().unregisterReceiver(screenCheckpoint);
+            screenCheckpointRegistered = false;
+        }
         detached = true;
         bootGeneration++;
         Choreographer.getInstance().removeFrameCallback(frameCallback);
