@@ -42,7 +42,12 @@ public final class PodTakeoverCoordinator {
         }
     }
     public interface Probe { Source detect() throws Exception; }
-    public interface Checkpoint { void saved(Phase phase); default void published() {} }
+    public interface Checkpoint {
+        void saved(Phase phase);
+        default void published() {}
+        /** Sanitized release diagnostics are supplied by the Android host. */
+        default void failed(Phase phase, Exception error) {}
+    }
     public interface Publisher {
         default void afterSnapshot(File generation) throws Exception {}
         void beforePublish(File generation) throws Exception;
@@ -96,7 +101,21 @@ public final class PodTakeoverCoordinator {
                 if (!converter.version().equals(p.getProperty("converter"))) {
                     p.setProperty("reason","converter_changed_candidate_retained"); save(p,Phase.BLOCKED); return p;
                 }
-                if (phase==Phase.PAUSED) phase=Phase.valueOf(p.getProperty("resumePhase"));
+                if (phase==Phase.PAUSED) {
+                    phase=Phase.valueOf(p.getProperty("resumePhase"));
+                    if (phase==Phase.DETECTED && "stage_failed".equals(p.getProperty("reason"))) {
+                        // No complete bundle exists yet and publication has never started.
+                        // Retain the failed private candidate; a changed file must not collide
+                        // with its old copy on every retry. Journal the fresh identity BEFORE
+                        // writing any new snapshot so process death replays only that attempt.
+                        File previous=generation(p.getProperty("generation"));
+                        if (Files.exists(new File(root,"active").toPath(),LinkOption.NOFOLLOW_LINKS)) throw new IOException("unexpected_pointer");
+                        for(String receipt:new String[]{"activation-receipt","native-backup-receipt"})
+                            if(Files.exists(new File(previous,receipt).toPath(),LinkOption.NOFOLLOW_LINKS))throw new IOException("unexpected_activation");
+                        p.setProperty("generation","g-"+java.util.UUID.randomUUID());
+                        save(p,Phase.DETECTED);
+                    }
+                }
                 File generation=generation(p.getProperty("generation"));
                 try {
                     if (phase!=Phase.DETECTED) converter.resume(generation,phase);
@@ -155,6 +174,7 @@ public final class PodTakeoverCoordinator {
                     }
                 } catch (Exception error) {
                     if(phase==Phase.ACTIVE)throw error; // committed generation is terminal, even if readback fails
+                    checkpoint.failed(phase,error);
                     p.setProperty("resumePhase",phase.name());
                     // Converter exceptions can contain secrets or URLs; persist only fixed codes.
                     p.setProperty("reason",error instanceof IOException && ("space_insufficient".equals(error.getMessage()) || "user_locked".equals(error.getMessage()))?error.getMessage():converter==EMPTY?"converter_unavailable":"stage_failed");

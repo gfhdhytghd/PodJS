@@ -57,6 +57,23 @@ public final class TakeoverTest {
         engine=new PodTakeoverCoordinator(root,source,retry);p=engine.run();check(p.getProperty("resumePhase").equals("COPYING"));
         check(!Files.readString(new File(root,"journal").toPath()).contains("secret value"));check(engine.run().getProperty("phase").equals("ACTIVE"));
     }
+    static void detectedRestartRejectsPublicationEvidence()throws Exception {
+        for(String evidence:new String[]{"active","activation-receipt","native-backup-receipt","generation-link"}) {
+            File root=temp();Converter converter=new Converter(){public void snapshot(File g)throws Exception{throw new IOException("synthetic snapshot failure");}};
+            Properties paused=new PodTakeoverCoordinator(root,source,converter).run();
+            byte[] journal=Files.readAllBytes(new File(root,"journal").toPath());
+            File previous=new File(root,"generations/"+paused.getProperty("generation"));
+            if(evidence.equals("generation-link")) {
+                File retained=new File(previous.getParentFile(),"retained");Files.move(previous.toPath(),retained.toPath());Files.createSymbolicLink(previous.toPath(),retained.toPath());
+            }else Files.writeString(new File(evidence.equals("active")?root:previous,evidence).toPath(),"synthetic evidence");
+            try{new PodTakeoverCoordinator(root,source,converter).run();throw new AssertionError("unsafe restart accepted");}
+            catch(IOException expected){check(expected.getMessage().equals(evidence.equals("active")?"unexpected_pointer":evidence.equals("generation-link")?"generation_symlink":"unexpected_activation"));}
+            check(Arrays.equals(journal,Files.readAllBytes(new File(root,"journal").toPath())));
+            try(java.util.stream.Stream<Path> paths=Files.walk(root.getParentFile().toPath())) {
+                for(Path path:(Iterable<Path>)paths.sorted(Comparator.reverseOrder())::iterator)Files.delete(path);
+            }
+        }
+    }
     static void fresh()throws Exception {
         File root=temp();File legacy=new File(root.getParentFile(),"podjs-kv.json");Files.writeString(legacy.toPath(),"existing user data");
         PodTakeoverCoordinator engine=new PodTakeoverCoordinator(root,()->new PodTakeoverCoordinator.Source(false,null,0,0,0),new Converter());
@@ -258,7 +275,7 @@ public final class TakeoverTest {
         coordinator.run();check(order.equals(List.of("snapshot","copy","seal-ready","active","active")));
     }
     public static void main(String[] args)throws Exception {
-        backupPublication();digestPublicationHooks();
+        backupPublication();digestPublicationHooks();detectedRestartRejectsPublicationEvidence();
         if(args.length>0){check(new PodTakeoverCoordinator(new File(args[0]),source,new Converter()).run().getProperty("phase").equals("ACTIVE"));return;}
         podjsOnlyIsNotNative();terminalAdmissionCache();concurrentAdmission();noSourceNeverWrites();restartEveryPhase();failures();fresh();atomicPointer();publicationGapAndCorruption();activationRechecksGates();concurrency();System.out.println("takeover JVM: PASS (terminal admission cache, concurrent single resolution, no-source zero writes, phase restart, pause/block, atomic pointer, thread/process locks)");
     }

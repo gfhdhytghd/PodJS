@@ -37,11 +37,16 @@ public final class PodTakeover {
                     new PodFileConverter(sandbox,PodRoomAndroidDb::new,(file,faces) -> {
                         for(int i=0;i<faces;i++)if(new android.graphics.Typeface.Builder(file).setTtcIndex(i).build()==null)
                             throw new IOException("font_unloadable");
-                    },boundary -> {},progress::fileCopied,c.getPackageName(),sourcePackage(c))), phase -> {
+                    },boundary -> {},progress::fileCopied,c.getPackageName(),sourcePackage(c))), new PodTakeoverCoordinator.Checkpoint() {
+                    public void saved(PodTakeoverCoordinator.Phase phase) {
                         progress.phase(phase);
                         if ((c.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)
                             android.util.Log.i("PodTakeoverPhase", phase.name());
-                    },new PodTakeoverBackup(c,sandbox));
+                    }
+                    public void failed(PodTakeoverCoordinator.Phase phase,Exception error) {
+                        PodTakeoverDiagnostics.warn(phase.name(),error);
+                    }
+                },new PodTakeoverBackup(c,sandbox));
     }
     private static PodTakeoverCoordinator coordinator(Context c,File sandbox) {
         return coordinator(c,sandbox,new ProgressReporter(c,null));
@@ -66,11 +71,11 @@ public final class PodTakeover {
     private static PodTakeoverAdmission.Paths paths(Context c) throws Exception {return paths(c,new ProgressReporter(c,null));}
     private static PodTakeoverAdmission.Paths requiredPaths(Context c) {
         try { return paths(c); }
-        catch(Exception failure){throw new IllegalStateException("takeover_pending");}
+        catch(Exception failure){PodTakeoverDiagnostics.warn("ADMISSION",failure);throw new IllegalStateException("takeover_pending");}
     }
     public static boolean ready(Context c) {
         try { paths(c); return true; }
-        catch(Exception failure){android.util.Log.w("PodTakeover","admission refused",failure);return false;}
+        catch(Exception failure){PodTakeoverDiagnostics.warn("ADMISSION",failure);return false;}
     }
     public static void requireReady(Context c) { requiredPaths(c); }
     public static File dataRoot(Context c) { return requiredPaths(c).data; }
@@ -172,7 +177,7 @@ public final class PodTakeover {
                 long began=PodStartupTrace.now();
                 boolean ready=false;ProgressReporter reporter=new ProgressReporter(context,this::update);reporter.reset();
                 try {paths(context,reporter);ready=true;}
-                catch(Exception failure){android.util.Log.w("PodTakeover","background admission pending",failure);}
+                catch(Exception failure){PodTakeoverDiagnostics.warn("ADMISSION",failure);}
                 PodStartupTrace.stage("admissionWorker",began);
                 running.set(false);update(status(context));
                 if(ready) {

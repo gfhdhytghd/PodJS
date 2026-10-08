@@ -159,8 +159,19 @@ public final class PodRoomV18Converter implements PodTakeoverCoordinator.Convert
         for(String table:names){
             JSONArray columns=expected.getJSONArray(table);List<Map<String,Object>> actual=db.query("PRAGMA table_info("+q(table)+")");
             if(columns.length()!=actual.size())throw new IOException("room_columns_invalid");
-            for(int i=0;i<columns.length();i++)for(String key:new String[]{"name","type","notnull","pk"})
-                if(!String.valueOf(columns.getJSONObject(i).get(key)).equals(String.valueOf(actual.get(i).get(key))))throw new IOException("room_columns_invalid");
+            // Room migrations append columns with ALTER TABLE. Their physical cid/order
+            // need not match a fresh v18 database. Match the same named schema while
+            // retaining exact type, nullability, PK ordinal and column-set checks.
+            Map<String,Map<String,Object>> byName=new HashMap<>();
+            for(Map<String,Object> column:actual)
+                if(byName.put(String.valueOf(column.get("name")),column)!=null)throw new IOException("room_columns_invalid");
+            for(int i=0;i<columns.length();i++) {
+                JSONObject column=columns.getJSONObject(i);Map<String,Object> found=byName.remove(column.getString("name"));
+                if(found==null)throw new IOException("room_columns_invalid");
+                for(String key:new String[]{"type","notnull","pk"})
+                    if(!String.valueOf(column.get(key)).equals(String.valueOf(found.get(key))))throw new IOException("room_columns_invalid");
+            }
+            if(!byName.isEmpty())throw new IOException("room_columns_invalid");
         }
         // saved_sync_states intentionally permits orphan item references.
         checks(db);

@@ -8,7 +8,8 @@ import org.json.*;
 /** Device-free complete P2d pipeline; only synthetic sandbox bytes are read. */
 public final class FileTakeoverTest {
     static void check(boolean v,String why){if(!v)throw new AssertionError(why);}
-    static File fixture()throws Exception {
+    static File fixture()throws Exception {return fixture(false);}
+    static File fixture(boolean migrated)throws Exception {
         File root=Files.createTempDirectory("takeover-files-source").toFile();
         StoreTest.xml(root,"watch_device_identity","<string name=\"device_id\">synthetic-device</string>");
         File db=new File(root,"databases/watchrss.db");db.getParentFile().mkdirs();
@@ -26,7 +27,7 @@ public final class FileTakeoverTest {
         StoreTest.write(new File(root,"files/reader_assets/variants/watch.png"),new byte[]{7,8,9});
         StoreTest.write(new File(root,"files/reader_assets/backgrounds/"+"z".repeat(251)+".png"),new byte[]{8});
         try(RoomV18Test.Jdbc d=new RoomV18Test.Jdbc(db)) {
-            RoomV18Test.fixture(d);
+            RoomV18Test.fixture(d,migrated);
             d.exec("UPDATE offline_media SET localPath=replace(localPath,?,?)", "com.lightningstudio.watchrss", "dev.podjs.source");
             d.exec("UPDATE rss_items SET content='watchrss-watch-content:fixture.txt',link='https://example.invalid/body' WHERE id=1");
             String articleId=PodStoreConverter.slot("https://example.invalid/body");
@@ -87,6 +88,83 @@ public final class FileTakeoverTest {
             StoreTest.remove(target);StoreTest.remove(source);
         }
     }
+    static void v1000PausedCompletedPhases()throws Exception {
+        for(PodTakeoverCoordinator.Phase phase:new PodTakeoverCoordinator.Phase[]{PodTakeoverCoordinator.Phase.SNAPSHOTTED,PodTakeoverCoordinator.Phase.COPYING,PodTakeoverCoordinator.Phase.VERIFYING,PodTakeoverCoordinator.Phase.READY,PodTakeoverCoordinator.Phase.ACTIVATING}) {
+            File source=fixture(true),target=new File(source,"files/package-takeover");
+            try {
+                PodTakeoverConverters converter=composite(source,b->{},new StoreTest.Crypto());
+                try{new PodTakeoverCoordinator(target,probe,converter,p->{if(p==phase)throw new PowerLoss();}).run();throw new AssertionError("missing interruption");}
+                catch(PowerLoss expected){}
+                Properties paused=PodTakeoverCoordinator.read(new File(target,"journal"));
+                paused.setProperty("phase","PAUSED");paused.setProperty("resumePhase",phase.name());paused.setProperty("reason","stage_failed");
+                PodTakeoverCoordinator.atomic(new File(target,"journal"),paused);
+                Map<String,String> before=CanonicalTakeoverTest.tree(source,true);
+                Properties active=new PodTakeoverCoordinator(target,probe,composite(source,b->{},new StoreTest.Crypto())).run();
+                check(active.getProperty("phase").equals("ACTIVE"),"v1000 paused "+phase);
+                check(active.getProperty("generation").equals(paused.getProperty("generation")),"complete generation retained "+phase);
+                check(before.equals(CanonicalTakeoverTest.tree(source,true)),"source bytes unchanged "+phase);
+            }finally{StoreTest.remove(source);}
+        }
+    }
+    static void migratedNativeV18ForwardRetry()throws Exception {
+        File source=fixture(true),target=new File(source,"files/package-takeover");
+        try {
+            Map<String,String> before=CanonicalTakeoverTest.tree(source,true);
+            PodTakeoverConverters converters=composite(source,b->{},new StoreTest.Crypto());
+            // Exact protocol/version of v1000; stage failure occurred before Room receipt.
+            Files.createDirectories(target.toPath());
+            Properties legacy=new Properties();legacy.setProperty("protocol","1");
+            legacy.setProperty("converter",converters.version());legacy.setProperty("generation","g-v1000");
+            legacy.setProperty("phase","PAUSED");legacy.setProperty("resumePhase","DETECTED");legacy.setProperty("reason","stage_failed");
+            PodTakeoverCoordinator.atomic(new File(target,"journal"),legacy);
+            Properties active=new PodTakeoverCoordinator(target,probe,converters).run();
+            check(active.getProperty("phase").equals("ACTIVE"),"migrated native v1000 PAUSED must publish: "+active);
+            check(before.equals(CanonicalTakeoverTest.tree(source,true)),"migrated native source bytes unchanged");
+        }finally{StoreTest.remove(source);}
+    }
+    static void v1000PausedSnapshotForwardRetry()throws Exception {
+        File source=fixture(),target=new File(source,"files/package-takeover");
+        try {
+            // v1000 failed after an atomic private copy, before files-snapshot.json.
+            int[] renamed={0};
+            PodTakeoverConverters broken=composite(source,b->{if(b.equals("snapshot.rename")&&++renamed[0]==3)throw new IOException("synthetic_interrupt");},new StoreTest.Crypto());
+            PodTakeoverCoordinator c=new PodTakeoverCoordinator(target,probe,broken);
+            Properties paused=c.run();check(paused.getProperty("phase").equals("PAUSED"),"v1000 PAUSED");
+            check(paused.getProperty("resumePhase").equals("DETECTED"),"v1000 DETECTED");
+            File old=generation(target,paused);String version=paused.getProperty("converter");
+            File changed=new File(source,"files/article_content/fixture.txt");
+            Files.writeString(changed.toPath(),"new synthetic native body");
+            Map<String,String> oldCandidate=StoreTest.digests(old),nativeBefore=CanonicalTakeoverTest.tree(source,true);
+            PodTakeoverConverters repaired=composite(source,b->{},new StoreTest.Crypto());
+            check(version.equals(repaired.version()),"v1000 protocol and converter versions compatible");
+            // Old behavior: same incomplete generation collides with the stale private copy.
+            try {repaired.snapshot(old);throw new AssertionError("stale copy must conflict");}
+            catch(IOException expected){check(expected.getMessage().equals("file_target_conflict"),"reproduced conflict");}
+            // Simulate process death after journaling the replacement generation.
+            try {new PodTakeoverCoordinator(target,probe,repaired,p->{if(p==PodTakeoverCoordinator.Phase.DETECTED)throw new PowerLoss();}).run();throw new AssertionError("missing kill");}
+            catch(PowerLoss expected){}
+            Properties restart=PodTakeoverCoordinator.read(new File(target,"journal"));
+            check(!restart.getProperty("generation").equals(paused.getProperty("generation")),"fresh private attempt");
+            check(oldCandidate.equals(StoreTest.digests(old)),"failed private candidate retained byte for byte");
+            Properties active=new PodTakeoverCoordinator(target,probe,repaired).run();
+            check(active.getProperty("phase").equals("ACTIVE"),"v1000 PAUSED to ACTIVE");
+            check(nativeBefore.equals(CanonicalTakeoverTest.tree(source,true)),"all source bytes retained");
+            check(Files.readString(new File(generation(target,active),"podjs/files/article_content/fixture.txt").toPath()).equals("new synthetic native body"),"fresh body imported");
+        }finally{StoreTest.remove(source);}
+        // A completed snapshot is immutable. Later paused phases keep their generation
+        // even if the live source changes: resume verifies only the fixed candidate.
+        source=fixture();target=new File(source,"files/package-takeover");
+        try {
+            PodTakeoverConverters broken=composite(source,b->{if(b.equals("copy.rename"))throw new IOException("synthetic_interrupt");},new StoreTest.Crypto());
+            Properties paused=new PodTakeoverCoordinator(target,probe,broken).run();
+            check(paused.getProperty("resumePhase").equals("COPYING"),"v1000 COPYING pause");
+            Map<String,String> nativeBefore=CanonicalTakeoverTest.tree(source,true);
+            Properties active=new PodTakeoverCoordinator(target,probe,composite(source,b->{},new StoreTest.Crypto())).run();
+            check(active.getProperty("phase").equals("ACTIVE"),"completed snapshot resumed");
+            check(active.getProperty("generation").equals(paused.getProperty("generation")),"completed snapshot not replaced");
+            check(nativeBefore.equals(CanonicalTakeoverTest.tree(source,true)),"resumed source unchanged");
+        }finally{StoreTest.remove(source);}
+    }
     public static void main(String[] args)throws Exception {
         if(args.length>0&&args[0].equals("crash")) {
             File source=new File(args[1]),root=new File(args[2]);String boundary=args[3];
@@ -96,6 +174,9 @@ public final class FileTakeoverTest {
                 public void published(){if(boundary.equals("published"))Runtime.getRuntime().halt(91);}
             }).run();throw new AssertionError("missing crash: "+boundary);
         }
+        v1000PausedCompletedPhases();
+        migratedNativeV18ForwardRetry();
+        v1000PausedSnapshotForwardRetry();
         aliasesAndLocks();
         File source=fixture();Map<String,String> before=StoreTest.digests(source);String body=Files.readString(new File(source,"files/article_content/fixture.txt").toPath());
         File full=root();Properties p=run(source,full);check(p.getProperty("phase").equals("ACTIVE"),"full pipeline: "+p);

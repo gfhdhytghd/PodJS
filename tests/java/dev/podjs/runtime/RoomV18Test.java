@@ -20,8 +20,27 @@ public final class RoomV18Test {
     }
     static File child(File parent,String name)throws Exception{File f=new File(parent,name);Files.createDirectories(f.toPath());return f;}
     static void require(boolean value,String message){if(!value)throw new AssertionError(message);}
-    static void fixture(Jdbc db)throws Exception {
-        JSONObject c=new JSONObject(PodRoomV18Converter.resource("room-v18.json"));JSONArray sql=c.getJSONArray("sql");for(int i=0;i<sql.length();i++)db.exec(sql.getString(i));db.exec("PRAGMA user_version=18");
+    static void fixture(Jdbc db)throws Exception {fixture(db,false);}
+    static void fixture(Jdbc db,boolean migrated)throws Exception {
+        JSONObject c=new JSONObject(PodRoomV18Converter.resource("room-v18.json"));JSONArray sql=c.getJSONArray("sql");
+        for(int i=0;i<sql.length();i++) {
+            String statement=sql.getString(i);
+            if(migrated&&statement.startsWith("CREATE TABLE IF NOT EXISTS `rss_items`")) {
+                // The real native 2->3, 4->5, 5->6, 6->7 migrations append these
+                // columns. Room accepts that physical layout under the SAME v18 identity.
+                String[] appended={"isLiked","readingProgress","summary","previewImageUrl","originalContent"};
+                List<String> definitions=new ArrayList<>();
+                for(String name:appended) {
+                    java.util.regex.Matcher m=java.util.regex.Pattern.compile("`"+name+"` [^,]+, ").matcher(statement);
+                    require(m.find(),"migrated column declaration");String declaration=m.group();
+                    definitions.add(declaration.substring(0,declaration.length()-2));
+                    statement=statement.replace(declaration,"");
+                }
+                db.exec(statement);
+                for(String declaration:definitions)db.exec("ALTER TABLE rss_items ADD COLUMN "+declaration);
+            }else db.exec(statement);
+        }
+        db.exec("PRAGMA user_version=18");
         for(String table:c.getJSONObject("tables").keySet()) {
             if(table.equals("room_master_table"))continue;
             JSONArray cols=c.getJSONObject("tables").getJSONArray(table);
