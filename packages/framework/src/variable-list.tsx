@@ -3,6 +3,8 @@ import type {RouteStateMemory} from './route-state.ts';
 export interface ListRestorationOwner {memory:RouteStateMemory;checkpoints:Set<()=>void>;scrollSlots:Set<number>;changed:()=>void}
 import {createIndexedWindowSource,createWindowedList,visibleWindowRange,type IndexedWindowEntries} from "./windowed-list.ts";
 import {ScrollRestoration,validScrollSnapshot} from './scroll-restoration.ts';
+import {roundListInsets,type RoundListOptions} from './round-list.ts';
+import type {QrRect} from './safe-qr-layout.ts';
 import { For, createMemo, onCleanup, untrack, type JSX } from "solid-js";
 import { View, type NodeMirror } from "@pocketjs/framework/components";
 import { createGesture, type GestureContact } from "@pocketjs/framework/gesture";
@@ -10,18 +12,38 @@ import { createScroller, bindDpadScroll, type Scroller } from "@pocketjs/framewo
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import { pressNode, hitNode } from "@pocketjs/framework/input";
 
-export interface ScrollEntry { height: number; render: (current?:()=>ScrollEntry) => JSX.Element; retain?:boolean; key?:unknown; data?:unknown }
+export interface ScrollEntry { height: number; render: (current?:()=>ScrollEntry) => JSX.Element; retain?:boolean; key?:unknown; data?:unknown; /** Visible content bounds relative to the row's padded left/top, for round-screen fitting. */ bounds?:QrRect }
 export interface PositionedScrollEntry extends ScrollEntry {top:number}
 export type IndexedScrollEntries=IndexedWindowEntries<PositionedScrollEntry,unknown>;
+export interface VariableListHandle {scroller:Scroller;/** Additional layout whitespace, for caller-owned hit tests and overlays. */ roundInsets:()=>{start:number;end:number}}
 /** Variable-height, windowed column; the clipping viewport never translates. */
-export function VariableList(props: { height: number; entries: ScrollEntry[]; indexedEntries?:IndexedScrollEntries; footerEntries?:ScrollEntry[]; gap?: number; padding?: number; verticalPadding?: number; retainRows?:number; fixed?: boolean; controller?: Scroller; inputActive?: () => boolean; accessibilityLabel?:string; onRefresh?: () => void; onManualScroll?:()=>void; onTap?:(contact:GestureContact)=>boolean|void; onLongPress?: (contact: GestureContact) => void; onScrollStateChange?:(scrolling:boolean)=>void; onOffsetChange?:(previous:number,current:number)=>void; onSettledRange?:(first:number,last:number)=>void; settleKey?:unknown; restorationOwner?:()=>ListRestorationOwner|undefined; overscan?:number;refreshDistance?:number; ref?: (handle: {scroller: Scroller}) => void }) {
+export function VariableList(props: { height: number; round?:RoundListOptions|null; entries: ScrollEntry[]; indexedEntries?:IndexedScrollEntries; footerEntries?:ScrollEntry[]; gap?: number; padding?: number; verticalPadding?: number; retainRows?:number; fixed?: boolean; controller?: Scroller; inputActive?: () => boolean; accessibilityLabel?:string; onRefresh?: () => void; onManualScroll?:()=>void; onTap?:(contact:GestureContact)=>boolean|void; onLongPress?: (contact: GestureContact) => void; onScrollStateChange?:(scrolling:boolean)=>void; onOffsetChange?:(previous:number,current:number)=>void; onSettledRange?:(first:number,last:number)=>void; settleKey?:unknown; restorationOwner?:()=>ListRestorationOwner|undefined; overscan?:number;refreshDistance?:number; ref?: (handle: VariableListHandle) => void }) {
   let viewport: NodeMirror | undefined;
-  const rows = createMemo(() => {
+  const rawRows = createMemo(() => {
     if(props.indexedEntries)return createIndexedWindowSource(props.indexedEntries,props.entries,props.footerEntries??[],{padding:props.verticalPadding??props.padding??0,gap:props.gap??0});
     let top = props.verticalPadding ?? props.padding ?? 0;
     return props.entries.map(entry => { const row = { ...entry, top }; top += entry.height + (props.gap ?? 0); return row; });
   });
-  const total = () => { const last = rows().at(-1); return last ? last.top + last.height + (props.verticalPadding ?? props.padding ?? 0) : 0; };
+  const rawTotal = () => { const last = rawRows().at(-1); return last ? last.top + last.height + (props.verticalPadding ?? props.padding ?? 0) : 0; };
+  const warned=new Set<string>();
+  const insets=createMemo(()=>{
+    if(!props.round||props.fixed)return {start:0,end:0,unfit:[]};
+    const value=roundListInsets(rawRows(),rawTotal(),props.height,props.round,props.padding??0);
+    if(props.round.development)for(const index of value.unfit){
+      const row=rawRows().at(index)!,key=JSON.stringify([index,row.height,row.bounds,props.round,props.height,props.padding]);
+      if(!warned.has(key)){warned.add(key);console.warn(`[VariableList] round row ${index} cannot fit completely in the safe circle and viewport; reduce/split its visible bounds.`,row.bounds??{width:(props.round.viewport?.width??props.round.width)-2*(props.padding??0),height:row.height});}
+    }
+    return value;
+  });
+  const rows=createMemo(()=>{
+    const source=rawRows(),shift=insets().start;if(!shift)return source;
+    // Unkeyed arrays use object identity. Keep shifted row objects stable while
+    // scrolling, just like the original positioned array.
+    if(Array.isArray(source))return source.map(row=>({...row,top:row.top+shift}));
+    const indexed=source as import('./windowed-rows.ts').WindowRowList<PositionedScrollEntry>;
+    return {length:source.length,scope:indexed.scope,indexOfKey:indexed.indexOfKey?.bind(indexed),at(index:number){const row=source.at(index);return row?{...row,top:row.top+shift}:undefined;}};
+  });
+  const total = () => rawTotal()+insets().start+insets().end;
   const scroller = props.controller ?? createScroller({ max: () => Math.max(0, total() - props.height) });
   const activity=props.restorationOwner?.();
   const memory=activity?.memory;
@@ -67,7 +89,7 @@ export function VariableList(props: { height: number; entries: ScrollEntry[]; in
     props.onSettledRange(range.first,range.last);
   });
   onCleanup(() => {scroller.stop();if(wasScrolling)props.onScrollStateChange?.(false);});
-  props.ref?.({scroller});
+  props.ref?.({scroller,roundInsets:insets});
   return <View ref={n => viewport = n} class="relative w-full overflow-hidden" style={{height: props.height}}
     accessibilityLabel={props.accessibilityLabel} accessibilityRole={props.accessibilityLabel?"list":undefined}
     accessibilityState={props.accessibilityLabel?{disabled:!active()}:undefined}

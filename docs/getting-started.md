@@ -179,7 +179,8 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/regexp` | Lazy RegExp construction to defer guest startup work. |
 | `@podjs/framework/sql` | Bounded SQL result pagination and UTF-8-safe large text reads. |
 | `@podjs/framework/frame-stream` | Bounded framed byte-stream connections with deadlines, cancellation and transfer progress. |
-| `@podjs/framework/variable-list` | Variable-height windowed viewport with caller-owned row data and scroll behavior. |
+| `@podjs/framework/variable-list` | Variable-height windowed viewport; opt-in `round` adds minimal safe-circle endpoint space, `ScrollEntry.bounds` describes visible content, and `round.development` warns about impossible rows. |
+| `@podjs/framework/round-list` | `roundRowRange`, `roundListInsets`, `RoundListOptions`: four-corner circle/viewport fitting, including displaced viewports and narrow visible-content bounds. |
 | `@podjs/framework/text-environment` | Native text environment lookup and font selection helpers. |
 | `@podjs/framework/text-carets` | Preserve caret map identity when row positions are unchanged. |
 | `@podjs/framework/text-lines` | Pure line breaking, measured titles and UI text layout helpers. |
@@ -205,3 +206,17 @@ Additional guides: [gates/volume/response/preview/matching](private-response-pre
 [startup/text compatibility](startup-and-text-compat.md),
 [service contracts](device-services.md),
 [debug external components](debug-external.md).
+
+Round lists opt in with `round: {width, height}` using full display dimensions,
+not the reduced height below a header. For a displaced viewport, also provide
+`viewport: {x, y, width}`; `height` on `VariableList` remains its clipping height.
+Whitespace is added to the existing vertical padding without changing row keys,
+indices, gestures or numeric scroll offsets. `ref` exposes a `VariableListHandle`
+with `roundInsets()`; subtract its `start` from screen-to-content hit coordinates
+and add it to independently positioned row overlays. A row's optional `bounds` is its
+visible rectangle relative to the padded row origin; omit it to fit the whole row.
+Set `round.development` from your host debug flag to warn about rectangles that
+cannot fit at any scroll position; split or narrow those rows in your UI.
+`round: null` opts out and `fixed` lists retain their supplied geometry. An
+external `controller` must include the added insets in its own maximum offset;
+keep round fitting disabled if that controller owns document/text anchors.
