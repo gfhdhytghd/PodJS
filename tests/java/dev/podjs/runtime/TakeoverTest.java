@@ -233,8 +233,32 @@ public final class TakeoverTest {
         check(c.run().getProperty("phase").equals("ACTIVE"));check(!db.exists());
         new dev.podjs.takeover.NativeBackup(sandbox).verify(state.getProperty("generation"));
     }
+    static void digestPublicationHooks()throws Exception {
+        File root=temp();List<String> order=new ArrayList<>();AtomicBoolean fail=new AtomicBoolean(true);
+        Converter converter=new Converter(){public void copy(File g)throws Exception{order.add("copy");super.copy(g);}};
+        PodTakeoverCoordinator.Publisher publisher=new PodTakeoverCoordinator.Publisher(){
+            public void afterSnapshot(File g)throws Exception {
+                Properties p=PodTakeoverCoordinator.read(new File(root,"journal"));
+                check(p.getProperty("phase").equals("SNAPSHOTTED")||(p.getProperty("phase").equals("PAUSED")&&p.getProperty("resumePhase").equals("SNAPSHOTTED")));
+                if(fail.getAndSet(false))throw new IOException("private source must never be logged");
+                order.add("snapshot");
+            }
+            public void beforePublish(File g){order.add("seal-ready");}
+            public void afterActive(File g)throws Exception {
+                check(PodTakeoverCoordinator.read(new File(root,"journal")).getProperty("phase").equals("ACTIVE"));
+                check(new File(root,"active").isFile());order.add("active");
+            }
+        };
+        PodTakeoverCoordinator coordinator=new PodTakeoverCoordinator(root,source,converter,p->{},publisher);
+        Properties paused=coordinator.run();check(paused.getProperty("resumePhase").equals("SNAPSHOTTED"));
+        check(!new File(root,"active").exists()&&order.isEmpty());
+        check(!Files.readString(new File(root,"journal").toPath()).contains("private"));
+        check(coordinator.run().getProperty("phase").equals("ACTIVE"));
+        check(order.equals(List.of("snapshot","copy","seal-ready","active")));
+        coordinator.run();check(order.equals(List.of("snapshot","copy","seal-ready","active","active")));
+    }
     public static void main(String[] args)throws Exception {
-        backupPublication();
+        backupPublication();digestPublicationHooks();
         if(args.length>0){check(new PodTakeoverCoordinator(new File(args[0]),source,new Converter()).run().getProperty("phase").equals("ACTIVE"));return;}
         podjsOnlyIsNotNative();terminalAdmissionCache();concurrentAdmission();noSourceNeverWrites();restartEveryPhase();failures();fresh();atomicPointer();publicationGapAndCorruption();activationRechecksGates();concurrency();System.out.println("takeover JVM: PASS (terminal admission cache, concurrent single resolution, no-source zero writes, phase restart, pause/block, atomic pointer, thread/process locks)");
     }

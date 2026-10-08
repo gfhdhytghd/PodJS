@@ -123,8 +123,9 @@ public final class PodRoomV18Converter implements PodTakeoverCoordinator.Convert
         // New scratch directory per attempt; interrupted candidates remain private.
         File scratch=new File(g,"capture-"+UUID.randomUUID());Files.createDirectories(scratch.toPath());
         File raw=new File(scratch,"room.sqlite");
+        String sourceDigest;
         try(Capture capture=new Capture(source)) {
-            String before=capture.digest();Capture.copy(capture.main,raw);Capture.copy(capture.wal,new File(raw+"-wal"));
+            String before=capture.digest();sourceDigest=before;Capture.copy(capture.main,raw);Capture.copy(capture.wal,new File(raw+"-wal"));
             if(!before.equals(capture.digest()))throw new IOException("source_changed");
         }
         try(Db db=factory.open(raw)) {
@@ -135,7 +136,7 @@ public final class PodRoomV18Converter implements PodTakeoverCoordinator.Convert
         }
         File fixed=new File(g,"room.sqlite");Files.move(raw.toPath(),fixed.toPath(),StandardCopyOption.REPLACE_EXISTING);
         try(RandomAccessFile f=new RandomAccessFile(fixed,"rw")){f.getFD().sync();}
-        Properties p=new Properties();p.setProperty("snapshot",hash(fixed));p.setProperty("version",version());
+        Properties p=new Properties();p.setProperty("sourceDigest",sourceDigest);p.setProperty("snapshot",hash(fixed));p.setProperty("version",version());
         // Identity remains private in candidate metadata, never the public journal.
         p.setProperty("identity",localIdentity.trim());p.setProperty("schema",hex(MessageDigest.getInstance("SHA-256").digest(resource("watchrss-schema.json").getBytes(StandardCharsets.UTF_8))));
         PodTakeoverCoordinator.atomic(receipt,p);

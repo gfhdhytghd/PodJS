@@ -44,6 +44,7 @@ public final class PodTakeoverCoordinator {
     public interface Probe { Source detect() throws Exception; }
     public interface Checkpoint { void saved(Phase phase); default void published() {} }
     public interface Publisher {
+        default void afterSnapshot(File generation) throws Exception {}
         void beforePublish(File generation) throws Exception;
         default void afterActive(File generation) throws Exception {}
     }
@@ -114,7 +115,7 @@ public final class PodTakeoverCoordinator {
                                 Files.createDirectories(generation.toPath());
                                 converter.snapshot(generation);
                                 phase=Phase.SNAPSHOTTED; break;
-                            case SNAPSHOTTED: phase=Phase.COPYING; break;
+                            case SNAPSHOTTED: publisher.afterSnapshot(generation); phase=Phase.COPYING; break;
                             case COPYING: converter.copy(generation); phase=Phase.VERIFYING; break;
                             case VERIFYING:
                                 String receipt=converter.verify(generation);

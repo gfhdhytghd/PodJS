@@ -6,7 +6,10 @@ trap 'rm -rf "$classes"' EXIT
 javac -d "$classes" platforms/android/runtime/src/main/java/dev/podjs/takeover/NativeBackup.java platforms/android/runtime/src/main/java/dev/podjs/runtime/PodTakeoverCoordinator.java platforms/android/runtime/src/main/java/dev/podjs/runtime/PodTakeoverAdmission.java platforms/android/runtime/src/main/java/dev/podjs/runtime/PodTakeoverSource.java tests/java/dev/podjs/runtime/TakeoverTest.java
 java -ea -cp "$classes" dev.podjs.runtime.TakeoverTest
 javac -d "$classes" platforms/android/runtime/src/main/java/dev/podjs/takeover/NativeBackup.java tests/java/dev/podjs/takeover/NativeBackupTest.java
+python3 scripts/test-recovery-native-backup.py
 java -ea -cp "$classes" dev.podjs.takeover.NativeBackupTest
+javac -d "$classes" platforms/android/runtime/src/main/java/dev/podjs/takeover/NativeBackup.java platforms/android/runtime/src/main/java/dev/podjs/takeover/TakeoverDigest.java tests/java/dev/podjs/takeover/TakeoverDigestTest.java
+java -ea -cp "$classes" dev.podjs.takeover.TakeoverDigestTest tests/fixtures/takeover-digest-v1.tsv
 javac -d "$classes" platforms/android/runtime/src/main/java/dev/podjs/runtime/BootSurface.java tests/java/dev/podjs/runtime/BootSurfaceTest.java
 java -ea -cp "$classes" dev.podjs.runtime.BootSurfaceTest
 bash scripts/test-room-v18.sh
