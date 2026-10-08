@@ -37,6 +37,22 @@ HTTPS URLs or loopback HTTP test fixtures. Existing browser data is not cleared.
 Acquisitions are serialized in a bounded eight-operation queue. A 60-second
 default deadline includes time in the queue; callers can use at most 120 seconds.
 Cancellation removes only its request and destroys the active WebView when owned.
+The detached browser has an explicitly measured 240×240 pixel viewport, no
+allocated view layer, drawing disabled and offscreen pre-rasterization disabled.
+Completion, deadline, cancellation and renderer death stop loading, remove the
+owned view from any parent and destroy it. `challenge_render_gone` distinguishes
+renderer exit from `challenge_timeout`; the client returns `true` to acknowledge
+cleanup. It never pauses global WebView timers or touches a login WebView.
+Android can share renderers across WebViews, so other affected WebView clients
+must handle their own renderer exit callbacks; process isolation is not promised.
+
+Release builds emit one terminal JSON line per admitted acquisition with tag
+`PodSiteChallenge`: `host`, `result`, `ms` (including queue time), and `cookies`
+(selected cookies returned, zero on failure). Results include `ok`, `timeout`,
+`renderGone`, `cancelled`, `service_closed` and existing failure codes. Rejected
+busy/invalid/unavailable acquisitions also emit a terminal line; invalid or closed
+requests without validated options use an empty host. Cache lookups do not log.
+No cookie names/values, user agent, URL path/query or exception text is logged.
 
 `isInteractiveSiteChallenge(body)` recognizes common CAPTCHA HTML. Callers may
 return `'interactive'` from their response classifier to reject immediately with
@@ -50,3 +66,8 @@ test exercises native service messages. Android instrumentation includes a real
 hidden WebView script-cookie/reload fixture, then ordinary HTTP retrieval, cache
 recreation, timeout and queued cancellation. Compiling those tests establishes
 build coverage; a device run is required to establish WebView execution.
+JVM lifecycle tests exercise the production renderer-exit callback, exactly-once
+completion/logging, owner-only cleanup even if stopLoading fails, and queue
+recovery. Instrumentation additionally checks actual viewport dimensions and a
+subsequent script-cookie acquisition after a simulated renderer-exit callback.
+Neither simulation establishes recovery from a real Chromium renderer crash.

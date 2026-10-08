@@ -1,6 +1,9 @@
 package dev.podjs.runtime;
 
 import android.content.Context;
+import android.view.View;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
 import androidx.test.platform.app.InstrumentationRegistry;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -68,6 +71,29 @@ public class PodSiteChallengeServicesTest {
             Reply stalled=new Reply();service.dispatch(fixture.options("/stall").put("timeoutMs",250),true,stalled);
             Reply cancelled=new Reply();service.dispatch(fixture.options("/feed"),true,cancelled);cancelled.active=false;service.cancel(cancelled);
             stalled.await();assertEquals("challenge_timeout",stalled.code);assertEquals(1,cancelled.done.getCount());
+        }
+    }
+    @Test public void measuredDetachedViewportAndRendererGoneCallbackReleaseOwnerAndAllowNextAcquisition() throws Exception {
+        // Invoke the real client callback deterministically. This is not a
+        // chrome://crash test, which could kill unrelated shared renderers.
+        AtomicReference<WebView> active=new AtomicReference<>();AtomicInteger created=new AtomicInteger();
+        try(Fixture fixture=new Fixture();PodSiteChallengeServices service=new PodSiteChallengeServices(context,c->{
+            WebView view=new WebView(c);active.set(view);created.incrementAndGet();return view;
+        })) {
+            Reply gone=new Reply();service.dispatch(fixture.options("/stall"),true,gone);
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(()->{
+                WebView view=active.get();assertNotNull(view);assertNull(view.getParent());
+                assertEquals(240,view.getMeasuredWidth());assertEquals(240,view.getMeasuredHeight());
+                assertEquals(240,view.getWidth());assertEquals(240,view.getHeight());
+                assertTrue(view.willNotDraw());assertEquals(View.LAYER_TYPE_NONE,view.getLayerType());
+                assertFalse(view.getSettings().getOffscreenPreRaster());
+                WebViewClient client=view.getWebViewClient();assertTrue(client.onRenderProcessGone(view,null));
+                assertTrue(client.onRenderProcessGone(view,null));
+            });
+            gone.await();assertEquals("challenge_render_gone",gone.code);
+            Reply next=new Reply();service.dispatch(fixture.options("/feed"),true,next);next.await();
+            assertNull(next.code);assertNotNull(next.value);assertEquals(2,created.get());
         }
     }
     @Test public void rejectsNonPublicSchemesCredentialUrlsAndCrossOriginNavigation() throws Exception {

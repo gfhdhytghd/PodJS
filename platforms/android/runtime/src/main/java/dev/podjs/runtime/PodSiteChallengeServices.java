@@ -6,6 +6,10 @@ import android.net.http.SslError;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.util.Log;
+import android.view.View;
+import android.view.ViewGroup;
+import android.webkit.RenderProcessGoneDetail;
 import android.webkit.CookieManager;
 import android.webkit.SslErrorHandler;
 import android.webkit.WebResourceError;
@@ -28,13 +32,15 @@ import java.util.TreeSet;
 /** Executes only the site's own scripts in a hidden WebView. No UI, injected
  * solver, JS bridge, unrelated account-cookie export, or global cookie deletion. */
 final class PodSiteChallengeServices implements AutoCloseable {
+    static final int VIEWPORT_PX=240;
+    interface WebViewFactory { WebView create(Context context); }
     interface Callback {
         boolean isActive();
         void complete(JSONObject value);
         void fail(String code,String message);
     }
     static final class Options {
-        final String url, origin, userAgent, key;
+        final String url, origin, host, userAgent, key;
         final List<String> names;
         final int timeoutMs;
         Options(JSONObject args) throws Exception {
@@ -45,6 +51,7 @@ final class PodSiteChallengeServices implements AutoCloseable {
                 ||!("https".equalsIgnoreCase(uri.getScheme())||"http".equalsIgnoreCase(uri.getScheme())&&loopback))
                 throw new IllegalArgumentException("Challenge requires HTTPS or loopback HTTP");
             origin=origin(uri);
+            this.host=host.toLowerCase(java.util.Locale.ROOT);
             userAgent=args.getString("userAgent");
             if(userAgent.isEmpty()||userAgent.length()>2048||userAgent.indexOf('\r')>=0||userAgent.indexOf('\n')>=0)
                 throw new IllegalArgumentException("Invalid challenge user agent");
@@ -85,53 +92,93 @@ final class PodSiteChallengeServices implements AutoCloseable {
         StringBuilder result=new StringBuilder();for(byte b:bytes)result.append(String.format(java.util.Locale.ROOT,"%02x",b&255));return result.toString();
     }
     private final Context context;
+    private final WebViewFactory webViews;
     private final SharedPreferences cache;
     private final Handler main=new Handler(Looper.getMainLooper());
     private final List<Session> queue=new ArrayList<>();
     private volatile boolean closed;
     PodSiteChallengeServices(Context context) {
-        this.context=context;cache=context.getSharedPreferences("pod-site-challenge",Context.MODE_PRIVATE);
+        this(context,WebView::new);
+    }
+    PodSiteChallengeServices(Context context,WebViewFactory webViews) {
+        this.context=context;this.webViews=webViews;cache=context.getSharedPreferences("pod-site-challenge",Context.MODE_PRIVATE);
     }
     void dispatch(JSONObject args,boolean acquire,Callback callback) {
+        long requested=SystemClock.elapsedRealtime();
         main.post(()->{
             if(!callback.isActive())return;
-            if(closed){callback.fail("service_closed","Site challenge service is closed");return;}
+            if(closed){if(acquire)logTerminal(null,requested,"service_closed",0);callback.fail("service_closed","Site challenge service is closed");return;}
+            Options options=null;
             try {
-                Options options=new Options(args);
+                options=new Options(args);
                 if(!acquire) {
                     String cookie=selectCookies(CookieManager.getInstance().getCookie(options.url),options.names);
                     // Match both UA and token. Unrelated WebViews may replace a token.
                     if(cookie.isEmpty()||!fingerprint(options.userAgent,cookie).equals(cache.getString(options.key,"")))cookie="";
                     callback.complete(result(options,cookie));return;
                 }
-                if(queue.size()>=8){callback.fail("busy","Too many site challenges");return;}
+                if(queue.size()>=8){logTerminal(options,requested,"busy",0);callback.fail("busy","Too many site challenges");return;}
                 Session session=new Session(options,callback);queue.add(session);
                 main.postDelayed(session.timeout,options.timeoutMs);
                 if(queue.size()==1)session.start();
-            }catch(Exception|LinkageError error){callback.fail((error instanceof IllegalArgumentException||error instanceof org.json.JSONException||error instanceof java.net.URISyntaxException)?"invalid_argument":"unavailable","Site challenge unavailable");}
+            }catch(Exception|LinkageError error){
+                String code=(error instanceof IllegalArgumentException||error instanceof org.json.JSONException||error instanceof java.net.URISyntaxException)?"invalid_argument":"unavailable";
+                if(acquire)logTerminal(options,requested,code,0);
+                callback.fail(code,"Site challenge unavailable");
+            }
         });
     }
     private static JSONObject result(Options options,String cookie) throws Exception {
         return new JSONObject().put("cookie",cookie).put("origin",options.origin);
     }
+    static void configureHiddenView(WebView view) {
+        // Detached script-only browser: keep the existing small viewport, but
+        // measure it explicitly. Never allocate a software/hardware view layer
+        // or request offscreen tile pre-rasterization for this invisible owner.
+        view.setLayerType(View.LAYER_TYPE_NONE,null);
+        view.setWillNotDraw(true);
+        view.getSettings().setOffscreenPreRaster(false);
+        int spec=View.MeasureSpec.makeMeasureSpec(VIEWPORT_PX,View.MeasureSpec.EXACTLY);
+        view.measure(spec,spec);view.layout(0,0,VIEWPORT_PX,VIEWPORT_PX);
+    }
+    private static void destroyView(WebView old) {
+        // Renderer death can make stopLoading fail. Still detach and destroy,
+        // without touching global timers, cookies or any other WebView.
+        try {old.stopLoading();}catch(RuntimeException|LinkageError ignored){}
+        try {if(old.getParent() instanceof ViewGroup)((ViewGroup)old.getParent()).removeView(old);}
+        finally {old.destroy();}
+    }
+    private static void logTerminal(Options options,long started,String outcome,int cookieCount) {
+        // Intentionally present in release. Never include URL/path/query, UA,
+        // cookie names/values, exception messages or renderer diagnostic text.
+        try {Log.i("PodSiteChallenge",new JSONObject().put("host",options==null?"":options.host).put("result",outcome)
+            .put("ms",Math.max(0,SystemClock.elapsedRealtime()-started)).put("cookies",cookieCount).toString());}
+        catch(org.json.JSONException impossible){throw new AssertionError(impossible);}
+    }
     private final class Session {
-        final Options options;final Callback callback;final long deadline;
+        final Options options;final Callback callback;final long started,deadline;
         final Runnable timeout=()->finish(null,"challenge_timeout","Site challenge timed out");
         final Runnable poll=this::poll;
         WebView view;String previous="";boolean loaded,done,checking;
-        Session(Options options,Callback callback){this.options=options;this.callback=callback;deadline=SystemClock.elapsedRealtime()+options.timeoutMs;}
+        Session(Options options,Callback callback){this.options=options;this.callback=callback;started=SystemClock.elapsedRealtime();deadline=started+options.timeoutMs;}
         void start() {
-            if(done)return;
+            if(done||view!=null)return;
             if(!callback.isActive()){finish(null,null,null);return;}
             if(SystemClock.elapsedRealtime()>=deadline){timeout.run();return;}
             try {
                 previous=selectCookies(CookieManager.getInstance().getCookie(options.url),options.names);
-                view=new WebView(context);WebSettings settings=view.getSettings();
+                view=webViews.create(context);configureHiddenView(view);WebSettings settings=view.getSettings();
                 settings.setJavaScriptEnabled(true);settings.setDomStorageEnabled(true);settings.setUserAgentString(options.userAgent);
                 settings.setAllowFileAccess(false);settings.setAllowContentAccess(false);settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
                 settings.setJavaScriptCanOpenWindowsAutomatically(false);settings.setSupportMultipleWindows(false);
                 CookieManager.getInstance().setAcceptThirdPartyCookies(view,false);
                 view.setWebViewClient(new WebViewClient(){
+                    @Override public boolean onRenderProcessGone(WebView web,RenderProcessGoneDetail detail) {
+                        // Each callback owns exactly its given WebView. Never
+                        // iterate browser/login instances sharing the renderer.
+                        if(web==view)finish(null,"challenge_render_gone","Site challenge renderer exited");
+                        return true;
+                    }
                     @Override public boolean shouldOverrideUrlLoading(WebView web,WebResourceRequest request) {
                         if(!options.sameOrigin(request.getUrl().toString())){finish(null,"challenge_redirect","Site challenge left its origin");return true;}return false;
                     }
@@ -148,8 +195,8 @@ final class PodSiteChallengeServices implements AutoCloseable {
                     @Override public void onReceivedHttpError(WebView web,WebResourceRequest request,WebResourceResponse response){if(request.isForMainFrame()&&response.getStatusCode()>=500)finish(null,"challenge_load_failed","Site challenge failed to load");}
                     @Override public void onReceivedSslError(WebView web,SslErrorHandler handler,SslError error){handler.cancel();finish(null,"challenge_tls_failed","Site challenge TLS failed");}
                 });
-                view.layout(0,0,240,240);view.onResume();view.loadUrl(options.url);
-                main.postDelayed(poll,250);
+                view.onResume();view.loadUrl(options.url);
+                if(!done)main.postDelayed(poll,250);
             }catch(RuntimeException|LinkageError unavailable){finish(null,"unavailable","Site challenge WebView unavailable");}
         }
         void poll() {
@@ -167,18 +214,22 @@ final class PodSiteChallengeServices implements AutoCloseable {
             if(loaded&&view!=null&&!checking){
                 checking=true;
                 // Read only visible controls; never click or submit verification.
-                view.evaluateJavascript("(function(){return Array.from(document.querySelectorAll('iframe[src*=captcha],.captcha_verify_container,.g-recaptcha,.h-captcha,.cf-turnstile,[data-sitekey]')).some(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0})})()", value->{
-                    checking=false;if(!done&&"true".equals(value))finish(null,"interaction_required","Site requires interactive verification");
-                });
+                try {
+                    view.evaluateJavascript("(function(){return Array.from(document.querySelectorAll('iframe[src*=captcha],.captcha_verify_container,.g-recaptcha,.h-captcha,.cf-turnstile,[data-sitekey]')).some(function(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0})})()", value->{
+                        checking=false;if(!done&&"true".equals(value))finish(null,"interaction_required","Site requires interactive verification");
+                    });
+                }catch(RuntimeException|LinkageError unavailable){finish(null,"unavailable","Site challenge WebView unavailable");return;}
             }
-            main.postDelayed(poll,250);
+            if(!done)main.postDelayed(poll,250);
         }
         void finish(JSONObject value,String code,String message) {
             if(done)return;done=true;main.removeCallbacks(timeout);main.removeCallbacks(poll);
             boolean first=!queue.isEmpty()&&queue.get(0)==this;queue.remove(this);
-            if(view!=null){WebView old=view;view=null;old.stopLoading();old.onPause();old.destroy();}
-            if(callback.isActive()){if(value!=null)callback.complete(value);else if(code!=null)callback.fail(code,message);}
-            if(first&&!queue.isEmpty()&&!closed)queue.get(0).start();
+            if(view!=null){WebView old=view;view=null;try {destroyView(old);}catch(RuntimeException|LinkageError ignored){}}
+            String outcome=value!=null?"ok":"challenge_timeout".equals(code)?"timeout":"challenge_render_gone".equals(code)?"renderGone":code==null?(closed?"service_closed":"cancelled"):code;
+            logTerminal(options,started,outcome,value!=null?options.names.size():0);
+            try {if(callback.isActive()){if(value!=null)callback.complete(value);else if(code!=null)callback.fail(code,message);}}
+            finally {if(first&&!queue.isEmpty()&&!closed)main.post(()->{if(!closed&&!queue.isEmpty())queue.get(0).start();});}
         }
     }
     void cancel(Callback callback){main.post(()->{for(Session session:new ArrayList<>(queue))if(session.callback==callback)session.finish(null,null,null);});}
