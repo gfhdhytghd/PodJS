@@ -106,7 +106,7 @@ export function normalizedRelativeAxisStep(delta: number): RelativeAxisStep {
 }
 
 export function getDisplayMetrics(): DisplayMetrics {
-  const raw = host()?.displayMetrics();
+  const raw = host()?.displayMetrics?.();
   if (!raw) {
     return {
       logicalWidth: 240,
