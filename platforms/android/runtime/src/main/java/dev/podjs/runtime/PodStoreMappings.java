@@ -62,26 +62,36 @@ final class PodStoreMappings {
         for(String key:new String[]{"reading_font_size_sp","llm_prompt_preset","media_playback_start_volume_limit_percent","rss_inline_image_prefetch_mode","oobe_seen_version","privacy_policy_agreed_version"})if(p.containsKey(key))require(p.get(key) instanceof Integer);
         for(String key:new String[]{"tts_speed","reader_auto_scroll_lines_per_second"})if(p.containsKey(key))require(p.get(key) instanceof Float);
         if(p.containsKey("cache_limit_bytes"))require(p.get("cache_limit_bytes") instanceof Long);
-        // Native toast throttling is not a persistent user preference; retain it privately.
+        // Preserve native per-channel toast throttling separately from user settings.
+        JSONObject hints=new JSONObject();
         for(String key:p.keySet()){
-            if(key.matches("temp_original_mode_hint_attempts_[1-9][0-9]*"))text(p.get(key));
-            else if(key.matches("temp_original_mode_hint_last_toast_[1-9][0-9]*"))integer(p.get(key),0,9007199254740991L);
+            if(key.matches("temp_original_mode_hint_attempts_[1-9][0-9]*")) {
+                String id=key.substring("temp_original_mode_hint_attempts_".length());JSONObject row=hints.optJSONObject(id);if(row==null){row=new JSONObject();hints.put(id,row);}
+                row.put("attempts",text(p.get(key)));u.remove(key);
+            } else if(key.matches("temp_original_mode_hint_last_toast_[1-9][0-9]*")) {
+                String id=key.substring("temp_original_mode_hint_last_toast_".length());JSONObject row=hints.optJSONObject(id);if(row==null){row=new JSONObject();hints.put(id,row);}
+                row.put("lastToast",integer(p.get(key),0,9007199254740991L));u.remove(key);
+            }
         }
+        if(hints.length()>0)kv.put("watchrss.temporary-original-hints.v1",hints);
         JSONObject s=new JSONObject();
-        String[][] booleans={{"llm_enabled","llmEnabled","true"},{"llm_auto_summarize","llmAutoSummarize","false"},{"llm_show_token_usage","llmShowTokenUsage","false"},{"reader_auto_scroll_enabled","readerAutoStart","false"},{"media_volume_control_enabled","mediaVolumeControl","true"},{"media_volume_guard_enabled","mediaVolumeGuard","false"},{"sync_media_keep_alive_enabled","syncMediaKeepAlive","false"},{"share_use_system","shareUseSystem","false"}};
+        String[][] booleans={{"phone_connection_enabled","phoneConnectionEnabled","true"},{"llm_enabled","llmEnabled","true"},{"llm_auto_summarize","llmAutoSummarize","false"},{"llm_show_token_usage","llmShowTokenUsage","false"},{"reader_auto_scroll_enabled","readerAutoStart","false"},{"media_volume_control_enabled","mediaVolumeControl","true"},{"media_volume_guard_enabled","mediaVolumeGuard","false"},{"sync_media_keep_alive_enabled","syncMediaKeepAlive","false"},{"share_use_system","shareUseSystem","false"}};
         for(String[] b:booleans)s.put(b[1],bool(take(p,u,b[0],Boolean.valueOf(b[2]))));
         long font=integer(take(p,u,"reading_font_size_sp",14),12,32);require(font%2==0);s.put("fontSizeSp",font);
         s.put("llmPromptPreset",integer(take(p,u,"llm_prompt_preset",0),0,3)+1);
         s.put("readerScrollSpeed",number(take(p,u,"reader_auto_scroll_lines_per_second",2.0),.5,10));
         double speed=number(take(p,u,"tts_speed",1.0),.5,2);s.put("speechRate",speed);
-        s.put("playbackStartVolumeLimit",p.containsKey("media_playback_start_volume_limit_percent")?integer(take(p,u,"media_playback_start_volume_limit_percent",null),0,100):JSONObject.NULL);
+        long limit=p.containsKey("media_playback_start_volume_limit_percent")?integer(take(p,u,"media_playback_start_volume_limit_percent",null),Integer.MIN_VALUE,Integer.MAX_VALUE):(s.getBoolean("mediaVolumeGuard")?10:-1);
+        s.put("playbackStartVolumeLimit",limit==-1?JSONObject.NULL:limit>=0&&limit<=100&&limit%5==0?limit:10);
         long bytes=integer(take(p,u,"cache_limit_bytes",512L*1024*1024),0,4096L*1024*1024);require(bytes%1048576==0);long mb=bytes/1048576;require(Arrays.asList(512L,768L,1024L,1536L,2048L,2560L,3072L,4096L).contains(mb));s.put("cacheLimitMb",mb);
         s.put("mediaCacheMode",new String[]{"关闭","前 4 项","全部"}[(int)integer(take(p,u,"rss_inline_image_prefetch_mode",1),0,2)]);
+        for(String[] pair:new String[][]{{"llm_provider","llmProvider"},{"llm_model","llmModel"},{"llm_base_url","llmBaseUrl"},{"llm_system_prompt","llmSystemPrompt"}})
+            s.put(pair[1],text(take(p,u,pair[0],"")));
         kv.put("watchrss.settings",s);
         if(p.containsKey("reading_theme_dark"))kv.put("__takeover.reader-dark",bool(take(p,u,"reading_theme_dark",true)));
         JSONObject onboarding=new JSONObject();for(String[] pair:new String[][]{{"oobe_seen_version","oobeSeenVersion"},{"privacy_policy_agreed_version","privacyPolicyAgreedVersion"}})if(p.containsKey(pair[0]))onboarding.put(pair[1],integer(take(p,u,pair[0],null),0,Integer.MAX_VALUE));if(onboarding.length()>0)kv.put("watchrss.onboarding",onboarding);
-        if(p.containsKey("tts_engine")){
-            String engine=text(p.get("tts_engine"));if(Arrays.asList("local","backend_default","minimax","azure","doubao").contains(engine)){
+        if(p.containsKey("tts_engine")||p.containsKey("tts_model")||p.containsKey("tts_voice_id")||p.containsKey("tts_base_url")){
+            String engine=text(p.getOrDefault("tts_engine",""));if(engine.isEmpty())engine="local";if(Arrays.asList("local","backend_default","minimax","azure","doubao").contains(engine)){
                 JSONObject t=new JSONObject().put("engine",engine).put("speed",speed);u.remove("tts_engine");
                 for(String[] pair:new String[][]{{"tts_model","model"},{"tts_voice_id","voiceId"},{"tts_base_url","baseUrl"}}){String v=text(take(p,u,pair[0],""));require(v.length()<=(pair[1].equals("baseUrl")?1024:256));if(pair[1].equals("baseUrl"))require(v.isEmpty()||v.startsWith("https://")&&!v.matches(".*\\s.*"));t.put(pair[1],v);}kv.put("watchrss.tts.config.v1",t);
             }

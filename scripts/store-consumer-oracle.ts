@@ -9,7 +9,7 @@ const secrets=await Bun.file(resolve(directory,'synthetic-secure.json')).json();
 const storage={get:(key:string)=>values[key],set:()=>{throw Error('oracle must not mutate');},delete:()=>{throw Error('oracle must not mutate');}};
 const secure={get:async(key:string)=>secrets[key]??null,set:async()=>{throw Error('oracle must not mutate');},remove:async()=>{throw Error('oracle must not mutate');}};
 const {SettingsStore}=await import(`${app}/src/settings/store.ts`);
-const settings=new SettingsStore(storage).load();assert.equal(settings.fontSizeSp,18);assert.equal(settings.cacheLimitMb,512);
+const settings=new SettingsStore(storage).load();assert.equal(settings.fontSizeSp,18);assert.equal(settings.cacheLimitMb,512);assert.equal(settings.phoneConnectionEnabled,false);assert.equal(settings.llmProvider,"synthetic-provider");assert.equal(settings.llmModel,"synthetic-model");assert.equal(settings.llmBaseUrl,"https://rehearsal.invalid");assert.equal(settings.llmSystemPrompt,"synthetic-prompt");
 const {OnboardingStore}=await import(`${app}/src/onboarding/store.ts`);
 assert.deepEqual(new OnboardingStore(storage).load(),{oobeSeenVersion:2,privacyPolicyAgreedVersion:0});
 const {ReaderPresetStore}=await import(`${app}/src/reader/preset-store.ts`);

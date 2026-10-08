@@ -29,7 +29,7 @@ public class StoreTest {
     static File fixture()throws Exception{
         File root=Files.createTempDirectory("pod-stores-source").toFile();
         for(String s:PodStoreConverter.STORES)if(!s.equals("settings")&&!s.equals("bili_cache"))xml(root,s,"");
-        write(new File(root,"files/datastore/settings.preferences_pb.preferences_pb"),concat(pref("reading_font_size_sp",concat(var(24),var(18))),pref("oobe_seen_version",concat(var(24),var(2))),pref("tts_engine",string("minimax")),pref("tts_model",string("fixture-model")),pref("reading_theme_dark",concat(var(8),var(0))),pref("future_key",string("PRIVATE_USER_SETTING"))));
+        write(new File(root,"files/datastore/settings.preferences_pb.preferences_pb"),concat(pref("reading_font_size_sp",concat(var(24),var(18))),pref("oobe_seen_version",concat(var(24),var(2))),pref("tts_engine",string("minimax")),pref("tts_model",string("fixture-model")),pref("reading_theme_dark",concat(var(8),var(0))),pref("phone_connection_enabled",concat(var(8),var(0))),pref("llm_provider",string("synthetic-provider")),pref("llm_model",string("synthetic-model")),pref("llm_base_url",string("https://rehearsal.invalid")),pref("llm_system_prompt",string("synthetic-prompt")),pref("future_key",string("PRIVATE_USER_SETTING"))));
         write(new File(root,"files/datastore/bili_cache.preferences_pb.preferences_pb"),concat(pref("bili_search_history",string("[\"fixture\"]")),pref("bili_local_interaction_state_json",string("[{\"aid\":7,\"isLiked\":true,\"isCoined\":false,\"isFavorited\":true,\"updatedAt\":123}]")),pref("bili_playback_progress_json",string("[{\"aid\":7,\"cid\":8,\"positionMs\":900,\"durationMs\":1000,\"updatedAt\":123}]"))));
         xml(root,"bili_account_store","<string name=\"account_json\">{\"cookies\":{\"SESSDATA\":\"DO_NOT_LEAK_BILI\"},\"refreshToken\":\"DO_NOT_LEAK_REFRESH\",\"updatedAtMillis\":123,\"cookieRefreshCheckedAtMillis\":120,\"wbiImgKey\":\"synthetic-img\",\"wbiSubKey\":\"synthetic-sub\"}</string>");
         xml(root,"douyin_account_store","<string name=\"cookie\">DO_NOT_LEAK_DOUYIN</string>");
@@ -51,7 +51,25 @@ public class StoreTest {
     static File generation()throws Exception{File g=Files.createTempDirectory("pod-stores-generation").toFile();PodStoreConverter.json(new File(g,"reader-catalog.json"),new JSONObject("{\"version\":1,\"records\":[],\"assets\":{\"fonts\":[],\"backgrounds\":[],\"deletions\":[]}}"));return g;}
     static JSONObject report(File g,String store)throws Exception{return PodStoreConverter.json(new File(g,"stores-report.json")).getJSONObject(store);}
     static void remove(File root)throws Exception{try(java.util.stream.Stream<Path> paths=Files.walk(root.toPath())){for(Path p:(Iterable<Path>)paths.sorted(Comparator.reverseOrder())::iterator)Files.delete(p);}}
+    static void settingsAudit()throws Exception {
+        Map<String,Object> source=new LinkedHashMap<>();
+        source.put("cache_limit_bytes",512L*1048576);source.put("oobe_seen_version",3);source.put("reading_theme_dark",true);source.put("reading_font_size_sp",18);
+        source.put("reader_auto_scroll_enabled",true);source.put("reader_auto_scroll_lines_per_second",2f);source.put("share_use_system",false);source.put("phone_connection_enabled",false);
+        source.put("sync_media_keep_alive_enabled",true);source.put("media_volume_control_enabled",true);source.put("media_volume_guard_enabled",true);source.put("media_playback_start_volume_limit_percent",-1);
+        source.put("rss_inline_image_prefetch_mode",1);source.put("llm_provider","provider");source.put("llm_model","model");source.put("llm_base_url","https://rehearsal.invalid");source.put("llm_system_prompt","prompt");
+        source.put("llm_enabled",true);source.put("llm_auto_summarize",false);source.put("llm_show_token_usage",false);source.put("llm_prompt_preset",0);
+        source.put("tts_engine","");source.put("tts_model","model");source.put("tts_voice_id","voice");source.put("tts_speed",1f);source.put("tts_base_url","");source.put("privacy_policy_agreed_version",1);
+        source.put("temp_original_mode_hint_attempts_39","123,456");source.put("temp_original_mode_hint_last_toast_39",789L);
+        check(source.size()==29);Set<String> unknown=new TreeSet<>(source.keySet());JSONObject output=new JSONObject();PodStoreMappings.settings(source,unknown,output);
+        check(unknown.isEmpty());check(!output.getJSONObject("watchrss.settings").getBoolean("phoneConnectionEnabled"));check(output.getJSONObject("watchrss.settings").isNull("playbackStartVolumeLimit"));
+        check(output.getJSONObject("watchrss.temporary-original-hints.v1").getJSONObject("39").getLong("lastToast")==789L);
+        check(output.getJSONObject("watchrss.tts.config.v1").getString("engine").equals("local"));
+        source.remove("media_playback_start_volume_limit_percent");unknown=new TreeSet<>(source.keySet());output=new JSONObject();PodStoreMappings.settings(source,unknown,output);check(output.getJSONObject("watchrss.settings").getInt("playbackStartVolumeLimit")==10);
+        source.remove("tts_engine");unknown=new TreeSet<>(source.keySet());output=new JSONObject();PodStoreMappings.settings(source,unknown,output);check(unknown.isEmpty());check(output.getJSONObject("watchrss.tts.config.v1").getString("voiceId").equals("voice"));
+        source.put("future_native_setting","retained");unknown=new TreeSet<>(source.keySet());PodStoreMappings.settings(source,unknown,new JSONObject());check(unknown.equals(Set.of("future_native_setting")));
+    }
     public static void main(String[] args)throws Exception{
+        settingsAudit();
         if(args.length>0&&args[0].equals("crash")){
             new PodStoreConverter(new File(args[1]),new Crypto(),(s,b)->{if(s.equals(args[3])&&b.equals(args[4]))Runtime.getRuntime().halt(91);}).copy(new File(args[2]));throw new AssertionError("crash boundary missing");
         }

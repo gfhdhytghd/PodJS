@@ -33,7 +33,7 @@ public final class PodStoreConverter implements PodTakeoverCoordinator.Converter
         validateKv(json(new File(g,"podjs/podjs-kv.json")));
         validateSecure(crypto.open(PodPreferenceReader.bytes(new File(g,"podjs/secure.store"))));
     }
-    public String version(){return "watchrss-stores-2"+(rehearsal?"-isolated":"");}public boolean complete(){return false;}
+    public String version(){return "watchrss-stores-3"+(rehearsal?"-isolated":"");}public boolean complete(){return false;}
     static boolean encrypted(String s){return Arrays.asList("watchrss_account_state","llm_secure_prefs","tts_secure_prefs","watchrss_cloud_keys","bili_account_store","douyin_account_store").contains(s);}
     static void write(File f,byte[] b)throws Exception{if(!f.getCanonicalFile().equals(f.getAbsoluteFile()))throw new IOException("candidate_symlink");Files.createDirectories(f.getParentFile().toPath());File tmp=new File(f+".tmp");if(Files.isSymbolicLink(tmp.toPath()))throw new IOException("candidate_symlink");try(FileOutputStream out=new FileOutputStream(tmp)){out.write(b);out.getFD().sync();}Files.move(tmp.toPath(),f.toPath(),StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);PodTakeoverCoordinator.syncDirectory(f.getParentFile());}
     static void json(File f,JSONObject j)throws Exception{write(f,j.toString().getBytes(StandardCharsets.UTF_8));}

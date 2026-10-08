@@ -21,6 +21,12 @@ public final class PodTakeover {
         try { return PodTakeoverSource.canonicalSandbox(raw); }
         catch(IOException error){throw new IllegalStateException("sandbox_unresolvable",error);}
     }
+    static String sourcePackage(Context c) {
+        try {
+            android.os.Bundle metadata=c.getPackageManager().getApplicationInfo(c.getPackageName(),android.content.pm.PackageManager.GET_META_DATA).metaData;
+            return metadata==null?c.getPackageName():metadata.getString("dev.podjs.takeover.sourcePackage",c.getPackageName());
+        } catch(android.content.pm.PackageManager.NameNotFoundException invalid){throw new IllegalStateException("package_identity_unavailable",invalid);}
+    }
     private static PodTakeoverCoordinator coordinator(Context c,File sandbox,ProgressReporter progress) {
         return new PodTakeoverCoordinator(new File(sandbox,"files/package-takeover"),
                 () -> detect(c,sandbox),new PodTakeoverConverters(new PodRoomV18Converter(new File(sandbox,"databases/watchrss.db"),
@@ -31,7 +37,7 @@ public final class PodTakeover {
                     new PodFileConverter(sandbox,PodRoomAndroidDb::new,(file,faces) -> {
                         for(int i=0;i<faces;i++)if(new android.graphics.Typeface.Builder(file).setTtcIndex(i).build()==null)
                             throw new IOException("font_unloadable");
-                    },boundary -> {},progress::fileCopied)), phase -> {
+                    },boundary -> {},progress::fileCopied,c.getPackageName(),sourcePackage(c))), phase -> {
                         progress.phase(phase);
                         if ((c.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)
                             android.util.Log.i("PodTakeoverPhase", phase.name());

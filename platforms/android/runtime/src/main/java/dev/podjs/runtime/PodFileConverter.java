@@ -17,6 +17,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
     public interface ProgressHook { void copied(long bytes); }
     public interface FontReader { void load(File file, int faces) throws Exception; }
     private final File sandbox;
+    private final Set<String> packages;
     private final PodRoomV18Converter.Factory factory;
     private final FontReader fonts;
     private final Hook hook;
@@ -29,9 +30,17 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         this(sandbox,factory,fonts,hook,bytes -> {});
     }
     PodFileConverter(File sandbox,PodRoomV18Converter.Factory factory,FontReader fonts,Hook hook,ProgressHook progress) {
-        this.sandbox=sandbox;this.factory=factory;this.fonts=fonts;this.hook=hook;this.progress=progress;
+        this(sandbox,factory,fonts,hook,progress,new String[0]);
     }
-    public String version(){return "watchrss-files-2";}
+    PodFileConverter(File sandbox,PodRoomV18Converter.Factory factory,FontReader fonts,Hook hook,ProgressHook progress,String... packages) {
+        this.sandbox=sandbox;this.factory=factory;this.fonts=fonts;this.hook=hook;this.progress=progress;
+        this.packages=new HashSet<>();
+        for(String name:packages){
+            if(name==null||!name.matches("[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+"))throw new IllegalArgumentException("package_identity_invalid");
+            this.packages.add(name);
+        }
+    }
+    public String version(){return "watchrss-files-3";}
     // A file converter alone does not constitute a publishable storage bundle.
     public boolean complete(){return false;}
     static SortedSet<String> names(JSONObject object) {
@@ -109,6 +118,32 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         if(p.startsWith("files/offline/bili/")||p.matches("cache/(douyin_preload|bili_stream_cache|rss_images|douyin_preview_snapshots|updates)/.+")||p.matches("cache/tts_[0-9]+\\.mp3"))return "refetchable";
         return "unknown-user-content";
     }
+    boolean ownSourcePath(String path,String relative) {
+        if(!path.equals(new File(sandbox,"files").getAbsolutePath()+"/"+relative)) {
+            boolean alias=false;
+            for(String name:packages) {
+                alias|=path.equals("/data/data/"+name+"/files/"+relative);
+                // Accept Android user directories only; never an arbitrary package or traversal.
+                java.util.regex.Matcher m=Pattern.compile("^/data/user/([0-9]+)/"+Pattern.quote(name)+"/files/"+Pattern.quote(relative)+"$").matcher(path);
+                if(m.matches()) {
+                    // Canonical mounted sandbox can lose /data/user/<id>; the trusted raw
+                    // Context package identifies user 0 on such a mount. Other users need a
+                    // matching explicit sandbox prefix.
+                    alias|=m.group(1).equals("0")||sandbox.getAbsolutePath().startsWith("/data/user/"+m.group(1)+"/"+name+"/")||sandbox.getAbsolutePath().equals("/data/user/"+m.group(1)+"/"+name);
+                }
+            }
+            if(!alias)return false;
+        }
+        try{safe(new File(sandbox,"files"),relative);return true;}catch(IOException invalid){return false;}
+    }
+    String classify(String path) {
+        if(path.equals("cache/watchrss.db.lck"))return "database-lock";
+        for(String name:packages) {
+            for(String root:new String[]{"cache/data/user/0/"+name+"/","cache/data/data/"+name+"/"})
+                if(path.equals(root+"databases/watchrss.db.lck")||path.equals(root+"no_backup/androidx.work.workdb.lck"))return "database-lock";
+        }
+        return category(path);
+    }
     private SortedMap<String,JSONObject> inventory()throws Exception {
         SortedMap<String,JSONObject> out=new TreeMap<>();
         for(String top:new String[]{"files","cache"})walk(top,out);
@@ -122,7 +157,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
                 if(p.equals("files/package-takeover")||p.equals("files/podjs")||p.equals("files/datastore")||p.startsWith("files/.podjs-"))continue;
                 walk(p,out);
             }
-        }else out.put(path,measure(file).put("category",category(path)));
+        }else out.put(path,measure(file).put("category",classify(path)));
     }
     public void snapshot(File g)throws Exception {
         File manifest=new File(g,"files-snapshot.json");
@@ -142,12 +177,12 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
     }
     public void resume(File g,PodTakeoverCoordinator.Phase phase)throws Exception {
         JSONObject entries=entries(g);
-        for(String p:names(entries))if(!category(p).equals(entries.getJSONObject(p).getString("category"))||!same(measure(safe(new File(g,"files-source"),p)),entries.getJSONObject(p)))throw new IOException("file_snapshot_changed");
+        for(String p:names(entries))if(!classify(p).equals(entries.getJSONObject(p).getString("category"))||!same(measure(safe(new File(g,"files-source"),p)),entries.getJSONObject(p)))throw new IOException("file_snapshot_changed");
     }
     public void copy(File g)throws Exception {
         resume(g,PodTakeoverCoordinator.Phase.COPYING);
         Files.createDirectories(safe(g,"podjs/files").toPath());JSONObject entries=entries(g);
-        for(String p:names(entries))if(category(p).equals("asset")){
+        for(String p:names(entries))if(classify(p).equals("asset")){
             copyFile(safe(new File(g,"files-source"),p),safe(new File(g,"podjs/files"),p.substring(6)),entries.getJSONObject(p),"copy");
             JSONObject receipt=new JSONObject().put("path",p).put("size",entries.getJSONObject(p).getLong("size")).put("sha256",entries.getJSONObject(p).getString("sha256")).put("complete",true);
             File record=safe(new File(g,"files-completed"),PodStoreConverter.slot(p)+".json");
@@ -173,7 +208,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         JSONObject entries=entries(g),r=new JSONObject().put("version",version()).put("blockers",new JSONArray()).put("degraded",new JSONArray()).put("derivedSync","empty-rebuild-before-export");
         JSONObject classes=new JSONObject();
         for(String p:names(entries)) {
-            String c=category(p);classes.put(c,classes.optInt(c)+1);
+            String c=classify(p);classes.put(c,classes.optInt(c)+1);
             if(c.equals("asset")){
                 JSONObject receipt=PodStoreConverter.json(safe(new File(g,"files-completed"),PodStoreConverter.slot(p)+".json"));
                 if(!receipt.getBoolean("complete")||!receipt.getString("path").equals(p)||!same(receipt,entries.getJSONObject(p)))throw new IOException("file_receipt_changed");
@@ -201,10 +236,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         try(PodRoomV18Converter.Db db=factory.open(new File(g,"podjs.sqlite"));PodRoomV18Converter.Db source=factory.open(new File(g,"room.sqlite"))) {
             for(Map<String,Object> row:source.query("SELECT localPath FROM offline_media WHERE localPath IS NOT NULL")) {
                 String path=(String)row.get("localPath"),relative=PodRoomV18Converter.relative(path);
-                String sourceRoot=new File(sandbox,"files").getAbsolutePath()+"/";
-                // Android's two canonical app-sandbox spellings are equivalent; arbitrary /files/ prefixes are not.
-                boolean own=path.equals(sourceRoot+relative);
-                for(String prefix:new String[]{"/data/user/0/com.lightningstudio.watchrss/files/","/data/data/com.lightningstudio.watchrss/files/"})own|=path.equals(prefix+relative);
+                boolean own=ownSourcePath(path,relative);
                 if(!own)block(r,"offline_source_root_invalid");
             }
             for(Map<String,Object> row:db.query("SELECT relative_path FROM offline_media WHERE relative_path IS NOT NULL")) {
