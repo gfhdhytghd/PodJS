@@ -62,6 +62,7 @@
     "./text-match": "./src/text-match.ts",
     "./request-policy": "./src/request-policy.ts",
     "./browser-qr-wait": "./src/browser-qr-wait.ts",
+    "./round-list": "./src/round-list.ts",
     "./round-layout": "./src/safe-qr-layout.ts",
     "./site-challenge": "./src/site-challenge.ts"
   },
