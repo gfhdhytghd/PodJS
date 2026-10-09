@@ -180,7 +180,8 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/cache` | Generic bounded disk cache, downloads, accounting, eviction and reference leases; configurable default transport download/image-validation limits. |
 | `@podjs/framework/regexp` | Lazy RegExp construction to defer guest startup work. |
 | `@podjs/framework/sql` | Bounded SQL result pagination and UTF-8-safe large text reads. |
-| `@podjs/framework/frame-stream` | Bounded framed byte-stream connections with deadlines, cancellation and transfer progress. |
+| `@podjs/framework/frame-stream` | Opaque signed/unsigned frame facade with caller codecs, error/poison/EOF policies; bounded connections with deadlines, cancellation and progress. |
+| `@podjs/framework/texture-upload` | Shared raw/sample RGBA uploads and explicit file ownership/release policies; no lifetime scheduling or pixel conversion. |
 | `@podjs/framework/variable-list` | Variable-height windowed viewport; opt-in `round` adds minimal safe-circle endpoint space, `ScrollEntry.bounds` describes visible content, and `round.development` warns about impossible rows. |
 | `@podjs/framework/round-list` | `roundRowRange`, `roundListInsets`, `RoundListOptions`: four-corner circle/viewport fitting, including displaced viewports and narrow visible-content bounds. |
 | `@podjs/framework/text-environment` | Native text environment lookup and font selection helpers. |
@@ -222,3 +223,10 @@ cannot fit at any scroll position; split or narrow those rows in your UI.
 `round: null` opts out and `fixed` lists retain their supplied geometry. An
 external `controller` must include the added insets in its own maximum offset;
 keep round fitting disabled if that controller owns document/text anchors.
+
+
+### Opaque frames and texture ownership
+
+Use `createFrameFacade<T, Work>` from `@podjs/framework/frame-stream` for four-byte big-endian frames. Supply synchronous/asynchronous body codecs and `maxFrameBytes`; the facade does not interpret the payload. `prefix` defaults to `signed` (`unsigned` is optional). Customize `errors` with factories. Incremental `FrameDecoder.push()` returns complete decoded bodies. By default push errors and truncated `finish()` poison the decoder, and a successful `finish()` permanently closes it. Set `poisonOnFinishError:false` to resume an incomplete frame, `closeOnFinish:false` to allow later frames, or `poisonOnPushError:false` to discard a bad frame and permit a fresh one. Async calls forward the caller's work context unchanged. This entry is pure and permitted in headless background handlers.
+
+Use `createTextureUploader` from `@podjs/framework/texture-upload` when a resource owner needs the same low-level upload across text or images. `uploadRgba(bytes,width,height,{psm:3,sample:1})` passes the same bytes to optional sampled upload; only nullish results fall back to regular upload. Omit sample for regular RGBA. `uploadFile(path,width,height,{take,unavailable})` calls `take` before the host invocation; only null triggers optional `unavailable`. A negative handle or thrown error leaves ownership with the invoked host. The caller controls whether file upload is available and where cleanup happens. Call `release(handle)` at the resource owner's existing lifetime boundary. Optional ports (`ops`, `uploadFile`, `release`) let owners inject/defer release without changing pixels or adding implicit cleanup. This host-backed entry is not allowed in headless handlers. Existing text/image/tiled-image owners share it while retaining their queues, cancellation, file deletion and cache policies.

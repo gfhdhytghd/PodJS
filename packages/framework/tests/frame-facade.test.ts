@@ -1,0 +1,30 @@
+import {expect,test} from 'bun:test';
+import {createFrameFacade,type FrameFacadeOptions} from '../src/frame-stream.ts';
+const options:FrameFacadeOptions<Uint8Array,{tag:string}>={maxFrameBytes:10,encodeBody:v=>v,decodeBody:v=>v,encodeBodyAsync:async(v)=>v,decodeBodyAsync:async(v)=>v};
+const header=(n:number)=>{const v=new Uint8Array(4);new DataView(v.buffer).setUint32(0,n,false);return v;};
+test('opaque bodies support both signed dialects, exact byte views, work context and injected errors',async()=>{
+ const seen:unknown[]=[];
+ const codec=createFrameFacade({...options,encodeBodyAsync:async(v,work)=>{seen.push(work);return v;},decodeBodyAsync:async(v,work)=>{seen.push(work);return v;}});
+ const body=Uint8Array.of(0,255,128),work={tag:'custom'};
+ const bytes=await codec.encodeFrameAsync(body,work);expect([...bytes]).toEqual([0,0,0,3,0,255,128]);
+ const backing=new Uint8Array(bytes.length+8);backing.set(bytes,5);
+ expect(await codec.decodeFrameAsync(backing.subarray(5,5+bytes.length),work)).toEqual(body);expect(seen).toEqual([work,work]);
+ expect(()=>codec.decodeFrame(header(0xffffffff))).toThrow('Frame length out of range: -1');
+ const unsigned=createFrameFacade({...options,prefix:'unsigned',errors:{length:n=>new Error('example length '+n)}});
+ expect(()=>unsigned.decodeFrame(header(0xffffffff))).toThrow('example length 4294967295');
+ expect(()=>codec.encodeFrame(new Uint8Array())).toThrow(RangeError);expect(()=>codec.encodeFrame(new Uint8Array(11))).toThrow(RangeError);
+ expect(()=>codec.decodeFrame(new Uint8Array(3))).toThrow('Truncated frame prefix');
+ expect(()=>codec.decodeFrame(Uint8Array.of(0,0,0,1))).toThrow('Truncated or trailing');
+ for(const maxFrameBytes of [0,NaN,1.5,0x80000000])expect(()=>createFrameFacade({...options,maxFrameBytes})).toThrow(RangeError);
+ expect(()=>createFrameFacade({...options,prefix:'unsigned',maxFrameBytes:0xffffffff})).not.toThrow();
+});
+test('poison, resumable EOF and permanent finish are explicit independent policies',()=>{
+ const codec=createFrameFacade(options),frame=codec.encodeFrame(Uint8Array.of(9));
+ const d=new codec.FrameDecoder();d.push(frame.subarray(0,4));expect(()=>d.finish()).toThrow('Truncated');expect(()=>d.push(frame)).toThrow('already failed');
+ const clean=new codec.FrameDecoder();expect(clean.push(frame)).toEqual([Uint8Array.of(9)]);clean.finish();expect(()=>clean.push(frame)).toThrow('finished');expect(()=>clean.finish()).toThrow('finished');
+ const resumable=createFrameFacade({...options,poisonOnPushError:false,poisonOnFinishError:false,closeOnFinish:false});
+ const r=new resumable.FrameDecoder();r.push(frame.subarray(0,2));expect(()=>r.finish()).toThrow('Truncated');expect(r.push(frame.subarray(2))).toEqual([Uint8Array.of(9)]);r.finish();r.finish();
+ expect(()=>r.push(header(0))).toThrow(RangeError);expect(r.push(frame)).toEqual([Uint8Array.of(9)]);
+ const poison=createFrameFacade({...options,decodeBody:()=>{throw new SyntaxError('opaque decoder failure');},errors:{failed:()=>new Error('example poison')}});
+ const p=new poison.FrameDecoder();expect(()=>p.push(frame)).toThrow(SyntaxError);expect(()=>p.push(new Uint8Array())).toThrow('example poison');expect(()=>p.finish()).toThrow('example poison');
+});

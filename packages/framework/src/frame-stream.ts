@@ -56,3 +56,93 @@ export class StreamFrameConnection<T> {
  }
  async close():Promise<void>{if(this.closed)return;this.closed=true;await this.stream.close();}
 }
+
+
+/** Framing treats the body as opaque bytes; wire formats and codecs belong to callers. */
+export interface FrameFacadeErrors {
+ length(length:number):Error;
+ prefix():Error;
+ size():Error;
+ failed():Error;
+ truncated():Error;
+ finished():Error;
+}
+export interface FrameFacadeOptions<T, Work> {
+ maxFrameBytes:number;
+ /** Four-byte big-endian length. Default is signed. */
+ prefix?:'signed'|'unsigned';
+ encodeBody(value:T):Uint8Array;
+ decodeBody(bytes:Uint8Array):T;
+ encodeBodyAsync(value:T,work:Work):Promise<Uint8Array>;
+ decodeBodyAsync(bytes:Uint8Array,work:Work):Promise<T>;
+ errors?:Partial<FrameFacadeErrors>;
+ /** Push errors discard pending bytes; false permits a new frame after an error. */
+ poisonOnPushError?:boolean;
+ /** A truncated finish normally poisons the decoder. */
+ poisonOnFinishError?:boolean;
+ /** A successful finish normally closes the decoder. False permits further pushes. */
+ closeOnFinish?:boolean;
+}
+export function createFrameFacade<T, Work>(options:FrameFacadeOptions<T,Work>) {
+ const signed=options.prefix!=='unsigned',max=options.maxFrameBytes;
+ if(!Number.isSafeInteger(max)||max<1||max>(signed?0x7fffffff:0xffffffff))throw new RangeError('Invalid frame byte limit');
+ const errors:FrameFacadeErrors={
+  length:n=>new RangeError(`Frame length out of range: ${n}`),prefix:()=>new Error('Truncated frame prefix'),
+  size:()=>new Error('Truncated or trailing frame bytes'),failed:()=>new Error('Frame stream already failed'),
+  truncated:()=>new Error('Truncated frame stream'),finished:()=>new Error('Frame stream finished'),...options.errors,
+ };
+ const validate=(n:number)=>{if(n<1||n>max)throw errors.length(n);return n;};
+ const length=(bytes:Uint8Array)=>{const view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);return validate(signed?view.getInt32(0,false):view.getUint32(0,false));};
+ const wrap=(body:Uint8Array)=>{
+  validate(body.byteLength);const frame=new Uint8Array(4+body.byteLength),view=new DataView(frame.buffer);
+  if(signed)view.setInt32(0,body.byteLength,false);else view.setUint32(0,body.byteLength,false);
+  frame.set(body,4);return frame;
+ };
+ const unwrap=(frame:Uint8Array)=>{
+  if(frame.byteLength<4)throw errors.prefix();const size=length(frame);
+  if(frame.byteLength!==4+size)throw errors.size();return frame.subarray(4);
+ };
+ class FrameDecoder {
+  private readonly header=new Uint8Array(4);
+  private headerSize=0;
+  private body:Uint8Array|null=null;
+  private bodySize=0;
+  private failed=false;
+  private finished=false;
+  private check(){if(this.failed)throw errors.failed();if(this.finished)throw errors.finished();}
+  push(bytes:Uint8Array):T[]{
+   this.check();const frames:T[]=[];let offset=0;
+   try{
+    while(offset<bytes.length){
+     if(!this.body){
+      const count=Math.min(4-this.headerSize,bytes.length-offset);
+      this.header.set(bytes.subarray(offset,offset+count),this.headerSize);this.headerSize+=count;offset+=count;
+      if(this.headerSize<4)break;
+      this.body=new Uint8Array(length(this.header));this.bodySize=0;
+     }
+     const count=Math.min(this.body.length-this.bodySize,bytes.length-offset);
+     this.body.set(bytes.subarray(offset,offset+count),this.bodySize);offset+=count;this.bodySize+=count;
+     if(this.bodySize===this.body.length){frames.push(options.decodeBody(this.body));this.body=null;this.headerSize=0;this.bodySize=0;}
+    }
+    return frames;
+   }catch(error){
+    this.body=null;
+    if(options.poisonOnPushError!==false)this.failed=true;
+    else {this.headerSize=0;this.bodySize=0;}
+    throw error;
+   }
+  }
+  finish():void {
+   this.check();
+   if(this.headerSize||this.body){if(options.poisonOnFinishError!==false){this.failed=true;this.body=null;}throw errors.truncated();}
+   if(options.closeOnFinish!==false)this.finished=true;
+  }
+ }
+ return {
+  encodeFrame:(value:T)=>wrap(options.encodeBody(value)),
+  encodeFrameAsync:async(value:T,work:Work)=>wrap(await options.encodeBodyAsync(value,work)),
+  decodeFrame:(frame:Uint8Array)=>options.decodeBody(unwrap(frame)),
+  decodeFrameAsync:async(frame:Uint8Array,work:Work)=>options.decodeBodyAsync(unwrap(frame),work),
+  FrameDecoder,
+ };
+}

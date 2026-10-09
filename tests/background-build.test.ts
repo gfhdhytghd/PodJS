@@ -72,3 +72,14 @@ test("headless Kotlin whitespace compatibility executes without host bootstrap a
  expect(JSON.parse(JSON.stringify(context.backgroundHandler()))).toEqual({control:'x',bom:'\ufeffx\ufeff'});expect(context.pod).toBeUndefined();expect(context.frame).toBeUndefined();
  const denied=fixture("import * as api from '@podjs/framework/text-compat/unsafe'; export default ()=>api;");await expect(buildBackground({denied:denied.entry},denied.root)).rejects.toThrow('Background');
 });
+
+
+test('headless opaque frame facade runs with caller codecs and no host bootstrap',async()=>{
+ const {root,entry}=fixture("import {createFrameFacade} from '@podjs/framework/frame-stream'; export default ()=>{const f=createFrameFacade({maxFrameBytes:8,encodeBody:v=>v,decodeBody:v=>v,encodeBodyAsync:async(v)=>v,decodeBodyAsync:async(v)=>v});const bytes=f.encodeFrame(Uint8Array.of(0,255));const decoder=new f.FrameDecoder();return {bytes:[...bytes],body:[...decoder.push(bytes)[0]]};};");
+ mkdirSync(join(root,'node_modules/@podjs'),{recursive:true});symlinkSync(new URL('../packages/framework',import.meta.url).pathname,join(root,'node_modules/@podjs/framework'),'dir');
+ const artifacts=await buildBackground({frames:entry},root),context:Record<string,any>={};runInNewContext(readFileSync(join(root,artifacts.frames!.file),'utf8'),context);
+ expect(JSON.parse(JSON.stringify(context.backgroundHandler()))).toEqual({bytes:[0,0,0,2,0,255],body:[0,255]});expect(context.pod).toBeUndefined();expect(context.frame).toBeUndefined();
+ for(const denied of ['@podjs/framework/frame-stream/unsafe','@podjs/framework/texture-upload']){
+  const f=fixture(`import * as api from '${denied}'; export default ()=>api;`);await expect(buildBackground({denied:f.entry},f.root)).rejects.toThrow('Background');
+ }
+});

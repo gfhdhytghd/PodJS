@@ -1,3 +1,4 @@
+import {createTextureUploader} from './texture-upload.ts';
 import {For,createEffect,createMemo,createSignal,onCleanup,untrack} from "solid-js";
 import {Image,View,type NodeMirror} from "@pocketjs/framework/components";
 import {getOps} from "@pocketjs/framework/host";
@@ -7,7 +8,8 @@ import {previewPlacement,type PreviewGeometry,type PreviewState} from "./image-p
 import {visibleImageTiles,imageTileRegion,type ImageTile,type ImageTileRegion} from "./image-tiles.ts";
 interface Decoded {path:string;width:number;height:number;sourceWidth:number;sourceHeight:number;contentWidth?:number;contentHeight?:number;trace?:{decoderOpenMs:number;decodeAndCropMs:number;padMs:number;writeRgbaMs:number}}
 interface TileEntry {tile:ImageTile;region:ImageTileRegion;handle:number;width:number;height:number;contentWidth:number;contentHeight:number;cancelled:boolean;started:boolean;op?:{cancel:()=>void};path?:string}
-function uploadImage(bytes:Uint8Array,width:number,height:number){const ops=getOps();return ops.uploadTextureSampled?.(bytes,width,height,3,1)??ops.uploadTexture(bytes,width,height,3);}
+const textures=createTextureUploader();
+function uploadImage(bytes:Uint8Array,width:number,height:number){return textures.uploadRgba(bytes,width,height,{sample:1});}
 // A full-resolution image can finish dozens of tiles in one frame. Bound file
 // cleanup separately from decoding so cleanup cannot exhaust the host's
 // 64-request lane or prevent the next image from opening.
@@ -45,7 +47,7 @@ export function TiledImage(props:{url:string;filePath?:string;sourceProvider:{ac
   return result;
  }
  const publish=()=>{if(closed)return;setTiles([...cache.values()].filter(entry=>entry.handle>=0&&!entry.cancelled));const expected=plan();const id=expected.map(tile=>tile.key).join("|");if(expected.length&&id!==reportedPlan&&expected.every(tile=>(cache.get(tile.key)?.handle??-1)>=0)){reportedPlan=id;props.onVisibleTilesReady?.();}};
- const release=(entry:TileEntry)=>{entry.cancelled=true;entry.op?.cancel();if(entry.handle>=0){getOps().freeTexture?.(entry.handle);entry.handle=-1;}removeEntry(entry);};
+ const release=(entry:TileEntry)=>{entry.cancelled=true;entry.op?.cancel();if(entry.handle>=0){textures.release(entry.handle);entry.handle=-1;}removeEntry(entry);};
  async function loadTile(entry:TileEntry){
   try {
    const startedAt=props.onTileTiming?Date.now():0;
@@ -72,7 +74,7 @@ export function TiledImage(props:{url:string;filePath?:string;sourceProvider:{ac
    ready=true;props.onSize(decoded.sourceWidth,decoded.sourceHeight);setSource({width:decoded.sourceWidth,height:decoded.sourceHeight});pump();
   }catch(error){if(!closed)props.onError(error);}finally{initialOp=undefined;remove(decodedPath);finishLease();}
  })();
- onCleanup(()=>{closed=true;initialOp?.cancel();for(const entry of cache.values())release(entry);cache.clear();if(overviewHandle>=0)getOps().freeTexture?.(overviewHandle);void hostOperation("image.release",{}).result.catch(()=>{});finishLease();});
+ onCleanup(()=>{closed=true;initialOp?.cancel();for(const entry of cache.values())release(entry);cache.clear();if(overviewHandle>=0)textures.release(overviewHandle);void hostOperation("image.release",{}).result.catch(()=>{});finishLease();});
  const base=()=>previewPlacement(props.geometry);
  const unitX=()=>base().width/(source()?.width??1)*props.state.scale,unitY=()=>base().height/(source()?.height??1)*props.state.scale;
  const left=()=>base().left+props.state.x+(base().width-base().width*props.state.scale)/2,top=()=>base().top+props.state.y+(base().height-base().height*props.state.scale)/2;

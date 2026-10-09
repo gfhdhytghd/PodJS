@@ -1,9 +1,11 @@
+import {createTextureUploader} from './texture-upload.ts';
 export {prepareTextLayout,type TextLayoutSnapshot,type TextLayoutSliceOptions,type TextLayoutSliceStats} from "./text-layout.ts";
 import {createEffect,createSignal,onCleanup,type JSX} from "solid-js";
 import {View,Image,type NodeMirror} from "@pocketjs/framework/components";
 import {getOps} from "@pocketjs/framework/host";
 import {textRaster,fileChunks,base64ToBytes,hasTextureFileUpload,uploadTextureFile,type TextParagraphLine,type TextFontOptions} from "./services.ts";
 
+const textures=createTextureUploader({uploadFile:uploadTextureFile});
 export interface SystemTextLineOptions extends TextFontOptions {fontRevision?:string;text:string;widthPx:number;heightPx:number;baselinePx:number;fontSizePx:number;fontWeight?:number;italic?:boolean;underline?:boolean;strikethrough?:boolean;letterSpacingEm?:number;colorArgb?:number;align?:"left"|"center"|"right";textMotion?:"subpixel"|"static"|"animated";paragraph?:TextParagraphLine}
 export type SystemTextFailureStage="raster"|"read"|"upload"|"set-image"|"ready-callback";
 export type SystemTextEntryState="pending"|"ready"|"failed";
@@ -70,8 +72,7 @@ async function load(entry:Entry){
   if(hasTextureFileUpload()){
    entry.stage="upload";stage="upload";
    // The supporting host consumes this exact temporary path on every outcome.
-   entry.path=undefined;
-   handle=uploadTextureFile(result.path,result.width,result.height,3)??-1;
+   handle=textures.uploadFile(result.path,result.width,result.height,{take:()=>{entry.path=undefined;}})??-1;
   }else{
    entry.stage="read";stage="read";
    const bytes=new Uint8Array(result.width*result.height*4);let offset=0;
@@ -81,11 +82,11 @@ async function load(entry:Entry){
    }
    if(entry.cancelled)return;
    entry.stage="upload";stage="upload";
-   handle=getOps().uploadTexture(bytes,result.width,result.height,3);
+   handle=textures.uploadRgba(bytes,result.width,result.height);
   }
   if(!Number.isInteger(handle)||handle<0)throw new Error("System text texture upload failed");
   // A synchronous host callback can release the last subscriber during upload.
-  if(entry.cancelled){getOps().freeTexture?.(handle);return;}
+  if(entry.cancelled){textures.release(handle);return;}
   entry.handle=handle;entry.width=result.width;entry.height=result.height;entry.carets=result.carets;
   entry.stage="delivery";
   // One failed consumer must not prevent delivery to other current consumers.
@@ -109,7 +110,7 @@ export function bindSystemTextLine(options:SystemTextLineOptions,node:NodeMirror
   if(--entry!.refs>0){countSuccess(entry!);return;}
   if(entries.get(key)===entry)entries.delete(key);
   entry!.cancelled=true;
-  if(entry!.handle>=0){const handle=entry!.handle;entry!.handle=-1;try{getOps().freeTexture?.(handle);}catch{console.warn("SystemTextLine","free failed");}}
+  if(entry!.handle>=0){const handle=entry!.handle;entry!.handle=-1;try{textures.release(handle);}catch{console.warn("SystemTextLine","free failed");}}
  };
 }
 /** System-shaped text rendered inside the application's retained scene, with a bounded texture lifecycle. */

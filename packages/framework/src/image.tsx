@@ -1,3 +1,4 @@
+import {createTextureUploader} from './texture-upload.ts';
 import { imageFitRect } from "./image-fit.ts";
 import { createEffect, createSignal, onCleanup } from "solid-js";
 import { Image, View, type NodeMirror } from "@pocketjs/framework/components";
@@ -5,6 +6,7 @@ import { getOps } from "@pocketjs/framework/host";
 import { getDisplayMetrics } from "./watch.ts";
 import { base64ToBytes, hostOperation, hasTextureFileUpload, uploadTextureFile } from "./services.ts";
 
+const textures=createTextureUploader({uploadFile:uploadTextureFile});
 export interface ImageSource {
   url:string;
   filePath?:string;
@@ -132,18 +134,17 @@ export function createImageLoader<S extends ImageSource>(options:ImageLoaderOpti
       let handle:number|null=null;
       if(hasTextureFileUpload()){
         // A supporting host consumes the generated path on every outcome.
-        entry.outputPath=undefined;
-        handle=uploadTextureFile(decoded.path,decoded.width,decoded.height,3);
-        // null means no supporting host took ownership.
-        if(handle===null)entry.outputPath=decoded.path;
+        handle=textures.uploadFile(decoded.path,decoded.width,decoded.height,{
+          take:()=>{entry.outputPath=undefined;},unavailable:()=>{entry.outputPath=decoded.path;},
+        });
       }
       if(handle===null){
         const rgba = await readDecoded(entry, decoded, size);
         if (entry.cancelled) return;
-        handle = getOps().uploadTexture(rgba, decoded.width, decoded.height, 3);
+        handle = textures.uploadRgba(rgba, decoded.width, decoded.height);
       }
       if (handle < 0) throw new Error(options.messages?.texture??"Image texture upload failed");
-      if (entry.cancelled) { getOps().freeTexture?.(handle); return; }
+      if (entry.cancelled) { textures.release(handle); return; }
       entry.handle = handle;
       entry.sourceWidth=decoded.sourceWidth??decoded.width;entry.sourceHeight=decoded.sourceHeight??decoded.height;
       // Size callbacks may synchronously replace virtualized rows. A replacement
@@ -180,7 +181,7 @@ export function createImageLoader<S extends ImageSource>(options:ImageLoaderOpti
     if(entries.get(entry.key)===entry)entries.delete(entry.key);
     entry.cancelled = true;
     entry.current?.cancel();
-    if (entry.handle >= 0) getOps().freeTexture?.(entry.handle);
+    if (entry.handle >= 0) textures.release(entry.handle);
     cleanupFiles(entry);
   }
   function retain(entry: Entry): void {

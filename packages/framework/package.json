@@ -66,7 +66,8 @@
     "./round-layout": "./src/safe-qr-layout.ts",
     "./site-challenge": "./src/site-challenge.ts",
     "./log-file": "./src/log-file.ts",
-    "./restorable-stack": "./src/restorable-stack.ts"
+    "./restorable-stack": "./src/restorable-stack.ts",
+    "./texture-upload": "./src/texture-upload.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",
