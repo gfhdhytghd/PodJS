@@ -14,6 +14,7 @@ static bool textureAvailable = true;
 static bool runtimeFont=false;
 static uint32_t mockCellW=1,mockCellH=1,mockGlyphCount=2;
 static uint64_t mockEpoch=77;
+static bool mockColorGlyph=false;
 extern "C" int32_t pod_runtime_texture_for_handle(PodRuntime *, int32_t handle,
                                                   PodTextureView *out) {
   static const uint8_t px[] = {0, 1};
@@ -36,6 +37,10 @@ extern "C" int32_t pod_runtime_font(PodRuntime *, uint32_t slot,
 extern "C" uint64_t pod_runtime_font_epoch(PodRuntime *,uint32_t slot) {return runtimeFont&&slot==2?mockEpoch:0;}
 extern "C" int32_t pod_runtime_glyph(PodRuntime *r,uint32_t slot,uint32_t glyph,PodGlyphView *out) {
   PodFontView f{};if(pod_runtime_font(r,slot,&f)||glyph>=f.glyph_count)return 1;
+  if(mockColorGlyph&&glyph==3) {
+    static const uint8_t rgba[]={217,23,91,255,217,23,91,255,217,23,91,255,217,23,91,255};
+    *out={rgba,sizeof(rgba)};return 0;
+  }
   if(mockCellW==1&&mockCellH==1&&glyph<2) {*out={f.bitmap+glyph*4,4};return 0;}
   static std::vector<uint8_t> bits;bits.assign(size_t(mockCellW)*mockCellH*4,uint8_t(glyph%255+1));*out={bits.data(),bits.size()};return 0;
 }
@@ -261,6 +266,18 @@ int main() {
   assert(decode({3,(1u<<16)|2,0xffffffff,xy(0,0),2}));
   assert(frame.images[0].rgba!=snapshot&&(*snapshot)[(1*16+9)*4+3]==0&&(*frame.images[0].rgba)[(1*16+9)*4+3]==3);
   const auto oldKey=frame.images[0].stableKey;
+  mockColorGlyph=true;mockGlyphCount=4;
+  assert(decode({3,(2u<<16)|2,0x80332211,xy(0,0),0,xy(1,0),3}));
+  assert(frame.primitives[0].type==GpuPrimitiveType::GlyphRun);
+  assert(frame.primitives[0].vertex[0].color==0x80332211);
+  assert(frame.primitives[1].type==GpuPrimitiveType::TexQuad);
+  assert(frame.primitives[1].vertex[0].color==0x80ffffff);
+  const auto colored=podjs_gpu::makePrimitivePush(frame.primitives[1],466,466,false);
+  assert(colored.xy2Mode[2]==4&&colored.texInfo[3]==2);
+  assert((*frame.images[0].rgba)[(1*16+13)*4]==217);
+  assert(decode({13,(1u<<16)|2,0x80332211,f32(1),f32(0),f32(0),f32(1),f32(0),f32(0),3}));
+  for(const auto& primitive:frame.primitives)assert(primitive.vertex[0].color==0x80ffffff);
+  mockColorGlyph=false;
   mockCellW=mockCellH=32;mockGlyphCount=4096;++mockEpoch;
   auto glyphRun=[](uint32_t first,uint32_t count) {
     std::vector<uint32_t> run={3,(count<<16)|2,0xffffffff};

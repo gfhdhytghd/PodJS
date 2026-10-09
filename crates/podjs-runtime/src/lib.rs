@@ -157,6 +157,8 @@ pub struct PodFontView {
 
 #[repr(C)]
 pub struct PodGlyphView { pub coverage:*const u8,pub byte_length:usize }
+#[repr(C)]
+pub struct PodGlyphImageView { pub data: PodGlyphView, pub width:u32, pub height:u32 }
 
 #[repr(C)]
 pub struct PodGlyphCacheStats {pub hits:u64,pub misses:u64,pub raster_micros:u64,pub resident_bytes:u64,pub source_bytes:u64,pub seed_bytes:u64,pub cells:u64}
@@ -1220,6 +1222,31 @@ pub extern "C" fn pod_runtime_set_scroll_configuration(
     OK
 }
 
+/// Host callback writes straight RGBA plus logical metrics. Install before pak
+/// loading. userdata must outlive the runtime and every acquired render snapshot.
+pub type PodSystemGlyphCallback = unsafe extern "C" fn(usize, *const u16, usize, f32, u32,
+    u32, u32, u32, u32, *mut f32, *mut f32, *mut f32, *mut u8, usize) -> i32;
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_set_system_font_fallback(
+    runtime: *mut PodRuntime, callback: Option<PodSystemGlyphCallback>, userdata: usize,
+) -> i32 {
+    let Ok(runtime) = runtime_mut(runtime) else { return ERR_ARGUMENT; };
+    let Some(callback) = callback else { return ERR_ARGUMENT; };
+    runtime.surface.with_ui(|ui| ui.set_system_font_fallback(std::sync::Arc::new(move |text, m| {
+        let mut rgba=vec![0u8; m.cell_w as usize*m.cell_h as usize*usize::from(m.density).pow(2)*4];
+        let (mut advance,mut xoff,mut yoff)=(0.0,0.0,0.0);
+        let utf16:Vec<u16>=text.encode_utf16().collect();
+        if unsafe {callback(userdata,utf16.as_ptr(),utf16.len(),m.px,u32::from(m.bold),m.cell_w,m.cell_h,m.baseline,u32::from(m.density),
+            &mut advance,&mut xoff,&mut yoff,rgba.as_mut_ptr(),rgba.len())} != OK {return None;}
+        // Native bitmap glyphs may contain gray/black detail, including monochrome emoji.
+        // Only an all-white raster is a tintable alpha mask.
+        let color=rgba.chunks_exact(4).any(|p|p[3]!=0&&(p[0]!=255||p[1]!=255||p[2]!=255));
+        let coverage:std::sync::Arc<[u8]>=rgba.chunks_exact(4).map(|p|p[3]).collect::<Vec<_>>().into();
+        Some(pocketjs_core::text::SystemGlyph {advance,xoff,yoff,coverage,color:color.then(||rgba.into())})
+    })));
+    OK
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn pod_runtime_set_lifecycle(runtime: *mut PodRuntime, state: u32) -> i32 {
     let Ok(runtime) = runtime_mut(runtime) else {
@@ -1750,7 +1777,7 @@ pub extern "C" fn pod_runtime_font(
                 baseline: font.baseline,
                 line_height: font.line_height,
                 raster_density: font.raster_density as u32,
-                glyph_count: font.glyph_count as u32,
+                glyph_count: font.available_glyph_count(),
                 bitmap: font.bitmap.as_ptr(),
                 bitmap_length: font.bitmap.len(),
             }
@@ -1865,7 +1892,8 @@ pub extern "C" fn pod_runtime_glyph_cache_stats(runtime:*mut PodRuntime,out:*mut
 pub extern "C" fn pod_runtime_font_epoch(runtime:*mut PodRuntime,slot:u32)->u64 {
     let Ok(runtime)=runtime_mut(runtime) else {return 0};
     if slot>255 {return 0;}
-    runtime.surface.with_ui(|ui|ui.font_atlas(slot as u8).and_then(|a|a.runtime.as_ref()).map_or(0,|i|i.cache_epoch))
+    runtime.surface.with_ui(|ui|ui.font_atlas(slot as u8).map_or(0,|a|a.runtime.as_ref()
+        .map_or((1u64<<63)|ui.font_resource_versions()[slot as usize],|i|i.cache_epoch)))
 }
 /// Coverage pointer is valid until the next glyph call or runtime destruction.
 /// Decoder copies it immediately; an Arc pins it across shared-cache eviction.
@@ -1874,7 +1902,8 @@ pub extern "C" fn pod_runtime_glyph(runtime:*mut PodRuntime,slot:u32,gid:u32,out
     let Ok(runtime)=runtime_mut(runtime) else {return ERR_ARGUMENT};
     if slot>255||gid>65535||out.is_null() {return ERR_ARGUMENT;}
     let cell=runtime.surface.with_ui(|ui| {
-        let a=ui.font_atlas(slot as u8)?;if gid>=u32::from(a.glyph_count) {return None;}
+        let a=ui.font_atlas(slot as u8)?;if gid>=a.available_glyph_count() {return None;}
+        if let Some(color)=a.glyph_color(gid as u16) {return Some(color);}
         match a.glyph_coverage(gid as u16) {
             pocketjs_core::text::GlyphRows::Shared(v)=>Some(v),
             pocketjs_core::text::GlyphRows::Borrowed(v)=>if a.runtime.is_some() {None}else{Some(std::sync::Arc::<[u8]>::from(v))},
@@ -1883,6 +1912,20 @@ pub extern "C" fn pod_runtime_glyph(runtime:*mut PodRuntime,slot:u32,gid:u32,out
     let Some(cell)=cell else {return IDLE};
     unsafe {*out=PodGlyphView{coverage:cell.as_ptr(),byte_length:cell.len()};}
     runtime.last_glyph=Some(cell);OK
+}
+
+/// Additive image query: fallback cells can exceed the primary atlas cell.
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_glyph_image(runtime:*mut PodRuntime,slot:u32,gid:u32,out:*mut PodGlyphImageView)->i32 {
+    if out.is_null() {return ERR_ARGUMENT;}
+    let mut data=PodGlyphView{coverage:std::ptr::null(),byte_length:0};
+    let result=pod_runtime_glyph(runtime,slot,gid,&mut data);if result!=OK {return result;}
+    let Ok(runtime)=runtime_mut(runtime) else {return ERR_ARGUMENT;};
+    let (width,height)=runtime.surface.with_ui(|ui| {
+        let a=ui.font_atlas(slot as u8).unwrap();let (w,h)=a.glyph_size(gid as u16);
+        (w*u32::from(a.raster_density),h*u32::from(a.raster_density))
+    });
+    unsafe {*out=PodGlyphImageView{data,width,height};}OK
 }
 
 #[unsafe(no_mangle)]
@@ -3700,6 +3743,51 @@ mod tests {
         assert_eq!(pod_runtime_pump_service_results(runtime), OK);
         assert!(pod_runtime_poll_effect(runtime).is_null());
         pod_runtime_destroy(runtime);
+    }
+
+    #[test]
+    fn system_fallback_metrics_color_and_snapshot_are_consistent() {
+        use render_snapshot::*;
+        use std::sync::atomic::{AtomicUsize,Ordering};
+        unsafe extern "C" fn raster(userdata:usize,text:*const u16,units:usize,_px:f32,_bold:u32,w:u32,h:u32,_baseline:u32,d:u32,
+            advance:*mut f32,xoff:*mut f32,yoff:*mut f32,pixels:*mut u8,len:usize)->i32 {
+            unsafe {&*(userdata as *const AtomicUsize)}.fetch_add(1,Ordering::Relaxed);
+            assert_eq!(unsafe {slice::from_raw_parts(text,units)},&[0x6c17]);assert_eq!(len,(w*h*d*d*4)as usize);
+            unsafe {*advance=12.5;*xoff=1.0;*yoff=2.0;}
+            for p in unsafe {slice::from_raw_parts_mut(pixels,len)}.chunks_exact_mut(4) {p.copy_from_slice(&[75,75,75,255]);}
+            OK
+        }
+        let target=CString::new("android-watch").unwrap();let caps=CString::new("[]").unwrap();
+        let runtime=pod_runtime_create(&valid_config(&target,&caps));let calls=AtomicUsize::new(0);
+        assert_eq!(pod_runtime_set_system_font_fallback(runtime,None,0),ERR_ARGUMENT);
+        assert_eq!(pod_runtime_set_system_font_fallback(runtime,Some(raster),&calls as *const _ as usize),OK);
+        let source=b"globalThis.frame = () => {};";validate(runtime,"android-watch",b"pak",source,&[]);
+        assert_eq!(pod_runtime_eval_bundle(runtime,source.as_ptr(),source.len(),std::ptr::null()),OK);
+        let mut atlas=Vec::new();atlas.extend_from_slice(&spec::font_atlas::MAGIC.to_le_bytes());
+        atlas.extend_from_slice(&3u16.to_le_bytes());atlas.extend_from_slice(&2u16.to_le_bytes());
+        atlas.extend_from_slice(&[16,24,18,24,0,0,2,0]);
+        for (cp,gid,adv) in [(65u32,1u16,7u8),(0xfffd,0,16)] {
+            atlas.extend_from_slice(&cp.to_le_bytes());atlas.extend_from_slice(&gid.to_le_bytes());atlas.extend_from_slice(&[adv,0]);
+        }
+        atlas.resize(atlas.len()+16*24*4*2,11);
+        runtime_mut(runtime).unwrap().surface.with_ui(|ui| {
+            assert!(ui.load_font_atlas(&atlas));assert_eq!(ui.measure_text("AA",0),14.0);
+            assert_eq!(calls.load(Ordering::Relaxed),0);assert_eq!(ui.measure_text("A気",0),19.5);
+        });
+        assert_eq!(calls.load(Ordering::Relaxed),1);assert_ne!(pod_runtime_font_epoch(runtime,0),0);
+        let snapshot=pod_runtime_pin_snapshot(runtime);let mut cell=PodGlyphView{coverage:std::ptr::null(),byte_length:0};
+        assert_eq!(pod_runtime_glyph(runtime,0,2,&mut cell),OK);assert_eq!(cell.byte_length,52*52*4*4);
+        let mut image=PodGlyphImageView {data:PodGlyphView {coverage:std::ptr::null(),byte_length:0},width:0,height:0};
+        assert_eq!(pod_runtime_glyph_image(runtime,0,2,&mut image),OK);assert_eq!((image.width,image.height),(104,104));
+        assert_eq!(unsafe {pod_render_snapshot_glyph_image(snapshot,0,2,&mut image)},OK);assert_eq!((image.width,image.height),(104,104));
+        assert_eq!(unsafe {slice::from_raw_parts(cell.coverage,4)},&[75,75,75,255]);
+        assert_eq!(unsafe {pod_render_snapshot_glyph(snapshot,0,2,&mut cell)},OK);
+        assert_eq!(unsafe {slice::from_raw_parts(cell.coverage,4)},&[75,75,75,255]);
+        assert_eq!(calls.load(Ordering::Relaxed),1);
+        assert!(runtime_mut(runtime).unwrap().surface.with_ui(|ui|ui.load_font_atlas(&atlas)));
+        assert_eq!(pod_runtime_glyph(runtime,0,2,&mut cell),IDLE);
+        assert_eq!(unsafe {pod_render_snapshot_glyph(snapshot,0,2,&mut cell)},OK);
+        unsafe {pod_render_snapshot_destroy(snapshot);}pod_runtime_destroy(runtime);
     }
 
     #[test]

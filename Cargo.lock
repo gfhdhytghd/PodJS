@@ -362,7 +362,9 @@ dependencies = [
 name = "pocketjs-core"
 version = "0.1.0"
 dependencies = [
+ "memchr",
  "taffy",
+ "unicode-segmentation",
 ]
 
 [[package]]

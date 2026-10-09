@@ -1087,3 +1087,12 @@ int main() {
   std::puts("vulkan_frame_pipeline_test: all synchronization scenarios passed "
             "(host mock)");
 }
+
+extern "C" int32_t pod_runtime_glyph_image(PodRuntime* r,uint32_t s,uint32_t g,PodGlyphImageView* out) {
+  PodFontView font{};int result=pod_runtime_font(r,s,&font);if(result)return result;
+  result=pod_runtime_glyph(r,s,g,&out->data);out->width=font.cell_width*font.raster_density;out->height=font.cell_height*font.raster_density;return result;
+}
+extern "C" int32_t pod_render_snapshot_glyph_image(PodRenderSnapshot* r,uint32_t s,uint32_t g,PodGlyphImageView* out) {
+  PodFontView font{};int result=pod_render_snapshot_font(r,s,&font);if(result)return result;
+  result=pod_render_snapshot_glyph(r,s,g,&out->data);out->width=font.cell_width*font.raster_density;out->height=font.cell_height*font.raster_density;return result;
+}

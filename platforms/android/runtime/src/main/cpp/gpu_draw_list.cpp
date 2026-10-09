@@ -15,8 +15,8 @@ int GpuResourceSource::font(uint32_t s, PodFontView* out) const {
 uint64_t GpuResourceSource::epoch(uint32_t s) const {
   return snapshot ? pod_render_snapshot_font_epoch(snapshot,s) : pod_runtime_font_epoch(runtime,s);
 }
-int GpuResourceSource::glyph(uint32_t s, uint32_t g, PodGlyphView* out) const {
-  return snapshot ? pod_render_snapshot_glyph(snapshot,s,g,out) : pod_runtime_glyph(runtime,s,g,out);
+int GpuResourceSource::glyph(uint32_t s, uint32_t g, PodGlyphImageView* out) const {
+  return snapshot ? pod_render_snapshot_glyph_image(snapshot,s,g,out) : pod_runtime_glyph_image(runtime,s,g,out);
 }
 
 namespace {
@@ -215,15 +215,21 @@ bool GpuDecodeCache::getGlyph(GpuResourceSource runtime, uint32_t slot,
   if(epoch) {
     auto output=[&](Page &p,size_t cell) {
       p.last=++clock_;p.pinned=frame_;*out=p.image;
-      const uint32_t x=uint32_t(cell%4)*(width+2)+1,y=uint32_t(cell/4)*(height+2)+1;
-      out->glyphOrigin=x|(y<<16);out->glyphSize=width|(height<<16);
+      const uint32_t x=uint32_t(cell%4)*(p.cellW+2)+1,y=uint32_t(cell/4)*(p.cellH+2)+1;
+      out->glyphOrigin=x|(y<<16);out->glyphSize=p.cellW|(p.cellH<<16);
+      out->colorGlyph=p.colors[cell];
     };
     Page *page=nullptr;
     for(auto &p:pages_) if(p.image.slot==slot&&p.epoch==epoch) {
       auto known=std::find(p.glyphs.begin(),p.glyphs.end(),uint16_t(glyph));
       if(known!=p.glyphs.end()) {output(p,size_t(known-p.glyphs.begin()));return true;}
-      if(p.glyphs.size()<16) page=&p;
     }
+    PodGlyphImageView image{};
+    if(runtime.glyph(slot,glyph,&image)!=0||!image.data.coverage||!image.width||!image.height||image.width>1020||image.height>1020) return bad(nullptr,error,"runtime glyph unavailable");
+    width=image.width;height=image.height;const auto& cell=image.data;
+    if(cell.byte_length!=size_t(width)*height&&cell.byte_length!=size_t(width)*height*4) return bad(nullptr,error,"runtime glyph unavailable");
+    const bool colorGlyph=cell.byte_length==size_t(width)*height*4;
+    for(auto &p:pages_)if(p.image.slot==slot&&p.epoch==epoch&&p.cellW==width&&p.cellH==height&&p.glyphs.size()<16)page=&p;
     if(!page) {
       const size_t bytes=size_t(width+2)*4*(height+2)*4*4;
       constexpr size_t budget=16*1024*1024;
@@ -243,8 +249,6 @@ bool GpuDecodeCache::getGlyph(GpuResourceSource runtime, uint32_t slot,
       fresh.image.rgba=std::make_shared<std::vector<uint8_t>>(bytes,0);
       pages_.push_back(std::move(fresh));page=&pages_.back();
     }
-    PodGlyphView cell{};
-    if(runtime.glyph(slot,glyph,&cell)!=0||!cell.coverage||cell.byte_length!=size_t(width)*height) return bad(nullptr,error,"runtime glyph unavailable");
     // Copy-on-write keeps the previous submitted frame immutable. Replicated
     // edge texels preserve single-cell clamp/bilinear sampling at UV 0 and 1.
     auto pixels=page->image.rgba.use_count()==1
@@ -254,9 +258,10 @@ bool GpuDecodeCache::getGlyph(GpuResourceSource runtime, uint32_t slot,
     for(uint32_t row=0;row<height+2;++row) for(uint32_t col=0;col<width+2;++col) {
       const uint32_t sx=std::min(width-1,col?col-1:0),sy=std::min(height-1,row?row-1:0);
       const size_t at=(size_t(y+row)*page->image.width+x+col)*4;
-      (*pixels)[at]=(*pixels)[at+1]=(*pixels)[at+2]=255;(*pixels)[at+3]=cell.coverage[size_t(sy)*width+sx];
+      if(colorGlyph)std::memcpy(pixels->data()+at,cell.coverage+(size_t(sy)*width+sx)*4,4);
+      else {(*pixels)[at]=(*pixels)[at+1]=(*pixels)[at+2]=255;(*pixels)[at+3]=cell.coverage[size_t(sy)*width+sx];}
     }
-    page->image.rgba=pixels;++page->image.revision;page->glyphs.push_back(uint16_t(glyph));output(*page,index);return true;
+    page->image.rgba=pixels;++page->image.revision;page->glyphs.push_back(uint16_t(glyph));page->colors.push_back(colorGlyph);output(*page,index);return true;
   }
   size_t stride = size_t(width), offset = size_t(glyph) * height * stride;
   if (offset + size_t(height) * stride > f.bitmap_length)
@@ -469,20 +474,25 @@ bool decodeGpuDrawList(GpuResourceSource runtime, const PodDrawList &list,
         return bad(out, error, "nonfinite glyph axes");
       if (i + stride * n > list.word_count)
         return bad(out, error, "truncated GLYPH_RUN_XFORM glyphs");
+      PodFontView font{};if(runtime.font(slot,&font)!=0)return bad(out,error,"font unavailable");
       for (uint32_t g = 0; g < n; g++) {
         const uint32_t gid = w[i + g * stride + stride - 1] & 65535;
         GpuImage image{};
         if (!cache->getGlyph(runtime, slot, gid, &image, error))
           return false;
-        const FloatVertex anchor = readVertex(i + g * stride, color);
+        const uint32_t glyphColor=image.colorGlyph?(color|0xffffffu):color;
+        const FloatVertex anchor = readVertex(i + g * stride, glyphColor);
         if (!std::isfinite(anchor.x) || !std::isfinite(anchor.y))
           return bad(out, error, "nonfinite glyph anchor");
+        const float sx=image.glyphSize?float(image.glyphSize&65535)/float(font.cell_width*image.rasterDensity):1.0f;
+        const float sy=image.glyphSize?float(image.glyphSize>>16)/float(font.cell_height*image.rasterDensity):1.0f;
+        const FloatVertex glyphAxisX{axisX.x*sx,axisX.y*sx,0,0,0},glyphAxisY{axisY.x*sy,axisY.y*sy,0,0,0};
         FloatVertex corner[4] = {
             anchor,
-            {anchor.x + axisX.x, anchor.y + axisX.y, color, 1.0f, 0.0f},
-            {anchor.x + axisX.x + axisY.x, anchor.y + axisX.y + axisY.y, color,
+            {anchor.x + glyphAxisX.x, anchor.y + glyphAxisX.y, glyphColor, 1.0f, 0.0f},
+            {anchor.x + glyphAxisX.x + glyphAxisY.x, anchor.y + glyphAxisX.y + glyphAxisY.y, glyphColor,
              1.0f, 1.0f},
-            {anchor.x + axisY.x, anchor.y + axisY.y, color, 0.0f, 1.0f},
+            {anchor.x + glyphAxisY.x, anchor.y + glyphAxisY.y, glyphColor, 0.0f, 1.0f},
         };
         corner[0].u = 0.0f;
         corner[0].v = 0.0f;
@@ -541,14 +551,14 @@ bool decodeGpuDrawList(GpuResourceSource runtime, const PodDrawList &list,
         if (!cache->getGlyph(runtime, slot, gid, &image, error))
           return false;
         GpuPrimitive q{};
-        q.type = GpuPrimitiveType::GlyphRun;
+        q.type = image.colorGlyph?GpuPrimitiveType::TexQuad:GpuPrimitiveType::GlyphRun;
         q.glyphSlot = slot;
         q.glyphOrigin=image.glyphOrigin;q.glyphSize=image.glyphSize;
         q.textureSlot = slot;
         q.textureKey = image.stableKey;
-        q.vertex[0] = vertex(w[i + g * 2], scale, color);
-        q.width = font.cell_width * scale;
-        q.height = font.cell_height * scale;
+        q.vertex[0] = vertex(w[i + g * 2], scale, image.colorGlyph?(color|0xffffffu):color);
+        q.width = (image.glyphSize?(image.glyphSize&65535)/image.rasterDensity:font.cell_width) * scale;
+        q.height = (image.glyphSize?(image.glyphSize>>16)/image.rasterDensity:font.cell_height) * scale;
         q.clip = intersect(screen, {q.vertex[0].x, q.vertex[0].y,
                                     q.vertex[0].x + int32_t(q.width),
                                     q.vertex[0].y + int32_t(q.height)});

@@ -3,6 +3,7 @@
 #include <android/log.h>
 #include <android/asset_manager_jni.h>
 #include <algorithm>
+#include <bit>
 #include <array>
 #include <chrono>
 #include <memory>
@@ -32,6 +33,9 @@ struct MappedAsset {
   ~MappedAsset() { if(base != MAP_FAILED) munmap(base,mappedLength); }
 };
 struct Host {
+  JavaVM* vm{};
+  jclass fontFallback{};
+  jmethodID fontRaster{};
   podjs_perf::FramePerfWindow framePerf;
   podjs_gpu::RendererTimingRecorder hostDiagnostics;
   PodRuntime* runtime{};
@@ -52,7 +56,33 @@ struct Host {
   bool frameFailed = false;
   uint64_t diagnosticFrameSequence = 0;
   uint64_t lastResourceGeneration = 0;
+  ~Host() {
+    if(fontFallback&&vm) {
+      JNIEnv* env=nullptr;bool attached=vm->GetEnv(reinterpret_cast<void**>(&env),JNI_VERSION_1_6)!=JNI_OK;
+      if(attached&&vm->AttachCurrentThread(&env,nullptr)!=JNI_OK)return;
+      env->DeleteGlobalRef(fontFallback);if(attached)vm->DetachCurrentThread();
+    }
+  }
 };
+static int32_t systemGlyph(uintptr_t userdata,const uint16_t* text,size_t units,float px,uint32_t bold,
+    uint32_t w,uint32_t h,uint32_t baseline,uint32_t density,float* advance,float* xoff,float* yoff,uint8_t* rgba,size_t length) {
+  auto* host=reinterpret_cast<Host*>(userdata);JNIEnv* env=nullptr;
+  bool attached=host->vm->GetEnv(reinterpret_cast<void**>(&env),JNI_VERSION_1_6)!=JNI_OK;
+  if(attached&&host->vm->AttachCurrentThread(&env,nullptr)!=JNI_OK)return 1;
+  jstring cluster=env->NewString(reinterpret_cast<const jchar*>(text),jsize(units));
+  auto bytes=cluster?static_cast<jbyteArray>(env->CallStaticObjectMethod(host->fontFallback,host->fontRaster,
+      cluster,jfloat(px),jint(bold),jint(w),jint(h),jint(baseline),jint(density))):nullptr;
+  int32_t result=1;
+  if(env->ExceptionCheck())env->ExceptionClear();
+  else if(bytes&&size_t(env->GetArrayLength(bytes))==length+12) {
+    uint8_t metrics[12];env->GetByteArrayRegion(bytes,0,12,reinterpret_cast<jbyte*>(metrics));
+    static_assert(std::endian::native==std::endian::little);
+    std::memcpy(advance,metrics,4);std::memcpy(xoff,metrics+4,4);std::memcpy(yoff,metrics+8,4);
+    env->GetByteArrayRegion(bytes,12,jsize(length),reinterpret_cast<jbyte*>(rgba));
+    if(!env->ExceptionCheck())result=0;else env->ExceptionClear();
+  }
+  if(bytes)env->DeleteLocalRef(bytes);if(cluster)env->DeleteLocalRef(cluster);if(attached)host->vm->DetachCurrentThread();return result;
+}
 static void renderFrame(Host* h, int64_t frameTimeNanos = 0);
 static void fail(JNIEnv* env, const char* message) { jclass c = env->FindClass("java/lang/IllegalStateException"); env->ThrowNew(c, message); }
 
@@ -220,6 +250,18 @@ const char* capabilities = "[\"input.touch\",\"input.rotary\",\"data.kv\",\"devi
     ANativeWindow_release(window);
     env->ReleaseStringUTFChars(target, t); env->ReleaseStringUTFChars(dataDir, d);
     fail(env, pod_runtime_last_error()); return 0;
+  }
+  env->GetJavaVM(&host->vm);
+  auto fontClass=env->FindClass("dev/podjs/runtime/PodSystemFontFallback");
+  if(fontClass) {
+    host->fontFallback=static_cast<jclass>(env->NewGlobalRef(fontClass));
+    host->fontRaster=env->GetStaticMethodID(fontClass,"raster","(Ljava/lang/String;FIIIII)[B");env->DeleteLocalRef(fontClass);
+  }
+  if(env->ExceptionCheck()||!host->fontFallback||!host->fontRaster||
+      pod_runtime_set_system_font_fallback(host->runtime,systemGlyph,reinterpret_cast<uintptr_t>(host.get()))!=0) {
+    ANativeWindow_release(window);pod_runtime_destroy(host->runtime);
+    env->ReleaseStringUTFChars(target,t);env->ReleaseStringUTFChars(dataDir,d);
+    if(!env->ExceptionCheck())fail(env,"Cannot initialize Android system font fallback");return 0;
   }
   if (pod_runtime_set_scroll_configuration(host->runtime, touchSlop, minFling, maxFling) != 0) {
     ANativeWindow_release(window);

@@ -24,6 +24,7 @@ void pod_sync_cancellation_free(PodSyncCancellation *value);
 #define PODJS_MAX_TOUCHES 8
 
 typedef struct PodRuntime PodRuntime;
+typedef struct PodRenderSnapshot PodRenderSnapshot;
 typedef struct PodSyncFiles PodSyncFiles;
 typedef struct PodSyncSession PodSyncSession;
 typedef struct PodBackgroundRun PodBackgroundRun;
@@ -349,6 +350,18 @@ int32_t pod_runtime_texture_for_handle(PodRuntime *runtime, int32_t handle,
                                        PodTextureView *out);
 int32_t pod_runtime_font(PodRuntime *runtime, uint32_t slot, PodFontView *out);
 typedef struct PodGlyphView {const uint8_t *coverage; size_t byte_length;} PodGlyphView;
+typedef struct PodGlyphImageView {PodGlyphView data; uint32_t width, height;} PodGlyphImageView;
+/* Raster dimensions are per glyph; primary atlas cells keep their original size. */
+int32_t pod_runtime_glyph_image(PodRuntime*, uint32_t, uint32_t, PodGlyphImageView*);
+int32_t pod_render_snapshot_glyph_image(PodRenderSnapshot*, uint32_t, uint32_t, PodGlyphImageView*);
+/* Glyph pixels are A8 (w*h) or straight RGBA (w*h*4, color font).
+ * Callback is optional, installed before loading fonts; existing atlas entries
+ * retain their metrics. It may run on a snapshot renderer thread. */
+typedef int32_t (*PodSystemGlyphCallback)(uintptr_t userdata, const uint16_t *text, size_t units,
+    float px, uint32_t bold, uint32_t cell_w, uint32_t cell_h,
+    uint32_t baseline, uint32_t density, float *advance, float *xoff, float *yoff,
+    uint8_t *rgba, size_t length);
+int32_t pod_runtime_set_system_font_fallback(PodRuntime*, PodSystemGlyphCallback, uintptr_t userdata);
 typedef struct PodGlyphCacheStats {uint64_t hits,misses,raster_micros,resident_bytes,source_bytes,seed_bytes,cells;} PodGlyphCacheStats;
 /* Demand-only JSON; valid until next sample/destruction. Host debug gate required. */
 const char *pod_runtime_memory_stats(PodRuntime *runtime);
@@ -377,7 +390,6 @@ void pod_runtime_destroy(PodRuntime *runtime);
 // Immutable renderer handoff. Capture on the runtime lane after snapshot.
 // Independent of runtime lifetime; destruction requires exclusive ownership.
 // Caller-owned mapped PAK bytes must outlive all snapshots as well as runtime.
-typedef struct PodRenderSnapshot PodRenderSnapshot;
 PodRenderSnapshot* pod_runtime_pin_snapshot(PodRuntime* runtime);
 void pod_render_snapshot_destroy(PodRenderSnapshot* snapshot);
 int32_t pod_render_snapshot_draw_list(const PodRenderSnapshot*, PodDrawList*);

@@ -1,0 +1,10 @@
+{
+  "name": "podjs-font-fallback-rehearsal",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@pocketjs/framework": "file:../../vendor/pocketjs",
+    "@podjs/framework": "file:../../packages/framework",
+    "solid-js": "1.9.9"
+  }
+}

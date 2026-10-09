@@ -115,7 +115,7 @@ pub unsafe extern "C" fn pod_render_snapshot_font(
         baseline: f.baseline,
         line_height: f.line_height,
         raster_density: f.raster_density as u32,
-        glyph_count: f.glyph_count as u32,
+        glyph_count: f.available_glyph_count(),
         bitmap: f.bitmap.as_ptr(),
         bitmap_length: f.bitmap.len(),
     };
@@ -154,19 +154,31 @@ pub unsafe extern "C" fn pod_render_snapshot_glyph(
     let Some(a) = s.resources.font_atlas(slot as u8) else {
         return IDLE;
     };
-    if gid >= u32::from(a.glyph_count) {
+    if gid >= a.available_glyph_count() {
         return IDLE;
     }
-    let cell = match a.glyph_coverage(gid as u16) {
+    let cell = if let Some(color)=a.glyph_color(gid as u16) {color} else {match a.glyph_coverage(gid as u16) {
         pocketjs_core::text::GlyphRows::Shared(v) => v,
         pocketjs_core::text::GlyphRows::Borrowed(v) => std::sync::Arc::from(v),
-    };
+    }};
     *out = PodGlyphView {
         coverage: cell.as_ptr(),
         byte_length: cell.len(),
     };
     s.last_glyph = Some(cell);
     OK
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pod_render_snapshot_glyph_image(
+    snapshot:*mut PodRenderSnapshot,slot:u32,gid:u32,out:*mut PodGlyphImageView,
+)->i32 {
+    if out.is_null() {return ERR_ARGUMENT;}
+    let mut data=PodGlyphView{coverage:std::ptr::null(),byte_length:0};
+    let result=unsafe {pod_render_snapshot_glyph(snapshot,slot,gid,&mut data)};
+    if result!=OK {return result;}
+    let s=unsafe {&*snapshot};let a=s.resources.font_atlas(slot as u8).unwrap();
+    let (w,h)=a.glyph_size(gid as u16);
+    unsafe {*out=PodGlyphImageView{data,width:w*u32::from(a.raster_density),height:h*u32::from(a.raster_density)};}OK
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pod_render_snapshot_rgba(

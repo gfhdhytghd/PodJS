@@ -1,0 +1,13 @@
+{
+  "entry": "src/main.tsx",
+  "appId": "dev.podjs.fontfallback.rehearsal",
+  "versionName": "T19",
+  "versionCode": 1,
+  "name": "PodJS Font Fallback",
+  "capabilities": [],
+  "resources": {
+    "fontRegular": "../../assets/fonts/NotoSansCJKSC-Regular-subset.ttf",
+    "fontBold": "../../assets/fonts/NotoSansCJKSC-Bold-subset.ttf",
+    "glyphCache": { "warmChars": "", "preseedScanned": true }
+  }
+}

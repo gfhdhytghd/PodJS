@@ -19,7 +19,7 @@ struct GpuResourceSource {
   int texture(int32_t handle, PodTextureView* out) const;
   int font(uint32_t slot, PodFontView* out) const;
   uint64_t epoch(uint32_t slot) const;
-  int glyph(uint32_t slot, uint32_t gid, PodGlyphView* out) const;
+  int glyph(uint32_t slot, uint32_t gid, PodGlyphImageView* out) const;
 };
 
 enum class GpuPrimitiveType : uint8_t {
@@ -64,6 +64,7 @@ struct GpuImage {
   uint64_t revision{}, stableKey{};
   bool linear{};
   bool coverage{};
+  bool colorGlyph{};
   uint32_t glyphOrigin{},glyphSize{};
   std::shared_ptr<const std::vector<uint8_t>> rgba;
 };
@@ -99,7 +100,7 @@ public:
                 GpuImage *out, std::string *error);
 
 private:
-  struct Page {GpuImage image; uint64_t epoch{},last{},pinned{}; uint32_t cellW{},cellH{};std::vector<uint16_t> glyphs;};
+  struct Page {GpuImage image; uint64_t epoch{},last{},pinned{}; uint32_t cellW{},cellH{};std::vector<uint16_t> glyphs;std::vector<bool> colors;};
   std::array<std::unordered_set<uint64_t>, kFramesInFlight> inFlightPages_;
   std::vector<Page> pages_;
   uint64_t frame_{},clock_{},nextPage_{1};
