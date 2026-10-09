@@ -40,6 +40,8 @@ android {
         externalNativeBuild { cmake { cppFlags += listOf("-std=c++20", "-fno-exceptions", "-fno-rtti") } }
     }
     testOptions { unitTests.isIncludeAndroidResources = true }
+    // Test the exact generated debug bridge, without packaging it in runtime.
+    sourceSets.getByName("test").java.srcDir("../../../packages/cli/templates/debug-external")
     externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
     buildFeatures { prefab = true }
     sourceSets.getByName("androidTest").assets.srcDir(semanticTestAssets)

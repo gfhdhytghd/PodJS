@@ -22,13 +22,13 @@ export interface CacheStats<B extends string=string> {
  pinnedPaths:string[];activeWorkers:number;queuedRequests:number;downloadHandles:number;
 }
 /** Default transport retains the host's atomic http.download publication and cancellation. */
-export function defaultCachePorts(options:{maxDownloadBytes?:number;validateImageDimension?:number}={}):CachePorts {
+export function defaultCachePorts(options:{maxDownloadBytes?:number|((path:string)=>number);validateImageDimension?:number}={}):CachePorts {
  const maxBytes=options.maxDownloadBytes??16*1024*1024;
- if(!Number.isSafeInteger(maxBytes)||maxBytes<1||(options.validateImageDimension!==undefined&&(!Number.isInteger(options.validateImageDimension)||options.validateImageDimension<1)))throw new RangeError('invalid cache transport bounds');
+ if((typeof maxBytes!=='function'&&(!Number.isSafeInteger(maxBytes)||maxBytes<1))||(options.validateImageDimension!==undefined&&(!Number.isInteger(options.validateImageDimension)||options.validateImageDimension<1)))throw new RangeError('invalid cache transport bounds');
  return {
  list:fileChunks.list,stat:fileChunks.stat,remove:fileChunks.remove,touch:fileChunks.touch,
  async digest(value){const result=await hostOperation<{digestBase64:string}>('crypto.hash',{algorithm:'SHA-256',dataBase64:bytesToBase64(stringToUtf8(value))}).result;return Array.from(base64ToBytes(result.digestBase64),b=>b.toString(16).padStart(2,'0')).join('');},
- download:(url,path,headers)=>hostOperation('http.download',{url,path,headers,maxBytes}),
+ download:(url,path,headers)=>{const bound=typeof maxBytes==='function'?maxBytes(path):maxBytes;if(!Number.isSafeInteger(bound)||bound<1)throw new RangeError('invalid cache transport bounds');return hostOperation('http.download',{url,path,headers,maxBytes:bound});},
  ...(options.validateImageDimension===undefined?{}:{async validate(path:string){const decoded=await images.decodeOperation(path,{maxDimension:options.validateImageDimension}).result;await fileChunks.remove(decoded.path);}}),
 };}
 const safePath=(path:string)=>!!path&&!path.startsWith('/')&&!/[\\\x00]/.test(path)&&path.split('/').every(part=>!!part&&part!=='.'&&part!=='..');

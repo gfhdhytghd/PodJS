@@ -12,3 +12,10 @@ test('production constructor uses default host hashing, atomic download and file
  const cache=createFileCache({root:'files',buckets:['blob'],namespace:()=>({filename:key=>key+'.bin',ownsFile:name=>name.endsWith('.bin'),stagedTarget:()=>undefined,traverseDirectory:()=>false,cleanupStaged:false}),evictionPolicy:()=>[]});
  const request=cache.acquire('https://example.test/asset');await tick();expect(emitted.at(-1).method).toBe('crypto.hash');await reply({digestBase64:btoa('a'.repeat(32))});expect(emitted.at(-1).method).toBe('file.stat');await reply({exists:false,file:false,size:0});expect(emitted.at(-1).method).toBe('http.download');expect(emitted.at(-1).args).toMatchObject({url:'https://example.test/asset',maxBytes:16*1024*1024});await reply({size:8});expect(emitted.at(-1).method).toBe('file.stat');await reply({exists:true,file:true,size:8});expect(emitted.at(-1).method).toBe('file.touch');await reply({});const lease=await request.result;expect(lease.path).toBe('files/blob/'+'61'.repeat(32)+'.bin');lease.release();await tick();expect(emitted.at(-1).method).toBe('file.list');await reply({entries:[]});await reply({entries:[]});
 });
+test('per-path download bounds are configurable and reject invalid policy before dispatch',async()=>{
+ const {defaultCachePorts}=await import('../src/cache.ts');
+ const ports=defaultCachePorts({maxDownloadBytes:path=>path.endsWith('.large')?64*1024*1024:8*1024*1024});
+ const small=ports.download('https://example.test/a','a.small',{});expect(emitted.at(-1).args.maxBytes).toBe(8*1024*1024);await reply({size:1});await small.result;
+ const large=ports.download('https://example.test/a','a.large',{});expect(emitted.at(-1).args.maxBytes).toBe(64*1024*1024);await reply({size:40*1024*1024});await large.result;
+ expect(()=>defaultCachePorts({maxDownloadBytes:()=>NaN}).download('https://example.test/a','a',{})).toThrow('invalid cache transport bounds');
+});

@@ -25,8 +25,8 @@ import java.util.Iterator;
 /** Bounded system image decoding into tightly packed RGBA8888 files. */
 public final class PodImageServices implements Closeable {
     public static final int MAX_DIMENSION = 512;
-    private static final int MAX_SOURCE_DIMENSION = 16_384;
-    private static final long MAX_SOURCE_PIXELS = 64L * 1024 * 1024;
+    private static final int MAX_SOURCE_DIMENSION = 65_535;
+    private static final long MAX_SOURCE_PIXELS = 400_000_000L;
     private final File root;
     private final Object decoderLock = new Object();
     private final ArrayDeque<DecoderEntry> idleDecoders = new ArrayDeque<>();
@@ -109,10 +109,7 @@ public final class PodImageServices implements Closeable {
         checkInterrupted();
         int sourceWidth = bounds.outWidth, sourceHeight = bounds.outHeight;
         if (sourceWidth < 1 || sourceHeight < 1) throw new IOException("unsupported_image");
-        if (sourceWidth > MAX_SOURCE_DIMENSION || sourceHeight > MAX_SOURCE_DIMENSION
-                || (long) sourceWidth * sourceHeight > MAX_SOURCE_PIXELS) {
-            throw new IOException("image_too_large");
-        }
+        checkSourceBounds(sourceWidth,sourceHeight,true);
         int orientation = args.optBoolean("applyExif", true) ? orientation(source) : ExifInterface.ORIENTATION_NORMAL;
         int displayedWidth = swapsAxes(orientation) ? sourceHeight : sourceWidth;
         int displayedHeight = swapsAxes(orientation) ? sourceWidth : sourceHeight;
@@ -120,7 +117,9 @@ public final class PodImageServices implements Closeable {
         int sample = 1;
         // Keep the sampled bitmap below roughly 2x the requested edge, then do
         // one high-quality exact resize. The decoder only receives powers of two.
-        while (ceilDiv(Math.max(sourceWidth, sourceHeight), sample << 1) >= maximum) sample <<= 1;
+        while (sample < Math.max(sourceWidth, sourceHeight)
+                && ceilDiv(Math.max(sourceWidth, sourceHeight), sample << 1) >= maximum) sample <<= 1;
+        checkSourceBounds(sourceWidth,sourceHeight,sample>1);
         BitmapFactory.Options options = new BitmapFactory.Options();
         options.inSampleSize = sample;
         options.inPreferredConfig = args.optBoolean("rgb565", false) ? Bitmap.Config.RGB_565 : Bitmap.Config.ARGB_8888;
@@ -192,7 +191,7 @@ public final class PodImageServices implements Closeable {
         Bitmap decoded=null, oriented=null, padded=null; File output=null;
         try {
             int rawWidth=decoder.getWidth(),rawHeight=decoder.getHeight();
-            if(rawWidth>MAX_SOURCE_DIMENSION || rawHeight>MAX_SOURCE_DIMENSION || (long)rawWidth*rawHeight>MAX_SOURCE_PIXELS) throw new IOException("image_too_large");
+            checkSourceBounds(rawWidth,rawHeight,true);
             int orientation=args.optBoolean("applyExif",true)?orientation(source):ExifInterface.ORIENTATION_NORMAL;
             int sourceWidth=swapsAxes(orientation)?rawHeight:rawWidth,sourceHeight=swapsAxes(orientation)?rawWidth:rawHeight;
             if((long)x+width>sourceWidth || (long)y+height>sourceHeight) throw new IllegalArgumentException("region_outside_image");
@@ -246,6 +245,13 @@ public final class PodImageServices implements Closeable {
             return result;
         }catch(Exception error){if(output!=null)output.delete();throw error;}
         finally {if(decoded!=null&&!decoded.isRecycled())decoded.recycle();if(oriented!=null&&!oriented.isRecycled())oriented.recycle();if(padded!=null&&!padded.isRecycled())padded.recycle();returnDecoder(decoderEntry);}
+    }
+
+    /** Sampled overviews and bounded regions may use large sources; full decodes retain the original guard. */
+    static void checkSourceBounds(int width,int height,boolean boundedOutput) throws IOException {
+        int edge=boundedOutput?MAX_SOURCE_DIMENSION:16_384;
+        long pixels=boundedOutput?MAX_SOURCE_PIXELS:64L*1024*1024;
+        if(width<1||height<1||width>edge||height>edge||(long)width*height>pixels)throw new IOException("image_too_large");
     }
 
     private static int orientation(File source) {
