@@ -78,3 +78,26 @@ Release diagnostic timing lines contain only fixed step names and elapsed
 milliseconds. Database-open, quick-check, foreign-key, schema/identity, KV,
 secure, pointer and publisher timing allow before/after attribution without
 printing paths, data, SQL values or key material.
+
+
+ACTIVE digest evidence is also scheduled from the first texture presentation,
+with the same 10-second grace period and the same low-priority single-thread
+executor as deep validation. Each sandbox submits at most one summary job per
+process, independently of the weekly deep-check deadline. The job builds the
+whole six-line `PodTakeoverDigest` ACTIVE projection before logging, using the
+unchanged digest v1 format; failures emit the existing sanitized `unavailable`
+diagnostic. `activeDigestSummary` times this deferred work separately from
+`activePublisher`. Normal admission does not read, parse or hash the sealed manifest.
+Process death before presentation/dispatch adds no on-disk summary marker and
+leaves the next process eligible to emit again. This is evidence about the
+sealed native backup, not a new check of mutable active stores.
+
+The owner-selected backup purge remains synchronous under the admission lock,
+including its full verification, failure propagation and import-snapshot cleanup.
+Only on that path, the publisher captures raw manifest/seal/ready bytes in memory
+before purge; the deferred job validates and projects those bytes after the
+backup has been removed. It does not persist another backup or evidence file.
+As before, an already purged backup under an applicable purge policy is skipped;
+a missing backup without that policy emits `unavailable`, never fabricated hashes.
+The startup pointer/receipt, required stores, provenance and failure-history
+invariants above are unchanged. Deferred evidence does not authorize admission.

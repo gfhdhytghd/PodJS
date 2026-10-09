@@ -69,6 +69,37 @@ public final class TakeoverDigest {
             }return hex(d.digest());
         }catch(java.security.NoSuchAlgorithmException impossible){throw new IOException("digest_invalid");}
     }
+    /** Raw, immutable evidence retained in memory across an authorized synchronous purge.
+     * Parsing, sorting, hashing and validation all remain deferred. No disk state is added. */
+    public static final class ActiveMetadata {
+        private final String generation;
+        private final byte[] manifest,seal,ready;
+        private ActiveMetadata(String g,byte[] m,byte[] s,byte[] r){generation=g;manifest=m;seal=s;ready=r;}
+        public List<String> lines()throws IOException {
+            Properties p=parse(manifest);String sha=TakeoverDigest.seal(p);
+            require("1".equals(p.getProperty("protocol"))&&generation.equals(p.getProperty("generation")));
+            require(sha.equals(parse(seal).getProperty("sha256")));
+            require(sha.equals(parse(ready).getProperty("sha256")));
+            return digestManifest(p,"ACTIVE",generation);
+        }
+    }
+    private static Properties parse(byte[] bytes)throws IOException {
+        Properties p=new Properties();try(InputStream in=new ByteArrayInputStream(bytes)){p.load(in);}return p;
+    }
+    private static byte[] raw(File file)throws IOException {
+        try(InputStream in=Files.newInputStream(file.toPath(),LinkOption.NOFOLLOW_LINKS);
+            ByteArrayOutputStream out=new ByteArrayOutputStream()) {
+            byte[] buffer=new byte[8192];int count;
+            while((count=in.read(buffer))!=-1)out.write(buffer,0,count);
+            return out.toByteArray();
+        }
+    }
+    public static ActiveMetadata captureActive(File sandbox,String generation)throws IOException {
+        require(generation!=null&&generation.matches("g-[a-zA-Z0-9-]+"));
+        String base=NativeBackup.BACKUP+"/"+generation+"/";
+        return new ActiveMetadata(generation,raw(safe(sandbox,base+"manifest")),
+            raw(safe(sandbox,base+"seal")),raw(safe(sandbox,base+"ready")));
+    }
     /** Read sealed Properties only. Payload verification remains NativeBackup's job. */
     public static List<String> activeLines(File sandbox,String generation)throws IOException {
         require(generation!=null&&generation.matches("g-[a-zA-Z0-9-]+"));

@@ -12,6 +12,11 @@ final class PodActiveValidationAndroid {
     private static final ScheduledExecutorService executor=Executors.newSingleThreadScheduledExecutor(r->{
         Thread t=new Thread(()->{android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);r.run();},"podjs-active-validation");t.setDaemon(true);return t;
     });
+    private static final PodAfterFirstFrameTasks evidence=new PodAfterFirstFrameTasks(
+        task->executor.schedule(task,10,TimeUnit.SECONDS));
+    static void activeSummary(Context c,Runnable task) {
+        evidence.submitOnce(c.getApplicationInfo().dataDir,task);
+    }
     static PodActiveValidation policy(Context c) {
         try{return new PodActiveValidation(c.getPackageManager().getPackageInfo(c.getPackageName(),0).getLongVersionCode(),System::currentTimeMillis);}
         catch(Exception missing){throw new IllegalStateException("package_version_unavailable");}
@@ -19,6 +24,7 @@ final class PodActiveValidationAndroid {
     static PodActiveValidation.Workload workload(Context c){return workloads.computeIfAbsent(c.getApplicationInfo().dataDir,k->new PodActiveValidation.Workload());}
     static void afterFirstFrame(Context context) {
         Context c=context.getApplicationContext();String key=c.getApplicationInfo().dataDir;
+        evidence.afterFirstFrame(key);
         if(scheduled.putIfAbsent(key,true)!=null)return;
         // Let the first guest SQL/font/layout burst settle after actual texture presentation.
         executor.schedule(()->run(c),10,TimeUnit.SECONDS);

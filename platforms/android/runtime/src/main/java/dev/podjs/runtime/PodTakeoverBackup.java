@@ -14,7 +14,11 @@ import org.json.JSONObject;
 /** Package owner policy, never guest controlled. Called under the coordinator lock. */
 final class PodTakeoverBackup implements PodTakeoverCoordinator.Publisher {
     final Context context;final File sandbox;
-    PodTakeoverBackup(Context context,File sandbox){this.context=context;this.sandbox=sandbox;}
+    private final java.util.function.Consumer<Runnable> summaries;
+    PodTakeoverBackup(Context context,File sandbox){this(context,sandbox,task->PodActiveValidationAndroid.activeSummary(context,task));}
+    PodTakeoverBackup(Context context,File sandbox,java.util.function.Consumer<Runnable> summaries){
+        this.context=context;this.sandbox=sandbox;this.summaries=summaries;
+    }
     private Bundle config() throws Exception {
         Bundle b=context.getPackageManager().getApplicationInfo(context.getPackageName(),PackageManager.GET_META_DATA).metaData;
         return b==null?new Bundle():b;
@@ -54,6 +58,11 @@ final class PodTakeoverBackup implements PodTakeoverCoordinator.Publisher {
     static void emit(java.util.List<String> lines) {
         for(String line:lines)android.util.Log.i("PodTakeoverDigest",line);
     }
+    private static void activeSummary(java.util.concurrent.Callable<java.util.List<String>> lines) {
+        long began=System.nanoTime();
+        try{emit(lines.call());}catch(Exception failure){unavailable(failure);}
+        finally{PodTakeoverDiagnostics.timed("activeDigestSummary",System.nanoTime()-began);}
+    }
     static void verifySnapshot(File sandbox,File g)throws IOException {
         Properties p=PodTakeoverCoordinator.read(new File(g,"takeover-digest-snapshot.properties"));
         if(!TakeoverDigest.digestManifest(p,"ACTIVE",g.getName()).equals(TakeoverDigest.activeLines(sandbox,g.getName())))
@@ -72,10 +81,17 @@ final class PodTakeoverBackup implements PodTakeoverCoordinator.Publisher {
     public void afterActive(File g) throws Exception {
         int threshold=config().getInt("dev.podjs.takeover.purgeBackupAfter",0);
         long current=context.getPackageManager().getPackageInfo(context.getPackageName(),0).getLongVersionCode();
-        // A previous admission may already have purged under owner policy.
-        // Missing backups otherwise remain an error; no digest is fabricated.
-        if(new File(sandbox,NativeBackup.BACKUP+"/"+g.getName()+"/manifest").exists()||threshold<=0||current<threshold)
-            try{emit(TakeoverDigest.activeLines(sandbox,g.getName()));}catch(Exception failure){unavailable(failure);}
+        boolean purge=threshold>0&&current>=threshold;
+        // Retain raw sealed metadata only when synchronous purge will remove it.
+        // Normal admission does not open/parse/hash the manifest at all.
+        if(!purge||new File(sandbox,NativeBackup.BACKUP+"/"+g.getName()+"/manifest").exists()) {
+            if(purge) {
+                try {
+                    TakeoverDigest.ActiveMetadata metadata=TakeoverDigest.captureActive(sandbox,g.getName());
+                    summaries.accept(()->activeSummary(metadata::lines));
+                } catch(Exception failure) {summaries.accept(()->activeSummary(()->{throw failure;}));}
+            } else summaries.accept(()->activeSummary(()->TakeoverDigest.activeLines(sandbox,g.getName())));
+        }
         if(threshold>0&&current>=threshold) {
             NativeBackup backup=new NativeBackup(sandbox);
             for(String retained:backup.retainedGenerations())backup.purge(retained);
