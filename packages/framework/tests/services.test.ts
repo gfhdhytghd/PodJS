@@ -10,7 +10,7 @@ const emitted: Record<string, unknown>[] = [];
 };
 
 const api = await import("../src/watch.ts");
-const { battery, debugPerformance, application, sharing, displayPower, silencePlayback, HostServiceError, hostOperation, sqlite, browser, browserAuth, mediaVolume, speech, timeInput, textInput, textLayout, fileChunks, uri, rfcomm, tcp, byteStreams, webSockets, discovery, onNetworkChange } = await import("../src/services.ts");
+const { secureStorage, battery, debugPerformance, application, sharing, displayPower, silencePlayback, HostServiceError, hostOperation, sqlite, browser, browserAuth, mediaVolume, speech, timeInput, textInput, textLayout, fileChunks, uri, rfcomm, tcp, byteStreams, webSockets, discovery, onNetworkChange } = await import("../src/services.ts");
 const host = (globalThis as unknown as { pod: { capabilities: () => string } }).pod;
 
 beforeEach(() => {
@@ -19,6 +19,11 @@ beforeEach(() => {
 afterEach(() => { events.length = 0; emitted.length = 0; });
 
 describe("host services", () => {
+ test('secure batch is capability gated and submits one transaction without logging values',async()=>{
+  await expect(secureStorage.update({key:'private'})).rejects.toMatchObject({code:'unsupported'});expect(emitted).toHaveLength(0);
+  host.capabilities=()=>JSON.stringify(['data.secure']);const result=secureStorage.update({key:'private',removed:null});const request=emitted.at(-1)!;expect(request).toMatchObject({method:'secure.update',args:{values:{key:'private',removed:null}}});
+  events.push({t:'service.result',id:request.id,ok:true,value:{ok:true}});api.__pumpPodEvents();await result;expect(emitted).toHaveLength(1);
+ });
   test('battery capacity is capability gated and preserves unavailable null',async()=>{
     await expect(battery.percent()).rejects.toMatchObject({code:'unsupported'});expect(emitted).toHaveLength(0);
     host.capabilities=()=>JSON.stringify(['device.battery']);

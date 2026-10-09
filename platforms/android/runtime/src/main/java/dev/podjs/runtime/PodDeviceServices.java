@@ -73,7 +73,7 @@ public final class PodDeviceServices implements AutoCloseable {
         if (closed) throw new IllegalStateException("service_closed");
         if (method == null || args == null) throw new IllegalArgumentException("method_and_args_required");
         switch (method) {
-            case "secure.get": case "secure.set": case "secure.delete": return secureOperation(method,args);
+            case "secure.get": case "secure.set": case "secure.delete": case "secure.update": return secureOperation(method,args);
             case "crypto.ecdhPublicKey": return ecdhPublicKey(args);
             case "crypto.ecdhUnwrap": return ecdhUnwrap(args);
             case "crypto.hkdfSha256": return new JSONObject().put("keyBase64", enc(PodCloudCrypto.hkdf(decode(args,"inputBase64"),decode(args,"saltBase64"),decode(args,"infoBase64"))));
@@ -138,9 +138,24 @@ public final class PodDeviceServices implements AutoCloseable {
                 secureTrace.end("secure.lock",waiting,id);
                 if("secure.get".equals(method))return secureGet(args);
                 if("secure.set".equals(method))return secureSet(args);
+                if("secure.update".equals(method)){writeSecure(mergeSecure(readSecure(id),args.getJSONObject("values")));return new JSONObject().put("ok",true);}
                 return secureDelete(args);
             }
         }}finally{secureTrace.end("secure.total",total,id);}
+    }
+    /** Validate the whole batch on a copy before the single encrypted atomic publication. */
+    static JSONObject mergeSecure(JSONObject current,JSONObject updates)throws Exception {
+        if(updates.length()>128)throw new IllegalArgumentException("secure_batch_limit");
+        JSONObject next=new JSONObject(current.toString());
+        for(java.util.Iterator<String> keys=updates.keys();keys.hasNext();){
+            String key=keys.next();Object value=updates.get(key);
+            if(key.isEmpty()||key.length()>1024)throw new IllegalArgumentException("secure_key_invalid");
+            if(value==JSONObject.NULL)next.remove(key);
+            else if(value instanceof String)next.put(key,value);
+            else throw new IllegalArgumentException("secure_value_invalid");
+        }
+        if(next.toString().getBytes(StandardCharsets.UTF_8).length>MAX_CHUNK_BYTES)throw new IllegalArgumentException("secure_quota");
+        return next;
     }
     private JSONObject secureGet(JSONObject a) throws Exception {
         JSONObject values = readSecure(a.optInt("requestId",-1)); String key = required(a, "key");
