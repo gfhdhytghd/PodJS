@@ -37,7 +37,7 @@ public final class PodTakeover {
                     new PodFileConverter(sandbox,PodRoomAndroidDb::new,(file,faces) -> {
                         for(int i=0;i<faces;i++)if(new android.graphics.Typeface.Builder(file).setTtcIndex(i).build()==null)
                             throw new IOException("font_unloadable");
-                    },boundary -> {},progress::fileCopied,c.getPackageName(),sourcePackage(c))), new PodTakeoverCoordinator.Checkpoint() {
+                    },boundary -> {},progress::fileCopied,c.getPackageName(),sourcePackage(c)).withDiagnostics(line -> android.util.Log.w("PodTakeoverFiles",line))), new PodTakeoverCoordinator.Checkpoint() {
                     public void saved(PodTakeoverCoordinator.Phase phase) {
                         progress.phase(phase);
                         if ((c.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0)

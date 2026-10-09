@@ -9,6 +9,15 @@ final class PodTakeoverConverters implements PodTakeoverCoordinator.Converter {
     PodTakeoverConverters(PodTakeoverCoordinator.Converter room,PodTakeoverCoordinator.Converter stores){this(room,stores,null);}
     PodTakeoverConverters(PodTakeoverCoordinator.Converter room,PodTakeoverCoordinator.Converter stores,PodTakeoverCoordinator.Converter files){this.room=room;this.stores=stores;this.files=files;}
     public String version(){return room.version()+"+"+stores.version()+(files==null?"":"+"+files.version());}
+    public boolean reclassifies(File g,String previous)throws Exception {
+        if(!previous.equals(room.version()+"+"+stores.version()+"+watchrss-files-3")||files==null||!files.version().equals("watchrss-files-4"))return false;
+        org.json.JSONObject report=PodStoreConverter.json(PodFileConverter.safe(g,"files-report.json"));
+        if(!"watchrss-files-3".equals(report.getString("version")))return false;
+        org.json.JSONArray blockers=report.getJSONArray("blockers");
+        if(blockers.length()==0)return false;
+        for(int i=0;i<blockers.length();i++)if(!"unknown_user_files".equals(blockers.getString(i)))return false;
+        return true;
+    }
     public boolean complete(){return files!=null&&verified;}
     public void active(File g)throws Exception{room.active(g);stores.active(g);}
     public void snapshot(File g)throws Exception{stores.snapshot(g);room.snapshot(g);

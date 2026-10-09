@@ -65,6 +65,69 @@ public final class FileTakeoverTest {
         PodTakeoverCoordinator next=new PodTakeoverCoordinator(root,()->{throw new AssertionError("ACTIVE must not inspect source");},PodTakeoverCoordinator.EMPTY);
         check(next.run().getProperty("phase").equals("ACTIVE"),"terminal active");check(Files.readString(body.toPath()).equals("new user edit"),"no reimport");
     }
+    static void blockedReclassification()throws Exception {
+        for(int generations:new int[]{2,3}) {
+            File source=fixture(true),target=new File(source,"files/package-takeover");
+            try {
+                for(String path:new String[]{"cache/image_cache/journal","cache/tmp123456789.tmp","cache/.font123-456-0","cache/NanoHTTPD-123456789","cache/provider/new-opaque.bin","files/androidx.appcompat.app.AppCompatDelegate.application_locales_record_file","files/activity_choser_model_history.xml"})StoreTest.write(new File(source,path),new byte[]{1,2,3});
+                Map<String,String> before=StoreTest.digests(source);
+                Properties blocked=new Properties();blocked.setProperty("protocol","1");blocked.setProperty("phase","BLOCKED");blocked.setProperty("reason","unknown_user_files");blocked.setProperty("converter","watchrss-room-v18-1+watchrss-stores-3+watchrss-files-3");blocked.setProperty("generation","g-v1002");
+                for(int i=0;i<generations;i++)StoreTest.write(new File(target,"generations/g-v"+(1002-i)+"/retained.part"),new byte[]{7,8,9});
+                PodStoreConverter.json(new File(target,"generations/g-v1002/files-report.json"),new JSONObject().put("version","watchrss-files-3").put("blockers",new JSONArray().put("unknown_user_files")));
+                PodTakeoverCoordinator.atomic(new File(target,"journal"),blocked);
+                Properties active=run(source,target);check(active.getProperty("phase").equals("ACTIVE"),"legacy BLOCKED to ACTIVE "+active);
+                check(!active.getProperty("generation").equals("g-v1002"),"fresh generation");
+                for(int i=0;i<generations;i++)check(Arrays.equals(new byte[]{7,8,9},Files.readAllBytes(new File(target,"generations/g-v"+(1002-i)+"/retained.part").toPath())),"old candidates retained");
+                JSONObject report=PodStoreConverter.json(new File(generation(target,active),"files-report.json"));check(report.getInt("unrecognizedCacheFiles")==5,"unknown cache counted");
+                check(report.getJSONObject("classes").getInt("private-platform-state")==2,"precise library state");
+                check(!new File(generation(target,active),"podjs/files/androidx.appcompat.app.AppCompatDelegate.application_locales_record_file").exists(),"metadata not imported");
+                for(Map.Entry<String,String> entry:before.entrySet())check(entry.getValue().equals(StoreTest.digests(source).get(entry.getKey())),"source untouched");
+            }finally{StoreTest.remove(source);}
+        }
+        for(String guard:new String[]{"active","activation-receipt","native-backup-receipt","old-receipt","candidate-link","blockedFromPhase","resumePhase","receipt"}) {
+            File source=fixture(true),target=new File(source,"files/package-takeover");
+            try {
+                File g=new File(target,"generations/g-v1002");g.mkdirs();
+                Properties blocked=new Properties();blocked.setProperty("protocol","1");blocked.setProperty("phase","BLOCKED");blocked.setProperty("reason","unknown_user_files");blocked.setProperty("converter","watchrss-room-v18-1+watchrss-stores-3+watchrss-files-3");blocked.setProperty("generation","g-v1002");
+                PodStoreConverter.json(new File(g,"files-report.json"),new JSONObject().put("version","watchrss-files-3").put("blockers",new JSONArray().put("unknown_user_files")));
+                if(guard.equals("blockedFromPhase")||guard.equals("resumePhase"))blocked.setProperty(guard,"ACTIVATING");
+                else if(guard.equals("receipt"))blocked.setProperty(guard,"a".repeat(64));
+                else if(guard.equals("active"))StoreTest.write(new File(target,"active"),new byte[]{1});
+                else if(guard.equals("old-receipt"))StoreTest.write(new File(target,"generations/g-old/native-backup-receipt"),new byte[]{1});
+                else if(guard.equals("candidate-link"))Files.createSymbolicLink(new File(target,"generations/g-old").toPath(),source.toPath());
+                else StoreTest.write(new File(g,guard),new byte[]{1});
+                PodTakeoverCoordinator.atomic(new File(target,"journal"),blocked);
+                try{run(source,target);throw new AssertionError("unsafe retry accepted "+guard);}catch(IOException expected){}
+                check(PodTakeoverCoordinator.read(new File(target,"journal")).equals(blocked),"unsafe journal unchanged");
+                if(guard.equals("candidate-link"))Files.delete(new File(target,"generations/g-old").toPath());
+            }finally{StoreTest.remove(source);}
+        }
+        for(String gate:new String[]{"other-reason","other-converter","mixed-blockers","report-version","source-missing","source-locked"}) {
+            File source=fixture(),target=new File(source,"files/package-takeover");
+            try {
+                File g=new File(target,"generations/g-v1002");g.mkdirs();
+                Properties blocked=new Properties();blocked.setProperty("protocol","1");blocked.setProperty("phase","BLOCKED");blocked.setProperty("reason",gate.equals("other-reason")?"cloud_cache_binding_unverified":"unknown_user_files");blocked.setProperty("converter",gate.equals("other-converter")?"other-room+watchrss-stores-3+watchrss-files-3":"watchrss-room-v18-1+watchrss-stores-3+watchrss-files-3");blocked.setProperty("generation","g-v1002");
+                JSONArray blockers=new JSONArray().put("unknown_user_files");if(gate.equals("mixed-blockers"))blockers.put("cloud_cache_binding_unverified");
+                PodStoreConverter.json(new File(g,"files-report.json"),new JSONObject().put("version",gate.equals("report-version")?"other-files":"watchrss-files-3").put("blockers",blockers));
+                PodTakeoverCoordinator.atomic(new File(target,"journal"),blocked);
+                PodTakeoverCoordinator.Probe detection=()->new PodTakeoverCoordinator.Source(!gate.equals("source-missing"),gate.equals("source-locked")?"user_locked":null,18,0,Long.MAX_VALUE);
+                check(new PodTakeoverCoordinator(target,detection,composite(source,b->{},new StoreTest.Crypto())).run().equals(blocked),"other blocker/compatibility/source gate retained "+gate);
+                check(!new File(target,"active").exists(),"gate did not publish");
+            }finally{StoreTest.remove(source);}
+        }
+        File source=fixture();File target=root();
+        try {
+            StoreTest.write(new File(source,"files/private-user/123456789/"+"a".repeat(40)),new byte[]{1});
+            for(int i=0;i<25;i++)StoreTest.write(new File(source,"files/unknown/"+i),new byte[]{1});
+            List<String> lines=new ArrayList<>();PodFileConverter file=files(source,b->{}).withDiagnostics(lines::add);
+            PodTakeoverConverters converter=new PodTakeoverConverters(new PodRoomV18Converter(new File(source,"databases/watchrss.db"),RoomV18Test.Jdbc::new,(File g)->PodStoreConverter.identity(new File(g,"stores-source"))),new PodStoreConverter(source,new StoreTest.Crypto()),file);
+            Properties blocked=new PodTakeoverCoordinator(target,probe,converter).run();check(blocked.getProperty("phase").equals("BLOCKED"),"unknown files still block");
+            JSONObject report=PodStoreConverter.json(new File(generation(target,blocked),"files-report.json"));check(report.getInt("unknownFiles")==26&&report.getJSONArray("unknownPaths").length()==20,"bounded diagnostics with total");
+            check(lines.size()==1&&!lines.get(0).contains("123456789")&&!lines.get(0).contains("a".repeat(40)),"release redaction");
+            check(PodFileConverter.redactedPath("files/dir/deadbeef/12/uuid-"+"a".repeat(40)).equals("files/dir/<id:8>/<id:2>/<id:45>"),"segment redaction");
+            check(new PodTakeoverCoordinator(target,probe,converter).run().equals(blocked),"new converter blocked remains terminal");
+        }finally{StoreTest.remove(source);StoreTest.remove(target);}
+    }
     static void aliasesAndLocks()throws Exception {
         File source=fixture();PodFileConverter converter=files(source,b->{});
         String relative="offline/rss/2/image.jpg";
@@ -76,13 +139,14 @@ public final class FileTakeoverTest {
         for(String path:new String[]{"/data/user/0/dev.podjs.other/files/"+relative,"/data/user/1/dev.podjs.source/files/"+relative,"/tmp/files/"+relative,"/data/user/0/dev.podjs.source.extra/files/"+relative,"/data/user/0/dev.podjs.source/files/offline/rss/2/../image.jpg"})
             check(!converter.ownSourcePath(path,relative),"alien/traversal alias rejected");
         check(!converter.ownSourcePath("/data/data/dev.podjs.source/files/../escape","../escape"),"unsafe relative rejected");
+        for(String path:new String[]{"cache/other.db.lck","cache/watchrss.db.lck.user","cache/data/user/0/dev.podjs.other/no_backup/androidx.work.workdb.lck","cache/data/user/1/dev.podjs.rehearsal/no_backup/androidx.work.workdb.lck"})check(converter.classify(path).equals("refetchable"),"non-allowlisted cache locks refetchable");
         String[] locks={"cache/watchrss.db.lck","cache/data/user/0/dev.podjs.rehearsal/no_backup/androidx.work.workdb.lck","cache/data/data/dev.podjs.source/databases/watchrss.db.lck"};
         for(String path:locks){check(converter.classify(path).equals("database-lock"),"exact DB lock");StoreTest.write(new File(source,path),new byte[]{0});}
         Map<String,String> before=StoreTest.digests(source);File target=root();Properties active=run(source,target);
         check(active.getProperty("phase").equals("ACTIVE"),"locks do not block");check(before.equals(StoreTest.digests(source)),"locks left untouched");
         for(String path:locks)check(!new File(generation(target,active),"podjs/files/"+path).exists(),"locks not migrated to assets");
         StoreTest.remove(target);StoreTest.remove(source);
-        for(String path:new String[]{"cache/other.db.lck","cache/watchrss.db.lck.user","cache/data/user/0/dev.podjs.other/no_backup/androidx.work.workdb.lck","cache/data/user/1/dev.podjs.rehearsal/no_backup/androidx.work.workdb.lck","files/recovery-rehearsal/seed.json","files/recovery-rehearsal/business.json","files/recovery-rehearsal/interrupt.bin","files/watchrss.db.lck"}){
+        for(String path:new String[]{"files/recovery-rehearsal/seed.json","files/recovery-rehearsal/business.json","files/recovery-rehearsal/interrupt.bin","files/watchrss.db.lck"}){
             source=fixture();converter=files(source,b->{});check(converter.classify(path).equals("unknown-user-content"),"unknown lock/marker still blocked");
             StoreTest.write(new File(source,path),new byte[]{0});target=root();check(run(source,target).getProperty("phase").equals("BLOCKED"),"unknown user files still block ACTIVE");
             StoreTest.remove(target);StoreTest.remove(source);
@@ -217,7 +281,7 @@ public final class FileTakeoverTest {
         v1000PausedCompletedPhases();
         migratedNativeV18ForwardRetry();
         v1000PausedSnapshotForwardRetry();
-        aliasesAndLocks();
+        blockedReclassification();aliasesAndLocks();
         File source=fixture();Map<String,String> before=StoreTest.digests(source);String body=Files.readString(new File(source,"files/article_content/fixture.txt").toPath());
         File full=root();Properties p=run(source,full);check(p.getProperty("phase").equals("ACTIVE"),"full pipeline: "+p);
         File g=generation(full,p);

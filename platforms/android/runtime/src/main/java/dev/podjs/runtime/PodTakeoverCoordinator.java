@@ -12,6 +12,8 @@ public final class PodTakeoverCoordinator {
     public enum Phase { DETECTED, SNAPSHOTTED, COPYING, VERIFYING, READY, ACTIVATING, ACTIVE, PAUSED, BLOCKED }
     public interface Converter {
         String version();
+        /** Explicit compatibility transition; unrelated converter changes remain blocked. */
+        default boolean reclassifies(File generation,String previous)throws Exception{return false;}
         default boolean complete() { return true; }
         /** Fixed non-sensitive code; null only when every blocking verification is cleared. */
         default String blocker(File generation) throws Exception { return null; }
@@ -49,6 +51,7 @@ public final class PodTakeoverCoordinator {
         default void failed(Phase phase, Exception error) {}
     }
     public interface Publisher {
+        default void beforeReclassification() throws Exception {}
         default void afterSnapshot(File generation) throws Exception {}
         void beforePublish(File generation) throws Exception;
         default void afterActive(File generation) throws Exception {}
@@ -97,7 +100,29 @@ public final class PodTakeoverCoordinator {
                 if (!"1".equals(p.getProperty("protocol"))) throw new IOException("protocol_unsupported");
                 Phase phase=Phase.valueOf(p.getProperty("phase"));
                 if (phase==Phase.ACTIVE) { validatePointer(p); converter.active(generation(p.getProperty("generation"))); publisher.afterActive(generation(p.getProperty("generation")));return p; }
-                if (phase==Phase.BLOCKED) return p;
+                if (phase==Phase.BLOCKED) {
+                    if(!"unknown_user_files".equals(p.getProperty("reason")))return p;
+                    File previous=generation(p.getProperty("generation"));
+                    if(!converter.reclassifies(previous,p.getProperty("converter","")))return p;
+                    // A verification blocker cannot authorize replay after publication started.
+                    if(p.containsKey("receipt")||(!p.getProperty("resumePhase","").isEmpty()&&!"VERIFYING".equals(p.getProperty("resumePhase")))||(!p.getProperty("blockedFromPhase","").isEmpty()&&!"VERIFYING".equals(p.getProperty("blockedFromPhase"))))throw new IOException("unexpected_activation");
+                    if(Files.exists(new File(root,"active").toPath(),LinkOption.NOFOLLOW_LINKS))throw new IOException("unexpected_pointer");
+                    File candidates=new File(root,"generations");safeFile(candidates);
+                    File[] retained=candidates.listFiles();if(retained==null)throw new IOException("candidate_unreadable");
+                    for(File candidate:retained) {
+                        safeFile(candidate);
+                        if(!Files.isDirectory(candidate.toPath(),LinkOption.NOFOLLOW_LINKS))throw new IOException("candidate_invalid");
+                        for(String receipt:new String[]{"activation-receipt","native-backup-receipt"})
+                            if(Files.exists(new File(candidate,receipt).toPath(),LinkOption.NOFOLLOW_LINKS))throw new IOException("unexpected_activation");
+                    }
+                    publisher.beforeReclassification();
+                    Source refreshed=probe.detect();
+                    if(!refreshed.present||refreshed.block!=null)return p;
+                    p.putAll(refreshed.inventory);
+                    p.setProperty("converter",converter.version());p.setProperty("generation","g-"+java.util.UUID.randomUUID());
+                    p.setProperty("schema",Integer.toString(refreshed.schema));
+                    save(p,Phase.DETECTED);phase=Phase.DETECTED;
+                }
                 if (!converter.version().equals(p.getProperty("converter"))) {
                     p.setProperty("reason","converter_changed_candidate_retained"); save(p,Phase.BLOCKED); return p;
                 }
@@ -187,11 +212,11 @@ public final class PodTakeoverCoordinator {
         String reason=converter.blocker(generation);
         if(reason==null)return false;
         if(!reason.matches("[a-z0-9_]{1,96}"))reason="verification_blocked";
-        p.setProperty("reason",reason);save(p,Phase.BLOCKED);return true;
+        p.setProperty("blockedFromPhase",p.getProperty("phase"));p.setProperty("reason",reason);save(p,Phase.BLOCKED);return true;
     }
     private static Properties fresh() { Properties p=new Properties(); p.setProperty("phase","NONE"); return p; }
     private void save(Properties p, Phase phase) throws IOException {
-        if (phase!=Phase.PAUSED && phase!=Phase.BLOCKED) { p.remove("reason"); p.remove("resumePhase"); }
+        if (phase!=Phase.PAUSED && phase!=Phase.BLOCKED) { p.remove("reason"); p.remove("resumePhase"); p.remove("blockedFromPhase"); }
         p.setProperty("phase",phase.name()); atomic(new File(root,"journal"),p); checkpoint.saved(phase);
     }
     private void validatePointer(Properties p) throws IOException {

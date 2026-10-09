@@ -49,7 +49,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
             this.packages.add(name);
         }
     }
-    public String version(){return "watchrss-files-3";}
+    public String version(){return "watchrss-files-4";}
     // A file converter alone does not constitute a publishable storage bundle.
     public boolean complete(){return false;}
     static SortedSet<String> names(JSONObject object) {
@@ -115,7 +115,23 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         for(File directory:directories)PodTakeoverCoordinator.syncDirectory(directory);
         dirtyDirectories.clear();
     }
+    private java.util.function.Consumer<String> diagnostics=line -> {};
+    PodFileConverter withDiagnostics(java.util.function.Consumer<String> sink){diagnostics=sink;return this;}
+    static String redactedPath(String path) {
+        StringJoiner out=new StringJoiner("/");
+        for(String bit:path.split("/",-1)) {
+            if(bit.length()>32||bit.matches("(?i)[0-9a-f]{8,}(?:[._-].*)?")||bit.matches("[0-9]+(?:[._-].*)?")||bit.matches("(?i)[0-9a-f]{8}-[0-9a-f-]{27}(?:[._-].*)?"))out.add("<id:"+bit.length()+">");
+            else out.add(bit.replaceAll("[^A-Za-z0-9._-]","_"));
+        }
+        return out.toString();
+    }
+    static boolean knownCache(String p) {
+        return p.matches("cache/(douyin_preload|bili_stream_cache|rss_images|douyin_preview_snapshots|updates)/.+")||p.matches("cache/tts_[0-9]+\\.mp3");
+    }
     static String category(String p) {
+        // Cache is disposable platform storage. Preserve exact lock handling in classify().
+        if(p.startsWith("cache/"))return "refetchable";
+        if(p.equals("files/androidx.appcompat.app.AppCompatDelegate.application_locales_record_file")||p.equals("files/activity_choser_model_history.xml"))return "private-platform-state";
         if(p.endsWith(".part")||p.endsWith(".part.meta")||p.endsWith(".tmp"))return "incomplete";
         if(p.matches("files/article_content/[^/]+")||p.matches("files/offline/rss/[^/]+/[^/]+")||p.matches("files/reader_assets/(fonts|backgrounds|variants)/[^/]+")||p.matches("files/notes/assets/[A-Za-z0-9][A-Za-z0-9._-]{0,159}"))return "asset";
         if(p.startsWith("files/watch-cloud-cache/"))return "cloud-unverified";
@@ -218,7 +234,10 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
             hook.saved("file");
         }
         syncDirtyDirectories();
-        PodStoreConverter.json(new File(g,"files-report.json"),report(g));hook.saved("report");
+        JSONObject report=report(g);
+        PodStoreConverter.json(new File(g,"files-report.json"),report);
+        if(report.getInt("unknownFiles")>0)diagnostics.accept("reason=unknown_user_files count="+report.getInt("unknownFiles")+" paths="+report.getJSONArray("unknownPaths").toString());
+        hook.saved("report");
     }
     private static String referenceId(JSONObject object,String key) {
         Object value=object.opt(key);return value instanceof String&&!((String)value).trim().isEmpty()?(String)value:"";
@@ -233,9 +252,10 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
     }
     private JSONObject report(File g)throws Exception {
         JSONObject entries=entries(g),r=new JSONObject().put("version",version()).put("blockers",new JSONArray()).put("degraded",new JSONArray()).put("derivedSync","empty-rebuild-before-export");
-        JSONObject classes=new JSONObject();
+        JSONObject classes=new JSONObject();JSONArray unknownPaths=new JSONArray();int unknownFiles=0,unrecognizedCache=0;
         for(String p:names(entries)) try {
             String c=classify(p);classes.put(c,classes.optInt(c)+1);
+            if(p.startsWith("cache/")&&c.equals("refetchable")&&!knownCache(p))unrecognizedCache++;
             if(c.equals("asset")){
                 JSONObject receipt=PodStoreConverter.json(safe(new File(g,"files-completed"),PodStoreConverter.slot(p)+".json"));
                 if(!receipt.getBoolean("complete")||!receipt.getString("path").equals(p)||!same(receipt,entries.getJSONObject(p)))throw new IOException("file_receipt_changed");
@@ -243,10 +263,13 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
             }
             else if(c.equals("private-test-state"))PodPreferenceReader.protobuf(safe(new File(g,"files-source"),p));
             else if(c.equals("platform-metadata")&&entries.getJSONObject(p).getLong("size")!=8)block(r,"platform_metadata_invalid");
-            else if(c.equals("unknown-user-content"))block(r,"unknown_user_files");
+            else if(c.equals("unknown-user-content")) {
+                block(r,"unknown_user_files");unknownFiles++;
+                if(unknownPaths.length()<20)unknownPaths.put(redactedPath(p));
+            }
             else if(c.equals("cloud-unverified"))block(r,"cloud_cache_binding_unverified");
         }catch(Exception error){throw failure(p,error);}
-        r.put("classes",classes);
+        r.put("classes",classes).put("unrecognizedCacheFiles",unrecognizedCache).put("unknownFiles",unknownFiles).put("unknownPaths",unknownPaths);
         try(PodRoomV18Converter.Db refs=factory.open(new File(g,"room-progress.sqlite"))) {
             for(Map<String,Object> row:refs.query("SELECT * FROM content_reference ORDER BY item_id,kind")) {
                 String path=(String)row.get("relative_path");

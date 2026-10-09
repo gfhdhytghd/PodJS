@@ -41,6 +41,11 @@ final class PodTakeoverBackup implements PodTakeoverCoordinator.Publisher {
         TakeoverDigest.digestManifest(snapshot,"SNAPSHOTTED",g.getName());
         PodTakeoverCoordinator.atomic(receipt,snapshot);return snapshot;
     }
+    public void beforeReclassification()throws Exception {
+        // Even a partial seal/move is publication evidence, including an older generation.
+        for(String path:new String[]{NativeBackup.BACKUP,NativeBackup.RECOVERED,"files/.podjs-restore-stage","files/.podjs-recovery-state"})
+            if(java.nio.file.Files.exists(new File(sandbox,path).toPath(),java.nio.file.LinkOption.NOFOLLOW_LINKS))throw new IOException("unexpected_activation");
+    }
     public void afterSnapshot(File g) throws Exception {
         try{emit(TakeoverDigest.digestManifest(snapshot(sandbox,g),"SNAPSHOTTED",g.getName()));}catch(Exception failure){unavailable(failure);}
     }
