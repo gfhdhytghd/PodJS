@@ -472,6 +472,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     @Override public void onSurfaceTextureUpdated(SurfaceTexture texture) {
         if (!firstTextureLogged) {
             firstTextureLogged = true;
+            PodActiveValidationAndroid.afterFirstFrame(getContext());
             if (getContext() instanceof android.app.Activity) {
                 ((android.app.Activity)getContext()).getWindow().setBackgroundDrawable(
                     new android.graphics.drawable.ColorDrawable(android.graphics.Color.BLACK));

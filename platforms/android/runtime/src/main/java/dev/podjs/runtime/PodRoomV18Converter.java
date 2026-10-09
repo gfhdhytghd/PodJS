@@ -23,6 +23,7 @@ public final class PodRoomV18Converter implements PodTakeoverCoordinator.Convert
     public interface ProgressHook { void copied(long bytes); }
     private final File source;
     private final Factory factory;
+    private Factory activeFactory;
     public interface IdentitySource { String read() throws Exception; }
     public interface SnapshotIdentitySource { String read(File generation) throws Exception; }
     private final SnapshotIdentitySource identity;
@@ -46,13 +47,39 @@ public final class PodRoomV18Converter implements PodTakeoverCoordinator.Convert
     PodRoomV18Converter(File source, Factory factory, SnapshotIdentitySource identity,ProgressHook progress) {
         this.source=source;this.factory=factory;this.identity=identity;this.batchSize=DEFAULT_BATCH_SIZE;this.hook=c -> {};this.progress=progress;
     }
+    private java.util.function.BiConsumer<String,Long> timings=(s,n)->{};
+    PodRoomV18Converter withTimings(java.util.function.BiConsumer<String,Long> sink){timings=sink;return this;}
+    PodRoomV18Converter withActiveFactory(Factory readOnly){activeFactory=readOnly;return this;}
+    private Db activeDb(File f)throws Exception{return (activeFactory==null?factory:activeFactory).open(f);}
+    public void activeFast(File g)throws Exception {
+        long began=System.nanoTime();
+        try(Db db=activeDb(new File(g,"podjs.sqlite"))){
+            // Published v18 conversion has user_version=0; guest initializes 1/2.
+            long version=number(scalar(db,"PRAGMA user_version"));
+            if(version<0||version>2)throw new IOException("active_schema_version_invalid");
+            schemaIdentity(db);
+        }
+        timings.accept("activeFastSchema",System.nanoTime()-began);
+    }
+    private static void schemaIdentity(Db db)throws Exception {
+        for(String table:new String[]{"articles","channels","memo_notes","sync_local_identity"})
+            if(scalar(db,"SELECT name FROM sqlite_master WHERE type='table' AND name=?",table)==null)throw new IOException("active_schema_missing");
+        if(!nonempty(scalar(db,"SELECT device_id FROM sync_local_identity WHERE id=1")))throw new IOException("active_identity_missing");
+    }
     public void active(File g)throws Exception {
         File file=new File(g,"podjs.sqlite");if(file.length()<100)throw new IOException("active_database_invalid");
-        try(Db db=factory.open(file)) {
-            checks(db);
-            for(String table:new String[]{"articles","channels","memo_notes","sync_local_identity"})
-                if(scalar(db,"SELECT name FROM sqlite_master WHERE type='table' AND name=?",table)==null)throw new IOException("active_schema_missing");
-            if(!nonempty(scalar(db,"SELECT device_id FROM sync_local_identity WHERE id=1")))throw new IOException("active_identity_missing");
+        long began=System.nanoTime();
+        try(Db db=activeDb(file)) {
+            timings.accept("activeRoomOpen",System.nanoTime()-began);
+            began=System.nanoTime();
+            if(!"ok".equals(scalar(db,"PRAGMA quick_check")))throw new IOException("quick_check_failed");
+            timings.accept("activeQuickCheck",System.nanoTime()-began);
+            began=System.nanoTime();
+            if(!db.query("PRAGMA foreign_key_check").isEmpty())throw new IOException("foreign_key_check_failed");
+            timings.accept("activeForeignKeys",System.nanoTime()-began);
+            began=System.nanoTime();
+            schemaIdentity(db);
+            timings.accept("activeSchemaIdentity",System.nanoTime()-began);
         }
     }
     public String version(){return "watchrss-room-v18-1";}

@@ -3,8 +3,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 classes=$(mktemp -d)
 trap 'rm -rf "$classes"' EXIT
-javac -d "$classes" platforms/android/runtime/src/main/java/dev/podjs/takeover/NativeBackup.java platforms/android/runtime/src/main/java/dev/podjs/runtime/PodTakeoverCoordinator.java platforms/android/runtime/src/main/java/dev/podjs/runtime/PodTakeoverAdmission.java platforms/android/runtime/src/main/java/dev/podjs/runtime/PodTakeoverSource.java tests/java/dev/podjs/runtime/TakeoverTest.java
+javac -d "$classes" platforms/android/runtime/src/main/java/dev/podjs/takeover/NativeBackup.java platforms/android/runtime/src/main/java/dev/podjs/runtime/PodActiveValidation.java platforms/android/runtime/src/main/java/dev/podjs/runtime/PodTakeoverCoordinator.java platforms/android/runtime/src/main/java/dev/podjs/runtime/PodTakeoverAdmission.java platforms/android/runtime/src/main/java/dev/podjs/runtime/PodTakeoverSource.java tests/java/dev/podjs/runtime/TakeoverTest.java tests/java/dev/podjs/runtime/ActiveValidationTest.java
 java -ea -cp "$classes" dev.podjs.runtime.TakeoverTest
+java -ea -cp "$classes" dev.podjs.runtime.ActiveValidationTest
 javac -d "$classes" platforms/android/runtime/src/main/java/dev/podjs/takeover/NativeBackup.java tests/java/dev/podjs/takeover/NativeBackupTest.java
 python3 scripts/test-recovery-native-backup.py
 java -ea -cp "$classes" dev.podjs.takeover.NativeBackupTest

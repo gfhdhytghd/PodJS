@@ -20,6 +20,8 @@ final class PodTakeoverConverters implements PodTakeoverCoordinator.Converter {
     }
     public boolean complete(){return files!=null&&verified;}
     public void active(File g)throws Exception{room.active(g);stores.active(g);}
+    public void activeFast(File g)throws Exception{room.activeFast(g);stores.activeFast(g);}
+    public void activeDeep(File g)throws Exception{room.activeDeep(g);stores.activeDeep(g);}
     public void snapshot(File g)throws Exception{stores.snapshot(g);room.snapshot(g);
         if(!PodStoreConverter.identity(new File(g,"stores-source")).trim().equals(PodTakeoverCoordinator.read(new File(g,"snapshot.properties")).getProperty("identity")))throw new java.io.IOException("identity_snapshot_mismatch");if(files!=null)files.snapshot(g);}
     public void copy(File g)throws Exception{room.copy(g);room.verify(g);stores.copy(g);if(files!=null)files.copy(g);}

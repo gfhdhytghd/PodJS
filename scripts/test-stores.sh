@@ -7,7 +7,7 @@ json=${JSON_JAR:-$(find "$HOME/.gradle/caches/modules-2/files-2.1/org.json/json/
 sqlite=${SQLITE_JDBC_JAR:-$(find "$HOME/.gradle/caches/modules-2/files-2.1/org.xerial/sqlite-jdbc/3.46.1.3" -name '*.jar' -print -quit)}
 slf4j=${SLF4J_JAR:-$(find "$HOME/.gradle/caches/modules-2/files-2.1/org.slf4j/slf4j-api/1.7.30" -name '*.jar' -print -quit)}
 cp="$work:$json:$sqlite:$slf4j:platforms/android/runtime/src/main/resources"
-javac -cp "$cp" -d "$work" platforms/android/runtime/src/main/java/dev/podjs/takeover/NativeBackup.java platforms/android/runtime/src/main/java/dev/podjs/takeover/TakeoverDigest.java platforms/android/runtime/src/main/java/dev/podjs/runtime/{PodTakeoverSource,PodTakeoverAdmission,PodTakeoverCoordinator,PodRoomV18Converter,PodTakeoverConverters,PodFileConverter,PodPreferenceReader,PodStoreConverter,PodStoreMappings,PodStorePolicy}.java tests/java/dev/podjs/runtime/{StoreTest,RoomV18Test,StoreRoomTest,FileTakeoverTest,CanonicalTakeoverTest,StorePolicyTest}.java
+javac -cp "$cp" -d "$work" platforms/android/runtime/src/main/java/dev/podjs/takeover/NativeBackup.java platforms/android/runtime/src/main/java/dev/podjs/takeover/TakeoverDigest.java platforms/android/runtime/src/main/java/dev/podjs/runtime/{PodActiveValidation,PodTakeoverSource,PodTakeoverAdmission,PodTakeoverCoordinator,PodRoomV18Converter,PodTakeoverConverters,PodFileConverter,PodPreferenceReader,PodStoreConverter,PodStoreMappings,PodStorePolicy}.java tests/java/dev/podjs/runtime/{StoreTest,RoomV18Test,StoreRoomTest,FileTakeoverTest,CanonicalTakeoverTest,StorePolicyTest}.java
 java -ea -cp "$cp" dev.podjs.runtime.StoreTest "$work/oracle"
 bun scripts/store-consumer-oracle.ts "$work/oracle"
 java -ea -cp "$cp" dev.podjs.runtime.StoreRoomTest

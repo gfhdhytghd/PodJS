@@ -704,6 +704,11 @@ final class PodServices implements Closeable {
         return database;
     }
     private Object sql(String method, JSONObject args, CancellationSignal cancellation) throws Exception {
+        try(AutoCloseable foreground=PodActiveValidationAndroid.workload(context).foreground()) {
+            return sqlForeground(method,args,cancellation);
+        }
+    }
+    private Object sqlForeground(String method, JSONObject args, CancellationSignal cancellation) throws Exception {
         if ("sql.transaction".equals(method)) {
             JSONArray statements = args.getJSONArray("statements");
             if (statements.length() > 2048) throw new IllegalArgumentException("Transaction too large");

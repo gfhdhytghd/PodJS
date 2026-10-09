@@ -8,8 +8,11 @@ import java.util.*;
 /** Opens candidate paths only; never supplied a source database path. */
 final class PodRoomAndroidDb implements PodRoomV18Converter.Db {
     private final SQLiteDatabase db;
-    PodRoomAndroidDb(File file) {
-        db=SQLiteDatabase.openDatabase(file.getAbsolutePath(),null,SQLiteDatabase.CREATE_IF_NECESSARY | SQLiteDatabase.NO_LOCALIZED_COLLATORS);
+    private final android.os.CancellationSignal cancellation;
+    PodRoomAndroidDb(File file){this(file,false,null);}
+    PodRoomAndroidDb(File file,boolean readOnly,android.os.CancellationSignal cancellation) {
+        this.cancellation=cancellation;
+        db=SQLiteDatabase.openDatabase(file.getAbsolutePath(),null,(readOnly?SQLiteDatabase.OPEN_READONLY:SQLiteDatabase.CREATE_IF_NECESSARY) | SQLiteDatabase.NO_LOCALIZED_COLLATORS);
     }
     public void exec(String sql,Object... args){db.execSQL(sql,args);}
     public List<Map<String,Object>> query(String sql,Object... args){
@@ -20,7 +23,7 @@ final class PodRoomAndroidDb implements PodRoomV18Converter.Db {
                 Object v=args[i];if(v==null)query.bindNull(i+1);else if(v instanceof Float||v instanceof Double)query.bindDouble(i+1,((Number)v).doubleValue());else if(v instanceof Number)query.bindLong(i+1,((Number)v).longValue());else query.bindString(i+1,v.toString());
             }
             return new android.database.sqlite.SQLiteCursor(driver,edit,query);
-        },sql,new String[0],null)){
+        },sql,new String[0],null,cancellation)){
             while(c.moveToNext()){
                 Map<String,Object> row=new LinkedHashMap<>();for(int i=0;i<c.getColumnCount();i++){
                     Object v;switch(c.getType(i)){case Cursor.FIELD_TYPE_NULL:v=null;break;case Cursor.FIELD_TYPE_INTEGER:v=c.getLong(i);break;case Cursor.FIELD_TYPE_FLOAT:v=c.getDouble(i);break;case Cursor.FIELD_TYPE_BLOB:v=c.getBlob(i);break;default:v=c.getString(i);}

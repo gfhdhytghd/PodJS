@@ -16,6 +16,10 @@ final class PodTakeoverDiagnostics {
         String category=error instanceof PodFileConverter.FileFailure?" category="+((PodFileConverter.FileFailure)error).category:"";
         return "phase="+phase+" exception="+(error instanceof PodFileConverter.FileFailure?((PodFileConverter.FileFailure)error).exceptionClass:error.getClass().getName())+" frame="+frame+code+category;
     }
+    static void timed(String step,long nanos) {
+        if(!step.matches("[A-Za-z]{1,48}"))throw new IllegalArgumentException("step_invalid");
+        android.util.Log.i("PodTakeover","step="+step+" elapsedMs="+(nanos/1_000_000.0));
+    }
     static void warn(String phase,Exception error) {
         android.util.Log.w("PodTakeover",line(phase,error));
     }

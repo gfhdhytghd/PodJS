@@ -19,6 +19,8 @@ public final class PodTakeoverCoordinator {
         default String blocker(File generation) throws Exception { return null; }
         /** Read current production stores without comparing them to the old import. */
         default void active(File generation) throws Exception {}
+        default void activeFast(File generation) throws Exception {active(generation);}
+        default void activeDeep(File generation) throws Exception {active(generation);}
         void snapshot(File generation) throws Exception;
         void copy(File generation) throws Exception;
         /** Recheck fixed snapshot identity, converter version, cursors and batch receipts. */
@@ -49,6 +51,7 @@ public final class PodTakeoverCoordinator {
         default void published() {}
         /** Sanitized release diagnostics are supplied by the Android host. */
         default void failed(Phase phase, Exception error) {}
+        default void timed(String step,long nanos) {}
     }
     public interface Publisher {
         default void beforeReclassification() throws Exception {}
@@ -70,7 +73,10 @@ public final class PodTakeoverCoordinator {
     PodTakeoverCoordinator(File root, Probe probe, Converter converter, Checkpoint checkpoint,Publisher publisher) {
         this.root=root; this.probe=probe; this.converter=converter; this.checkpoint=checkpoint;this.publisher=publisher;
     }
+    private PodActiveValidation activeValidation;
+    PodTakeoverCoordinator withActiveValidation(PodActiveValidation validation){activeValidation=validation;return this;}
     public Properties run() throws Exception {
+        long runBegan=System.nanoTime();
         synchronized (PROCESS_LOCK) {
             // Read-only preflight also covers an existing empty takeover directory
             // (or empty journal). A NONE result must never create even a lock file.
@@ -99,7 +105,24 @@ public final class PodTakeoverCoordinator {
                 }
                 if (!"1".equals(p.getProperty("protocol"))) throw new IOException("protocol_unsupported");
                 Phase phase=Phase.valueOf(p.getProperty("phase"));
-                if (phase==Phase.ACTIVE) { validatePointer(p); converter.active(generation(p.getProperty("generation"))); publisher.afterActive(generation(p.getProperty("generation")));return p; }
+                if (phase==Phase.ACTIVE) {
+                    checkpoint.timed("activeJournalLock",System.nanoTime()-runBegan);
+                    long began=System.nanoTime(); validatePointer(p);checkpoint.timed("activePointer",System.nanoTime()-began);
+                    File g=generation(p.getProperty("generation"));
+                    began=System.nanoTime();
+                    try {
+                        if(activeValidation==null)converter.active(g);
+                        else activeValidation.require(g,p.getProperty("receipt"),()->converter.activeFast(g));
+                    } catch(Exception error) {
+                        if(activeValidation==null)throw error;
+                        checkpoint.failed(Phase.ACTIVE,error);
+                        p.setProperty("blockedFromPhase","ACTIVE");
+                        p.setProperty("reason","active_deep_validation_failed".equals(error.getMessage())?"active_deep_validation_failed":"active_validation_failed");
+                        save(p,Phase.BLOCKED);return p;
+                    }
+                    checkpoint.timed("activeConverters",System.nanoTime()-began);
+                    began=System.nanoTime();publisher.afterActive(g);checkpoint.timed("activePublisher",System.nanoTime()-began);return p;
+                }
                 if (phase==Phase.BLOCKED) {
                     if(!"unknown_user_files".equals(p.getProperty("reason")))return p;
                     File previous=generation(p.getProperty("generation"));
@@ -192,7 +215,12 @@ public final class PodTakeoverCoordinator {
                                 checkpoint.published();
                                 validatePointer(p);
                                 phase=Phase.ACTIVE; break;
-                            case ACTIVE: validatePointer(p); converter.active(generation);publisher.afterActive(generation);return p;
+                            case ACTIVE:
+                                validatePointer(p);
+                                try{converter.active(generation);} // READY->ACTIVE still full.
+                                catch(Exception error){if(activeValidation!=null)activeValidation.completed(generation,p.getProperty("receipt"),false);throw error;}
+                                if(activeValidation!=null)activeValidation.completed(generation,p.getProperty("receipt"),true);
+                                publisher.afterActive(generation);return p;
                             default: throw new IOException("phase_invalid");
                         }
                         save(p,phase);
@@ -243,7 +271,9 @@ public final class PodTakeoverCoordinator {
     public File activeGeneration(Properties admitted) throws IOException {
         if ("NONE".equals(admitted.getProperty("phase"))) return null;
         if (!"ACTIVE".equals(admitted.getProperty("phase"))) throw new IOException("takeover_pending");
-        validatePointer(admitted); return generation(admitted.getProperty("generation"));
+        long began=System.nanoTime();validatePointer(admitted);
+        checkpoint.timed("activeResolvePointer",System.nanoTime()-began);
+        return generation(admitted.getProperty("generation"));
     }
     private static void safeFile(File file)throws IOException {
         if(!file.getCanonicalFile().equals(file.getAbsoluteFile()))throw new IOException("takeover_symlink");

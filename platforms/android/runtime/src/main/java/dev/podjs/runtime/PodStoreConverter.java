@@ -28,10 +28,19 @@ public final class PodStoreConverter implements PodTakeoverCoordinator.Converter
     public PodStoreConverter(File sandbox,Crypto crypto,boolean rehearsal){this(sandbox,crypto,(s,b)->{},rehearsal);}
     PodStoreConverter(File sandbox,Crypto crypto,Hook hook){this(sandbox,crypto,hook,false);}
     PodStoreConverter(File sandbox,Crypto crypto,Hook hook,boolean rehearsal){this.sandbox=sandbox;this.crypto=crypto;this.hook=hook;this.rehearsal=rehearsal;}
-    public void active(File g)throws Exception {
+    private java.util.function.BiConsumer<String,Long> timings=(s,n)->{};
+    PodStoreConverter withTimings(java.util.function.BiConsumer<String,Long> sink){timings=sink;return this;}
+    public void activeFast(File g)throws Exception {
         if(!rehearsal&&json(new File(g,"stores-snapshot.json")).getString("version").endsWith("-isolated"))throw new IOException("isolated_generation_not_admissible");
+    }
+    public void active(File g)throws Exception {
+        long began=System.nanoTime();
+        if(!rehearsal&&json(new File(g,"stores-snapshot.json")).getString("version").endsWith("-isolated"))throw new IOException("isolated_generation_not_admissible");
+        timings.accept("activeStoreProvenance",System.nanoTime()-began);began=System.nanoTime();
         validateKv(json(new File(g,"podjs/podjs-kv.json")));
+        timings.accept("activeKv",System.nanoTime()-began);began=System.nanoTime();
         validateSecure(crypto.open(PodPreferenceReader.bytes(new File(g,"podjs/secure.store"))));
+        timings.accept("activeSecure",System.nanoTime()-began);
     }
     public String version(){return "watchrss-stores-3"+(rehearsal?"-isolated":"");}public boolean complete(){return false;}
     static boolean encrypted(String s){return Arrays.asList("watchrss_account_state","llm_secure_prefs","tts_secure_prefs","watchrss_cloud_keys","bili_account_store","douyin_account_store").contains(s);}
