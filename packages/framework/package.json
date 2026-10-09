@@ -64,7 +64,9 @@
     "./browser-qr-wait": "./src/browser-qr-wait.ts",
     "./round-list": "./src/round-list.ts",
     "./round-layout": "./src/safe-qr-layout.ts",
-    "./site-challenge": "./src/site-challenge.ts"
+    "./site-challenge": "./src/site-challenge.ts",
+    "./log-file": "./src/log-file.ts",
+    "./restorable-stack": "./src/restorable-stack.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",

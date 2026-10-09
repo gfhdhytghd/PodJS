@@ -138,7 +138,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/watch` | Display metrics, capabilities, lifecycle, Back/rotary events, navigation state, haptics and synchronous KV. |
 | `@podjs/framework/testing/bun-runtime` | Isolated Bun test service-pump binding; never import in a production app. |
 | `@podjs/framework/targets` | Target profiles, host ABI and capability identifiers. |
-| `@podjs/framework/services` | Cancellable native operations for files, network, input, media, text, crypto and platform services. |
+| `@podjs/framework/services` | Cancellable native operations for files, network, input, media, text, crypto and platform services; images.decodeOperation/decodeRegionOperation retain source dimensions and cancellation. |
 | `@podjs/framework/sync-state` | Versioned companion saved-state clocks, merge and persistence rules. |
 | `@podjs/framework/request-policy` | `RequestFilter`, `createRequestAllowlist`: generic request rejection hooks; app owns keys and rejection replies. |
 | `@podjs/framework/browser-qr-wait` | `BrowserQrWait`, `browserQrWaitStatus`, `BrowserQrWaitOptions`, `BrowserQrWaitStatus`: configurable QR waiting state independent of page loading; no UI rendering. |
@@ -154,7 +154,8 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/bytes` | Portable UTF-8, byte and Base64 codecs. |
 | `@podjs/framework/async-bytes` | Chunked/yielding byte codecs for bounded guest work. |
 | `@podjs/framework/watch-ui` | Progress, round-safe geometry (QR layout, top blocks), swipe action cards and confirmation dialogs. |
-| `@podjs/framework/navigation` | BackMotion, ScrollRestoration, activity/route state and automatic scrolling. |
+| `@podjs/framework/restorable-stack` | Pure bounded saved/retained stack envelopes, valid-prefix restoration and per-instance route IDs; route codecs/root/entity policy stay with the caller. |
+| `@podjs/framework/navigation` | BackMotion, ScrollRestoration, activity/route state, bounded restorable stacks with caller codecs, instance route identities and automatic scrolling. |
 | `@podjs/framework/windowed-list` | Keyed bounded visible-row selection and indexed header/body/footer sources. |
 | `@podjs/framework/keyed-memo` | Caller-owned memoized values with explicit dependency identity and clearing. |
 | `@podjs/framework/image` | File-backed RemoteImage, bounded decoder queue, texture leases and image fitting. |
@@ -167,6 +168,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/text-compat` | Compatibility text policies including `kotlinTrim` (JVM whitespace), kept independent of application labels. |
 | `@podjs/framework/startup` | JS phase tracing, content-ready gates and startup exit interpolation. |
 | `@podjs/framework/startup-overlay` | Startup overlay that stays until its exit frame finishes while content mounts. |
+| `@podjs/framework/log-file` | Bounded UTF-8 host log files with caller paths, atomic hash/commit replacement and injected or default file ports. |
 | `@podjs/framework/logging` | Configurable redaction and serialized persistent FileLogger with caller-owned storage ports. |
 | `@podjs/framework/async` | SerialWriteQueue, cancellable bounded final-write waits and target-identity exit coalescing. |
 | `@podjs/framework/editing` | Pure editing/hit-test helpers for text input. |
@@ -175,7 +177,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/image-preview` | Image preview geometry and interaction helpers. |
 | `@podjs/framework/image-tiles` | Image tile addressing and bounded preview selection. |
 | `@podjs/framework/tiled-image` | Tiled image presentation component. |
-| `@podjs/framework/cache` | Generic bounded disk cache, downloads, accounting, eviction and reference leases. |
+| `@podjs/framework/cache` | Generic bounded disk cache, downloads, accounting, eviction and reference leases; configurable default transport download/image-validation limits. |
 | `@podjs/framework/regexp` | Lazy RegExp construction to defer guest startup work. |
 | `@podjs/framework/sql` | Bounded SQL result pagination and UTF-8-safe large text reads. |
 | `@podjs/framework/frame-stream` | Bounded framed byte-stream connections with deadlines, cancellation and transfer progress. |
@@ -197,7 +199,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/text-match` | UTF-16 match ranges and measured segment/line geometry, including wrapped matches. |
 | `@podjs/framework/round-layout` | Dependency-free round-screen geometry: QR layout, `rectInsideCircle`, `safeTopBlock`. |
 
-Additional guides: [gates/volume/response/preview/matching](private-response-preview.md),
+Additional guides: [restorable stacks and host files](restorable-stack-and-host-files.md), [gates/volume/response/preview/matching](private-response-preview.md),
 [UI/navigation](watch-ui-navigation.md),
 [actions](watch-actions.md), [cache](cache.md),
 [activity/logging](activity-and-file-logging.md),

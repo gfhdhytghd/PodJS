@@ -5,3 +5,5 @@ export {ScrollRestoration,validScrollSnapshot,type ScrollRow,type ScrollRows,typ
 export {AutoScrollController,type ScrollSink} from "./auto-scroll.ts";
 
 export {RouteStateProvider,routeState,restoredSignal,booleanState,stringState,finiteState,type RouteStateOwner,type RouteStateMemory} from './route-state.ts';
+
+export {createRestorableStack,createRouteMemoryAllocator,type StackMemory,type RestorableStackOptions} from './restorable-stack.ts';

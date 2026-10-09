@@ -508,9 +508,17 @@ export const DOUYIN_AUTH_STATUS_SCRIPT = `(function(){
   }
   return {qr:qr,verifying:verifying,loading:document.readyState!=='complete',loginPanelVisible:panel};
 })()`;
+export interface ImageDecodeResult {path:string;width:number;height:number;sourceWidth?:number;sourceHeight?:number;contentWidth?:number;contentHeight?:number;trace?:{decoderOpenMs:number;decodeAndCropMs:number;padMs:number;writeRgbaMs:number}}
+export interface ImageDecodeOptions {maxDimension?:number;applyExif?:boolean;rgb565?:boolean}
+export interface ImageRegionOptions {x:number;y:number;width:number;height:number;sampleSize?:number;applyExif?:boolean;rgb565?:boolean;trace?:boolean}
 export const images = {
-  decode(path:string, maxDimension=512): Promise<{path:string;width:number;height:number}> {
-    return hostOperation<{path:string;width:number;height:number}>("image.decode", {path, maxDimension}).result;
+  /** Promise compatibility entry; cancellation-aware consumers use decodeOperation. */
+  decode(path:string,maxDimension=512):Promise<ImageDecodeResult> {return images.decodeOperation(path,{maxDimension}).result;},
+  decodeOperation(path:string,options:ImageDecodeOptions={}):HostOperation<ImageDecodeResult> {
+    return hostOperation<ImageDecodeResult>('image.decode',{path,...options,maxDimension:options.maxDimension??512});
+  },
+  decodeRegionOperation(path:string,options:ImageRegionOptions):HostOperation<ImageDecodeResult> {
+    return hostOperation<ImageDecodeResult>('image.decodeRegion',{path,...options});
   },
 };
 export const uri = {

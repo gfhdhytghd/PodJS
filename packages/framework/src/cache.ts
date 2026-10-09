@@ -1,4 +1,4 @@
-import {fileChunks,hostOperation,base64ToBytes,bytesToBase64,stringToUtf8} from './services.ts';
+import {fileChunks,hostOperation,base64ToBytes,bytesToBase64,stringToUtf8,images} from './services.ts';
 export interface CacheFile<B extends string=string> {path:string;bucket:B;size:number;modified:number}
 export interface CacheNamespace {
  /** Flat filename produced after digesting URL and sorted headers. */
@@ -22,10 +22,14 @@ export interface CacheStats<B extends string=string> {
  pinnedPaths:string[];activeWorkers:number;queuedRequests:number;downloadHandles:number;
 }
 /** Default transport retains the host's atomic http.download publication and cancellation. */
-export function defaultCachePorts():CachePorts {return {
+export function defaultCachePorts(options:{maxDownloadBytes?:number;validateImageDimension?:number}={}):CachePorts {
+ const maxBytes=options.maxDownloadBytes??16*1024*1024;
+ if(!Number.isSafeInteger(maxBytes)||maxBytes<1||(options.validateImageDimension!==undefined&&(!Number.isInteger(options.validateImageDimension)||options.validateImageDimension<1)))throw new RangeError('invalid cache transport bounds');
+ return {
  list:fileChunks.list,stat:fileChunks.stat,remove:fileChunks.remove,touch:fileChunks.touch,
  async digest(value){const result=await hostOperation<{digestBase64:string}>('crypto.hash',{algorithm:'SHA-256',dataBase64:bytesToBase64(stringToUtf8(value))}).result;return Array.from(base64ToBytes(result.digestBase64),b=>b.toString(16).padStart(2,'0')).join('');},
- download:(url,path,headers)=>hostOperation('http.download',{url,path,headers,maxBytes:16*1024*1024}),
+ download:(url,path,headers)=>hostOperation('http.download',{url,path,headers,maxBytes}),
+ ...(options.validateImageDimension===undefined?{}:{async validate(path:string){const decoded=await images.decodeOperation(path,{maxDimension:options.validateImageDimension}).result;await fileChunks.remove(decoded.path);}}),
 };}
 const safePath=(path:string)=>!!path&&!path.startsWith('/')&&!/[\\\x00]/.test(path)&&path.split('/').every(part=>!!part&&part!=='.'&&part!=='..');
 export interface CacheEntry {path:string;file:boolean;directory:boolean;size:number;modified:number}
