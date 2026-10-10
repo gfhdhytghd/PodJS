@@ -787,8 +787,9 @@ export const debugAcoustic = Object.freeze({
 (globalThis as {__podYieldCodecTurn?:()=>Promise<void>}).__podYieldCodecTurn=()=>delay(1).result;
 
 export interface DebugExternalEvent {deadline?:number;id:number;kind:'intent'|'dump';action:string;extras:Record<string,string|number|boolean>;args:string[]}
+export interface DebugExternalReply {code?:number;data?:string;result?:{code:number;extras?:Record<string,string|number|boolean>}}
 export const debugExternal={
- async listen(handler:(event:DebugExternalEvent)=>Promise<{code?:number;data?:string}>):Promise<()=>void>{
+ async listen(handler:(event:DebugExternalEvent)=>Promise<DebugExternalReply>):Promise<()=>void>{
   if(!(await application.buildInfo()).debugBuild)throw new HostServiceError('unavailable','Debug external interface unavailable');
   let closed=false;
   const off=__onHostEvent(event=>{
