@@ -11,6 +11,8 @@ python3 scripts/test-recovery-native-backup.py
 java -ea -cp "$classes" dev.podjs.takeover.NativeBackupTest
 javac -d "$classes" platforms/android/runtime/src/main/java/dev/podjs/takeover/NativeBackup.java platforms/android/runtime/src/main/java/dev/podjs/takeover/TakeoverDigest.java tests/java/dev/podjs/takeover/TakeoverDigestTest.java
 java -ea -cp "$classes" dev.podjs.takeover.TakeoverDigestTest tests/fixtures/takeover-digest-v1.tsv
+javac -cp "$classes" -d "$classes" platforms/android/runtime/src/test/java/dev/podjs/takeover/LegacyTakeoverDigest.java platforms/android/runtime/src/test/java/dev/podjs/takeover/DigestDifferential.java
+java -ea -cp "$classes" dev.podjs.takeover.DigestDifferential
 javac -d "$classes" platforms/android/runtime/src/main/java/dev/podjs/runtime/BootSurface.java tests/java/dev/podjs/runtime/BootSurfaceTest.java
 java -ea -cp "$classes" dev.podjs.runtime.BootSurfaceTest
 bash scripts/test-room-v18.sh
