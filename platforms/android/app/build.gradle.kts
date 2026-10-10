@@ -4,6 +4,7 @@ val podAppName = providers.gradleProperty("podAppName").orElse("PodJS Gallery").
 val podVersionName = providers.gradleProperty("podVersionName").orElse("0.1.0").get()
 val podVersionCode = providers.gradleProperty("podVersionCode").map(String::toInt).orElse(1).get()
 val podDistDir = providers.gradleProperty("podDistDir").orElse("../../../dist/android-watch").get()
+val podGeneratedManifest = file("$podDistDir/pod-android/AndroidManifest.xml")
 val podSplashRes = file("$podDistDir/pod-android-res")
 val podAppTheme = if (file("$podSplashRes/values/pod_splash.xml").isFile) "@style/Theme.PodJS.Splash" else providers.gradleProperty("podAppTheme").orElse("@style/AppTheme").get()
 val podCleartextTraffic = providers.gradleProperty("podCleartextTraffic").orElse("false").get()
@@ -26,6 +27,7 @@ android {
             sourceSets["release"].java.srcDir("$directory/java")
         }
     }
+    if (podGeneratedManifest.isFile) sourceSets["main"].manifest.srcFile(podGeneratedManifest)
     sourceSets["main"].assets.srcDir(podDistDir)
     sourceSets["main"].res.srcDir(podSplashRes)
     providers.gradleProperty("podResDir").orNull?.let { sourceSets["main"].res.srcDir(it) }
