@@ -3,6 +3,7 @@ import { createProject } from "./create.ts";
 import {writeDebugExternal} from './debug-external.ts';
 import { existsSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import {writeAndroidSplash} from './android-splash.ts';
 import { createHash } from "node:crypto";
 import { cac } from "cac";
 import { POD_TARGETS, type PodTargetProfile } from "../../framework/src/targets.ts";
@@ -163,6 +164,7 @@ async function build(target: Target, project?: ResolvedPodProject): Promise<Reso
   };
   writeFileSync(join(out, "pod.manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   writeFileSync(join(out, "pod.workmanager.json"), workManagerTakeoverAsset(project?.config.appId ?? "dev.podjs.androidwatch", project?.config.android?.workManagerTakeover));
+  writeAndroidSplash(out,project?.config.android?.splash,project?.androidTheme);
   console.log(`pod: built ${profile.id} -> ${out}`);
   return project;
 }

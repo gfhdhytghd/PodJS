@@ -39,6 +39,7 @@ struct Host {
   podjs_perf::FramePerfWindow framePerf;
   podjs_gpu::RendererTimingRecorder hostDiagnostics;
   PodRuntime* runtime{};
+  bool contentSubmitted{};
   MappedAsset pak;
   std::unique_ptr<RenderThread> renderer;
   TouchSnapshotQueue touches;
@@ -499,6 +500,7 @@ static void renderFrame(Host* h, int64_t frameTimeNanos) {
       snapshotMs += monoMs()-pinBegan;
       const double handoffBegan = monoMs();
       queued=h->renderer->handoff(std::move(snapshot), sequence);
+      if(queued && list.word_count>0)h->contentSubmitted=true;
       submitMs = monoMs()-handoffBegan;
 
     }
@@ -618,6 +620,7 @@ static void renderFrame(Host* h, int64_t frameTimeNanos) {
   hostTiming.setFlags(queued ? int64_t{1}<<19 : 0);
   hostTiming.finish(result==0,result);
 }
+extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeHasContent(JNIEnv*,jclass,jlong p){auto*h=reinterpret_cast<Host*>(p);return h&&h->contentSubmitted?JNI_TRUE:JNI_FALSE;}
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeFrame(JNIEnv*,jclass,jlong p,jlong frameTimeNanos) {
   renderFrame(reinterpret_cast<Host*>(p),frameTimeNanos);
 }

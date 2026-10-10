@@ -166,6 +166,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/json` | Bounded JSON projection without materializing unused fields. |
 | `@podjs/framework/json-numbers` | JSON parsing that keeps lexical number tokens (`1` vs `1.0`). |
 | `@podjs/framework/text-compat` | Compatibility text policies including `kotlinTrim` (JVM whitespace), kept independent of application labels. |
+| `@podjs/framework/splash` | Android system/AndroidX splash hold and release; bounded Activity lifetime. |
 | `@podjs/framework/startup` | JS phase tracing, content-ready gates and startup exit interpolation. |
 | `@podjs/framework/startup-overlay` | Startup overlay that stays until its exit frame finishes while content mounts. |
 | `@podjs/framework/log-file` | Bounded UTF-8 host log files with caller paths, atomic hash/commit replacement and injected or default file ports. |

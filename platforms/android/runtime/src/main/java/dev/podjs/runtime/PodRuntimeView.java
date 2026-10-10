@@ -470,6 +470,9 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         try { if (host != 0) nativeResize(host, surface, w, h); } finally { surface.release(); }
     }
     @Override public void onSurfaceTextureUpdated(SurfaceTexture texture) {
+        if(host!=0&&nativeHasContent(host)){
+            PodSplash splash=PodSplash.of(getContext());if(splash!=null&&splash.keeping())splash.texturePresented();
+        }
         if (!firstTextureLogged) {
             firstTextureLogged = true;
             PodActiveValidationAndroid.afterFirstFrame(getContext());
@@ -725,6 +728,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private static native void nativeInput(long host, int[] ids, float[] xy, int count, int rotaryMilliDegrees);
     private static native void nativePumpServices(long host);
     private static native void nativePumpServiceResults(long host);
+    private static native boolean nativeHasContent(long host);
     private static native void nativeFrame(long host, long frameTimeNanos);
     private static native boolean nativeBeginRendererTiming(long host,int capacity);
     private static native long[] nativeEndRendererTiming(long host);

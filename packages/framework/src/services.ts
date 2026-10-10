@@ -49,6 +49,7 @@ const methods: Record<string, PodCapabilityId> = {
   "takeover.status": "host.takeover",
   "debug.external.subscribe":"host.lifecycle", "debug.external.unsubscribe":"host.lifecycle", "debug.external.reply":"host.lifecycle",
   "app.buildInfo": "host.lifecycle",
+  "splash.hold": "host.lifecycle", "splash.release": "host.lifecycle",
   "cloud.schedule":"host.lifecycle", "cloud.cancel":"host.lifecycle", "cloud.acquire":"host.lifecycle", "cloud.release":"host.lifecycle",
   "debug.memoryStats": "host.lifecycle",
   "debug.performance.start": "host.lifecycle", "debug.performance.read": "host.lifecycle", "debug.performance.stop": "host.lifecycle",

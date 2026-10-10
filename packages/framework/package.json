@@ -31,6 +31,7 @@
     "./xml": "./src/xml.ts",
     "./json": "./src/json.ts",
     "./text-compat": "./src/text-compat.ts",
+    "./splash": "./src/splash.ts",
     "./startup": "./src/startup.ts",
     "./logging": "./src/logging.ts",
     "./async": "./src/async.ts",

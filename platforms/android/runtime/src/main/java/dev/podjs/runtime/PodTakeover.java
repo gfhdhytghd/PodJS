@@ -166,7 +166,7 @@ public final class PodTakeover {
         }
         void update(JSONObject state) {
             android.app.Activity owner=activity.get();if(owner==null)return;
-            owner.runOnUiThread(()->{if(!owner.isFinishing()&&!owner.isDestroyed())view.render(state,running.get());});
+            owner.runOnUiThread(()->{if(!owner.isFinishing()&&!owner.isDestroyed()){view.render(state,running.get());PodSplash splash=PodSplash.of(owner);if(splash!=null)splash.recoveryStatus(state);}});
         }
         void start() {
             if(!running.compareAndSet(false,true))return;
