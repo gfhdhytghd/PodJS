@@ -175,4 +175,29 @@ public class PodWorkManagerTakeoverTest {
         assertNull(PodWorkManagerTakeover.factory(context).createWorker(context,CurrentWorker.class.getName(),null));
         assertTrue(PodWorkManagerTakeover.completedInProcess(context,new File(context.getApplicationInfo().dataDir,"files/podjs")));
     }
+    private void coldProcess(){try{java.lang.reflect.Field f=PodWorkManagerTakeover.class.getDeclaredField("completed");f.setAccessible(true);((Set<?>)f.get(null)).clear();}catch(Exception e){throw new RuntimeException(e);}}
+    @Test public void verifiedColdReceiptDoesNotAcquireWorkManagerButMissingReceiptDoes()throws Exception {
+        String generation="g-"+UUID.randomUUID();java.util.concurrent.atomic.AtomicInteger acquired=new java.util.concurrent.atomic.AtomicInteger();
+        PodWorkManagerTakeover.WorkProvider provider=()->{acquired.incrementAndGet();return work;};
+        PodWorkManagerTakeover.retire(context,generation,legacy,provider);assertEquals(1,acquired.get());coldProcess();
+        OneTimeWorkRequest later=old("unused");work.enqueueUniqueWork("native-sync",ExistingWorkPolicy.REPLACE,later).getResult().get();
+        PodWorkManagerTakeover.retire(context,generation,legacy,(PodWorkManagerTakeover.WorkProvider)()->{throw new AssertionError("cold receipt opened WorkManager");});
+        assertEquals(WorkInfo.State.ENQUEUED,state(later.getId()));
+    }
+    @Test public void corruptColdReceiptBlocksWithoutOpeningWorkManager()throws Exception {
+        String generation="g-"+UUID.randomUUID();PodWorkManagerTakeover.retire(context,generation,legacy,work);coldProcess();
+        File receipt=new File(PodTakeover.sandbox(context),"no_backup/podjs-workmanager-takeover/"+generation+"-"+legacy.fingerprint+".done");Files.write(receipt.toPath(),new byte[]{1});
+        try{PodWorkManagerTakeover.retire(context,generation,legacy,(PodWorkManagerTakeover.WorkProvider)()->{throw new AssertionError("corrupt receipt opened WorkManager");});fail("corrupt receipt admitted");}
+        catch(java.io.IOException expected){assertEquals("legacy_receipt_invalid",expected.getMessage());}
+    }
+    @Test public void compactConfigBindsPackageAndRejectsMalformedOrOversizedInput()throws Exception {
+        String body=new JSONObject().put("protocol",1).put("androidWorkManagerTakeover",new JSONObject().put("nativeAppId",legacy.appId).put("workerClasses",new JSONArray(legacy.classes)).put("uniqueWorkNames",new JSONArray(legacy.names)).put("tags",new JSONArray(legacy.tags))).toString();
+        assertEquals(legacy.fingerprint,PodWorkManagerTakeover.readConfig(new java.io.ByteArrayInputStream(body.getBytes("UTF-8")),true,legacy.appId).fingerprint);
+        assertNull(PodWorkManagerTakeover.readConfig(new java.io.ByteArrayInputStream(body.getBytes("UTF-8")),true,"com.example.coexist"));
+        assertNull(PodWorkManagerTakeover.readConfig(new java.io.ByteArrayInputStream("{\"protocol\":1,\"androidWorkManagerTakeover\":null}".getBytes("UTF-8")),true,legacy.appId));
+        for(String bad:new String[]{"{}","{\"protocol\":2,\"androidWorkManagerTakeover\":null}","{\"protocol\":1,\"androidWorkManagerTakeover\":null,\"extra\":1}","{\"protocol\":1,\"androidWorkManagerTakeover\":7}",body+" ".repeat(65536)}){
+            try{PodWorkManagerTakeover.readConfig(new java.io.ByteArrayInputStream(bad.getBytes("UTF-8")),true,legacy.appId);fail("bad compact config accepted");}catch(Exception expected){}
+        }
+    }
+
 }

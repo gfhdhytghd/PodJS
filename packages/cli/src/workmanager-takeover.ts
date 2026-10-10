@@ -32,3 +32,11 @@ export function validateWorkManagerTakeover(raw: unknown): WorkManagerTakeoverCo
 export function manifestWorkManagerTakeover(appId: string, config?: WorkManagerTakeoverConfig): WorkManagerTakeoverConfig | undefined {
   return config?.nativeAppId === appId ? config : undefined;
 }
+
+/** Bounded host configuration, independent of the large guest asset manifest. */
+export function workManagerTakeoverAsset(appId: string, config?: WorkManagerTakeoverConfig): string {
+  const selected=manifestWorkManagerTakeover(appId,config);
+  const body=JSON.stringify({protocol:1,androidWorkManagerTakeover:selected?validateWorkManagerTakeover(selected):null})+'\n';
+  if(Buffer.byteLength(body,'utf8')>65536)throw Error('android.workManagerTakeover asset too large');
+  return body;
+}

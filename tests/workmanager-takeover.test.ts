@@ -2,7 +2,7 @@ import {expect, test} from 'bun:test';
 import {mkdtempSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {manifestWorkManagerTakeover, validateWorkManagerTakeover, type WorkManagerTakeoverConfig} from '../packages/cli/src/workmanager-takeover.ts';
+import {workManagerTakeoverAsset, manifestWorkManagerTakeover, validateWorkManagerTakeover, type WorkManagerTakeoverConfig} from '../packages/cli/src/workmanager-takeover.ts';
 import {resolvePodProject} from '../packages/cli/src/project.ts';
 import {POD_TARGETS} from '../packages/framework/src/targets.ts';
 
@@ -26,4 +26,13 @@ test('only the package replacing the native app carries the takeover manifest en
   expect(manifestWorkManagerTakeover('com.example.old',config)).toEqual(config);
   expect(manifestWorkManagerTakeover('com.example.old.podjs',config)).toBeUndefined();
   expect(manifestWorkManagerTakeover('com.example.old',undefined)).toBeUndefined();
+});
+
+test('compact scheduler asset binds the selected owner configuration and encodes absence',()=>{
+  expect(JSON.parse(workManagerTakeoverAsset('com.example.old',config))).toEqual({protocol:1,androidWorkManagerTakeover:config});
+  expect(JSON.parse(workManagerTakeoverAsset('com.example.old.podjs',config))).toEqual({protocol:1,androidWorkManagerTakeover:null});
+  expect(JSON.parse(workManagerTakeoverAsset('com.example.old'))).toEqual({protocol:1,androidWorkManagerTakeover:null});
+  const worst={nativeAppId:'com.example.old',workerClasses:Array.from({length:64},(_,i)=>'com.example.'+'W'.repeat(235)+i),uniqueWorkNames:Array.from({length:64},(_,i)=>'n'.repeat(252)+i),tags:Array.from({length:64},(_,i)=>'t'.repeat(252)+i)};
+  expect(Buffer.byteLength(workManagerTakeoverAsset('com.example.old',worst))).toBeLessThanOrEqual(65536);
+  expect(()=>workManagerTakeoverAsset('com.example.old',{...config,workerClasses:[]})).toThrow('workManagerTakeover');
 });

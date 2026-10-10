@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { cac } from "cac";
 import { POD_TARGETS, type PodTargetProfile } from "../../framework/src/targets.ts";
 import { resolvePodProject, type ResolvedPodProject } from "./project.ts";
-import { manifestWorkManagerTakeover } from "./workmanager-takeover.ts";
+import { workManagerTakeoverAsset, manifestWorkManagerTakeover } from "./workmanager-takeover.ts";
 import { buildBackground } from "./background-build.ts";
 import { syncProjectAssets } from "./project-assets.ts";
 import { androidPackagePlan, androidPackageOptions, signAndroidApk, rotateAndroidSigning, type RotateOptions } from "./android-signing.ts";
@@ -162,6 +162,7 @@ async function build(target: Target, project?: ResolvedPodProject): Promise<Reso
     ...(Object.keys(assets).length ? { assets } : {}),
   };
   writeFileSync(join(out, "pod.manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  writeFileSync(join(out, "pod.workmanager.json"), workManagerTakeoverAsset(project?.config.appId ?? "dev.podjs.androidwatch", project?.config.android?.workManagerTakeover));
   console.log(`pod: built ${profile.id} -> ${out}`);
   return project;
 }

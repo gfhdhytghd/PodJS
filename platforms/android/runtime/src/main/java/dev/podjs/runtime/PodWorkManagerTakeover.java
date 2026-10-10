@@ -55,19 +55,29 @@ public final class PodWorkManagerTakeover {
     private static synchronized Config installed(Context c) {
         String key=c.getApplicationInfo().dataDir;
         if(configs.containsKey(key))return configs.get(key);
-        JSONObject manifest;
-        try(InputStream in=c.getAssets().open("pod.manifest.json")) {
-            ByteArrayOutputStream bytes=new ByteArrayOutputStream();byte[] buffer=new byte[4096];int n;
-            while((n=in.read(buffer))!=-1){if(bytes.size()+n>1024*1024)throw new IOException("legacy_config_invalid");bytes.write(buffer,0,n);}
-            manifest=new JSONObject(bytes.toString("UTF-8"));
-        } catch(FileNotFoundException absent) { configs.put(key,null);return null; }
-        catch(Exception invalid) { throw new IllegalStateException("legacy_config_invalid"); }
-        Config config=null;
-        if(manifest.has("androidWorkManagerTakeover"))try {
-            Config parsed=new Config(manifest.getJSONObject("androidWorkManagerTakeover"));
-            if(c.getPackageName().equals(parsed.appId))config=parsed;
-        } catch(Exception invalid) { throw new IllegalStateException("legacy_config_invalid"); }
+        Config config;
+        // New APKs carry only the owner-selected scheduler identities here.
+        // An absent asset supports old packages; malformed compact data never
+        // falls back to a permissive or stale full manifest.
+        try(InputStream in=c.getAssets().open("pod.workmanager.json")) {
+            config=readConfig(in,true,c.getPackageName());
+        } catch(FileNotFoundException oldPackage) {
+            try(InputStream in=c.getAssets().open("pod.manifest.json")) {
+                config=readConfig(in,false,c.getPackageName());
+            } catch(FileNotFoundException absent) {configs.put(key,null);return null;}
+            catch(Exception invalid) {throw new IllegalStateException("legacy_config_invalid");}
+        } catch(Exception invalid) {throw new IllegalStateException("legacy_config_invalid");}
         configs.put(key,config);return config;
+    }
+    static Config readConfig(InputStream in,boolean compact,String packageName)throws Exception {
+        int limit=compact?65536:1024*1024;
+        ByteArrayOutputStream bytes=new ByteArrayOutputStream();byte[] buffer=new byte[4096];int n;
+        while((n=in.read(buffer))!=-1){if(bytes.size()+n>limit)throw new IOException("legacy_config_invalid");bytes.write(buffer,0,n);}
+        JSONObject manifest=new JSONObject(bytes.toString("UTF-8"));
+        if(compact&&(manifest.length()!=2||manifest.getInt("protocol")!=1||!manifest.has("androidWorkManagerTakeover")))throw new IOException("legacy_config_invalid");
+        if(!manifest.has("androidWorkManagerTakeover")||(compact&&manifest.isNull("androidWorkManagerTakeover")))return null;
+        Config parsed=new Config(manifest.getJSONObject("androidWorkManagerTakeover"));
+        return packageName.equals(parsed.appId)?parsed:null;
     }
     public static WorkerFactory factory(Context c) {return factory(installed(c));}
     static WorkerFactory factory(Config config) {
@@ -94,16 +104,24 @@ public final class PodWorkManagerTakeover {
     }
     private static String key(Context c,String generation,Config config){return c.getApplicationInfo().dataDir+":"+generation+":"+config.fingerprint;}
     static void afterAdmission(Context c,String generation)throws Exception {
-        Config config=installed(c);if(config!=null)retire(c,generation,config,WorkManager.getInstance(c));
+        long began=System.nanoTime();Config config=installed(c);
+        // Routine data/files/database lookups after admission stay quiet.
+        if(config==null||completed.contains(key(c,generation,config)))return;
+        PodTakeoverDiagnostics.timed("activeWorkConfig",System.nanoTime()-began);
+        began=System.nanoTime();retire(c,generation,config,()->WorkManager.getInstance(c));PodTakeoverDiagnostics.timed("activeWorkRetirement",System.nanoTime()-began);
     }
     /** IO-thread only. WorkManager operations and the receipt are awaited in order.
      * Crash before receipt: replay safe cancellation. Crash after: never cancel new work.
      * Receipt and lock writes are in a new PodJS-owned no_backup directory.
      */
     static void retire(Context c,String generation,Config config,WorkManager work)throws Exception {
+        retire(c,generation,config,()->work);
+    }
+    interface WorkProvider { WorkManager get(); }
+    static void retire(Context c,String generation,Config config,WorkProvider work)throws Exception {
         synchronized(CLEANUP_LOCK){retireLocked(c,generation,config,work);}
     }
-    private static void retireLocked(Context c,String generation,Config config,WorkManager work)throws Exception {
+    private static void retireLocked(Context c,String generation,Config config,WorkProvider provider)throws Exception {
         if(!generation.matches("g-[A-Za-z0-9-]+"))throw new IOException("legacy_generation_invalid");
         String key=key(c,generation,config);if(completed.contains(key))return;
         // Context's trusted dataDir may itself be an Android mount alias. Resolve it once,
@@ -119,6 +137,9 @@ public final class PodWorkManagerTakeover {
             if(receipt.exists()||new File(receipt+".bak").exists()) {
                 if(!Arrays.equals(atomic.readFully(),config.fingerprint.getBytes(StandardCharsets.US_ASCII)))throw new IOException("legacy_receipt_invalid");
             } else {
+                // An existing verified receipt means the old cancellation is
+                // complete. Do not open Room/WorkManager merely to read it.
+                WorkManager work=provider.get();
                 for(String name:config.names)work.cancelUniqueWork(name).getResult().get(30,TimeUnit.SECONDS);
                 // WorkManager adds the worker class itself as a tag, including one-shot work.
                 Set<String> tags=new LinkedHashSet<>(config.tags);tags.addAll(config.classes);
