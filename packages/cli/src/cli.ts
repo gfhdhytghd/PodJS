@@ -3,6 +3,7 @@ import { createProject } from "./create.ts";
 import {writeDebugExternal} from './debug-external.ts';
 import { existsSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import {writeAndroidManifest} from './android-manifest.ts';
 import {writeAndroidSplash} from './android-splash.ts';
 import { createHash } from "node:crypto";
 import { cac } from "cac";
@@ -165,6 +166,10 @@ async function build(target: Target, project?: ResolvedPodProject): Promise<Reso
   writeFileSync(join(out, "pod.manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   writeFileSync(join(out, "pod.workmanager.json"), workManagerTakeoverAsset(project?.config.appId ?? "dev.podjs.androidwatch", project?.config.android?.workManagerTakeover));
   writeAndroidSplash(out,project?.config.android?.splash,project?.androidTheme);
+  if (target === "android-watch" || target === "wearos-watch") {
+    const platform = target === "android-watch" ? "android" : "wearos";
+    writeAndroidManifest(out, readFileSync(join(ROOT, "platforms", platform, "app/src/main/AndroidManifest.xml"), "utf8"), project?.config.capabilities ?? []);
+  }
   console.log(`pod: built ${profile.id} -> ${out}`);
   return project;
 }
