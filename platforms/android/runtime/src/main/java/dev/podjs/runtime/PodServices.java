@@ -470,6 +470,19 @@ final class PodServices implements Closeable {
             } catch(Exception error) { if(requests.remove(id,request))reply(id,true,JSONObject.NULL,null,null); }
             return;
         }
+        if ("splash.hold".equals(method)||"splash.release".equals(method)) {
+            Runnable operation=()->{
+                if(!requests.remove(id,request))return;
+                try {
+                    String owner=args.getString("owner");if(!owner.matches("[A-Za-z0-9_.:-]{1,128}"))throw new IllegalArgumentException("Invalid splash owner");
+                    PodSplash splash=PodSplash.of(context);
+                    if(splash==null){failure(id,"unsupported","No configured Activity splash");return;}
+                    if("splash.hold".equals(method))splash.hold(owner);else splash.release(owner);
+                    reply(id,true,JSONObject.NULL,null,null);
+                }catch(Exception error){failure(id,"invalid_argument","Invalid splash operation");}
+            };
+            if(Looper.myLooper()==Looper.getMainLooper())operation.run();else main.post(operation);return;
+        }
         if ("app.buildInfo".equals(method)) {
             if (!requests.remove(id, request)) return;
             try {

@@ -1,3 +1,4 @@
+import {validateAndroidSplash,type AndroidSplash} from './android-splash.ts';
 import {validateWorkManagerTakeover,type WorkManagerTakeoverConfig} from './workmanager-takeover.ts';
 import {validateDebugExternal,type DebugExternalConfig} from './debug-external.ts';
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -49,7 +50,7 @@ export interface PodProjectConfig {
   /** Omit duplicate function source strings, retaining error locations.
    * Opt in only if Function.toString source introspection is unused. */
   bytecode?: { stripSource: boolean };
-  android?: { workManagerTakeover?: WorkManagerTakeoverConfig; debugExternal?: DebugExternalConfig; resources?: string; theme?: string; cleartextTraffic?: boolean; signing?: AndroidSigning; takeover?: { sourceVersionCode: number; purgeBackupAfter?: number } };
+  android?: { splash?: AndroidSplash; workManagerTakeover?: WorkManagerTakeoverConfig; debugExternal?: DebugExternalConfig; resources?: string; theme?: string; cleartextTraffic?: boolean; signing?: AndroidSigning; takeover?: { sourceVersionCode: number; purgeBackupAfter?: number } };
 }
 
 export interface ResolvedPodProject {
@@ -194,6 +195,7 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
     if (!value.android || typeof value.android !== "object" || Array.isArray(value.android)) invalid("android must be an object");
     const candidate = value.android as Record<string, unknown>;
     android = {};
+    if(candidate.splash!==undefined)android.splash=validateAndroidSplash(candidate.splash);
     if(candidate.workManagerTakeover!==undefined)android.workManagerTakeover=validateWorkManagerTakeover(candidate.workManagerTakeover);
     if(candidate.debugExternal!==undefined)android.debugExternal=validateDebugExternal(candidate.debugExternal);
     if (candidate.resources !== undefined) {

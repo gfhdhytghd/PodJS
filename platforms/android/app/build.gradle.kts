@@ -4,8 +4,9 @@ val podAppName = providers.gradleProperty("podAppName").orElse("PodJS Gallery").
 val podVersionName = providers.gradleProperty("podVersionName").orElse("0.1.0").get()
 val podVersionCode = providers.gradleProperty("podVersionCode").map(String::toInt).orElse(1).get()
 val podDistDir = providers.gradleProperty("podDistDir").orElse("../../../dist/android-watch").get()
+val podSplashRes = file("$podDistDir/pod-android-res")
+val podAppTheme = if (file("$podSplashRes/values/pod_splash.xml").isFile) "@style/Theme.PodJS.Splash" else providers.gradleProperty("podAppTheme").orElse("@style/AppTheme").get()
 val podCleartextTraffic = providers.gradleProperty("podCleartextTraffic").orElse("false").get()
-val podAppTheme = providers.gradleProperty("podAppTheme").orElse("@style/AppTheme").get()
 android {
     // Stored bytecode lets AAsset_getBuffer map it without inflate/copy at boot.
     androidResources { noCompress += listOf("pak", "qbc") }
@@ -26,6 +27,7 @@ android {
         }
     }
     sourceSets["main"].assets.srcDir(podDistDir)
+    sourceSets["main"].res.srcDir(podSplashRes)
     providers.gradleProperty("podResDir").orNull?.let { sourceSets["main"].res.srcDir(it) }
     providers.gradleProperty("podTestAssetsDir").orNull?.let { sourceSets["androidTest"].assets.srcDir(it) }
     providers.gradleProperty("podTestSourceDir").orNull?.let { sourceSets["androidTest"].java.srcDir(it) }

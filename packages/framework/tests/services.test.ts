@@ -665,3 +665,14 @@ for(const terminal of ['success','error','cancel'] as const)test(`browser QR wai
  expect(waits.at(-1)).toEqual({visible:false,message:'Wait for QR'});const count=statuses.length;
  status({type:'qrCleared'});expect(statuses).toHaveLength(count);expect(waits.at(-1)).toEqual({visible:false,message:'Wait for QR'});
 });
+
+const splash=await import('../src/splash.ts');
+test('splash API uses normal lifecycle host services, validates owners, and propagates unsupported',async()=>{
+ await expect(splash.hold()).rejects.toMatchObject({code:'unsupported'});
+ host.capabilities=()=>JSON.stringify(['host.lifecycle']);
+ for(const [run,method] of [[splash.hold,'splash.hold'],[splash.release,'splash.release']] as const){
+  const result=run(),request=emitted.at(-1)!;expect(request).toMatchObject({method,args:{owner:'guest'}});
+  events.push({t:'service.result',id:request.id,ok:true,value:null});api.__pumpPodEvents();await result;
+ }
+ expect(()=>splash.hold('<bad>')).toThrow('Invalid splash owner');
+});
