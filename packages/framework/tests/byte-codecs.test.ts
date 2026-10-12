@@ -30,3 +30,36 @@ test('bounded optional host/rejection paths, ownership and cancellation at sched
   sizes.length=0;await expect(encodeUtf8Async(text,'strict',{cancelled:()=>true})).rejects.toThrow();expect(sizes).toHaveLength(0);
  }finally{root.pod=previous;}
 });
+
+test('fast codec pieces amortize scheduler waits while large streams remain bounded and cancellable',async()=>{
+ const root=globalThis as any,previous=root.pod;let turns=0;
+ try{
+  root.pod={encodeUtf8Chunk:(s:string)=>new TextEncoder().encode(s),decodeUtf8:(b:Uint8Array)=>new TextDecoder('utf8',{fatal:true}).decode(b)};
+  const text='a'.repeat(374001),options={yield:async()=>{turns++;}};
+  const bytes=await encodeUtf8Async(text,'strict',options);expect(bytes).toEqual(new TextEncoder().encode(text));expect(turns).toBeGreaterThan(0);expect(turns).toBeLessThan(92);
+  turns=0;expect(await decodeUtf8Async(bytes,options)).toBe(text);expect(turns).toBeGreaterThan(0);expect(turns).toBeLessThan(92);
+  let checks=0;await expect(encodeUtf8Async(text,'strict',{cancelled:()=>++checks>10,yield:async()=>{}})).rejects.toThrow('cancelled');
+ }finally{root.pod=previous;}
+});
+
+test('optional SHA256 bridge keeps bounded views and rejects malformed/absent results',async()=>{
+ const {sha256Bytes}=await import('../src/bytes.ts');const root=globalThis as any,old=root.pod;
+ try{
+  delete root.pod;expect(sha256Bytes(new Uint8Array([1]))).toBeNull();
+  let input:Uint8Array|undefined;root.pod={sha256Bytes:(b:Uint8Array)=>{input=b;return new Uint8Array(32).fill(9);}};
+  const view=new Uint8Array([8,1,2,7]).subarray(1,3);expect(sha256Bytes(view)).toEqual(new Uint8Array(32).fill(9));expect(input).toBe(view);
+  input=undefined;expect(sha256Bytes(new Uint8Array(256*1024+1))).toBeNull();expect(input).toBeUndefined();
+  for(const value of [null,undefined]){root.pod={sha256Bytes:()=>value};expect(sha256Bytes(view)).toBeNull();}
+  for(const value of [new Uint8Array(31),new Array(32),3]){root.pod={sha256Bytes:()=>value};expect(()=>sha256Bytes(view)).toThrow('Invalid native SHA-256 digest');}
+ }finally{root.pod=old;}
+});
+
+test('optional bounded gzip view decode rejects malformed bridge results and keeps an absent-host fallback',async()=>{
+ const {gunzipBytes}=await import('../src/bytes.ts');const root=globalThis as any,old=root.pod;
+ try{
+  delete root.pod;expect(gunzipBytes(new Uint8Array())).toBeNull();let got:Uint8Array|undefined;
+  root.pod={gunzipBytes:(b:Uint8Array)=>{got=b;return new Uint8Array([1,2]);}};const view=new Uint8Array([9,3,4,8]).subarray(1,3);expect(gunzipBytes(view)).toEqual(new Uint8Array([1,2]));expect(got).toBe(view);
+  got=undefined;expect(gunzipBytes(new Uint8Array(256*1024+1))).toBeNull();expect(got).toBeUndefined();
+  root.pod={gunzipBytes:()=>null};expect(gunzipBytes(view)).toBeNull();root.pod={gunzipBytes:()=>new Uint8Array(256*1024+1)};expect(()=>gunzipBytes(view)).toThrow('Invalid native gzip result');
+ }finally{root.pod=old;}
+});

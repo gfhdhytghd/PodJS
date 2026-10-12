@@ -28,3 +28,11 @@ test('poison, resumable EOF and permanent finish are explicit independent polici
  const poison=createFrameFacade({...options,decodeBody:()=>{throw new SyntaxError('opaque decoder failure');},errors:{failed:()=>new Error('example poison')}});
  const p=new poison.FrameDecoder();expect(()=>p.push(frame)).toThrow(SyntaxError);expect(()=>p.push(new Uint8Array())).toThrow('example poison');expect(()=>p.finish()).toThrow('example poison');
 });
+
+test('frame timing separates codec and IO clocks; observer errors never change bytes',async()=>{
+ const {StreamFrameConnection}=await import('../src/frame-stream.ts');let now=0,offset=0;const raw=Uint8Array.of(0,0,0,1,7),writes:number[]=[];
+ const stream={read:async(max:number)=>{now+=3;const b=raw.slice(offset,offset+max);offset+=b.length;return b.length?b:null;},write:async(b:Uint8Array)=>{now+=5;writes.push(...b);},close:async()=>{}};
+ const conn=new StreamFrameConnection(stream,{maxFrameBytes:100,encode:async()=>{now+=11;return raw;},decode:async()=>{now+=13;return 7;}},()=>now),samples:any[]=[];
+ conn.setFrameTiming(sample=>{samples.push(sample);throw Error('observer');});expect(await conn.readFrame(1000)).toBe(7);await conn.writeFrame(7);expect(writes).toEqual([...raw]);
+ expect(samples).toEqual([{direction:'read',bytes:5,readMs:6,decodeMs:13,encodeMs:0,writeMs:0},{direction:'write',bytes:5,readMs:0,decodeMs:0,encodeMs:11,writeMs:10}]);await conn.close();
+});

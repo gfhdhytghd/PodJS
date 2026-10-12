@@ -47,19 +47,26 @@ final class PodBleDiscoveryServices implements Closeable {
         Read read=new Read(scanner,advertised,manufacturer,marker,service,characteristic,args.optBoolean("bondedOnly",true));
         synchronized(this){if(closed)throw new IllegalStateException("BLE discovery closed");if(reads.size()>=4)throw new IllegalStateException("Too many BLE discovery requests");reads.add(read);}
         cancellation.setOnCancelListener(read::close);
+        long began=SystemClock.elapsedRealtime(),scanned=began;String stage="scan";
         try{
             cancellation.throwIfCanceled();read.startScan();
             BluetoothDevice device;
             try{device=read.awaitDevice(scanTimeout);}finally{read.stopScan();}
-            cancellation.throwIfCanceled();read.startGatt(device);byte[] bytes=read.awaitBytes(readTimeout);cancellation.throwIfCanceled();
+            scanned=SystemClock.elapsedRealtime();stage="gatt";cancellation.throwIfCanceled();read.startGatt(device);byte[] bytes=read.awaitBytes(readTimeout);cancellation.throwIfCanceled();
+            diagnostic("complete",read,SystemClock.elapsedRealtime()-began,bytes.length);
             return new JSONObject().put("address",device.getAddress()).put("bonded",device.getBondState()==BluetoothDevice.BOND_BONDED).put("dataBase64",Base64.encodeToString(bytes,Base64.NO_WRAP));
-        }finally{read.close();cancellation.setOnCancelListener(null);synchronized(this){reads.remove(read);}}
+        }catch(Exception error){diagnostic(stage,read,SystemClock.elapsedRealtime()-began,0);throw error;}finally{read.close();cancellation.setOnCancelListener(null);synchronized(this){reads.remove(read);}}
+    }
+    private void diagnostic(String stage,Read read,long elapsed,int bytes){
+        if((context.getApplicationInfo().flags&android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)==0)return;
+        android.util.Log.i("PodBleDiscovery","stage="+stage+" elapsedMs="+elapsed+" results="+read.results+" markerMatches="+read.markerMatches+" serviceMatches="+read.serviceMatches+" bondedMatches="+read.bondedMatches+" bytes="+bytes+" gattStatus="+read.gattStatus+" mtu="+read.mtu);
     }
     public void close(){List<Read> pending;synchronized(this){closed=true;pending=new ArrayList<>(reads);reads.clear();}for(Read read:pending)read.close();}
 
     private final class Read implements Closeable {
         final BluetoothLeScanner scanner;final UUID advertised,service,characteristic;final int manufacturer;final byte[] marker;final boolean bondedOnly;
-        boolean scanning,ended;BluetoothDevice device;BluetoothGatt gatt;byte[] value;RuntimeException failure;
+        int results,markerMatches,serviceMatches,bondedMatches,gattStatus=-1;
+        boolean scanning,ended,readStarted;int mtu=23;BluetoothGattCharacteristic readField;BluetoothDevice device;BluetoothGatt gatt;byte[] value;RuntimeException failure;
         Read(BluetoothLeScanner scanner,UUID advertised,int manufacturer,byte[] marker,UUID service,UUID characteristic,boolean bondedOnly){this.scanner=scanner;this.advertised=advertised;this.manufacturer=manufacturer;this.marker=marker;this.service=service;this.characteristic=characteristic;this.bondedOnly=bondedOnly;}
         private void check(){if(ended)throw new IllegalStateException("BLE discovery closed");if(failure!=null)throw failure;}
         private synchronized void fail(String message){if(!ended&&failure==null){failure=new IllegalStateException(message);notifyAll();}}
@@ -86,15 +93,15 @@ final class PodBleDiscoveryServices implements Closeable {
             private void accept(ScanResult result){synchronized(Read.this){
                 if(ended||device!=null||result==null)return;
                 try{
-                    ScanRecord record=result.getScanRecord();BluetoothDevice candidate=result.getDevice();if(record==null||candidate==null||(bondedOnly&&candidate.getBondState()!=BluetoothDevice.BOND_BONDED)||!Arrays.equals(marker,record.getManufacturerSpecificData(manufacturer)))return;
+                    results++;ScanRecord record=result.getScanRecord();BluetoothDevice candidate=result.getDevice();if(record==null||candidate==null||!Arrays.equals(marker,record.getManufacturerSpecificData(manufacturer)))return;markerMatches++;
                     boolean matches=false;if(record.getServiceUuids()!=null)for(android.os.ParcelUuid uuid:record.getServiceUuids())if(advertised.equals(uuid.getUuid()))matches=true;
-                    if(matches){device=candidate;Read.this.notifyAll();}
+                    if(matches){serviceMatches++;if(bondedOnly&&candidate.getBondState()!=BluetoothDevice.BOND_BONDED)return;bondedMatches++;device=candidate;Read.this.notifyAll();}
                 }catch(SecurityException error){fail("BLE discovery permission revoked");}
             }}
         };
         final BluetoothGattCallback gattCallback=new BluetoothGattCallback(){
             public void onConnectionStateChange(BluetoothGatt connection,int status,int state){synchronized(Read.this){
-                if(ended)return;
+                if(ended)return;gattStatus=status;
                 if(status==BluetoothGatt.GATT_SUCCESS&&state==BluetoothProfile.STATE_CONNECTED){try{if(!connection.discoverServices())fail("GATT service discovery rejected");}catch(RuntimeException error){fail("GATT service discovery failed");}}
                 else if(status!=BluetoothGatt.GATT_SUCCESS||state==BluetoothProfile.STATE_DISCONNECTED)fail("GATT disconnected: "+status);
             }}
@@ -102,12 +109,22 @@ final class PodBleDiscoveryServices implements Closeable {
                 if(ended)return;if(status!=BluetoothGatt.GATT_SUCCESS){fail("GATT service discovery failed: "+status);return;}
                 BluetoothGattService found=connection.getService(service);BluetoothGattCharacteristic field=found==null?null:found.getCharacteristic(characteristic);
                 if(field==null){fail("GATT characteristic unavailable");return;}
-                try{if(!connection.readCharacteristic(field))fail("GATT read rejected");}catch(RuntimeException error){fail("GATT read failed");}
+                readField=field;
+                // A changing legacy peripheral value should fit one ATT response.
+                // Stable peripherals retain long-read fallback if MTU is rejected.
+                try{if(!connection.requestMtu(517))startRead(connection);}catch(RuntimeException error){startRead(connection);}
             }}
+            public void onMtuChanged(BluetoothGatt connection,int negotiated,int status){synchronized(Read.this){
+                if(ended)return;mtu=negotiated;startRead(connection);
+            }}
+            private void startRead(BluetoothGatt connection){
+                if(ended||readStarted||readField==null)return;readStarted=true;
+                try{if(!connection.readCharacteristic(readField))fail("GATT read rejected");}catch(RuntimeException error){fail("GATT read failed");}
+            }
             @SuppressWarnings("deprecation") public void onCharacteristicRead(BluetoothGatt connection,BluetoothGattCharacteristic field,int status){complete(field,field.getValue(),status);}
             public void onCharacteristicRead(BluetoothGatt connection,BluetoothGattCharacteristic field,byte[] bytes,int status){complete(field,bytes,status);}
             private void complete(BluetoothGattCharacteristic field,byte[] bytes,int status){synchronized(Read.this){
-                if(ended||value!=null||!characteristic.equals(field.getUuid()))return;
+                if(ended||value!=null||!characteristic.equals(field.getUuid()))return;gattStatus=status;
                 if(status!=BluetoothGatt.GATT_SUCCESS||bytes==null||bytes.length==0||bytes.length>65536){fail("GATT characteristic read failed: "+status);return;}
                 value=bytes.clone();Read.this.notifyAll();
             }}

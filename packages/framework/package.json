@@ -30,6 +30,7 @@
     "./html-slices": "./src/html-slices.ts",
     "./xml": "./src/xml.ts",
     "./json": "./src/json.ts",
+    "./json-string": "./src/json-string.ts",
     "./text-compat": "./src/text-compat.ts",
     "./splash": "./src/splash.ts",
     "./startup": "./src/startup.ts",

@@ -11,6 +11,7 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 memory-diagnostics = ["pocket-mod/memory-diagnostics"]
 
 [dependencies]
+flate2 = "1"
 anyhow.workspace = true
 base64 = "0.22"
 log.workspace = true

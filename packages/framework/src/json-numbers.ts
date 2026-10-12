@@ -12,8 +12,13 @@ export function parseJsonObjectNumbers(text:string,options:JsonNumberOptions={})
  if(!root||typeof root!=="object"||Array.isArray(root))throw (options.objectError?.()??new Error("JSON value must be an object"));
  let at=0;
  const space=()=>{while(at<text.length&&/[\x20\t\r\n]/.test(text[at]!))at++;};
- const string=()=>{const start=at++;while(at<text.length){const c=text[at++];if(c==='"')break;if(c==='\\')at++;}return text.slice(start,at);};
- const mark=(parent:unknown,key:string,token:string|null)=>{if(parent&&typeof parent==="object"){let m=numericTokens.get(parent);if(!m){m=new Map();numericTokens.set(parent,m);}if(token===null)m.delete(key);else m.set(key,token);}};
+ const string=()=>{const start=at++;
+  // JSON.parse already validated the text. Skip long string bodies in the
+  // engine, retaining lexical number tokens without a JS loop per body byte.
+  while(at<text.length){const quote=text.indexOf('"',at);let slash=quote-1;while(slash>=start&&text[slash]==='\\')slash--;at=quote+1;if((quote-1-slash)%2===0)break;}
+  return text.slice(start,at);
+ };
+ const mark=(parent:unknown,key:string,token:string|null)=>{if(parent&&typeof parent==="object"){let m=numericTokens.get(parent);if(token===null){m?.delete(key);return;}if(!m){m=new Map();numericTokens.set(parent,m);}m.set(key,token);}};
  function visit(value:unknown,parent:unknown,key:string,depth:number):void {
   if(depth>(options.maxDepth??128))throw (options.depthError?.()??new Error("JSON nesting too deep"));space();const c=text[at];
   mark(parent,key,null);

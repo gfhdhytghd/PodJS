@@ -1,3 +1,4 @@
+export interface FrameTiming {bytes:number;readMs:number;decodeMs:number;encodeMs:number;writeMs:number;direction:'read'|'write'}
 export interface TransferByteProgress {direction:'read'|'write';bytes:number}
 export interface FrameCodec<T> {
  maxFrameBytes:number;chunkBytes?:number;
@@ -18,6 +19,9 @@ export class StreamFrameConnection<T> {
  private closed=false;
  private reading=false;
  private writing=false;
+ private timing:((sample:FrameTiming)=>void)|undefined;
+ setFrameTiming(listener:((sample:FrameTiming)=>void)|undefined){this.timing=listener;}
+ private reportTiming(sample:FrameTiming){try{this.timing?.(sample);}catch{/* Observability must not fail a transfer. */}}
  private progress:((progress:TransferByteProgress)=>void)|undefined;
  setTransferProgress(listener:((progress:TransferByteProgress)=>void)|undefined){this.progress=listener;}
  constructor(private readonly stream:FrameByteStream,private readonly codec:FrameCodec<T>,private readonly now=Date.now){
@@ -29,9 +33,9 @@ export class StreamFrameConnection<T> {
   if(!Number.isFinite(timeoutMs)||timeoutMs<=0)throw new Error('Invalid sync read deadline');
   this.reading=true;const deadline=this.now()+timeoutMs;
   try{
-   const header=new Uint8Array(4);await this.readInto(header,deadline,false);this.progress?.({direction:'read',bytes:4});
+   const began=this.now();const header=new Uint8Array(4);await this.readInto(header,deadline,false);this.progress?.({direction:'read',bytes:4});
    const length=new DataView(header.buffer).getInt32(0,false);if(length<1||length>this.codec.maxFrameBytes)throw new Error('Sync frame length out of range');
-   const frame=new Uint8Array(length+4);frame.set(header);await this.readInto(frame.subarray(4),deadline);return await this.codec.decode(frame,{cancelled:()=>this.closed});
+   const frame=new Uint8Array(length+4);frame.set(header);await this.readInto(frame.subarray(4),deadline);const received=this.now();const value=await this.codec.decode(frame,{cancelled:()=>this.closed});this.reportTiming({direction:'read',bytes:frame.length,readMs:Math.max(0,received-began),decodeMs:Math.max(0,this.now()-received),encodeMs:0,writeMs:0});return value;
   }catch(error){await this.close();throw error;}finally{this.reading=false;}
  }
  private async readInto(target:Uint8Array,deadline:number,report=true):Promise<void>{
@@ -47,10 +51,11 @@ export class StreamFrameConnection<T> {
  async writeFrame(frame:T):Promise<void>{
   if(this.closed)throw new Error('Sync connection closed');if(this.writing)throw new Error('Concurrent sync frame writes');this.writing=true;
   try{
-   const bytes=await this.codec.encode(frame,{cancelled:()=>this.closed});
+   const began=this.now();const bytes=await this.codec.encode(frame,{cancelled:()=>this.closed});const encoded=this.now();
    const write=async(part:Uint8Array)=>{if(this.closed)throw new Error('Sync connection closed');await this.stream.write(part);if(this.closed)throw new Error('Sync connection closed');this.progress?.({direction:'write',bytes:part.length});};
    await write(bytes.subarray(0,4));
    for(let i=4;i<bytes.length;i+=(this.codec.chunkBytes??TRANSFER_CHUNK_BYTES))await write(bytes.subarray(i,i+(this.codec.chunkBytes??TRANSFER_CHUNK_BYTES)));
+   this.reportTiming({direction:'write',bytes:bytes.length,readMs:0,decodeMs:0,encodeMs:Math.max(0,encoded-began),writeMs:Math.max(0,this.now()-encoded)});
   }catch(error){await this.close();throw error;}
   finally{this.writing=false;}
  }

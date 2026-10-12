@@ -24,10 +24,15 @@ async function yieldTurn(options:CodecWorkOptions):Promise<void>{
 }
 async function collect<T>(pieces:Iterable<T>,options:CodecWorkOptions):Promise<T[]> {
  const out:T[]=[];check(options);const iterator=pieces[Symbol.iterator]();
- try {while(true){check(options);const next=iterator.next();if(next.done)break;out.push(next.value);await yieldTurn(options);}check(options);return out;}
+ const now=()=>globalThis.performance?.now?.()??Date.now();let sliceStart=now(),piecesInSlice=0;
+ try {while(true){check(options);const next=iterator.next();if(next.done)break;out.push(next.value);piecesInSlice++;
+  // Bound CPU work as well as bytes. Fast native pieces should share a turn,
+  // rather than paying one Android timer/service roundtrip for every 4 KiB.
+  if(piecesInSlice>=16||now()-sliceStart>=8){await yieldTurn(options);sliceStart=now();piecesInSlice=0;}
+ }if(piecesInSlice)await yieldTurn(options);check(options);return out;}
  finally{iterator.return?.();}
 }
-/** Each piece yields a host timer turn, including on legacy hosts. */
+/** Bounded 4 KiB pieces share a slice of at most 16 pieces / 8 ms before yielding. */
 export async function encodeUtf8Async(value:string,policy:SurrogatePolicy='strict',options:CodecWorkOptions={}):Promise<Uint8Array>{check(options);if(value.length<=UTF16_BUDGET)return encodeUtf8(value,policy);return join(await collect(utf8EncodeChunks(value,policy),options));}
 export async function encodeBase64Async(bytes:Uint8Array,options:CodecWorkOptions={}):Promise<string>{check(options);if(bytes.length<=BASE64_BYTES)return encodeBase64(bytes);return (await collect(base64EncodeChunks(bytes),options)).join('');}
 export async function decodeBase64Async(value:string,options:CodecWorkOptions={}):Promise<Uint8Array>{check(options);if(value.length<=BASE64_CHARS)return decodeBase64(value);return join(await collect(base64DecodeChunks(value),options));}

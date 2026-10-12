@@ -29,3 +29,20 @@ export function decodeUtf8Chunk(bytes:Uint8Array,start=0,options:Utf8ChunkOption
 
 export {encodeUtf8Async,decodeUtf8Async,encodeBase64Async,decodeBase64Async} from './async-bytes.ts';
 export type {CodecWorkOptions} from './async-bytes.ts';
+
+/** Optional pure native SHA-256 for at most 256 KiB; null requests a caller's fallback. */
+export function sha256Bytes(bytes:Uint8Array):Uint8Array|null {
+ const hash=(globalThis as {pod?:{sha256Bytes?:(bytes:Uint8Array)=>Uint8Array|null|undefined}}).pod?.sha256Bytes;
+ if(bytes.length>256*1024||typeof hash!=='function')return null;
+ const digest=hash(bytes);
+ if(digest==null)return null;
+ if(!(digest instanceof Uint8Array)||digest.length!==32)throw Error('Invalid native SHA-256 digest');
+ return digest;
+}
+
+/** Optional pure gzip fast path: at most 256 KiB input and decompressed output. */
+export function gunzipBytes(bytes:Uint8Array):Uint8Array|null {
+ const decode=(globalThis as {pod?:{gunzipBytes?:(bytes:Uint8Array)=>Uint8Array|null|undefined}}).pod?.gunzipBytes;
+ if(bytes.length>256*1024||!decode)return null;const result=decode(bytes);
+ if(result==null)return null;if(!(result instanceof Uint8Array)||result.length>256*1024)throw Error('Invalid native gzip result');return result;
+}

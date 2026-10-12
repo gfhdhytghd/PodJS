@@ -45,7 +45,7 @@ test('default layout and byte codecs complete through Android timer validation a
    __pumpPodEvents();
   }
  }
- await work;expect(failure).toBeUndefined();expect(published).toHaveLength(1);expect(published[0].entries).toHaveLength(35);expect(turns).toBeGreaterThan(12);
+ await work;expect(failure).toBeUndefined();expect(published).toHaveLength(1);expect(published[0].entries).toHaveLength(35);expect(turns).toBeGreaterThanOrEqual(5);expect(turns).toBeLessThanOrEqual(12);
 });
 test('mid-task cancellation cancels the host operation, closes its iterator once and ignores late replies',async()=>{
  let closes=0,published=0;function* rows(){try{yield* fixture();return {height:0};}finally{closes++;}}
