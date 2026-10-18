@@ -4,7 +4,8 @@ import {resolve} from 'node:path';
 const app=resolve(process.env.WATCHRSS_APP_SOURCE??'/home/wilf/data/OPPO_Develop/PodJS_WatchRSS');
 const directory=process.argv[2];
 if(!directory)throw Error('synthetic fixture directory required');
-const values=await Bun.file(resolve(directory,'kv.json')).json();
+const kvFile=Bun.file(resolve(directory,'kv.json')),kvInput=await kvFile.text();
+const values=JSON.parse(kvInput);
 const secrets=await Bun.file(resolve(directory,'synthetic-secure.json')).json();
 const storage={get:(key:string)=>values[key],set:()=>{throw Error('oracle must not mutate');},delete:()=>{throw Error('oracle must not mutate');}};
 const secure={get:async(key:string)=>secrets[key]??null,set:async()=>{throw Error('oracle must not mutate');},remove:async()=>{throw Error('oracle must not mutate');}};
@@ -25,11 +26,20 @@ const telemetry=new SyncAccountTelemetry(storage).snapshots();assert.equal(telem
 const {readBiliPlaybackProgress}=await import(`${app}/src/bili/playback.ts`);
 const playback=await readBiliPlaybackProgress({get:async(key:string)=>values[key]});assert.equal(playback[0].cid,8);assert.equal(playback[0].positionMs,900);
 const {DouyinClient}=await import(`${app}/src/douyin/client.ts`);
-const historyStorage={get:async(key:string)=>values[key]??null,set:async()=>{throw Error('oracle must not mutate');},remove:async()=>{throw Error('oracle must not mutate');}};
+// Production consumers now migrate legacy Douyin records on first read. Give
+// the target consumer a disposable copy; the JVM outputs remain read-only.
+const migrated:Record<string,string>=structuredClone(values);
+const legacyDouyin=new Set(['douyin.history.v1','douyin.watched.v1','douyin.feed.v1','douyin.recent-window.v1','douyin.playback-queue.v1']);
+const targetDouyin=/^douyin\.(?:history\.(?:index\.v2|row\.v2\.[0-9]+)|(?:feed|recent-window|playback-queue|playback-items)\.v2|playback-item\.v2\.[0-9]+)$/;
+const historyStorage={get:async(key:string)=>migrated[key]??null,
+ set:async(key:string,value:string)=>{assert.match(key,targetDouyin);migrated[key]=value;},
+ remove:async(key:string)=>{assert.ok(legacyDouyin.has(key)||targetDouyin.test(key));delete migrated[key];}};
 const douyin=new DouyinClient({transport:{request:()=>{throw Error('oracle must not access network');}},secureStorage:secure,historyStorage});
 assert.deepEqual(await douyin.listWatchedIds(),['42']);const history=await douyin.listHistory();assert.equal(history[0].item.description,'fixture title');assert.equal(history[0].watchedAtMillis,123);
 const {DouyinFeedStore}=await import(`${app}/src/douyin/feed-store.ts`);
 const feed=await new DouyinFeedStore(historyStorage).bootstrap();assert.equal(feed.items[0].awemeId,'42');assert.equal(feed.resolved['42'],123);assert.equal(feed.anchorAwemeId,'42');
+assert.equal(await kvFile.text(),kvInput,'source fixture was modified');
+assert.ok(migrated['douyin.history.index.v2']);assert.equal(migrated['douyin.history.v1'],undefined);
 console.log('Store consumer oracle PASS: settings, onboarding, reader, TTS, account, resume, telemetry, Bili, Douyin');
 
 const {BiliClient}=await import(`${app}/src/bili/client.ts`);

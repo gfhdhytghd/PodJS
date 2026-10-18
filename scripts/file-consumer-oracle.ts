@@ -24,6 +24,9 @@ const {LocalArticleManifestStore}=await import(`${app}/src/sync/local-manifest.t
 const {encodeBodyJson}=await import(`${app}/src/sync/article-body.ts`);
 const sqlite=new Database(resolve(root,'podjs.sqlite'));
 const db={query:async(q:string,p:any[]=[])=>sqlite.query(q).all(...p),execute:async(q:string,p:any[]=[])=>{sqlite.query(q).run(...p);},transaction:async(statements:any[])=>{sqlite.transaction(()=>{for(const s of statements)sqlite.query(s.sql).run(...(s.params??[]));})();}};
+// T39 adds derived sync tables at application startup after takeover. Run the
+// same idempotent schema initialization before invoking current consumers.
+const {initializeSchema}=await import(`${app}/src/core/schema.ts`);await initializeSchema(db);
 const codec={sha256:async(b:Uint8Array)=>createHash('sha256').update(b).digest('hex'),encode:async(body:any)=>new Uint8Array(gzipSync(Buffer.from(encodeBodyJson(body),'utf8')))};
 const text={parseUri:async(value:string)=>{try{const u=new URL(value);return {valid:true,scheme:u.protocol.slice(0,-1),host:u.hostname,rawPath:u.pathname,rawQuery:u.search.slice(1)||null};}catch{return {valid:false,scheme:null,host:null,rawPath:null,rawQuery:null};}},htmlText:async(value:string)=>value.replace(/<[^>]*>/g,'')};
 const files={hydrate:async(value:string)=>{if(!importedTextFileName(value))return value;const handle=await imported.handle(value);assert.ok(handle);const out=[];for(let i=0;i<handle.chunkCount;i++){const part=await imported.chunk(handle,i);assert.notEqual(part,null);out.push(part);}return out.join('');},storeText:async(_key:string,value:string)=>value};

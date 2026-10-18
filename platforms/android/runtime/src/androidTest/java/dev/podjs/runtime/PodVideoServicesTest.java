@@ -35,7 +35,8 @@ public final class PodVideoServicesTest {
    ok(call(s,"video.setBounds",b)); i.waitForIdleSync(); float d=target.getResources().getDisplayMetrics().density; FrameLayout.LayoutParams lp=(FrameLayout.LayoutParams)texture.getLayoutParams();
    assertEquals(Math.round(24*d),lp.leftMargin); assertEquals(Math.round(15*d),lp.topMargin); assertEquals(Math.round(40*d),lp.width); assertEquals(Math.round(42*d),lp.height); assertEquals(View.VISIBLE,texture.getVisibility()); assertTrue(texture.getClipToOutline());
    Outline outline=new Outline(); i.runOnMainSync(()->texture.getOutlineProvider().getOutline(texture,outline)); Rect r=new Rect(); assertTrue(outline.getRect(r)); assertEquals(Math.round(8*d),r.left); assertEquals(Math.round(9*d),r.top); assertEquals(Math.round(32*d),r.right); assertEquals(Math.round(33*d),r.bottom);
-   ok(call(s,"video.setBounds",new JSONObject().put("width",40).put("height",42).put("visible",false))); i.waitForIdleSync(); assertEquals(View.GONE,texture.getVisibility());
+   ok(call(s,"video.setBounds",new JSONObject().put("width",40).put("height",42).put("visible",false))); i.waitForIdleSync(); // Keep the TextureView attached; visibility is alpha-gated so first-frame delivery survives handoff.
+   assertEquals(View.VISIBLE,texture.getVisibility()); assertEquals(0f,texture.getAlpha(),0f);
    Result stop=call(s,"video.stop",new JSONObject()); ok(stop); assertEquals("stopped",stop.value.getString("state")); Result stopped=call(s,"video.state",new JSONObject()); ok(stopped); assertEquals("stopped",stopped.value.getString("state")); assertEquals(0,stopped.value.getLong("positionMs"));
   } finally { s.close(); await("child removal",3000,()->a.videoHost().getChildCount()==0); a.finish(); i.waitForIdleSync(); assertTrue(source.delete()||!source.exists()); }
  }
