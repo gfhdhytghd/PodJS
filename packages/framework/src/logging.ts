@@ -1,4 +1,4 @@
-import {stringToUtf8} from './bytes.ts';
+import {traceServiceWork} from './service-trace.ts';
 export type LogLevel='V'|'D'|'I'|'W'|'E';
 /** Native header/Bearer/cookie rules, extended to JSON credentials and all URL queries. */
 export function createLogRedactor(options:{sensitivePattern:string;headerPattern?:string}):(raw:string)=>string {
@@ -55,9 +55,11 @@ export class FileLogger {
     let size=await this.file.size();
     // Trim once BEFORE append, only when strictly over the configured byte limit.
     if(size>this.options.maxBytes){
-     const lines=(await this.file.read()??'').split(/\r\n|\n|\r/);if(lines.at(-1)==='')lines.pop();
-     const text=this.options.trim(lines);
-     await this.file.replace(text);size=stringToUtf8(text).length;
+     const raw=await this.file.read()??'';
+     const {splitTextLinesAsync}=await import('./text-layout.ts');
+     const lines=await splitTextLinesAsync(raw,{traceLabel:'logging.rotate.lines'});if(lines.at(-1)==='')lines.pop();
+     const text=traceServiceWork('logging.rotate.trim',()=>this.options.trim(lines),raw.length);
+     await this.file.replace(text);size=await this.file.size();
     }
     await this.file.append(line+'\n',size);
    }).catch(()=>{try{this.output('E',this.options.writeFailureMessage);}catch{}});

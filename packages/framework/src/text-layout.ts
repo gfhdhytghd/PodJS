@@ -1,4 +1,6 @@
-import {delay,type HostOperation} from './services.ts';
+import {splitTextLineSteps} from './line-split.ts';
+import * as services from './services.ts';
+import type {HostOperation} from './services.ts';
 import {traceServiceWork} from './service-trace.ts';
 
 export interface TextLayoutSnapshot<Layout,Entry,Key> {
@@ -32,7 +34,7 @@ export function prepareTextLayout<Row,Layout,Entry,Key>(steps:Iterator<Row,Layou
  options:TextLayoutSliceOptions={}) {
  // Android runtime.timer accepts 1..120000ms; zero is a rejected request,
  // so every default slice must use the minimum valid host timer.
- const clock=options.clock??Date.now,yieldTurn=options.yieldTurn??(()=>delay(1));
+ const clock=options.clock??Date.now,yieldTurn=options.yieldTurn??(()=>services.delay(1));
  // 64 cheap steps avoid a host roundtrip for every 16 scan/row operations.
  // The 1ms wall limit still applies to expensive steps and coarse host clocks.
  const budget=options.budgetMs??1,limit=options.rowLimit??64;
@@ -76,10 +78,18 @@ export function prepareTextLayout<Row,Layout,Entry,Key>(steps:Iterator<Row,Layou
  */
 export function yieldWorkTurn():HostOperation<void> {
  const host=(globalThis as {pod?:{capabilities?:()=>string}}).pod;
- if(host?.capabilities&&JSON.parse(host.capabilities()).includes('runtime.timer'))return delay(1);
+ if(host?.capabilities&&JSON.parse(host.capabilities()).includes('runtime.timer'))return services.delay(1);
  let timer:ReturnType<typeof setTimeout>,reject:(error:Error)=>void=()=>{};
  const result=new Promise<void>((resolve,fail)=>{reject=fail;timer=setTimeout(resolve,1);});
  return {result,cancel(){clearTimeout(timer);reject(Error('work cancelled'));}};
 }
 
 export * from "./text-lines.ts";
+
+/** Bounded line scanning with the same empty/trailing/mixed-newline behavior as
+ * String.split(/\r\n|\n|\r/). The default yields before every 16 KiB piece. */
+export async function splitTextLinesAsync(source:string,options:TextLayoutSliceOptions&{chunkUnits?:number}={}):Promise<string[]> {
+ let index=0,lines:string[]|undefined;
+ const task=prepareTextLayout(splitTextLineSteps(source,options.chunkUnits),{key:()=>index++,entry:()=>undefined,publish:snapshot=>{lines=snapshot.layout;}},{rowLimit:1,yieldTurn:yieldWorkTurn,...options});
+ await task.done;if(!lines)throw Error('line split cancelled');return lines;
+}
