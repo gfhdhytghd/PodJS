@@ -54,9 +54,9 @@ public final class PodRoomV18Converter implements PodTakeoverCoordinator.Convert
     public void activeFast(File g)throws Exception {
         long began=System.nanoTime();
         try(Db db=activeDb(new File(g,"podjs.sqlite"))){
-            // Published v18 conversion has user_version=0; guest initializes 1/2.
+            // Published v18 conversion has user_version=0; guest initializes 1/2/3.
             long version=number(scalar(db,"PRAGMA user_version"));
-            if(version<0||version>2)throw new IOException("active_schema_version_invalid");
+            if(version<0||version>3)throw new IOException("active_schema_version_invalid");
             schemaIdentity(db);
         }
         timings.accept("activeFastSchema",System.nanoTime()-began);
