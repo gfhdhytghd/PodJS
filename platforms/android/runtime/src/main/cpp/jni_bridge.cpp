@@ -56,6 +56,9 @@ struct Host {
   bool navigationKnown = false;
   bool frameFailed = false;
   uint64_t diagnosticFrameSequence = 0;
+  uint64_t renderCheckpointId=0,lastSnapshotHash=0;
+  double renderCheckpointUntilMs=0,lastSnapshotMonoMs=0;
+  int renderCheckpointFrames=0;
   uint64_t lastResourceGeneration = 0;
   ~Host() {
     if(fontFallback&&vm) {
@@ -493,6 +496,7 @@ static void renderFrame(Host* h, int64_t frameTimeNanos) {
     auto snapshotTiming = h->hostDiagnostics.scope(podjs_gpu::RendererTimingStage::Snapshot);
     const int snapshotResult = pod_runtime_snapshot(h->runtime,&list);
     snapshotMs = monoMs()-snapshotBegan;
+    h->lastSnapshotHash=list.content_hash;h->lastSnapshotMonoMs=monoMs();
 
     if (!snapshotResult && (list.changed || h->renderer->needsRedraw(list.content_hash))) {
       const double pinBegan = monoMs();
@@ -505,6 +509,12 @@ static void renderFrame(Host* h, int64_t frameTimeNanos) {
 
     }
     snapshotTiming.finish(snapshotResult==0,snapshotResult);
+    if(h->renderCheckpointFrames>0 && monoMs()<=h->renderCheckpointUntilMs){
+      --h->renderCheckpointFrames;
+      __android_log_print(ANDROID_LOG_INFO,"PodRenderTiming",
+          "stage=snapshot checkpoint=%llu frame=%llu hash=%llu monoMs=%.3f changed=%d queued=%d snapshotMs=%.3f guestToSnapshotMs=%.3f",
+          (unsigned long long)h->renderCheckpointId,(unsigned long long)sequence,(unsigned long long)list.content_hash,monoMs(),list.changed,queued,snapshotMs,monoMs()-start);
+    }
   }
   for (const auto& done : completions.completed) {
     const auto& p = done.perf;
@@ -623,6 +633,13 @@ static void renderFrame(Host* h, int64_t frameTimeNanos) {
 extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeHasContent(JNIEnv*,jclass,jlong p){auto*h=reinterpret_cast<Host*>(p);return h&&h->contentSubmitted?JNI_TRUE:JNI_FALSE;}
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeFrame(JNIEnv*,jclass,jlong p,jlong frameTimeNanos) {
   renderFrame(reinterpret_cast<Host*>(p),frameTimeNanos);
+}
+extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeRenderCheckpoint(JNIEnv*,jclass,jlong p,jlong id) {
+  auto*h=reinterpret_cast<Host*>(p);if(!h||id<1)return;
+  h->renderCheckpointId=id;h->renderCheckpointFrames=8;h->renderCheckpointUntilMs=monoMs()+2000;
+  __android_log_print(ANDROID_LOG_INFO,"PodRenderTiming","stage=receiptSnapshot checkpoint=%llu frame=%llu hash=%llu snapshotMonoMs=%.3f monoMs=%.3f",
+      (unsigned long long)id,(unsigned long long)h->diagnosticFrameSequence,(unsigned long long)h->lastSnapshotHash,h->lastSnapshotMonoMs,monoMs());
+  h->renderer->traceCheckpoint(id);
 }
 extern "C" JNIEXPORT jstring JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePollEffect(JNIEnv* env,jclass,jlong p){auto*h=reinterpret_cast<Host*>(p);if(!h)return nullptr;const char* line=pod_runtime_poll_effect(h->runtime);return line?env->NewStringUTF(line):nullptr;}
 extern "C" JNIEXPORT jstring JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePollNet(JNIEnv* env,jclass,jlong p){auto*h=reinterpret_cast<Host*>(p);if(!h)return nullptr;const char* line=pod_runtime_poll_net_command(h->runtime);return line?env->NewStringUTF(line):nullptr;}

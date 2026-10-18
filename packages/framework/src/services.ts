@@ -60,7 +60,7 @@ const methods: Record<string, PodCapabilityId> = {
   "discovery.mdns": "net.discovery", "discovery.status": "net.discovery", "discovery.requestPermission": "net.discovery", "discovery.bleReadCharacteristic": "net.discovery",
   "websocket.connect": "net.websocket", "websocket.readText": "net.websocket", "websocket.writeText": "net.websocket", "websocket.close": "net.websocket",
   "stream.read": "net.stream", "stream.write": "net.stream", "stream.close": "net.stream",
-  "runtime.delay": "runtime.timer",
+  "runtime.delay": "runtime.timer", "runtime.afterPaint":"runtime.timer",
   "display.state": "display.power", "display.keepAwake": "display.power",
   "audio.silenceState": "media.audio", "audio.silenceEnabled": "media.audio", "audio.silenceLease": "media.audio",
   "ui.toast": "system.toast",

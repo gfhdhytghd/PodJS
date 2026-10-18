@@ -70,7 +70,9 @@
     "./restorable-stack": "./src/restorable-stack.ts",
     "./texture-upload": "./src/texture-upload.ts",
     "./download-cache": "./src/download-cache.ts",
-    "./media-prefix-cache": "./src/media-prefix-cache.ts"
+    "./media-prefix-cache": "./src/media-prefix-cache.ts",
+    "./render-checkpoint": "./src/render-checkpoint.ts",
+    "./render": "./src/render.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",

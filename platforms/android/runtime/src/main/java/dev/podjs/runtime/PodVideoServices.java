@@ -64,6 +64,7 @@ public final class PodVideoServices implements AutoCloseable {
     private String state = "idle";
     private String playbackErrorCode;
     private boolean hasRenderedFirstFrame;
+    private int observedTextureFrames;
     private boolean boundsVisible=true;
     private long prepareStartedMs;
     private boolean firstRevealLogged;
@@ -98,7 +99,11 @@ public final class PodVideoServices implements AutoCloseable {
             if (closed || host == null) return;
             parent = host;
             if (videoView == null) {
-                videoView = new TextureView(context) {
+                videoView = new PodObservedTextureView(context, texture -> {
+                    if(!hasRenderedFirstFrame||observedTextureFrames>=8)return;
+                    observedTextureFrames++;
+                    android.util.Log.i("PodVideoTiming","textureUpdated seq="+prepareSequence+" count="+observedTextureFrames+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-prepareStartedMs)+" producerNs="+texture.getTimestamp()+" alpha="+videoView.getAlpha()+" playing="+(player!=null&&player.isPlaying()));
+                }) {
                     @Override public boolean onTouchEvent(android.view.MotionEvent event) { return false; }
                     @Override public boolean dispatchTouchEvent(android.view.MotionEvent event) { return false; }
                 };
@@ -144,7 +149,7 @@ public final class PodVideoServices implements AutoCloseable {
     public void pauseForLifecycle() { main.post(() -> { if (!backgroundPlayback) { lifecyclePaused=true; if(player!=null)player.pause(); state="paused"; } }); }
 
     private void prepare(JSONObject a, Callback cb) throws Exception {
-        firstRevealLogged=false;prepareSequence++;android.util.Log.i("PodVideoTiming","prepareBegin seq="+prepareSequence);hasRenderedFirstFrame=false; prepareStartedMs=android.os.SystemClock.elapsedRealtime(); playbackErrorCode=null;
+        firstRevealLogged=false;prepareSequence++;android.util.Log.i("PodVideoTiming","prepareBegin seq="+prepareSequence);hasRenderedFirstFrame=false;observedTextureFrames=0; prepareStartedMs=android.os.SystemClock.elapsedRealtime(); playbackErrorCode=null;
         if(videoView==null || parent==null) throw new IllegalStateException("video_surface_unavailable");
         String videoUrl = a.optString("videoUrl", ""); String audioUrl = a.optString("audioUrl", "");
         String url = videoUrl.isEmpty() || audioUrl.isEmpty() ? source(a, "url") : sourceValue(videoUrl);
@@ -200,7 +205,7 @@ public final class PodVideoServices implements AutoCloseable {
         if (autoplay && !lifecyclePaused) player.play(); else player.pause();
     }
     private MediaItem item(String url, String type) { MediaItem.Builder b=new MediaItem.Builder().setUri(Uri.parse(url)); if(!type.isEmpty()) b.setMimeType(type); return b.build(); }
-    private void play(Callback c) throws Exception { require(); lifecyclePaused=false;if(videoView!=null)videoView.setKeepScreenOn(true);player.play(); c.complete(state()); }
+    private void play(Callback c) throws Exception { require();android.util.Log.i("PodVideoTiming","playCall seq="+prepareSequence+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-prepareStartedMs)); lifecyclePaused=false;if(videoView!=null)videoView.setKeepScreenOn(true);player.play(); c.complete(state()); }
     private void pause(Callback c) throws Exception { require(); player.pause(); if(videoView!=null)videoView.setKeepScreenOn(false); state="paused"; c.complete(state()); }
     private void seek(JSONObject a, Callback c) throws Exception { require(); long p=a.optLong("positionMs", -1); if(p<0) throw new IllegalArgumentException("invalid_position"); player.seekTo(p); c.complete(state()); }
     private void stop(Callback c) throws Exception { releasePlayer(); clearBackdrop(); state="stopped"; if(videoView!=null){videoView.setVisibility(View.GONE);videoView.setKeepScreenOn(false);} c.complete(state()); }

@@ -83,6 +83,9 @@ final class PodServices implements Closeable {
         });
     }
     private final Handler main = new Handler(Looper.getMainLooper());
+    interface PaintAwaiter {Runnable await(java.util.function.Consumer<Boolean> complete);}
+    private PaintAwaiter paintAwaiter;
+    void attachPaintAwaiter(PaintAwaiter awaiter){paintAwaiter=awaiter;}
     private final PodParagraphLayout.Cache paragraphLayouts=new PodParagraphLayout.Cache();
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     /** SQLite owns one connection and must stay serial, but must not queue behind file IO,
@@ -239,6 +242,7 @@ final class PodServices implements Closeable {
         volatile Future<?> future;
         AlertDialog dialog;
         Runnable timer;
+        Runnable paintCancel;
         String method;
         volatile PodBrowserAuthServices.Callback authCallback;
         volatile PodSiteChallengeServices.Callback challengeCallback;
@@ -371,6 +375,15 @@ final class PodServices implements Closeable {
                 }
             });
             return;
+        }
+        if("runtime.afterPaint".equals(method)){
+            main.post(()->{
+                if(closed||!requests.containsKey(id))return;
+                java.util.function.Consumer<Boolean> finish=committed->{
+                    if(requests.remove(id,request))try{reply(id,true,new JSONObject().put("committed",committed),null,null);}catch(Exception error){failure(id,"paint_error","Paint acknowledgement failed");}
+                };
+                if(paintAwaiter==null)finish.accept(false);else request.paintCancel=paintAwaiter.await(finish);
+            });return;
         }
         if ("runtime.delay".equals(method)) {
             long delay = args.optLong("milliseconds", -1);
@@ -825,6 +838,7 @@ final class PodServices implements Closeable {
         if(request == null) return;
         request.cancellation.cancel();
         if(request.timer != null) main.removeCallbacks(request.timer);
+        if(request.paintCancel!=null)request.paintCancel.run();
         if(request.method!=null&&request.method.startsWith("acoustic.")){
             acoustic.cancel();guidedWifi.cancel();main.post(()->{acousticPermission.cancel(id);guidedPermission.cancel(id);});
         }
