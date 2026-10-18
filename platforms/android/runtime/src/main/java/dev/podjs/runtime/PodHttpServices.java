@@ -27,7 +27,7 @@ public final class PodHttpServices implements AutoCloseable {
     private static final int MAX_REDIRECTS = 5;
     private static final int BUFFER_SIZE = 32 * 1024;
     private static final long DEFAULT_MAX_BYTES = 16L * 1024 * 1024;
-    private static final long MAX_BYTES = 64L * 1024 * 1024;
+    private static final long MAX_BYTES = 256L * 1024 * 1024;
     private static final int DEFAULT_TIMEOUT_MS = 30_000;
     private final File root;
     private final OkHttpClient client;

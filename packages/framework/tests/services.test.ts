@@ -19,6 +19,13 @@ beforeEach(() => {
 afterEach(() => { events.length = 0; emitted.length = 0; });
 
 describe("host services", () => {
+ test('afterPaint requests commits and cancellation remains owned by the caller',async()=>{
+  host.capabilities=()=>JSON.stringify(['runtime.timer']);const {afterPaint}=await import('../src/render.ts');
+  const op=afterPaint(),request=emitted.at(-1)!;expect(request).toMatchObject({method:'runtime.afterPaint',args:{}});
+  events.push({t:'service.result',id:request.id,ok:true,value:{committed:true}});api.__pumpPodEvents();await expect(op.result).resolves.toEqual({committed:true});
+  const cancelled=afterPaint();cancelled.cancel();await expect(cancelled.result).rejects.toMatchObject({code:'cancelled'});expect(emitted.at(-1)?.t).toBe('service.cancel');
+ });
+
  test('secure batch is capability gated and submits one transaction without logging values',async()=>{
   await expect(secureStorage.update({key:'private'})).rejects.toMatchObject({code:'unsupported'});expect(emitted).toHaveLength(0);
   host.capabilities=()=>JSON.stringify(['data.secure']);const result=secureStorage.update({key:'private',removed:null});const request=emitted.at(-1)!;expect(request).toMatchObject({method:'secure.update',args:{values:{key:'private',removed:null}}});

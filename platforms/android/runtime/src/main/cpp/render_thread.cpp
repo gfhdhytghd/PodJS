@@ -90,6 +90,13 @@ RenderThread::Poll RenderThread::poll(uint64_t sequence) {
   completed_.count=0; replaced_=0;
   return out;
 }
+void RenderThread::traceCheckpoint(uint64_t id) {
+  traceCheckpointId_=id;traceFrames_=8;
+  Completion previous;
+  {std::lock_guard lock(mutex_);previous=lastCompletion_;}
+  __android_log_print(ANDROID_LOG_INFO,"PodRenderTiming","stage=priorSubmission checkpoint=%llu frame=%llu hash=%llu beginMonoMs=%.3f endMonoMs=%.3f gpu=%d cpu=%d",
+      (unsigned long long)id,(unsigned long long)previous.sequence,(unsigned long long)previous.hash,previous.startedMonoMs,previous.finishedMonoMs,previous.gpu,previous.cpu);
+}
 void RenderThread::run() {
   for(;;) {
     std::function<void()> command;
@@ -103,7 +110,7 @@ void RenderThread::run() {
     }
     if(command) { command(); continue; }
     const double began=nowMs();
-    Completion result{}; result.sequence=frame->sequence;
+    Completion result{}; result.sequence=frame->sequence;result.hash=frame->hash;result.startedMonoMs=began;
     PodDrawList list{};
     pod_render_snapshot_draw_list(frame->snapshot.get(),&list);
     auto host=renderer_->beginHostFrame(frame->sequence);
@@ -129,7 +136,7 @@ void RenderThread::run() {
     }
     host.setFlags((int64_t{1}<<18) | (result.gpu ? int64_t{1}<<16 : 0) | (result.cpu ? int64_t{1}<<17 : 0));
     host.finish(result.gpu||result.cpu,0);
-    result.totalMs=nowMs()-began;
+    result.finishedMonoMs=nowMs();result.totalMs=result.finishedMonoMs-began;
     valid_=renderer_->valid();
     glyphBytes_=renderer_->glyphPageBytes(); glyphPages_=renderer_->glyphPageCount();
     {
@@ -138,7 +145,12 @@ void RenderThread::run() {
       lastCompleted_=frame->sequence;
       // Between host polls only executing+pending can complete. Lifecycle/debug
       // loops can run without polls; diagnostics history is explicitly bounded.
-      completed_.push(result);
+      completed_.push(result);lastCompletion_=result;
+    }
+    if(traceFrames_.load()>0){
+      --traceFrames_;
+      __android_log_print(ANDROID_LOG_INFO,"PodRenderTiming","stage=renderSubmitted checkpoint=%llu frame=%llu hash=%llu beginMonoMs=%.3f endMonoMs=%.3f totalMs=%.3f presentWaitMs=%.3f gpu=%d cpu=%d",
+          (unsigned long long)traceCheckpointId_.load(),(unsigned long long)result.sequence,(unsigned long long)result.hash,result.startedMonoMs,result.finishedMonoMs,result.totalMs,result.perf.presentWaitMs,result.gpu,result.cpu);
     }
     __android_log_print(ANDROID_LOG_DEBUG,"PodJSRenderer",
         "frame seq=%llu hash=%llu words=%zu rendererTotalMs=%.2f gpuDecodeMs=%.2f textureUploadMs=%.2f "

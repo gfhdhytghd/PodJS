@@ -51,13 +51,23 @@ public final class PodVideoTransformTest {
             TextureView texture = (TextureView) activity.videoHost().getChildAt(1);
             Result prepared = call(services, "video.prepare", new JSONObject().put("url", fixture.getName())
                     .put("autoplay", true).put("loop", true).put("muted", true)
-                    .put("bounds", new JSONObject().put("x", 0).put("y", 0).put("width", 80).put("height", 40).put("visible", true)));
+                    .put("bounds", new JSONObject().put("x", 0).put("y", 0).put("width", 80).put("height", 40).put("visible", false)));
             assertNull(prepared.error); assertNotNull(prepared.value); assertTrue(prepared.value.getBoolean("ok"));
             assertBackgroundMatchesVideo(activity, texture);
             waitFor("decoded video dimensions", 7000, () -> state(services).getInt("width") > 0 && state(services).getInt("height") > 0);
             JSONObject dimensions = state(services);
             assertEquals(16, dimensions.getInt("width")); assertEquals(16, dimensions.getInt("height"));
 
+            waitFor("first frame while hidden", 7000, () -> state(services).getBoolean("hasRenderedFirstFrame"));
+            assertEquals(0f, texture.getAlpha(), .001f);
+            assertEquals(View.VISIBLE, texture.getVisibility());
+            android.view.ViewGroup.LayoutParams originalLayout = texture.getLayoutParams();
+            Result moved = call(services, "video.setBounds", new JSONObject().put("x",0).put("y",0).put("width",80).put("height",40).put("translateY",-10).put("visible",true));
+            assertNull(moved.error);
+            assertSame("a vertical drag must not relayout the decoder surface", originalLayout, texture.getLayoutParams());
+            assertEquals(-10f*target.getResources().getDisplayMetrics().density, texture.getTranslationY(), .001f);
+            assertEquals(1f, texture.getAlpha(), .001f);
+            call(services, "video.setBounds", new JSONObject().put("x",0).put("y",0).put("width",80).put("height",40).put("translateY",0).put("visible",true));
             Matrix standard = transformOf(instrumentation, texture);
             Result rotated90 = call(services, "video.setTransform", new JSONObject().put("rotationDeg", 90));
             assertTrue(rotated90.value.getBoolean("ok"));

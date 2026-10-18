@@ -52,6 +52,7 @@ final class PodVideoSessionServices implements AutoCloseable {
     private final Context context;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final File mediaRoot;
+    private final PodMediaPrefixCache mediaPrefixCache;
     private final PodVideoDecoderBudget decoderBudget;
     private final PodVideoDecoderCapabilities decoderCapabilities;
     private final LinkedHashMap<String, Session> sessions = new LinkedHashMap<>();
@@ -63,9 +64,13 @@ final class PodVideoSessionServices implements AutoCloseable {
     private PodVideoDecoderCapabilities.Result lastCapability;
 
     PodVideoSessionServices(Context context, PodVideoDecoderBudget decoderBudget) {
+        this(context,decoderBudget,null);
+    }
+    PodVideoSessionServices(Context context, PodVideoDecoderBudget decoderBudget, PodMediaPrefixCache cache) {
         if (context == null) throw new IllegalArgumentException("context_required");
         this.context = context.getApplicationContext();
         this.decoderBudget = decoderBudget;
+        this.mediaPrefixCache=cache;
         decoderCapabilities = new PodVideoDecoderCapabilities(this.context);
         try { mediaRoot = PodTakeover.filesRoot(this.context).getCanonicalFile(); }
         catch (Exception error) { throw new IllegalStateException("service_root_unavailable", error); }
@@ -457,7 +462,7 @@ final class PodVideoSessionServices implements AutoCloseable {
         Map<String, String> headers = headers(args.optJSONObject("headers"));
         DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory();
         if (!headers.isEmpty()) http.setDefaultRequestProperties(headers);
-        DefaultMediaSourceFactory factory = new DefaultMediaSourceFactory(new DefaultDataSource.Factory(context, http));
+        DefaultMediaSourceFactory factory = new DefaultMediaSourceFactory(mediaPrefixCache==null?new DefaultDataSource.Factory(context,http):mediaPrefixCache.factory(new DefaultDataSource.Factory(context,http)));
         if (!videoUrl.isEmpty() && !audioUrl.isEmpty()) {
             return new MergingMediaSource(factory.createMediaSource(item(videoUrl, args.optString("type", ""))), factory.createMediaSource(item(audioUrl, "")));
         }
@@ -534,6 +539,7 @@ final class PodVideoSessionServices implements AutoCloseable {
     }
 
     private String sourceValue(String value) throws Exception {
+        if(mediaPrefixCache!=null&&mediaPrefixCache.owns(value))return value;
         if (value.startsWith("http://") || value.startsWith("https://")) {
             Uri uri = Uri.parse(value);
             if (uri.getHost() == null) throw new IllegalArgumentException("invalid_url");

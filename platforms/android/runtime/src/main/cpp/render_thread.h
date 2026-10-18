@@ -15,7 +15,8 @@ class RenderThread {
   using Snapshot = std::unique_ptr<PodRenderSnapshot, SnapshotDeleter>;
   struct Completion {
     uint64_t sequence{}, lagFrames{};
-    double totalMs{};
+    double totalMs{},startedMonoMs{},finishedMonoMs{};
+    uint64_t hash{};
     VulkanRenderer::SubmitPerf perf{};
     bool gpu{}, cpu{};
   };
@@ -48,6 +49,7 @@ class RenderThread {
   // Consumes ownership even if suspended; returned bool means queued, not displayed.
   bool handoff(Snapshot snapshot, uint64_t sequence);
   Poll poll(uint64_t sequence);
+  void traceCheckpoint(uint64_t id);
   void replaceWindow(ANativeWindow*, uint32_t, uint32_t);
   void setPaused(bool);
   bool beginRendererTiming(uint32_t);
@@ -68,6 +70,9 @@ class RenderThread {
   std::function<void()> command_;
   bool accepting_{}, attached_{}, paused_{}, stopping_{};
   CompletionBatch completed_;
+  Completion lastCompletion_;
+  std::atomic<uint64_t> traceCheckpointId_{};
+  std::atomic<int> traceFrames_{};
   uint64_t replaced_{}, latestSequence_{}, lastCompleted_{};
   std::atomic<bool> valid_{};
   std::atomic<uint64_t> acceptedHash_{};

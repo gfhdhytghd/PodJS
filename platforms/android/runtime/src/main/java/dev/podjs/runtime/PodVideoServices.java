@@ -47,6 +47,7 @@ public final class PodVideoServices implements AutoCloseable {
     private final Context context;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final File mediaRoot;
+    private final PodMediaPrefixCache mediaPrefixCache;
     private final PodVideoDecoderBudget decoderBudget;
     private boolean decoderLease;
     private ExoPlayer player;
@@ -63,6 +64,14 @@ public final class PodVideoServices implements AutoCloseable {
     private String state = "idle";
     private String playbackErrorCode;
     private boolean hasRenderedFirstFrame;
+    private int observedTextureFrames;
+    private PodVideoFrameStats frameStats;
+    private int statsSequence;
+    private boolean statsWindowLogged;
+    private boolean boundsVisible=true;
+    private long prepareStartedMs;
+    private boolean firstRevealLogged;
+    private int prepareSequence;
     private boolean closed;
     private boolean autoplay;
     private boolean backgroundPlayback, lifecyclePaused;
@@ -75,9 +84,13 @@ public final class PodVideoServices implements AutoCloseable {
     }
 
     PodVideoServices(Context context, PodVideoDecoderBudget decoderBudget) {
+        this(context,decoderBudget,null);
+    }
+    PodVideoServices(Context context, PodVideoDecoderBudget decoderBudget, PodMediaPrefixCache cache) {
         if (context == null) throw new IllegalArgumentException("context_required");
         this.context = context.getApplicationContext();
         this.decoderBudget = decoderBudget;
+        this.mediaPrefixCache=cache;
         try { mediaRoot = PodTakeover.filesRoot(this.context).getCanonicalFile(); }
         catch (IOException e) { throw new IllegalStateException("service_root_unavailable", e); }
         density = this.context.getResources().getDisplayMetrics().density;
@@ -89,7 +102,12 @@ public final class PodVideoServices implements AutoCloseable {
             if (closed || host == null) return;
             parent = host;
             if (videoView == null) {
-                videoView = new TextureView(context) {
+                videoView = new PodObservedTextureView(context, texture -> {
+                    if(frameStats!=null)frameStats.updated(android.os.SystemClock.elapsedRealtimeNanos());
+                    if(!hasRenderedFirstFrame||observedTextureFrames>=8)return;
+                    observedTextureFrames++;
+                    android.util.Log.i("PodVideoTiming","textureUpdated seq="+prepareSequence+" count="+observedTextureFrames+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-prepareStartedMs)+" producerNs="+texture.getTimestamp()+" alpha="+videoView.getAlpha()+" playing="+(player!=null&&player.isPlaying()));
+                }) {
                     @Override public boolean onTouchEvent(android.view.MotionEvent event) { return false; }
                     @Override public boolean dispatchTouchEvent(android.view.MotionEvent event) { return false; }
                 };
@@ -135,7 +153,7 @@ public final class PodVideoServices implements AutoCloseable {
     public void pauseForLifecycle() { main.post(() -> { if (!backgroundPlayback) { lifecyclePaused=true; if(player!=null)player.pause(); state="paused"; } }); }
 
     private void prepare(JSONObject a, Callback cb) throws Exception {
-        hasRenderedFirstFrame=false; playbackErrorCode=null;
+        firstRevealLogged=false;prepareSequence++;android.util.Log.i("PodVideoTiming","prepareBegin seq="+prepareSequence);hasRenderedFirstFrame=false;observedTextureFrames=0; prepareStartedMs=android.os.SystemClock.elapsedRealtime(); playbackErrorCode=null;
         if(videoView==null || parent==null) throw new IllegalStateException("video_surface_unavailable");
         String videoUrl = a.optString("videoUrl", ""); String audioUrl = a.optString("audioUrl", "");
         String url = videoUrl.isEmpty() || audioUrl.isEmpty() ? source(a, "url") : sourceValue(videoUrl);
@@ -149,7 +167,7 @@ public final class PodVideoServices implements AutoCloseable {
         Map<String,String> headers = headers(a.optJSONObject("headers"));
         DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory(); if (!headers.isEmpty()) http.setDefaultRequestProperties(headers);
         DefaultDataSource.Factory data = new DefaultDataSource.Factory(context, http);
-        DefaultMediaSourceFactory factory = new DefaultMediaSourceFactory(data);
+        DefaultMediaSourceFactory factory = new DefaultMediaSourceFactory(mediaPrefixCache==null?data:mediaPrefixCache.factory(data));
         MediaSource source;
         if (!videoUrl.isEmpty() && !audioUrl.isEmpty()) source = new MergingMediaSource(factory.createMediaSource(item(videoUrl, a.optString("type", ""))), factory.createMediaSource(item(audioUrl, "")));
         else source = factory.createMediaSource(item(url, a.optString("type", "")));
@@ -174,23 +192,25 @@ public final class PodVideoServices implements AutoCloseable {
     }
     private void configurePlayer(JSONObject a,MediaSource source) throws Exception {
         if(player==null)throw new IllegalStateException("video_service_unavailable");
+        android.util.Log.i("PodVideoTiming","playerAttached seq="+prepareSequence+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-prepareStartedMs));
         final ExoPlayer session = player;
+        frameStats=new PodVideoFrameStats();statsSequence=prepareSequence;statsWindowLogged=false;
         player.setAudioAttributes(new AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(),true);
         player.setRepeatMode(a.optBoolean("loop", false) ? Player.REPEAT_MODE_ONE : Player.REPEAT_MODE_OFF);
         player.setVolume(a.optBoolean("muted", false) ? 0f : 1f);
         playerListener=new Player.Listener() {
-            @Override public void onRenderedFirstFrame() { if(player==session)hasRenderedFirstFrame=true; }
+            @Override public void onRenderedFirstFrame() { if(player==session){hasRenderedFirstFrame=true;frameStats.playing(player.isPlaying(),android.os.SystemClock.elapsedRealtimeNanos());final int observedSequence=statsSequence;main.postDelayed(()->{if(player==session&&statsSequence==observedSequence){logFrameStats("window");statsWindowLogged=true;}},8000);androidx.media3.common.Format decoded=player.getVideoFormat();if(decoded!=null)android.util.Log.i("PodVideoTiming","decoded mime="+("video/avc".equals(decoded.sampleMimeType)?"avc":"video/hevc".equals(decoded.sampleMimeType)?"hevc":"other")+" width="+decoded.width+" height="+decoded.height);if(boundsVisible&&!firstRevealLogged){firstRevealLogged=true;android.util.Log.i("PodVideoTiming","surfaceReveal seq="+prepareSequence+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-prepareStartedMs));} if(videoView!=null)videoView.setAlpha(boundsVisible?1f:0f); if(videoBackground!=null)videoBackground.setAlpha(boundsVisible?1f:0f); android.util.Log.i("PodVideoTiming","firstFrame prepareMs="+(android.os.SystemClock.elapsedRealtime()-prepareStartedMs));} }
             @Override public void onVideoSizeChanged(androidx.media3.common.VideoSize size){if(player==session)fitVideo();}
-            @Override public void onPlaybackStateChanged(int s) { if(player!=session)return; if (s==Player.STATE_BUFFERING) { if (player.getPlayWhenReady()) state="buffering"; } else if(s==Player.STATE_READY && player!=null && player.isPlaying()) state="playing"; else if(s==Player.STATE_ENDED) { state="ended"; if(videoView!=null)videoView.setKeepScreenOn(false); } else if(s==Player.STATE_READY && !"paused".equals(state)) state="ready"; if (s==Player.STATE_READY && prepareCallback != null) { Callback c=prepareCallback; prepareCallback=null; try { c.complete(state()); } catch (Exception e) { c.fail("video_error", e.getMessage()); } } }
-            @Override public void onIsPlayingChanged(boolean playing) { if(player!=session)return; if (playing) state="playing"; else if (state.equals("playing")) state="paused"; }
+            @Override public void onPlaybackStateChanged(int s) { if(player!=session)return; if(frameStats!=null&&hasRenderedFirstFrame)frameStats.buffering(s==Player.STATE_BUFFERING,android.os.SystemClock.elapsedRealtimeNanos()); if (s==Player.STATE_BUFFERING) { if (player.getPlayWhenReady()) state="buffering"; } else if(s==Player.STATE_READY && player!=null && player.isPlaying()) state="playing"; else if(s==Player.STATE_ENDED) { state="ended"; if(videoView!=null)videoView.setKeepScreenOn(false); } else if(s==Player.STATE_READY && !"paused".equals(state)) state="ready"; if (s==Player.STATE_READY && prepareCallback != null) { Callback c=prepareCallback; prepareCallback=null; try { c.complete(state()); } catch (Exception e) { c.fail("video_error", e.getMessage()); } } }
+            @Override public void onIsPlayingChanged(boolean playing) { if(player!=session)return; if(frameStats!=null)frameStats.playing(playing&&hasRenderedFirstFrame,android.os.SystemClock.elapsedRealtimeNanos()); if (playing) state="playing"; else if (state.equals("playing")) state="paused"; }
             @Override public void onPlayerError(PlaybackException error) { if(player!=session)return; state="error"; playbackErrorCode=PodPlaybackFailure.isNetwork(error)?"network_error":"prepare_failed"; Callback c=prepareCallback; prepareCallback=null; releasePlayer(); if(c!=null)c.fail(playbackErrorCode,"Video playback failed"); if(videoView!=null)videoView.setVisibility(View.GONE); }
         };
         player.addListener(playerListener);
-        state=lifecyclePaused?"paused":"preparing"; if(videoView!=null)videoView.setKeepScreenOn(true); player.setMediaSource(source); player.setVideoTextureView(videoView); player.prepare();
+        state=lifecyclePaused?"paused":"preparing"; if(videoView!=null)videoView.setKeepScreenOn(true); player.setMediaSource(source); player.setVideoTextureView(videoView); android.util.Log.i("PodVideoTiming","prepareCall seq="+prepareSequence+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-prepareStartedMs));player.prepare();
         if (autoplay && !lifecyclePaused) player.play(); else player.pause();
     }
     private MediaItem item(String url, String type) { MediaItem.Builder b=new MediaItem.Builder().setUri(Uri.parse(url)); if(!type.isEmpty()) b.setMimeType(type); return b.build(); }
-    private void play(Callback c) throws Exception { require(); lifecyclePaused=false;if(videoView!=null)videoView.setKeepScreenOn(true);player.play(); c.complete(state()); }
+    private void play(Callback c) throws Exception { require();android.util.Log.i("PodVideoTiming","playCall seq="+prepareSequence+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-prepareStartedMs)); lifecyclePaused=false;if(videoView!=null)videoView.setKeepScreenOn(true);player.play(); c.complete(state()); }
     private void pause(Callback c) throws Exception { require(); player.pause(); if(videoView!=null)videoView.setKeepScreenOn(false); state="paused"; c.complete(state()); }
     private void seek(JSONObject a, Callback c) throws Exception { require(); long p=a.optLong("positionMs", -1); if(p<0) throw new IllegalArgumentException("invalid_position"); player.seekTo(p); c.complete(state()); }
     private void stop(Callback c) throws Exception { releasePlayer(); clearBackdrop(); state="stopped"; if(videoView!=null){videoView.setVisibility(View.GONE);videoView.setKeepScreenOn(false);} c.complete(state()); }
@@ -199,7 +219,17 @@ public final class PodVideoServices implements AutoCloseable {
     private void clearBackdrop(){if(backdrop!=null){backdrop.setImageDrawable(null);backdrop.setVisibility(View.GONE);}if(backdropBitmap!=null&&!backdropBitmap.isRecycled())backdropBitmap.recycle();backdropBitmap=null;}
     private void transform(JSONObject a, Callback c)throws Exception { String mode=a.optString("scaleMode","standard");if(!mode.equals("standard")&&!mode.equals("expanded")&&!mode.equals("shrunk"))throw new IllegalArgumentException("invalid_scale_mode");float rot=(float)a.optDouble("rotationDeg",0);if(!Float.isFinite(rot)||Math.abs(rot)>100000)throw new IllegalArgumentException("invalid_rotation");rotationDeg=Math.round(rot*100f)/100f;scaleMode=mode;panX=(float)a.optDouble("panX",0);panY=(float)a.optDouble("panY",0);if(!Float.isFinite(panX)||!Float.isFinite(panY))throw new IllegalArgumentException("invalid_pan");fitVideo();c.complete(state()); }
     private void setVolume(JSONObject a, Callback c)throws Exception {double v=a.optDouble("volume",-1);if(!Double.isFinite(v)||v<0||v>1)throw new IllegalArgumentException("invalid_volume");volume=(float)v;AudioManager am=(AudioManager)context.getSystemService(Context.AUDIO_SERVICE);int max=am.getStreamMaxVolume(AudioManager.STREAM_MUSIC);am.setStreamVolume(AudioManager.STREAM_MUSIC,Math.round(max*volume),0);c.complete(state());}
-    private void applyBounds(JSONObject b) { if(videoView==null||b==null)return; if(backdrop!=null)backdrop.setVisibility(b.optDouble("translateX",0)==0?View.GONE:View.VISIBLE); int x=dp(b.optDouble("x",0)+b.optDouble("translateX",0)),y=dp(b.optDouble("y",0)),w=dp(b.optDouble("width",0)),h=dp(b.optDouble("height",0)); FrameLayout.LayoutParams p=new FrameLayout.LayoutParams(Math.max(0,w),Math.max(0,h));p.leftMargin=x;p.topMargin=y;videoView.setLayoutParams(p); boolean visible=b.optBoolean("visible",true);videoView.setVisibility(visible&&w>0&&h>0?View.VISIBLE:View.GONE); JSONObject clip=b.optJSONObject("roundClip"); if(clip!=null){final float r=(float)clip.optDouble("radius",0)*density; final float cx=(float)clip.optDouble("cx",w/(2*density))*density,cy=(float)clip.optDouble("cy",h/(2*density))*density; videoView.setClipToOutline(r>0); videoView.setOutlineProvider(new ViewOutlineProvider(){public void getOutline(View v,Outline o){o.setRoundRect((int)(cx-r),(int)(cy-r),(int)(cx+r),(int)(cy+r),r);}}); } else videoView.setClipToOutline(false); if(videoBackground!=null){videoBackground.setLayoutParams(new FrameLayout.LayoutParams(p));videoBackground.setVisibility(videoView.getVisibility());videoBackground.setOutlineProvider(videoView.getOutlineProvider());videoBackground.setClipToOutline(videoView.getClipToOutline());} fitVideo(); }
+    private void applyBounds(JSONObject b) { if(videoView==null||b==null)return; if(backdrop!=null)backdrop.setVisibility(b.optDouble("translateX",0)==0?View.GONE:View.VISIBLE); int x=dp(b.optDouble("x",0)+b.optDouble("translateX",0)),y=dp(b.optDouble("y",0)),w=dp(b.optDouble("width",0)),h=dp(b.optDouble("height",0)); final float ty=(float)b.optDouble("translateY",0)*density;
+        // A vertical pager drag moves the surface every frame: translate it, and relayout only when the frame itself changes.
+        FrameLayout.LayoutParams current=(FrameLayout.LayoutParams)videoView.getLayoutParams(); boolean relayout=current==null||current.leftMargin!=x||current.topMargin!=y||current.width!=Math.max(0,w)||current.height!=Math.max(0,h);
+        FrameLayout.LayoutParams p=new FrameLayout.LayoutParams(Math.max(0,w),Math.max(0,h));p.leftMargin=x;p.topMargin=y; if(relayout)videoView.setLayoutParams(p); videoView.setTranslationY(ty); boundsVisible=b.optBoolean("visible",true);
+        // Keep the TextureView surface alive while hidden: GONE during a handoff
+        // prevents a replacement decoder from producing its first frame.
+        videoView.setVisibility(w>0&&h>0?View.VISIBLE:View.GONE); videoView.setAlpha(boundsVisible&&hasRenderedFirstFrame?1f:0f);
+        if(boundsVisible&&hasRenderedFirstFrame&&!firstRevealLogged){firstRevealLogged=true;android.util.Log.i("PodVideoTiming","surfaceReveal seq="+prepareSequence+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-prepareStartedMs));}
+        // The round clip stays fixed to the screen while the surface is translated.
+        JSONObject clip=b.optJSONObject("roundClip"); if(clip!=null){final float r=(float)clip.optDouble("radius",0)*density; final float cx=(float)clip.optDouble("cx",w/(2*density))*density,cy=(float)clip.optDouble("cy",h/(2*density))*density-ty; videoView.setClipToOutline(r>0); videoView.setOutlineProvider(new ViewOutlineProvider(){public void getOutline(View v,Outline o){o.setRoundRect((int)(cx-r),(int)(cy-r),(int)(cx+r),(int)(cy+r),r);}}); } else videoView.setClipToOutline(false);
+        if(videoBackground!=null){if(relayout)videoBackground.setLayoutParams(new FrameLayout.LayoutParams(p));videoBackground.setTranslationY(ty);videoBackground.setVisibility(videoView.getVisibility());videoBackground.setAlpha(videoView.getAlpha());videoBackground.setOutlineProvider(videoView.getOutlineProvider());videoBackground.setClipToOutline(videoView.getClipToOutline());} if(relayout)fitVideo(); }
     private void fitVideo(){
         if(player==null||videoView==null||videoView.getLayoutParams()==null)return;
         androidx.media3.common.VideoSize size=player.getVideoSize();int w=videoView.getLayoutParams().width,h=videoView.getLayoutParams().height;
@@ -220,9 +250,17 @@ public final class PodVideoServices implements AutoCloseable {
     private void require(){if(player==null)throw new IllegalStateException("video_not_ready");}
     private JSONObject state() throws Exception { AudioManager am=(AudioManager)context.getSystemService(Context.AUDIO_SERVICE);return new JSONObject().put("ok",true).put("state",state).put("hasRenderedFirstFrame",hasRenderedFirstFrame).put("errorCode", "error".equals(state)?playbackErrorCode:null).put("positionMs",player==null?0:player.getCurrentPosition()).put("durationMs",player==null?0:Math.max(0,player.getDuration())).put("width",player==null?0:player.getVideoSize().width).put("height",player==null?0:player.getVideoSize().height).put("volume",am.getStreamVolume(AudioManager.STREAM_MUSIC)/(double)Math.max(1,am.getStreamMaxVolume(AudioManager.STREAM_MUSIC))).put("volumeMax",am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)); }
     private String source(JSONObject a,String key)throws Exception{String s=a.optString(key,"");if(s.isEmpty())throw new IllegalArgumentException("missing_url");return sourceValue(s);}
-    private String sourceValue(String s)throws Exception{if(s.startsWith("http://")||s.startsWith("https://")){Uri u=Uri.parse(s);if(u.getHost()==null)throw new IllegalArgumentException("invalid_url");return s;}File f=new File(mediaRoot,s).getCanonicalFile();if(s.startsWith("/")||!f.getPath().startsWith(mediaRoot.getPath()+File.separator)||!f.isFile())throw new SecurityException("invalid_media_path");return f.toURI().toString();}
+    private String sourceValue(String s)throws Exception{if(mediaPrefixCache!=null&&mediaPrefixCache.owns(s))return s;if(s.startsWith("http://")||s.startsWith("https://")){Uri u=Uri.parse(s);if(u.getHost()==null)throw new IllegalArgumentException("invalid_url");return s;}File f=new File(mediaRoot,s).getCanonicalFile();if(s.startsWith("/")||!f.getPath().startsWith(mediaRoot.getPath()+File.separator)||!f.isFile())throw new SecurityException("invalid_media_path");return f.toURI().toString();}
     private Map<String,String> headers(JSONObject o)throws Exception{Map<String,String> m=new HashMap<>();if(o==null)return m; if(o.length()>32)throw new IllegalArgumentException("too_many_headers");int total=0;java.util.Iterator<String> i=o.keys();while(i.hasNext()){String k=i.next();String v=o.optString(k,null);if(v==null||k.length()>128||v.length()>65536||k.indexOf('\r')>=0||k.indexOf('\n')>=0||v.indexOf('\r')>=0||v.indexOf('\n')>=0)throw new IllegalArgumentException("invalid_headers");total+=k.length()+v.length();if(total>65536)throw new IllegalArgumentException("headers_too_large");m.put(k,v);}return m;}
+    private void logFrameStats(String scope){
+        if(player==null||frameStats==null)return;
+        androidx.media3.exoplayer.DecoderCounters counters=player.getVideoDecoderCounters();
+        if(counters!=null)counters.ensureUpdated();
+        android.util.Log.i("PodVideoTiming","playbackStats seq="+statsSequence+" scope="+scope+" "+frameStats.summary(android.os.SystemClock.elapsedRealtimeNanos())
+            +" decoderRendered="+(counters==null?-1:counters.renderedOutputBufferCount)+" decoderDropped="+(counters==null?-1:counters.droppedBufferCount)+" decoderSkipped="+(counters==null?-1:counters.skippedOutputBufferCount));
+    }
     private void detachPlayer(boolean keepPlaying){
+        if(!statsWindowLogged)logFrameStats("end");frameStats=null;
         ExoPlayer previous=player;player=null;
         if(previous!=null){if(playerListener!=null)previous.removeListener(playerListener);previous.clearVideoSurface();if(!keepPlaying){previous.stop();previous.clearMediaItems();}}
         playerListener=null;

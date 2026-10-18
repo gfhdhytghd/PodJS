@@ -34,6 +34,7 @@ public class PodLargeDownloadTest {
   }finally{target.delete();}
  }
  @Test public void fortyMiBIsStreamedToDiskWithBoundedHeap()throws Exception {download(40L*1024*1024,64L*1024*1024,false);}
+ @Test public void wholeMediaBeyondTheOldCeilingKeepsBoundedHeap()throws Exception {download(80L*1024*1024,256L*1024*1024,false);}
  @Test public void exceedingConfiguredLimitRemovesPartialFile()throws Exception {download(2L*1024*1024,1024*1024,false);}
  @Test public void cancellationRemovesPartialFile()throws Exception {download(40L*1024*1024,64L*1024*1024,true);}
 }

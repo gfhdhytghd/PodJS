@@ -160,6 +160,8 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/keyed-memo` | Caller-owned memoized values with explicit dependency identity and clearing. |
 | `@podjs/framework/image` | File-backed RemoteImage, bounded decoder queue, texture leases and image fitting. |
 | `@podjs/framework/service-trace` | Optional service timing and work diagnostics. |
+| `@podjs/framework/render-checkpoint` | Opt-in numeric Android render checkpoints, snapshot/submit timings and bounded UI texture alpha counts; not a display fence. |
+| `@podjs/framework/render` | Cancellable `afterPaint` boundary before expensive guest continuation work; explicit bounded fallback. |
 | `@podjs/framework/html` | Generic HTML parsing, entities and text extraction. |
 | `@podjs/framework/html-slices` | Incremental/cancellable HTML fragment parsing. |
 | `@podjs/framework/xml` | Generic XML parsing and document navigation. |
@@ -179,6 +181,8 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/image-tiles` | Image tile addressing and bounded preview selection. |
 | `@podjs/framework/tiled-image` | Tiled image presentation component. |
 | `@podjs/framework/cache` | Generic bounded disk cache, downloads, accounting, eviction and reference leases; configurable default transport download/image-validation limits. |
+| `@podjs/framework/download-cache` | Serial whole-file downloads with lazy URL resolution, request headers, cancellation, byte limits, stable content identity and pinned LRU retention. |
+| `@podjs/framework/media-prefix-cache` | Bounded range-aware Media3 prefix transport and cancellable windows |
 | `@podjs/framework/regexp` | Lazy RegExp construction to defer guest startup work. |
 | `@podjs/framework/sql` | Bounded SQL result pagination and UTF-8-safe large text reads. |
 | `@podjs/framework/json-string` | Android-compatible JSON string quoting, including slash escaping and lone UTF-16 preservation. |
@@ -238,3 +242,38 @@ Use `createTextureUploader` from `@podjs/framework/texture-upload` when a resour
 `androidJsonQuotedByteLength` reports exact Android quoted UTF-8 size, using a bounded native counter when available and the portable quote/UTF-8 fallback otherwise. Large inputs split at 32768 UTF-16 units without splitting a surrogate pair. The native counter rejects inputs over 256 KiB. Legacy BLE discovery requests both coarse and fine location as one location group; RFCOMM permission remains separate.
 
 `gunzipBytes` is an optional bounded native decoder (256 KiB compressed and decompressed). It validates members/CRC and returns null for invalid/oversized/unsupported input so callers retain their existing larger-input and error paths. It performs no I/O and retains no guest buffer.
+
+For bounded Media3 streaming previews, import `mediaPrefixCache` from
+`@podjs/framework/media-prefix-cache`; see [cache.md](cache.md). Opaque registered
+URIs require a fresh process-local registration and still need the network for
+uncached ranges.
+
+
+### Render checkpoints
+
+`renderCheckpoint()` returns a process-local numeric ID when a host accepts the
+`diagnostic.renderCheckpoint` effect. Call it at a logical UI change and retain
+that ID with the application's timing record. Hosts without this diagnostic sink
+remain inert. Android records receipt, the most recent snapshot at receipt, the
+next eight snapshots/submissions and up to eight UI TextureView updates within
+two seconds. Host and renderer records include monotonic times, frame sequence
+and content hash; a recent snapshot at receipt can precede a service-only guest
+turn, so subsequent snapshots bound that turn's committed scene.
+
+`renderCheckpoint({sampleAlpha:true})` additionally samples the first two updated
+UI textures into a 16x16 bitmap and logs only transparent/partial/opaque counts
+in the inner 10x10 region. This optional GPU readback can perturb timing; it does
+not export pixels or sample other applications. Checkpoints reset with the guest
+lifetime. **Queue submission, vkQueuePresentKHR return and TextureView update
+callbacks are not panel scan-out timestamps.** Use independently timed visible
+capture when evaluating presentation, and keep its acquisition interval.
+
+
+`afterPaint()` from `@podjs/framework/render` requires `runtime.timer`. Android
+waits for two window frame-commit callbacks, letting an asynchronously submitted
+UI texture be consumed before a heavy continuation. The operation returns
+`{committed:true}` after those commits; hidden/unattached views and a 250ms timeout
+return `{committed:false}`. Cancellation removes the registered commit callback
+and timeout. This is a scheduling boundary, not a panel scan-out guarantee, and
+does not make subsequent synchronous guest work inexpensive. Keep durability
+ordering explicit when placing persistence after this boundary.

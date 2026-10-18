@@ -51,6 +51,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private final long[] accessibilityMetadata = new long[3];
     private final long viewBegan = android.os.SystemClock.elapsedRealtime();
     private boolean firstTextureLogged;
+    private final PodRenderCheckpoint renderCheckpoint = new PodRenderCheckpoint();
     private long surfaceBegan;
     private boolean firstFrameLogged;
     private int bootGeneration;
@@ -138,6 +139,13 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                     rootSwipeEnabled = command.optBoolean("rootSwipeEnabled", true);
                     if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(!canSwipeDismiss());
                 }
+                else if ("diagnostic.renderCheckpoint".equals(command.optString("t"))) {
+                    long id=command.optLong("sequence"),now=System.nanoTime();
+                    if(renderCheckpoint.begin(id,now,command.optBoolean("sampleAlpha",false))){
+                        android.util.Log.i("PodRenderTiming","stage=hostApplied checkpoint="+id+" monoNs="+now+" guestEpochMs="+command.optLong("guestEpochMs"));
+                        nativeRenderCheckpoint(host,id);
+                    }
+                }
                 else if ("diagnostic.serviceWork".equals(command.optString("t"))) {
                     if(serviceResultTrace.enabled && command.optString("label").matches("[a-zA-Z][a-zA-Z0-9_.:-]{0,79}"))
                         android.util.Log.i("PodJSService", "guest label="+command.optString("label")+" ms="+command.optLong("elapsedMs")+" exclusiveMs="+command.optLong("exclusiveMs")+" beginEpochMs="+command.optLong("beginEpochMs")+" endEpochMs="+command.optLong("endEpochMs")+(command.has("units")?" units="+command.optLong("units"):""));
@@ -163,6 +171,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
 
     private void setHost(long handle) {
         host = handle;
+        renderCheckpoint.reset();
         serviceTraceGuestEnabled=false;
         hostLifetime = handle == 0 ? null : new HostLifetime(handle);
     }
@@ -289,6 +298,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
         long servicesBegan = PodStartupTrace.now();
         services = new PodServices(context, this::receiveServiceEvent);
+        services.attachPaintAwaiter(complete->PodAfterPaint.await(this,serviceHandler,complete));
         services.enableDeviceServiceTrace(serviceResultTrace.enabled);
         if(PodServices.memoryEnabled(context))services.attachMemoryProvider(()->{
             if(host==0)return null;
@@ -470,6 +480,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         try { if (host != 0) nativeResize(host, surface, w, h); } finally { surface.release(); }
     }
     @Override public void onSurfaceTextureUpdated(SurfaceTexture texture) {
+        renderCheckpoint.textureUpdated(this,texture);
         if(host!=0&&nativeHasContent(host)){
             PodSplash splash=PodSplash.of(getContext());if(splash!=null&&splash.keeping())splash.texturePresented();
         }
@@ -729,6 +740,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private static native void nativePumpServices(long host);
     private static native void nativePumpServiceResults(long host);
     private static native boolean nativeHasContent(long host);
+    private static native void nativeRenderCheckpoint(long host,long sequence);
     private static native void nativeFrame(long host, long frameTimeNanos);
     private static native boolean nativeBeginRendererTiming(long host,int capacity);
     private static native long[] nativeEndRendererTiming(long host);

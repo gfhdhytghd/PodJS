@@ -83,6 +83,9 @@ final class PodServices implements Closeable {
         });
     }
     private final Handler main = new Handler(Looper.getMainLooper());
+    interface PaintAwaiter {Runnable await(java.util.function.Consumer<Boolean> complete);}
+    private PaintAwaiter paintAwaiter;
+    void attachPaintAwaiter(PaintAwaiter awaiter){paintAwaiter=awaiter;}
     private final PodParagraphLayout.Cache paragraphLayouts=new PodParagraphLayout.Cache();
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     /** SQLite owns one connection and must stay serial, but must not queue behind file IO,
@@ -100,6 +103,7 @@ final class PodServices implements Closeable {
     void screenLifecycle(boolean resumed){displayResumed=resumed;mediaSurfaces.lifecycle(resumed);videoSessions.lifecycle(resumed);main.post(()->{if(!closed){debugPerformance.lifecycle(resumed);if(screen!=null)screen.lifecycle(resumed);}});}
     private final PodVideoDecoderBudget videoDecoderBudget;
     private final PodVideoServices video;
+    private final PodMediaPrefixCache mediaPrefixCache;
     private final PodVideoSessionServices videoSessions;
     private final PodMediaSurfaceServices mediaSurfaces;
     private final PodInlineTextInput inlineText;
@@ -238,12 +242,13 @@ final class PodServices implements Closeable {
         volatile Future<?> future;
         AlertDialog dialog;
         Runnable timer;
+        Runnable paintCancel;
         String method;
         volatile PodBrowserAuthServices.Callback authCallback;
         volatile PodSiteChallengeServices.Callback challengeCallback;
         String videoSessionId;
     }
-    PodServices(Context context, Sink sink) { PodTakeover.requireReady(context); this.context = context; this.sink = sink; textBitmapStats=memoryEnabled(context)?new PodTextRasterServices.Stats():null; device = new PodDeviceServices(context); media = new PodMediaServices(context, event -> { if (!closed) sink.complete(event); }); videoDecoderBudget=new PodVideoDecoderBudget(PodVideoSessionServices.MAX_SESSIONS); video = new PodVideoServices(context,videoDecoderBudget); videoSessions=new PodVideoSessionServices(context,videoDecoderBudget); mediaSurfaces = new PodMediaSurfaceServices(context); inlineText = new PodInlineTextInput(context,event->{if(!closed)sink.complete(event);}); images = new PodImageServices(context); http = new PodHttpServices(context); byteStreams = new PodByteStreamServices(context); webSockets = new PodWebSocketServices(context,byteStreams); discovery = new PodDiscoveryServices(context); bleDiscovery = new PodBleDiscoveryServices(context); networks = new PodNetworkServices(context,event->{if(!closed)sink.complete(event);}); browser = new PodBrowserServices(context); browserAuth = new PodBrowserAuthServices(context); siteChallenge = new PodSiteChallengeServices(context); acoustic=new PodAcousticServices(context);guidedWifi=new PodGuidedWifiServices(context,acoustic);
+    PodServices(Context context, Sink sink) { PodTakeover.requireReady(context); this.context = context; this.sink = sink; textBitmapStats=memoryEnabled(context)?new PodTextRasterServices.Stats():null; device = new PodDeviceServices(context); media = new PodMediaServices(context, event -> { if (!closed) sink.complete(event); }); videoDecoderBudget=new PodVideoDecoderBudget(PodVideoSessionServices.MAX_SESSIONS); mediaPrefixCache=new PodMediaPrefixCache(new java.io.File(context.getCacheDir(),"podjs-media-prefix"));video = new PodVideoServices(context,videoDecoderBudget,mediaPrefixCache); videoSessions=new PodVideoSessionServices(context,videoDecoderBudget,mediaPrefixCache); mediaSurfaces = new PodMediaSurfaceServices(context); inlineText = new PodInlineTextInput(context,event->{if(!closed)sink.complete(event);}); images = new PodImageServices(context); http = new PodHttpServices(context); byteStreams = new PodByteStreamServices(context); webSockets = new PodWebSocketServices(context,byteStreams); discovery = new PodDiscoveryServices(context); bleDiscovery = new PodBleDiscoveryServices(context); networks = new PodNetworkServices(context,event->{if(!closed)sink.complete(event);}); browser = new PodBrowserServices(context); browserAuth = new PodBrowserAuthServices(context); siteChallenge = new PodSiteChallengeServices(context); acoustic=new PodAcousticServices(context);guidedWifi=new PodGuidedWifiServices(context,acoustic);
         acousticPermission=new PodBluetoothPermission(context,0x5045,new String[]{android.Manifest.permission.RECORD_AUDIO});
         guidedPermission=new PodBluetoothPermission(context,0x5046,android.os.Build.VERSION.SDK_INT>=33?new String[]{android.Manifest.permission.RECORD_AUDIO,android.Manifest.permission.ACCESS_FINE_LOCATION,android.Manifest.permission.NEARBY_WIFI_DEVICES}:new String[]{android.Manifest.permission.RECORD_AUDIO,android.Manifest.permission.ACCESS_FINE_LOCATION});
         notificationPermission=new PodNotificationPermission(context); bluetoothPermission=new PodBluetoothPermission(context); discoveryPermission=new PodBluetoothPermission(context,0x5044,PodBleDiscoveryServices.permissions()); location=new PodLocationServices(context); }
@@ -371,6 +376,15 @@ final class PodServices implements Closeable {
             });
             return;
         }
+        if("runtime.afterPaint".equals(method)){
+            main.post(()->{
+                if(closed||!requests.containsKey(id))return;
+                java.util.function.Consumer<Boolean> finish=committed->{
+                    if(requests.remove(id,request))try{reply(id,true,new JSONObject().put("committed",committed),null,null);}catch(Exception error){failure(id,"paint_error","Paint acknowledgement failed");}
+                };
+                if(paintAwaiter==null)finish.accept(false);else request.paintCancel=paintAwaiter.await(finish);
+            });return;
+        }
         if ("runtime.delay".equals(method)) {
             long delay = args.optLong("milliseconds", -1);
             if(delay < 1 || delay > 120000) { requests.remove(id,request); failure(id,"invalid_argument","Timer delay must be 1..120000ms"); return; }
@@ -391,6 +405,9 @@ final class PodServices implements Closeable {
                 public void fail(String code,String message){if(requests.remove(id,request))failure(id,code,message);}
             });
             return;
+        }
+        if (method.startsWith("video.cache.")) {
+            streamWorkers.execute(()->{try{JSONObject result=mediaPrefixCache.execute(method,args);if(requests.remove(id,request))reply(id,true,result,null,null);}catch(Exception error){if(requests.remove(id,request))failure(id,"media_cache_error","Media prefix operation failed");}});return;
         }
         if (method.startsWith("video.")) {
             video.dispatch(method, args, new PodVideoServices.Callback() {
@@ -821,6 +838,7 @@ final class PodServices implements Closeable {
         if(request == null) return;
         request.cancellation.cancel();
         if(request.timer != null) main.removeCallbacks(request.timer);
+        if(request.paintCancel!=null)request.paintCancel.run();
         if(request.method!=null&&request.method.startsWith("acoustic.")){
             acoustic.cancel();guidedWifi.cancel();main.post(()->{acousticPermission.cancel(id);guidedPermission.cancel(id);});
         }
@@ -850,7 +868,7 @@ final class PodServices implements Closeable {
         main.post(inlineText::closeAll);
         main.post(()->{debugPerformance.close();if(screen!=null){screen.close();screen=null;}});
         media.close();
-        video.close();
+        mediaPrefixCache.close();video.close();
         videoSessions.close();
         mediaSurfaces.close();
         imageWorkers.shutdownNow();
