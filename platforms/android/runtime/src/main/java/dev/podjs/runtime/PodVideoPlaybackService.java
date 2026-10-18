@@ -30,7 +30,9 @@ public final class PodVideoPlaybackService extends MediaSessionService {
             .setTargetBufferBytes(PodVideoSessionServices.TARGET_BUFFER_BYTES)
             .setBufferDurationsMs(1_000,4_000,100,250)
             .build();
+        long createStarted=android.os.SystemClock.elapsedRealtime();
         player=new ExoPlayer.Builder(this).setLoadControl(loadControl).build();
+        android.util.Log.i("PodVideoTiming","playerCreated durationMs="+(android.os.SystemClock.elapsedRealtime()-createStarted));
         session=new MediaSession.Builder(this,player).build();
         addSession(session);
     }
