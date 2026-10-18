@@ -22,11 +22,11 @@ public final class PodBackgroundPackage {
     private final String[] grants;
     static String[] validateGrants(org.json.JSONArray array) throws Exception {
         if (array==null) return new String[0];
-        if (array.length()>5) throw new SecurityException("Too many background grants");
+        if (array.length()>6) throw new SecurityException("Too many background grants");
         java.util.HashSet<String> seen=new java.util.HashSet<>();String[] result=new String[array.length()];
         for (int i=0;i<result.length;i++) {
             Object raw=array.get(i);
-            if (!(raw instanceof String) || !java.util.Arrays.asList("kv.get","kv.set","kv.delete","kv.keys","debug.cloudHost").contains(raw) || !seen.add((String)raw))
+            if (!(raw instanceof String) || !java.util.Arrays.asList("kv.get","kv.set","kv.delete","kv.keys","cloud.host","debug.cloudHost").contains(raw) || !seen.add((String)raw))
                 throw new SecurityException("Invalid background grant");
             result[i]=(String)raw;
         }
@@ -99,8 +99,15 @@ public final class PodBackgroundPackage {
         return scheduler.scheduleVerified(app,task,source,item.getString("sha256"),earliestAt,budgetMs,requiresNetwork,payload,grants);
     }
     /** Reads the current installed cloud handler, never a persisted guest path. */
-    String cloudSource() throws Exception {
-        if(!java.util.Arrays.asList(grants).containsAll(java.util.Arrays.asList("debug.cloudHost","kv.get")))throw new SecurityException("Cloud background grant missing");
+    String cloudHostMethod(boolean debugBuild) {
+        java.util.List<String> allowed=java.util.Arrays.asList(grants);
+        if(!allowed.contains("kv.get"))throw new SecurityException("Cloud background grant missing");
+        if(allowed.contains("cloud.host"))return "cloud.host";
+        if(debugBuild&&allowed.contains("debug.cloudHost"))return "debug.cloudHost";
+        throw new SecurityException("Cloud background grant missing");
+    }
+    String cloudSource(boolean debugBuild) throws Exception {
+        cloudHostMethod(debugBuild);
         JSONObject item=handlers.optJSONObject("watchrss-cloud-sync");
         if(item==null)throw new SecurityException("Cloud background handler missing");
         ByteArrayOutputStream output=new ByteArrayOutputStream();

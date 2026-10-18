@@ -97,7 +97,7 @@ struct Reply {id:u64, ok:bool, #[serde(default)] value:serde_json::Value, code:O
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pod_background_reply(handle: *const PodBackgroundRun, bytes:*const u8, length:usize) -> i32 {
     let Some(handle)=(unsafe {handle.as_ref()}) else {return -1;};
-    if bytes.is_null() || length==0 || length>if handle.config.allowed_methods.iter().any(|m| m=="debug.cloudHost") {1024*1024} else {70*1024} {return -1;}
+    if bytes.is_null() || length==0 || length>if handle.config.allowed_methods.iter().any(|m| m=="cloud.host" || m=="debug.cloudHost") {1024*1024} else {70*1024} {return -1;}
     let Ok(reply)=serde_json::from_slice::<Reply>(unsafe {std::slice::from_raw_parts(bytes,length)}) else {return -1;};
     if reply.ok && reply.code.is_some() || !reply.ok && !reply.value.is_null() {return -1;}
     let result=if reply.ok {Ok(reply.value.to_string())} else {
@@ -151,6 +151,19 @@ mod tests {
         let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
         let request=loop{let line=pod_background_poll(handle);if !line.is_null(){break serde_json::from_str::<serde_json::Value>(std::ffi::CStr::from_ptr(line).to_str().unwrap()).unwrap();}assert!(std::time::Instant::now()<deadline);std::thread::yield_now();};
         assert_eq!(request["method"],"debug.cloudHost");
+        let reply=serde_json::json!({"id":request["id"],"ok":true,"value":"x".repeat(100000)}).to_string();assert_eq!(pod_background_reply(handle,reply.as_ptr(),reply.len()),0);
+        let result:serde_json::Value=serde_json::from_str(&worker.join().unwrap()).unwrap();assert_eq!(result["status"],"success");pod_background_close(handle);std::fs::remove_dir_all(root).unwrap();
+    }}
+    #[test] fn release_cloud_host_replies_and_private_kv_share_one_bounded_guest() { unsafe {
+        let root=std::env::temp_dir().join(format!("pod-release-cloud-kv-{}",std::process::id()));std::fs::create_dir_all(&root).unwrap();
+        let mut kv=crate::kv::KvStore::open(root.to_str());kv.set("legacy".into(),serde_json::json!("progress")).unwrap();
+        let source="globalThis.backgroundHandler=async c=>{const old=await c.request('kv.get',{key:'legacy'});if(!old.exists||old.value!=='progress')return 'failure';const value=await c.request('cloud.host',{method:'file.read',args:{}});return value.length===100000?'success':'failure'}";
+        let bytes=serde_json::json!({"app_id":"ffi-release-cloud","task_id":"task","source":source,"budget_ms":300000,"memory_bytes":268435456,"allowed_methods":["cloud.host","kv.get"],"kv_root":root}).to_string();
+        let handle=pod_background_open(bytes.as_ptr(),bytes.len());assert!(!handle.is_null());let address=handle as usize;
+        let worker=std::thread::spawn(move || std::ffi::CStr::from_ptr(pod_background_execute(address as *const PodBackgroundRun)).to_str().unwrap().to_owned());
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(5);
+        let request=loop{let line=pod_background_poll(handle);if !line.is_null(){break serde_json::from_str::<serde_json::Value>(std::ffi::CStr::from_ptr(line).to_str().unwrap()).unwrap();}assert!(std::time::Instant::now()<deadline);std::thread::yield_now();};
+        assert_eq!(request["method"],"cloud.host");
         let reply=serde_json::json!({"id":request["id"],"ok":true,"value":"x".repeat(100000)}).to_string();assert_eq!(pod_background_reply(handle,reply.as_ptr(),reply.len()),0);
         let result:serde_json::Value=serde_json::from_str(&worker.join().unwrap()).unwrap();assert_eq!(result["status"],"success");pod_background_close(handle);std::fs::remove_dir_all(root).unwrap();
     }}

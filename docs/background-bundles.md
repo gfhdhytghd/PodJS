@@ -298,3 +298,19 @@ manifest. It restores the original manifests and removes only its own temporary
 files, then rebuilds the original HAP. It does not install or launch an app.
 For an exported checkout, supply the verified `PODJS_POCKETJS_REVISION` required
 by the Rust build, as for the normal Harmony packaging command.
+
+### Android cloud workers in release builds
+
+Installed APKs may explicitly declare `backgroundServices: ["cloud.host", "kv.get"]`
+and a `watchrss-cloud-sync` handler. The host verifies the bundled handler size and
+SHA-256 before scheduling, acquiring the process-independent writer lease or
+executing the headless worker. `cloud.host` uses the existing enumerated data/crypto/HTTP
+method allowlist and bounded cloud profile (5 minutes, 256 MiB, 16 in-flight calls,
+1 MiB messages); it does not grant UI or arbitrary host operations. Missing or
+revoked grants and modified bundles remain denied.
+
+`debug.cloudHost` remains accepted for older debug APKs, and never authorizes a
+release APK. Build type does not disable the explicit production grant. Account
+consent, credentials, membership, key approval and transport policy are enforced by
+the application coordinator. The periodic worker remains 6-hour/unmetered with
+backoff, and cancellation/release remain available for cleanup.
