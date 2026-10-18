@@ -6,7 +6,7 @@ import org.json.JSONObject;
 import java.util.*;
 import java.util.concurrent.*;
 
-/** Verified, debug-only headless cloud guest. A narrowly enumerated host route
+/** Verified, manifest-authorized headless cloud guest. A narrowly enumerated host route
  * supplies data services; no Activity, frame loop, or guest-selected code. */
 public final class PodCloudWorker extends Worker {
     private volatile PodBackgroundRun active;
@@ -22,12 +22,13 @@ public final class PodCloudWorker extends Worker {
     public PodCloudWorker(Context context,WorkerParameters params){super(context,params);}
     @Override public Result doWork(){
         Context context=getApplicationContext();
-        if(!PodCloudWork.debug(context)){WorkManager.getInstance(context).cancelUniqueWork(PodCloudWork.NAME);return Result.success();}
         if(!PodTakeover.ready(context))return Result.retry();
         ExecutorService executor=Executors.newSingleThreadExecutor();
         try{
-            String source=PodCloudWork.installed(context).cloudSource();
-            try(PodBackgroundRun run=new PodBackgroundRun(context.getPackageName(),PodCloudWork.HANDLER,source,300000,256*1024*1024,JSONObject.NULL,new String[]{"debug.cloudHost","kv.get"},PodTakeover.dataRoot(context).getAbsolutePath())){
+            PodBackgroundPackage approved=PodCloudWork.installed(context);
+            String route=approved.cloudHostMethod(PodCloudWork.debug(context));
+            String source=approved.cloudSource(PodCloudWork.debug(context));
+            try(PodBackgroundRun run=new PodBackgroundRun(context.getPackageName(),PodCloudWork.HANDLER,source,300000,256*1024*1024,JSONObject.NULL,new String[]{route,"kv.get"},PodTakeover.dataRoot(context).getAbsolutePath())){
                 active=run;
                 try(PodServices host=new PodServices(context,event->{
                     try{JSONObject e=new JSONObject(event);if(!"service.result".equals(e.optString("t")))return;
@@ -43,7 +44,7 @@ public final class PodCloudWorker extends Worker {
                         JSONObject request=run.pollRequest();
                         if(request==null){Thread.sleep(2);continue;}
                         JSONObject args=request.optJSONObject("args");String method=args==null?"":args.optString("method");
-                        if(!"debug.cloudHost".equals(request.optString("method"))||!METHODS.contains(method)||!PodCloudWork.debug(context)){
+                        if(!route.equals(request.optString("method"))||!METHODS.contains(method)){
                             run.reply(new JSONObject().put("id",request.getLong("id")).put("ok",false).put("code","permission_denied"));continue;
                         }
                         host.dispatch(new JSONObject().put("t","service.request").put("version",1).put("id",request.getInt("id")).put("method",method).put("args",args.getJSONObject("args")));

@@ -29,7 +29,9 @@ describe("external project config", () => {
   test("background service grants are explicit and bounded", () => {
     expect(resolvePodProject(fixture(base),POD_TARGETS,defaults).config.backgroundServices).toEqual([]);
     expect(resolvePodProject(fixture({...base,backgroundServices:["kv.get","kv.set"]}),POD_TARGETS,defaults).config.backgroundServices).toEqual(["kv.get","kv.set"]);
-    for (const backgroundServices of [["http.get"],["kv.get","kv.get"],"kv.get",[null]])
+    expect(resolvePodProject(fixture({...base,backgroundServices:["cloud.host","kv.get"]}),POD_TARGETS,defaults).config.backgroundServices).toEqual(["cloud.host","kv.get"]);
+    expect(resolvePodProject(fixture({...base,backgroundServices:["debug.cloudHost","kv.get"]}),POD_TARGETS,defaults).config.backgroundServices).toEqual(["debug.cloudHost","kv.get"]);
+    for (const backgroundServices of [["cloud.host","cloud.host"],["cloud.host","ui.draw"],["http.get"],["kv.get","kv.get"],"kv.get",[null]])
       expect(() => resolvePodProject(fixture({...base,backgroundServices}),POD_TARGETS,defaults)).toThrow("backgroundServices");
   });
   test("android cleartext traffic is an explicit boolean opt-in", () => {

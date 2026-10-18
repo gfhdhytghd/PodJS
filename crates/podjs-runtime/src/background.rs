@@ -22,7 +22,7 @@ struct ClearPending<'js>(Rc<RefCell<Vec<Pending<'js>>>>);
 impl Drop for ClearPending<'_> { fn drop(&mut self) { self.0.borrow_mut().clear(); } }
 struct CancelServices(Cancellation);
 fn attach_services<'js>(ctx: Ctx<'js>, job: &Object<'js>, waiting: Rc<RefCell<Vec<Pending<'js>>>>, services: Services, app: String, task: String, deadline: Instant, service_cancel: Cancellation) -> rquickjs::Result<()> {
-    let cloud=services.allowed_methods.contains("debug.cloudHost");
+    let cloud=services.allowed_methods.contains("cloud.host") || services.allowed_methods.contains("debug.cloudHost");
     let max_calls=if cloud {100_000} else {32};
     let max_bytes=if cloud {1024*1024} else {64*1024};
     let calls=Rc::new(RefCell::new(0usize));
@@ -81,7 +81,7 @@ pub fn run(source: &str, options: Options<'_>, cancel: Cancellation) -> RunResul
 pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellation, services: Option<Services>) -> RunResult {
     let started = Instant::now();
     let finish = |status, code| RunResult { status, code, elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64 };
-    let cloud=services.as_ref().is_some_and(|s| s.allowed_methods.contains("debug.cloudHost"));
+    let cloud=services.as_ref().is_some_and(|s| s.allowed_methods.contains("cloud.host") || s.allowed_methods.contains("debug.cloudHost"));
     if !valid_id(options.app_id) || !valid_id(options.task_id) || !(1..=if cloud {300_000} else {30_000}).contains(&options.budget_ms)
         || !(4*1024*1024..=if cloud {256*1024*1024} else {32*1024*1024}).contains(&options.memory_bytes) || source.len() > 1024*1024 || options.payload_json.len() > 64*1024 {
         return finish(Status::Failure,"invalid_options");
@@ -180,8 +180,8 @@ mod tests {
     use super::*;
     fn options(app: &str) -> Options<'_> { Options { app_id:app,task_id:"refresh",budget_ms:100,memory_bytes:8*1024*1024,payload_json:"null" } }
     #[test] fn cloud_profile_is_explicit_and_preserves_default_budgets() {
-        let source="globalThis.backgroundHandler=async c=>{for(let i=0;i<40;i++){const v=await c.request('debug.cloudHost',{method:'file.read',args:{}});if(v.length!==100000)return 'failure'}try{await c.request('ui.draw',{});return 'failure'}catch(e){return e==='permission_denied'?'success':'failure'}}";
-        let make=|| Services {allowed_methods:HashSet::from(["debug.cloudHost".into()]),dispatch:Arc::new(|_| {
+        let source="globalThis.backgroundHandler=async c=>{for(let i=0;i<40;i++){const v=await c.request('cloud.host',{method:'file.read',args:{}});if(v.length!==100000)return 'failure'}try{await c.request('ui.draw',{});return 'failure'}catch(e){return e==='permission_denied'?'success':'failure'}}";
+        let make=|| Services {allowed_methods:HashSet::from(["cloud.host".into()]),dispatch:Arc::new(|_| {
             let (send,receive)=std::sync::mpsc::channel();send.send(Ok(serde_json::to_string(&"x".repeat(100000)).unwrap())).unwrap();receive
         })};
         let config=Options {app_id:"cloud-profile",task_id:"cloud",budget_ms:300000,memory_bytes:256*1024*1024,payload_json:"null"};

@@ -18,7 +18,10 @@ public final class PodBlePermissions {
         } else {
             permissions.add(Manifest.permission.BLUETOOTH);
             permissions.add(Manifest.permission.BLUETOOTH_ADMIN);
-            if(scan) permissions.add(Manifest.permission.ACCESS_FINE_LOCATION);
+            if(scan) {
+                permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION);
+                permissions.add(Manifest.permission.ACCESS_FINE_LOCATION);
+            }
         }
         return permissions.toArray(new String[0]);
     }

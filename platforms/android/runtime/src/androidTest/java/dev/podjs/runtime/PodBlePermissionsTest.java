@@ -15,7 +15,7 @@ public class PodBlePermissionsTest {
     }
     @Test public void legacyLocationIsRequiredOnlyForDiscovery() {
         assertArrayEquals(new String[]{Manifest.permission.BLUETOOTH,Manifest.permission.BLUETOOTH_ADMIN},PodBlePermissions.required(30,false,true));
-        assertArrayEquals(new String[]{Manifest.permission.BLUETOOTH,Manifest.permission.BLUETOOTH_ADMIN,Manifest.permission.ACCESS_FINE_LOCATION},PodBlePermissions.required(30,true,false));
+        assertArrayEquals(new String[]{Manifest.permission.BLUETOOTH,Manifest.permission.BLUETOOTH_ADMIN,Manifest.permission.ACCESS_COARSE_LOCATION,Manifest.permission.ACCESS_FINE_LOCATION},PodBlePermissions.required(30,true,false));
     }
     @Test public void deniedPermissionFailsClosedAndGrantedSetPasses() {
         ContextWrapper denied=new ContextWrapper(InstrumentationRegistry.getInstrumentation().getTargetContext()) {
