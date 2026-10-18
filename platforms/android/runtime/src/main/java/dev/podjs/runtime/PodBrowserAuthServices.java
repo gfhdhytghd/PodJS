@@ -192,8 +192,6 @@ public final class PodBrowserAuthServices implements AutoCloseable {
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             JSONObject qrWait = args.optJSONObject("qrWait");
             PodBrowserWaitView waitView = withStatus && qrWait != null ? new PodBrowserWaitView(context) : null;
-            if (waitView != null) browserArea.addView(waitView, new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             if (!qrExtractionScript.isEmpty()) {
                 FrameLayout mask = new FrameLayout(context);
                 mask.setBackgroundColor(Color.BLACK);
@@ -219,9 +217,17 @@ public final class PodBrowserAuthServices implements AutoCloseable {
             content.addView(browserArea, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, layout.webViewHeightPx));
             content.addView(actions, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, layout.actionHeightPx));
 
+            // The waiting ring traces the screen edge: a centred square of the shorter screen side, over the whole chrome.
+            FrameLayout root = new FrameLayout(context);
+            root.addView(content, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            if (waitView != null) {
+                int ringSize = Math.min(context.getResources().getDisplayMetrics().widthPixels, context.getResources().getDisplayMetrics().heightPixels);
+                root.addView(waitView, new FrameLayout.LayoutParams(ringSize, ringSize, Gravity.CENTER));
+            }
+
             Dialog created = new Dialog(context);
             created.requestWindowFeature(Window.FEATURE_NO_TITLE);
-            created.setContentView(content);
+            created.setContentView(root);
             created.setOnShowListener(ignored -> {
                 Window window = created.getWindow();
                 if (window != null) {

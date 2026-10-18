@@ -13,7 +13,7 @@ import android.view.animation.LinearInterpolator;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 
-/** Host-owned waiting UI over the browser area while a login QR is expected.
+/** Host-owned waiting UI, a screen-edge square over the browser dialog, while a login QR is expected.
  * Native WebViewStyleLoadingIndicator: ProgressRingView filling the area, 12px round-capped stroke,
  * #476CFF progress from -90 degrees, no base ring; message bodySmall 12/14sp white with a soft
  * black shadow, centred with 88dp top and 20dp horizontal padding. */
