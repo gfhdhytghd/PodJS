@@ -83,3 +83,13 @@ test('headless opaque frame facade runs with caller codecs and no host bootstrap
   const f=fixture(`import * as api from '${denied}'; export default ()=>api;`);await expect(buildBackground({denied:f.entry},f.root)).rejects.toThrow('Background');
  }
 });
+
+
+test('headless crypto uses caller request ports without bootstrapping the unrestricted host',async()=>{
+ const {root,entry}=fixture(`import {lengthPrefix,hex,decimalCode,createCrypto} from '@podjs/framework/crypto';
+ export default async()=>{const calls=[];const crypto=createCrypto(async(method,args)=>{calls.push(method);return method==='crypto.verifyP256'?{valid:true}:{digestBase64:'AQI='};});return{lp:hex(lengthPrefix('x',1)),code:decimalCode(new Uint8Array(32)),hmac:[...await crypto.hmacSha256(Uint8Array.of(1),Uint8Array.of(2))],valid:await crypto.verifyP256(new Uint8Array(),new Uint8Array(),new Uint8Array(64)),short:await crypto.verifyP256(new Uint8Array(),new Uint8Array(),new Uint8Array(63)),calls};};`);
+ mkdirSync(join(root,'node_modules/@podjs'),{recursive:true});symlinkSync(new URL('../packages/framework',import.meta.url).pathname,join(root,'node_modules/@podjs/framework'),'dir');
+ const artifacts=await buildBackground({crypto:entry},root),context:Record<string,any>={};runInNewContext(readFileSync(join(root,artifacts.crypto!.file),'utf8'),context);
+ expect(JSON.parse(JSON.stringify(await context.backgroundHandler()))).toEqual({lp:'00000001780000000131',code:'00000000',hmac:[1,2],valid:true,short:false,calls:['crypto.hmacSha256','crypto.verifyP256']});expect(context.pod).toBeUndefined();expect(context.frame).toBeUndefined();
+ for(const denied of ['@podjs/framework/crypto/unsafe','@podjs/framework/services','@podjs/framework/watch']){const f=fixture(`import * as api from '${denied}';export default ()=>api;`);await expect(buildBackground({denied:f.entry},f.root)).rejects.toThrow('Background');}
+});
