@@ -100,7 +100,7 @@ final class PodServices implements Closeable {
     private PodScreenServices screen;
     private final PodDebugPerformance debugPerformance = new PodDebugPerformance();
     private boolean displayResumed=true;
-    void screenLifecycle(boolean resumed){displayResumed=resumed;mediaSurfaces.lifecycle(resumed);videoSessions.lifecycle(resumed);main.post(()->{if(!closed){debugPerformance.lifecycle(resumed);if(screen!=null)screen.lifecycle(resumed);}});}
+    void screenLifecycle(boolean resumed){displayResumed=resumed;if(!resumed)provisioning.closeSession();mediaSurfaces.lifecycle(resumed);videoSessions.lifecycle(resumed);main.post(()->{if(!closed){debugPerformance.lifecycle(resumed);if(screen!=null)screen.lifecycle(resumed);}});}
     private final PodVideoDecoderBudget videoDecoderBudget;
     private final PodVideoServices video;
     private final PodMediaPrefixCache mediaPrefixCache;
@@ -115,6 +115,8 @@ final class PodServices implements Closeable {
     private final PodWebSocketServices webSockets;
     private final PodDiscoveryServices discovery;
     private final PodBleDiscoveryServices bleDiscovery;
+    private final PodBleProvisionServices provisioning;
+    private final PodBluetoothPermission provisionPermission;
     private final PodNetworkServices networks;
     private final ExecutorService streamWorkers=Executors.newFixedThreadPool(9);
     private final ExecutorService imageWorkers=Executors.newFixedThreadPool(4);
@@ -248,11 +250,11 @@ final class PodServices implements Closeable {
         volatile PodSiteChallengeServices.Callback challengeCallback;
         String videoSessionId;
     }
-    PodServices(Context context, Sink sink) { PodTakeover.requireReady(context); this.context = context; this.sink = sink; textBitmapStats=memoryEnabled(context)?new PodTextRasterServices.Stats():null; device = new PodDeviceServices(context); media = new PodMediaServices(context, event -> { if (!closed) sink.complete(event); }); videoDecoderBudget=new PodVideoDecoderBudget(PodVideoSessionServices.MAX_SESSIONS); mediaPrefixCache=new PodMediaPrefixCache(new java.io.File(context.getCacheDir(),"podjs-media-prefix"));video = new PodVideoServices(context,videoDecoderBudget,mediaPrefixCache); videoSessions=new PodVideoSessionServices(context,videoDecoderBudget,mediaPrefixCache); mediaSurfaces = new PodMediaSurfaceServices(context); inlineText = new PodInlineTextInput(context,event->{if(!closed)sink.complete(event);}); images = new PodImageServices(context); http = new PodHttpServices(context); byteStreams = new PodByteStreamServices(context); webSockets = new PodWebSocketServices(context,byteStreams); discovery = new PodDiscoveryServices(context); bleDiscovery = new PodBleDiscoveryServices(context); networks = new PodNetworkServices(context,event->{if(!closed)sink.complete(event);}); browser = new PodBrowserServices(context); browserAuth = new PodBrowserAuthServices(context); siteChallenge = new PodSiteChallengeServices(context); acoustic=new PodAcousticServices(context);guidedWifi=new PodGuidedWifiServices(context,acoustic);
+    PodServices(Context context, Sink sink) { PodTakeover.requireReady(context); this.context = context; this.sink = sink; textBitmapStats=memoryEnabled(context)?new PodTextRasterServices.Stats():null; device = new PodDeviceServices(context); media = new PodMediaServices(context, event -> { if (!closed) sink.complete(event); }); videoDecoderBudget=new PodVideoDecoderBudget(PodVideoSessionServices.MAX_SESSIONS); mediaPrefixCache=new PodMediaPrefixCache(new java.io.File(context.getCacheDir(),"podjs-media-prefix"));video = new PodVideoServices(context,videoDecoderBudget,mediaPrefixCache); videoSessions=new PodVideoSessionServices(context,videoDecoderBudget,mediaPrefixCache); mediaSurfaces = new PodMediaSurfaceServices(context); inlineText = new PodInlineTextInput(context,event->{if(!closed)sink.complete(event);}); images = new PodImageServices(context); http = new PodHttpServices(context); byteStreams = new PodByteStreamServices(context); webSockets = new PodWebSocketServices(context,byteStreams); discovery = new PodDiscoveryServices(context); bleDiscovery = new PodBleDiscoveryServices(context); provisioning=new PodBleProvisionServices(context); provisionPermission=new PodBluetoothPermission(context,0x5056,PodBlePermissions.required(android.os.Build.VERSION.SDK_INT,false,true)); networks = new PodNetworkServices(context,event->{if(!closed)sink.complete(event);}); browser = new PodBrowserServices(context); browserAuth = new PodBrowserAuthServices(context); siteChallenge = new PodSiteChallengeServices(context); acoustic=new PodAcousticServices(context);guidedWifi=new PodGuidedWifiServices(context,acoustic);
         acousticPermission=new PodBluetoothPermission(context,0x5045,new String[]{android.Manifest.permission.RECORD_AUDIO});
         guidedPermission=new PodBluetoothPermission(context,0x5046,android.os.Build.VERSION.SDK_INT>=33?new String[]{android.Manifest.permission.RECORD_AUDIO,android.Manifest.permission.ACCESS_FINE_LOCATION,android.Manifest.permission.NEARBY_WIFI_DEVICES}:new String[]{android.Manifest.permission.RECORD_AUDIO,android.Manifest.permission.ACCESS_FINE_LOCATION});
         notificationPermission=new PodNotificationPermission(context); bluetoothPermission=new PodBluetoothPermission(context); discoveryPermission=new PodBluetoothPermission(context,0x5044,PodBleDiscoveryServices.permissions()); location=new PodLocationServices(context); }
-    void notificationPermissionResult(int code,int[] results){notificationPermission.result(code,results);acousticPermission.result(code);guidedPermission.result(code);location.permissionResult(code);bluetoothPermission.result(code); discoveryPermission.result(code);}
+    void notificationPermissionResult(int code,int[] results){notificationPermission.result(code,results);acousticPermission.result(code);guidedPermission.result(code);location.permissionResult(code);bluetoothPermission.result(code); discoveryPermission.result(code); provisionPermission.result(code);}
     PodServices(Context context, Sink sink, PodBackgroundServices approvedBackground) {
         this(context,sink); background=approvedBackground;
     }
@@ -326,10 +328,10 @@ final class PodServices implements Closeable {
             });
             return;
         }
-        if("rfcomm.requestPermission".equals(method)||"discovery.requestPermission".equals(method)) {
+        if("rfcomm.requestPermission".equals(method)||"discovery.requestPermission".equals(method)||"provision.requestPermission".equals(method)) {
             main.post(()->{
                 if(closed || !requests.containsKey(id))return;
-                ("discovery.requestPermission".equals(method)?discoveryPermission:bluetoothPermission).request(id,new PodBluetoothPermission.Callback(){
+                ("provision.requestPermission".equals(method)?provisionPermission:"discovery.requestPermission".equals(method)?discoveryPermission:bluetoothPermission).request(id,new PodBluetoothPermission.Callback(){
                     public void complete(String state){if(requests.remove(id,request))reply(id,true,state,null,null);}
                     public void fail(String code,String message){if(requests.remove(id,request))failure(id,code,message);}
                 });
@@ -600,12 +602,16 @@ final class PodServices implements Closeable {
             return;
         }
         args.put("requestId", id);
-        request.future = (method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.") || method.startsWith("discovery.") ? streamWorkers : method.startsWith("http.") ? transfers : method.startsWith("sql.") ? sqlWorker : method.startsWith("text.") ? textWorker : worker).submit(() -> {
+        request.future = (method.startsWith("provision.") || method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.") || method.startsWith("discovery.") ? streamWorkers : method.startsWith("http.") ? transfers : method.startsWith("sql.") ? sqlWorker : method.startsWith("text.") ? textWorker : worker).submit(() -> {
             try {
                 request.cancellation.throwIfCanceled();
                 Object value;
                 if (method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.")) {
                     value=method.startsWith("websocket.")?webSockets.execute(method,args,request.cancellation):byteStreams.execute(method,args,request.cancellation);
+                } else if (method.startsWith("provision.")) {
+                    if(!displayResumed)throw new IllegalStateException("配对需要保持前台");
+                    request.cancellation.setOnCancelListener(()->{if("provision.start".equals(method))provisioning.cancelStart(Integer.toString(id));else provisioning.cancel(args.optString("sessionId"));});
+                    value=provisioning.execute(method,args,request.cancellation);
                 } else if (method.startsWith("discovery.")) {
                     value = method.startsWith("discovery.network")?networks.execute(method,args,request.cancellation):"discovery.mdns".equals(method)?discovery.execute(method,args,request.cancellation):bleDiscovery.execute(method,args,request.cancellation);
                 } else if ("text.raster".equals(method)) {
@@ -635,6 +641,7 @@ final class PodServices implements Closeable {
                     value=background.execute(method,args);
                 } else value = method.startsWith("sql.") ? sql(method, args, request.cancellation) : method.startsWith("http.") ? http.execute(method,args) : device.execute(method, args);
                 if (requests.remove(id, request)) reply(id, true, value, null, null);
+                else if ("provision.start".equals(method) && value instanceof JSONObject) provisioning.cancel(((JSONObject)value).optString("sessionId"));
                 else if ("discovery.networkSubscribe".equals(method)) networks.discard(args.getString("subscriptionId"));
                 else if ("websocket.connect".equals(method) && value instanceof JSONObject) webSockets.discard((JSONObject)value);
                 else if (("rfcomm.listen".equals(method) || "rfcomm.accept".equals(method) || "tcp.listen".equals(method) || "tcp.accept".equals(method)) && value instanceof JSONObject) byteStreams.discard((JSONObject)value);
@@ -644,7 +651,7 @@ final class PodServices implements Closeable {
                 else if ("http.download".equals(method) && value instanceof JSONObject) http.discard((JSONObject)value);
             } catch (Exception error) {
                 if (requests.remove(id, request)) failure(id,
-                    error instanceof SecurityException ? "permission_denied" : error instanceof UnsupportedOperationException ? "unsupported" : error instanceof IllegalArgumentException ? "invalid_argument" : "host_error",
+                    error instanceof SecurityException ? "permission_denied" : error instanceof ProvisioningSession.Failure ? "provision_"+((ProvisioningSession.Failure)error).reason : error instanceof UnsupportedOperationException ? "unsupported" : error instanceof IllegalArgumentException ? "invalid_argument" : "host_error",
                     error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage());
             }
         });
@@ -851,6 +858,7 @@ final class PodServices implements Closeable {
         if("location.current".equals(request.method))main.post(location::cancel);
         if("rfcomm.requestPermission".equals(request.method))main.post(()->bluetoothPermission.cancel(id));
         if("discovery.requestPermission".equals(request.method))main.post(()->discoveryPermission.cancel(id));
+        if("provision.requestPermission".equals(request.method))main.post(()->provisionPermission.cancel(id));
         if(request.future != null) request.future.cancel(true);
         if(request.dialog != null) request.dialog.dismiss();
     }
@@ -862,6 +870,7 @@ final class PodServices implements Closeable {
         main.post(notificationPermission::cancel);
         main.post(location::cancel);
         main.post(bluetoothPermission::cancel);
+        main.post(provisionPermission::cancel);
         main.post(discoveryPermission::cancel);
         for(Integer id:requests.keySet()) cancel(id);
         main.post(inlineText::closeAll);
@@ -876,7 +885,7 @@ final class PodServices implements Closeable {
         siteChallenge.close();
         main.post(browser::close);
         http.close();
-        networks.close(); bleDiscovery.close(); discovery.close(); webSockets.close(); byteStreams.close();
+        provisioning.close(); networks.close(); bleDiscovery.close(); discovery.close(); webSockets.close(); byteStreams.close();
         streamWorkers.shutdownNow();
         transfers.shutdownNow();
         textWorker.execute(paragraphLayouts::clear);

@@ -50,7 +50,7 @@ export interface PodProjectConfig {
   /** Omit duplicate function source strings, retaining error locations.
    * Opt in only if Function.toString source introspection is unused. */
   bytecode?: { stripSource: boolean };
-  android?: { splash?: AndroidSplash; workManagerTakeover?: WorkManagerTakeoverConfig; debugExternal?: DebugExternalConfig; resources?: string; theme?: string; cleartextTraffic?: boolean; signing?: AndroidSigning; takeover?: { sourceVersionCode: number; purgeBackupAfter?: number } };
+  android?: { splash?: AndroidSplash; workManagerTakeover?: WorkManagerTakeoverConfig; debugExternal?: DebugExternalConfig; resources?: string; theme?: string; cleartextTraffic?: boolean; bleProvisioning?: boolean; signing?: AndroidSigning; takeover?: { sourceVersionCode: number; purgeBackupAfter?: number } };
 }
 
 export interface ResolvedPodProject {
@@ -208,6 +208,10 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
       androidTheme = stringField(candidate.theme, "android.theme");
       if (!/^@style\/[A-Za-z0-9_.]+$/.test(androidTheme)) invalid("android.theme must be an @style resource");
       android.theme = androidTheme;
+    }
+    if (candidate.bleProvisioning !== undefined) {
+      if (typeof candidate.bleProvisioning !== "boolean") invalid("android.bleProvisioning must be a boolean");
+      android.bleProvisioning = candidate.bleProvisioning;
     }
     if (candidate.cleartextTraffic !== undefined) {
       if (typeof candidate.cleartextTraffic !== "boolean") invalid("android.cleartextTraffic must be a boolean");

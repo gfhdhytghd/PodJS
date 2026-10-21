@@ -57,6 +57,7 @@ const methods: Record<string, PodCapabilityId> = {
   "rfcomm.requestPermission": "net.rfcomm", "rfcomm.status": "net.rfcomm", "rfcomm.listen": "net.rfcomm", "rfcomm.accept": "net.rfcomm", "rfcomm.close": "net.rfcomm",
   "tcp.listen":"net.tcp", "tcp.accept":"net.tcp", "tcp.close":"net.tcp", "tcp.addresses":"net.tcp",
   "discovery.networkSnapshot": "net.discovery", "discovery.networkSubscribe": "net.discovery", "discovery.networkUnsubscribe": "net.discovery",
+  "provision.start": "net.ble.provision", "provision.receive": "net.ble.provision", "provision.respond": "net.ble.provision", "provision.close": "net.ble.provision", "provision.requestPermission": "net.ble.provision",
   "discovery.mdns": "net.discovery", "discovery.status": "net.discovery", "discovery.requestPermission": "net.discovery", "discovery.bleReadCharacteristic": "net.discovery",
   "websocket.connect": "net.websocket", "websocket.readText": "net.websocket", "websocket.writeText": "net.websocket", "websocket.close": "net.websocket",
   "stream.read": "net.stream", "stream.write": "net.stream", "stream.close": "net.stream",

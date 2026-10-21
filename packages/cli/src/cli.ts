@@ -192,6 +192,7 @@ async function packageTarget(target: Target, project?: ResolvedPodProject, relea
     const gradleArgs = project ? [`-PpodDistDir=${join(project.output, target)}`, `-PpodAppId=${project.config.appId}`, `-PpodAppName=${project.config.name}`, `-PpodVersionName=${project.config.versionName}`, `-PpodVersionCode=${project.config.versionCode}`,
       ...(project.androidResources ? [`-PpodResDir=${project.androidResources}`] : []),
       ...(project.androidTheme ? [`-PpodAppTheme=${project.androidTheme}`] : []),
+      `-PpodEnableBleProvision=${project.config.android?.bleProvisioning !== false}`,
       `-PpodCleartextTraffic=${project.androidCleartextTraffic === true}`,
       `-PpodTakeoverSourceVersionCode=${project.config.android?.takeover?.sourceVersionCode ?? 0}`,
       `-PpodTakeoverPurgeBackupAfter=${project.config.android?.takeover?.purgeBackupAfter ?? 0}`] : [];

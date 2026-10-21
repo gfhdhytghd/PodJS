@@ -26,6 +26,13 @@ tasks.matching { it.name.startsWith("merge") && it.name.endsWith("AndroidTestAss
 }
 
 android {
+    if (providers.gradleProperty("podEnableBleProvision").orNull == "false") {
+        sourceSets.getByName("main").java.apply {
+            exclude("**/BleProvisioningSession.java", "**/PodBleProvisionServices.java")
+            srcDir("src/noBleProvision/java")
+        }
+    }
+
     namespace = "dev.podjs.runtime"
     compileSdk = 36
     defaultConfig {
