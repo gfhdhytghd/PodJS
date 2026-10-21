@@ -27,4 +27,23 @@ public class PodSecureBatchTest {
   try{PodDeviceServices.mergeSecure(old,new JSONObject(),new org.json.JSONArray().put("scopeA.").put(""));fail();}catch(IllegalArgumentException expected){}
   assertEquals(3,old.length());
  }
+ @Test public void nativeEcdhFieldsSurviveScopedCleanupAndRejectExplicitOrOverlappingGuestMutation()throws Exception {
+  String nativeKey="__podjs_native_ecdh_v1.fixture";
+  JSONObject old=new JSONObject().put(nativeKey,"native-private").put("watchrss.cloud.state.fixture","old").put("other","keep");
+  try(PodDeviceServices service=new PodDeviceServices(androidx.test.core.app.ApplicationProvider.getApplicationContext())) {
+   for(String operation:new String[]{"secure.get","secure.set","secure.delete","secure.update"}) {
+    JSONObject request=new JSONObject().put("key",nativeKey).put("value","forbidden").put("values",new JSONObject().put(nativeKey,"forbidden"));
+    try{service.execute(operation,request);fail();}catch(SecurityException expected){assertEquals("reserved_secure_key",expected.getMessage());}
+   }
+  }
+  JSONObject next=PodDeviceServices.mergeSecure(old,new JSONObject().put("normal","value"),new org.json.JSONArray().put("watchrss.cloud.state."));
+  assertEquals("native-private",next.getString(nativeKey));assertFalse(next.has("watchrss.cloud.state.fixture"));assertEquals("keep",next.getString("other"));
+  for(Object value:new Object[]{"replacement",JSONObject.NULL}) {
+   try{PodDeviceServices.mergeSecure(old,new JSONObject().put(nativeKey,value));fail();}catch(SecurityException expected){assertEquals("reserved_secure_key",expected.getMessage());}
+  }
+  for(String prefix:new String[]{"_","__podjs_native_","__podjs_native_ecdh_v1.",nativeKey}) {
+   try{PodDeviceServices.mergeSecure(old,new JSONObject().put("normal","value"),new org.json.JSONArray().put("watchrss.cloud.state.").put(prefix));fail();}catch(SecurityException expected){assertEquals("reserved_secure_key",expected.getMessage());}
+   assertEquals("old",old.getString("watchrss.cloud.state.fixture"));assertEquals("native-private",old.getString(nativeKey));assertFalse(old.has("normal"));
+  }
+ }
 }

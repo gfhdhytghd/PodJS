@@ -691,6 +691,22 @@ final class PodServices implements Closeable {
             }
         });
     }
+    /** Shared by the actual prompt and JVM Android tests; ordinary input is unchanged. */
+    static void configureSensitiveNumber(EditText input,JSONObject args,String key) {
+        // One-time approval codes: digits only, bounded, never restorable or offered to Autofill.
+        if("number".equals(args.optString("inputType")) && args.optBoolean("sensitive",false)) {
+            if(key!=null) throw new IllegalArgumentException("sensitive_input_not_restorable");
+            int limit=args.optInt("maxLength",8);
+            if(limit<1||limit>32)throw new IllegalArgumentException("invalid_input_limit");
+            input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+            input.setSingleLine(true);
+            input.setFilters(new android.text.InputFilter[]{android.text.method.DigitsKeyListener.getInstance("0123456789"),new android.text.InputFilter.LengthFilter(limit)});
+            input.setImeOptions(android.view.inputmethod.EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING);
+            input.setImportantForAutofill(android.view.View.IMPORTANT_FOR_AUTOFILL_NO);
+            input.setGravity(android.view.Gravity.CENTER);
+            input.setTextSize(22);
+        }
+    }
     private void prompt(int id, Request request, JSONObject args) {
         if (!(context instanceof Activity)) { requests.remove(id); failure(id,"unavailable","Text input requires an Activity"); return; }
         main.post(() -> {
@@ -702,8 +718,9 @@ final class PodServices implements Closeable {
                 JSONObject draft=key==null?null:modalState.pending(key);
                 if(draft!=null && !title.equals(draft.optString("title"))) draft=null;
                 EditText input = new EditText(context);
-                input.setText(draft==null?args.optString("value", ""):draft.optString("text"));
                 input.setSingleLine(false);
+                configureSensitiveNumber(input,args,key);
+                input.setText(draft==null?args.optString("value", ""):draft.optString("text"));
                 if(draft!=null) input.setSelection(draft.optInt("start",0),draft.optInt("end",0));
                 Runnable finished=()->{
                     if(modalInput==input){modalInput=null;modalDialog=null;modalKey=null;modalTitle=null;if(key!=null)modalState.clear(key);}

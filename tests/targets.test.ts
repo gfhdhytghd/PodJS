@@ -32,3 +32,11 @@ test("Android package capability order matches the JNI boot contract",async()=>{
   expect(capabilities).toEqual(POD_TARGETS["android-watch"].capabilities);
   expect(capabilities).toEqual(POD_TARGETS["wearos-watch"].capabilities);
 });
+
+
+test("Android host keeps release trace disabled and never logs raw service arguments",async()=>{
+  const source=await Bun.file(new URL("../platforms/android/runtime/src/main/java/dev/podjs/runtime/PodServices.java",import.meta.url)).text();
+  expect(source).toContain("private static final boolean PERF_TRACE = false;");
+  const logs=source.match(/(?:android\.util\.)?Log\.[\s\S]*?;/g)??[];
+  for(const log of logs)expect(log).not.toMatch(/\bargs\b/);
+});

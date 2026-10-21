@@ -49,6 +49,7 @@ public final class PodDeviceServices implements AutoCloseable {
     private static final String CRYPTO_ALIAS = "podjs.crypto.v1";
     private static final String SECURE_FILE = "secure.store";
     private static final Object SECURE_LOCK = new Object();
+    private static final String ECDH_PRIVATE_PREFIX = "__podjs_native_ecdh_v1.";
     private static final byte[] AAD = "PodJS-device-services-v1".getBytes(StandardCharsets.UTF_8);
 
     private final File root;
@@ -132,6 +133,11 @@ public final class PodDeviceServices implements AutoCloseable {
     // Foreground and background own separate service instances. Reload/update
     // the encrypted map under an OS lock so unrelated keys cannot be lost.
     private JSONObject secureOperation(String method,JSONObject args) throws Exception {
+        // Internal software private keys never cross the JavaScript secure-storage API.
+        if ("secure.update".equals(method)) {
+            java.util.Iterator<String> names=args.getJSONObject("values").keys();
+            while(names.hasNext()) checkPublicSecureKey(names.next());
+        } else checkPublicSecureKey(required(args,"key"));
         long total=secureTrace.begin(),waiting=total;int id=args.optInt("requestId",-1);
         try{synchronized(SECURE_LOCK){
             try(java.io.RandomAccessFile file=new java.io.RandomAccessFile(new File(secureFile.getParentFile(),"secure.store.lock"),"rw");
@@ -147,12 +153,15 @@ public final class PodDeviceServices implements AutoCloseable {
             }
         }}finally{secureTrace.end("secure.total",total,id);}
     }
+    private static void checkPublicSecureKey(String key) {
+        if(key.startsWith(ECDH_PRIVATE_PREFIX)) throw new SecurityException("reserved_secure_key");
+    }
     /** Validate the whole batch on a copy before the single encrypted atomic publication. */
     static JSONObject mergeSecure(JSONObject current,JSONObject updates)throws Exception {
         if(updates.length()>128)throw new IllegalArgumentException("secure_batch_limit");
         JSONObject next=new JSONObject(current.toString());
         for(java.util.Iterator<String> keys=updates.keys();keys.hasNext();){
-            String key=keys.next();Object value=updates.get(key);
+            String key=keys.next();checkPublicSecureKey(key);Object value=updates.get(key);
             if(key.isEmpty()||key.length()>1024)throw new IllegalArgumentException("secure_key_invalid");
             if(value==JSONObject.NULL)next.remove(key);
             else if(value instanceof String)next.put(key,value);
@@ -171,6 +180,8 @@ public final class PodDeviceServices implements AutoCloseable {
                 if(!(value instanceof String) || ((String)value).isEmpty() || ((String)value).length()>1024)
                     throw new IllegalArgumentException("secure_prefix_required");
                 String prefix=(String)value;
+                // Broad guest cleanup must not erase a native-only identity either.
+                if(prefix.startsWith(ECDH_PRIVATE_PREFIX)||ECDH_PRIVATE_PREFIX.startsWith(prefix))throw new SecurityException("reserved_secure_key");
                 java.util.ArrayList<String> removed=new java.util.ArrayList<>();
                 for(java.util.Iterator<String> names=next.keys();names.hasNext();){String name=names.next();if(name.startsWith(prefix))removed.add(name);}
                 for(String name:removed)next.remove(name);
@@ -220,8 +231,9 @@ public final class PodDeviceServices implements AutoCloseable {
         finally{Arrays.fill(plain,(byte)0);trace.end("secure.json",began,id);}
     }
     private void writeSecure(JSONObject values) throws Exception {
-        byte[] encrypted = encryptWithKey(getKey(SECURE_ALIAS), values.toString().getBytes(StandardCharsets.UTF_8));
-        atomicWrite(secureFile, encrypted);
+        byte[] plain=values.toString().getBytes(StandardCharsets.UTF_8);
+        try { atomicWrite(secureFile,encryptWithKey(getKey(SECURE_ALIAS),plain)); }
+        finally { Arrays.fill(plain,(byte)0); }
     }
 
     // Only the SPKI public key and authenticated plaintext cross the bridge. There is
@@ -232,23 +244,55 @@ public final class PodDeviceServices implements AutoCloseable {
         return "podjs.ecdh.v1." + enc(MessageDigest.getInstance("SHA-256").digest(id.getBytes(StandardCharsets.UTF_8)));
     }
     private KeyStore ecdhStore() throws Exception {
-        if(android.os.Build.VERSION.SDK_INT < 31) throw new UnsupportedOperationException("ecdh_requires_android_12");
         KeyStore store=KeyStore.getInstance(KEYSTORE); store.load(null); return store;
     }
-    private JSONObject ecdhPublicKey(JSONObject args) throws Exception {
-        KeyStore store=ecdhStore(); String alias=ecdhAlias(args);
-        if(!store.containsAlias(alias)) {
+    /** Caller holds both the process and OS secure-store locks, including generation. */
+    private java.security.KeyPair ecdhPair(JSONObject args, boolean create) throws Exception {
+        String alias=ecdhAlias(args), softwareKey=ECDH_PRIVATE_PREFIX+alias;
+        JSONObject values=readSecure(-1);
+        KeyStore store=ecdhStore();
+        // Keep Android 11 keys after an OS upgrade; never rotate an established device identity.
+        if(values.has(softwareKey)) {
+            if(store.containsAlias(alias)) throw new IllegalStateException("device_private_key_ambiguous");
+            return PodSoftwareEcdh.decode(values.getString(softwareKey));
+        }
+        if(store.containsAlias(alias)) {
+            java.security.PrivateKey key=(java.security.PrivateKey)store.getKey(alias,null);
+            java.security.cert.Certificate certificate=store.getCertificate(alias);
+            if(key==null||certificate==null) throw new IllegalStateException("device_private_key_missing");
+            return new java.security.KeyPair(certificate.getPublicKey(),key);
+        }
+        // A Keystore-only sentinel survives accidental deletion of the encrypted file.
+        // Missing/corrupt identities must never be silently regenerated under an old keyId.
+        if(store.containsAlias(alias+".software")) throw new IllegalStateException("device_private_key_missing");
+        if(!create) throw new IllegalStateException("device_private_key_missing");
+        if(android.os.Build.VERSION.SDK_INT>=31) {
             java.security.KeyPairGenerator generator=java.security.KeyPairGenerator.getInstance("EC",KEYSTORE);
             generator.initialize(new KeyGenParameterSpec.Builder(alias,KeyProperties.PURPOSE_AGREE_KEY)
                 .setAlgorithmParameterSpec(new java.security.spec.ECGenParameterSpec("secp256r1"))
                 .setDigests(KeyProperties.DIGEST_SHA256).build());
-            generator.generateKeyPair();
+            return generator.generateKeyPair();
         }
-        return new JSONObject().put("publicKeySpki",enc(store.getCertificate(alias).getPublicKey().getEncoded()));
+        java.security.KeyPair pair=PodSoftwareEcdh.generate();
+        values.put(softwareKey,PodSoftwareEcdh.encode(pair));
+        getKey(alias+".software");
+        // AES-GCM using the existing Android Keystore AES key; atomic encrypted publication only.
+        writeSecure(values);
+        return pair;
+    }
+    private java.security.KeyPair lockedEcdhPair(JSONObject args,boolean create) throws Exception {
+        synchronized(SECURE_LOCK) {
+            try(java.io.RandomAccessFile file=new java.io.RandomAccessFile(new File(secureFile.getParentFile(),"secure.store.lock"),"rw");
+                java.nio.channels.FileLock lock=file.getChannel().lock()) {
+                return ecdhPair(args,create);
+            }
+        }
+    }
+    private JSONObject ecdhPublicKey(JSONObject args) throws Exception {
+        return new JSONObject().put("publicKeySpki",enc(lockedEcdhPair(args,true).getPublic().getEncoded()));
     }
     private JSONObject ecdhUnwrap(JSONObject args) throws Exception {
-        java.security.PrivateKey privateKey=(java.security.PrivateKey)ecdhStore().getKey(ecdhAlias(args),null);
-        if(privateKey==null) throw new IllegalStateException("device_private_key_missing");
+        java.security.PrivateKey privateKey=lockedEcdhPair(args,false).getPrivate();
         byte[] value=PodCloudCrypto.unwrap(privateKey,decode(args,"publicKeySpki"),decode(args,"saltBase64"),decode(args,"infoBase64"),decode(args,"nonceBase64"),decode(args,"ciphertextBase64"),decode(args,"aadBase64"));
         try { if(value.length!=32) throw new IllegalArgumentException("invalid_account_key"); return new JSONObject().put("dataBase64",enc(value)); }
         finally { Arrays.fill(value,(byte)0); }

@@ -91,4 +91,38 @@ public class PodDeviceServicesTest {
         } finally { services.execute("file.delete",new JSONObject().put("path",path));services.close(); }
     }
 
+    @Test public void cloudEcdhIdentitySurvivesInstancesAndUnwraps() throws Exception {
+        String id="instrumentation-ecdh-"+java.util.UUID.randomUUID();
+        JSONObject args=new JSONObject().put("keyId",id);
+        String publicSpki;
+        try(PodDeviceServices first=new PodDeviceServices(context())) {
+            publicSpki=first.execute("crypto.ecdhPublicKey",args).getString("publicKeySpki");
+        }
+        java.security.KeyPair peer=PodSoftwareEcdh.generate();
+        java.security.PublicKey recipient=java.security.KeyFactory.getInstance("EC").generatePublic(new java.security.spec.X509EncodedKeySpec(Base64.decode(publicSpki,Base64.DEFAULT)));
+        javax.crypto.KeyAgreement agreement=javax.crypto.KeyAgreement.getInstance("ECDH");
+        agreement.init(peer.getPrivate());agreement.doPhase(recipient,true);
+        byte[] salt=new byte[16],nonce=new byte[12],info="cloud-context".getBytes(StandardCharsets.UTF_8),aad="device-id".getBytes(StandardCharsets.UTF_8),account=new byte[32];
+        new java.security.SecureRandom().nextBytes(account);
+        byte[] cipher=PodCloudCrypto.aes(true,PodCloudCrypto.hkdf(agreement.generateSecret(),salt,info),nonce,account,aad);
+        try(PodDeviceServices second=new PodDeviceServices(context())) {
+            assertEquals(publicSpki,second.execute("crypto.ecdhPublicKey",args).getString("publicKeySpki"));
+            JSONObject envelope=new JSONObject().put("keyId",id).put("publicKeySpki",b64(peer.getPublic().getEncoded())).put("saltBase64",b64(salt)).put("infoBase64",b64(info)).put("nonceBase64",b64(nonce)).put("ciphertextBase64",b64(cipher)).put("aadBase64",b64(aad));
+            assertArrayEquals(account,Base64.decode(second.execute("crypto.ecdhUnwrap",envelope).getString("dataBase64"),Base64.DEFAULT));
+            try { second.execute("crypto.ecdhUnwrap",new JSONObject(envelope.toString()).put("keyId",id+"missing"));fail("missing identity regenerated"); }
+            catch(IllegalStateException expected) { assertEquals("device_private_key_missing",expected.getMessage()); }
+            String alias="podjs.ecdh.v1."+b64(java.security.MessageDigest.getInstance("SHA-256").digest(id.getBytes(StandardCharsets.UTF_8)));
+            java.security.KeyStore store=java.security.KeyStore.getInstance("AndroidKeyStore");store.load(null);
+            assertEquals(android.os.Build.VERSION.SDK_INT>=31,store.containsAlias(alias));
+            assertEquals(android.os.Build.VERSION.SDK_INT<31,store.containsAlias(alias+".software"));
+            for(String operation:new String[]{"secure.get","secure.set","secure.delete","secure.update"}) {
+                String privateField="__podjs_native_ecdh_v1."+alias;
+                JSONObject request=new JSONObject().put("key",privateField).put("value","forbidden").put("values",new JSONObject().put(privateField,"forbidden"));
+                try { second.execute(operation,request);fail("native key exposed through "+operation); }
+                catch(SecurityException expected) { assertEquals("reserved_secure_key",expected.getMessage()); }
+            }
+        }
+    }
+    private static String b64(byte[] bytes) { return Base64.encodeToString(bytes,Base64.NO_WRAP); }
+
 }
