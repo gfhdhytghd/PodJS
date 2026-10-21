@@ -291,7 +291,6 @@ final class PodServices implements Closeable {
         if (requests.size() >= 64) { failure(id,"busy","Too many requests"); return; }
         String method = command.getString("method");
         JSONObject args = command.getJSONObject("args");
-        if (PERF_TRACE) android.util.Log.i("PodJSPerf", "svc id=" + id + " method=" + method + " args=" + Math.min(160, args.toString().length()) + ":" + args.toString().substring(0, Math.min(160, args.toString().length())));
         Request request = new Request();
         request.method = method;
         requests.put(id, request);

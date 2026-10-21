@@ -42,6 +42,19 @@ public final class PodCloudCrypto {
         try { key = hkdf(secret,salt,info); return aes(false,key,nonce,ciphertext,aad); }
         finally { Arrays.fill(secret,(byte)0); if(key != null) Arrays.fill(key,(byte)0); }
     }
+    /** P1363 fixed-width r||s input, converted to minimal positive DER integers. */
+    public static boolean verifyP256(byte[] spki, byte[] input, byte[] signature) throws Exception {
+        if(signature.length != 64 || input.length > 256*1024) return false;
+        ECPublicKey key=(ECPublicKey)KeyFactory.getInstance("EC").generatePublic(new X509EncodedKeySpec(spki));
+        AlgorithmParameters parameters=AlgorithmParameters.getInstance("EC");parameters.init(new ECGenParameterSpec("secp256r1"));
+        ECParameterSpec expected=parameters.getParameterSpec(ECParameterSpec.class), actual=key.getParams();
+        if(!expected.getCurve().equals(actual.getCurve()) || !expected.getGenerator().equals(actual.getGenerator()) || !expected.getOrder().equals(actual.getOrder()) || expected.getCofactor()!=actual.getCofactor()) return false;
+        byte[] r=new java.math.BigInteger(1,Arrays.copyOfRange(signature,0,32)).toByteArray();
+        byte[] s=new java.math.BigInteger(1,Arrays.copyOfRange(signature,32,64)).toByteArray();
+        ByteArrayOutputStream der=new ByteArrayOutputStream();der.write(48);der.write(4+r.length+s.length);der.write(2);der.write(r.length);der.write(r);der.write(2);der.write(s.length);der.write(s);
+        Signature verifier=Signature.getInstance("SHA256withECDSA");verifier.initVerify(key);verifier.update(input);
+        try{return verifier.verify(der.toByteArray());}catch(SignatureException invalid){return false;}
+    }
     public static byte[] gzip(byte[] input) throws Exception {
         if(input.length > MAX_BYTES) throw new IllegalArgumentException("compression_input_too_large");
         ByteArrayOutputStream out = new ByteArrayOutputStream();

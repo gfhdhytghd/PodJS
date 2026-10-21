@@ -74,6 +74,7 @@ public final class PodDeviceServices implements AutoCloseable {
         if (method == null || args == null) throw new IllegalArgumentException("method_and_args_required");
         switch (method) {
             case "secure.get": case "secure.set": case "secure.delete": case "secure.update": return secureOperation(method,args);
+            case "crypto.verifyP256": return new JSONObject().put("valid",PodCloudCrypto.verifyP256(decode(args,"publicKeySpki"),decode(args,"dataBase64"),decode(args,"signatureBase64")));
             case "crypto.ecdhPublicKey": return ecdhPublicKey(args);
             case "crypto.ecdhUnwrap": return ecdhUnwrap(args);
             case "crypto.hkdfSha256": return new JSONObject().put("keyBase64", enc(PodCloudCrypto.hkdf(decode(args,"inputBase64"),decode(args,"saltBase64"),decode(args,"infoBase64"))));
@@ -138,7 +139,10 @@ public final class PodDeviceServices implements AutoCloseable {
                 secureTrace.end("secure.lock",waiting,id);
                 if("secure.get".equals(method))return secureGet(args);
                 if("secure.set".equals(method))return secureSet(args);
-                if("secure.update".equals(method)){writeSecure(mergeSecure(readSecure(id),args.getJSONObject("values")));return new JSONObject().put("ok",true);}
+                if("secure.update".equals(method)){
+                    writeSecure(mergeSecure(readSecure(id),args.getJSONObject("values"),args.optJSONArray("removePrefixes")));
+                    return new JSONObject().put("ok",true);
+                }
                 return secureDelete(args);
             }
         }}finally{secureTrace.end("secure.total",total,id);}
@@ -156,6 +160,23 @@ public final class PodDeviceServices implements AutoCloseable {
         }
         if(next.toString().getBytes(StandardCharsets.UTF_8).length>MAX_CHUNK_BYTES)throw new IllegalArgumentException("secure_quota");
         return next;
+    }
+    /** Prefix removal and explicit values publish together under the secure-store lock. */
+    static JSONObject mergeSecure(JSONObject current,JSONObject updates,org.json.JSONArray prefixes)throws Exception {
+        JSONObject next=new JSONObject(current.toString());
+        if(prefixes!=null){
+            if(prefixes.length()>16)throw new IllegalArgumentException("secure_batch_limit");
+            for(int i=0;i<prefixes.length();i++){
+                Object value=prefixes.get(i);
+                if(!(value instanceof String) || ((String)value).isEmpty() || ((String)value).length()>1024)
+                    throw new IllegalArgumentException("secure_prefix_required");
+                String prefix=(String)value;
+                java.util.ArrayList<String> removed=new java.util.ArrayList<>();
+                for(java.util.Iterator<String> names=next.keys();names.hasNext();){String name=names.next();if(name.startsWith(prefix))removed.add(name);}
+                for(String name:removed)next.remove(name);
+            }
+        }
+        return mergeSecure(next,updates);
     }
     private JSONObject secureGet(JSONObject a) throws Exception {
         JSONObject values = readSecure(a.optInt("requestId",-1)); String key = required(a, "key");

@@ -74,3 +74,11 @@ dependencies {
     androidTestImplementation("androidx.security:security-crypto:1.1.0-alpha06")
     androidTestImplementation("junit:junit:4.13.2")
 }
+
+// Release prebuild must reject accidental source-level sensitive tracing.
+val verifyReleaseServiceTracing = tasks.register("verifyReleaseServiceTracing") {
+    val source = file("src/main/java/dev/podjs/runtime/PodServices.java")
+    inputs.file(source)
+    doLast { require(Regex("private static final boolean PERF_TRACE = false;").containsMatchIn(source.readText())) { "Release forbids PERF_TRACE" } }
+}
+tasks.matching { it.name.startsWith("pre") && it.name.contains("Release") && it.name.endsWith("Build") }.configureEach { dependsOn(verifyReleaseServiceTracing) }

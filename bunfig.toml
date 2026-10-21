@@ -1,0 +1,3 @@
+preload = ["./packages/framework/testing/solid-preload.ts"]
+[test]
+preload = ["./packages/framework/testing/solid-preload.ts"]
