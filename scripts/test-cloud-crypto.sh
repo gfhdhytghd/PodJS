@@ -7,3 +7,5 @@ javac -d "$task_tmp" platforms/android/runtime/src/main/java/dev/podjs/runtime/P
 java -cp "$task_tmp" PodCloudCryptoTest "$@"
 
 java -cp "$task_tmp" dev.podjs.runtime.SoftwareEcdhTest
+javac -d "$task_tmp" platforms/android/runtime/src/main/java/dev/podjs/runtime/PodSecureLease.java tests/java/dev/podjs/runtime/SecureLeaseTest.java
+java -cp "$task_tmp" dev.podjs.runtime.SecureLeaseTest

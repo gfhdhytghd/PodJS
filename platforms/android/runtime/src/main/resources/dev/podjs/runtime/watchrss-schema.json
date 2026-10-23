@@ -14,6 +14,7 @@
   "CREATE TABLE IF NOT EXISTS article_native_sync_hash (item_id INTEGER PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE,body_hash TEXT NOT NULL)",
   "CREATE TABLE IF NOT EXISTS offline_media (id INTEGER PRIMARY KEY, item_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE, media_type TEXT NOT NULL CHECK(media_type IN ('IMAGE','VIDEO')), origin_url TEXT NOT NULL, relative_path TEXT, created_at INTEGER NOT NULL, UNIQUE(item_id,origin_url))",
   "CREATE TABLE IF NOT EXISTS sync_local_identity (id INTEGER PRIMARY KEY CHECK(id=1), device_id TEXT NOT NULL, device_order TEXT NOT NULL)",
+  "CREATE TABLE IF NOT EXISTS cloud_rss_article_ids (item_id INTEGER PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE, article_id TEXT NOT NULL)",
   "CREATE TABLE IF NOT EXISTS sync_article_ids (article_id TEXT PRIMARY KEY, item_id INTEGER UNIQUE CHECK(item_id>0) REFERENCES articles(id) ON DELETE SET NULL, url TEXT NOT NULL)",
   "CREATE TABLE IF NOT EXISTS sync_article_aliases (item_id INTEGER PRIMARY KEY REFERENCES articles(id) ON DELETE CASCADE, article_id TEXT NOT NULL)",
   "CREATE TRIGGER IF NOT EXISTS sync_article_alias_immutable BEFORE UPDATE OF article_id ON sync_article_aliases WHEN OLD.article_id!=NEW.article_id BEGIN SELECT RAISE(ABORT,'Article alias already bound to another identity'); END",

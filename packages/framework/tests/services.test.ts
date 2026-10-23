@@ -19,6 +19,12 @@ beforeEach(() => {
 afterEach(() => { events.length = 0; emitted.length = 0; });
 
 describe("host services", () => {
+ test('secure leases require data.secure and expose nonblocking ownership without secrets',async()=>{
+  await expect(secureStorage.acquire('account')).rejects.toMatchObject({code:'unsupported'});expect(emitted).toHaveLength(0);
+  host.capabilities=()=>JSON.stringify(['data.secure']);
+  for(const acquired of [true,false]){const task=secureStorage.acquire('account'),request=emitted.at(-1)!;expect(request).toMatchObject({method:'secure.acquire',args:{key:'account'}});events.push({t:'service.result',id:request.id,ok:true,value:{acquired}});api.__pumpPodEvents();expect(await task).toBe(acquired);}
+  const task=secureStorage.release('account'),request=emitted.at(-1)!;expect(request).toMatchObject({method:'secure.release',args:{key:'account'}});events.push({t:'service.result',id:request.id,ok:true,value:{ok:true}});api.__pumpPodEvents();await task;
+ });
  test('afterPaint requests commits and cancellation remains owned by the caller',async()=>{
   host.capabilities=()=>JSON.stringify(['runtime.timer']);const {afterPaint}=await import('../src/render.ts');
   const op=afterPaint(),request=emitted.at(-1)!;expect(request).toMatchObject({method:'runtime.afterPaint',args:{}});

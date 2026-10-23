@@ -54,6 +54,7 @@ public final class PodDeviceServices implements AutoCloseable {
 
     private final File root;
     private final File secureFile;
+    private final PodSecureLease secureLeases;
     private final SecureRandom random = new SecureRandom();
     private boolean closed;
     private DeviceServiceTrace secureTrace=new DeviceServiceTrace(false,line->{});
@@ -68,12 +69,15 @@ public final class PodDeviceServices implements AutoCloseable {
         if (!files.exists() && !files.mkdirs()) throw new IllegalStateException("service_root_unavailable");
         try { root = files.getCanonicalFile(); secureFile = new File(root.getParentFile(), SECURE_FILE); }
         catch (IOException e) { throw new IllegalStateException("service_root_unavailable", e); }
+        secureLeases = new PodSecureLease(secureFile.getParentFile());
     }
 
     public synchronized JSONObject execute(String method, JSONObject args) throws Exception {
         if (closed) throw new IllegalStateException("service_closed");
         if (method == null || args == null) throw new IllegalArgumentException("method_and_args_required");
         switch (method) {
+            case "secure.acquire": return new JSONObject().put("acquired",secureLeases.acquire(required(args,"key")));
+            case "secure.release": secureLeases.release(required(args,"key")); return new JSONObject().put("ok",true);
             case "secure.get": case "secure.set": case "secure.delete": case "secure.update": return secureOperation(method,args);
             case "crypto.verifyP256": return new JSONObject().put("valid",PodCloudCrypto.verifyP256(decode(args,"publicKeySpki"),decode(args,"dataBase64"),decode(args,"signatureBase64")));
             case "crypto.ecdhPublicKey": return ecdhPublicKey(args);
@@ -114,6 +118,7 @@ public final class PodDeviceServices implements AutoCloseable {
 
     @Override public synchronized void close() {
         closed = true;
+        secureLeases.close();
         for (File file : temporaryFiles) file.delete();
         temporaryFiles.clear();
         for (java.io.Reader reader : textReaders.values()) try { reader.close(); } catch (IOException ignored) { }

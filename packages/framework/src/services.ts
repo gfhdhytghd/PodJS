@@ -51,6 +51,7 @@ const methods: Record<string, PodCapabilityId> = {
   "app.buildInfo": "host.lifecycle",
   "splash.hold": "host.lifecycle", "splash.release": "host.lifecycle",
   "cloud.schedule":"host.lifecycle", "cloud.cancel":"host.lifecycle", "cloud.acquire":"host.lifecycle", "cloud.release":"host.lifecycle",
+  "secure.acquire":"data.secure", "secure.release":"data.secure",
   "debug.memoryStats": "host.lifecycle",
   "debug.performance.start": "host.lifecycle", "debug.performance.read": "host.lifecycle", "debug.performance.stop": "host.lifecycle",
   "app.activityState.read": "host.lifecycle", "app.activityState.write": "host.lifecycle",
@@ -232,6 +233,10 @@ export const location = {
 };
 
 export const secureStorage = {
+  /** Android app-private cross-guest/process try-lease; release only after acquired=true.
+   * The host also releases all owned leases when this guest closes. */
+  async acquire(key:string):Promise<boolean> { return (await hostOperation<{acquired:boolean}>("secure.acquire",{key}).result).acquired; },
+  async release(key:string):Promise<void> { await hostOperation("secure.release",{key}).result; },
   /** Publish a bounded set of updates/deletions in one encrypted store transaction. */
   async update(values:Record<string,string|null>):Promise<void> { await hostOperation("secure.update",{values}).result; },
   async get(key: string): Promise<string | undefined> { const value = await hostOperation<{exists:boolean;value?:string}>("secure.get",{key}).result; return value.exists ? value.value : undefined; },
