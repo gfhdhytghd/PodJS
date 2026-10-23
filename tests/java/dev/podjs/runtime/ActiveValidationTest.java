@@ -39,6 +39,17 @@ public final class ActiveValidationTest {
    expect("pointer_mismatch",c::run);pointer.setProperty("receipt",active.getProperty("receipt"));PodTakeoverCoordinator.atomic(new File(root,"active"),pointer);
    v2.completed(current,active.getProperty("receipt"),false);Properties blocked=c.run();check("BLOCKED".equals(blocked.getProperty("phase")));check("active_deep_validation_failed".equals(blocked.getProperty("reason")));check(new File(root,"active").isFile());
    expect("takeover_pending",()->c.activeGeneration(blocked));check("BLOCKED".equals(c.run().getProperty("phase")));
+   // Host schema recognition repair must reopen the exact published data,
+   // never replay an old snapshot over writes made after activation.
+   File repairRoot=new File(parent,"schema-repair");AtomicBoolean unsupported=new AtomicBoolean();AtomicInteger repairs=new AtomicInteger();
+   TakeoverTest.Converter repairedConverter=new TakeoverTest.Converter(){
+    public void active(File dir){repairs.incrementAndGet();}
+    public void activeFast(File dir)throws IOException{if(unsupported.get())throw new IOException("active_schema_version_invalid");}
+   };
+   PodTakeoverCoordinator repair=new PodTakeoverCoordinator(repairRoot,TakeoverTest.source,repairedConverter).withActiveValidation(v2);
+   Properties published=repair.run();int copiesBefore=repairedConverter.copies.get();File preserved=repair.activeGeneration(published);File userWrite=new File(preserved,"post-activation.txt");Files.writeString(userWrite.toPath(),"keep latest user data");
+   unsupported.set(true);Properties schemaBlocked=repair.run();check("active_validation_failed".equals(schemaBlocked.getProperty("reason")));check("BLOCKED".equals(repair.run().getProperty("phase")));
+   unsupported.set(false);Properties recovered=repair.run();check("ACTIVE".equals(recovered.getProperty("phase")));check(preserved.equals(repair.activeGeneration(recovered)));check("keep latest user data".equals(Files.readString(userWrite.toPath())));check(repairs.get()==2);check(repairedConverter.copies.get()==copiesBefore);
    // A missing required store still vetoes before any converter can run.
    File missingRoot=new File(parent,"missing-takeover");PodTakeoverCoordinator missing=new PodTakeoverCoordinator(missingRoot,TakeoverTest.source,converter).withActiveValidation(v2);
    Properties healthy=missing.run();File missingGeneration=missing.activeGeneration(healthy);Files.delete(new File(missingGeneration,"podjs/podjs-kv.json").toPath());

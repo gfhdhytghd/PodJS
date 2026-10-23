@@ -46,3 +46,19 @@ export function gunzipBytes(bytes:Uint8Array):Uint8Array|null {
  if(bytes.length>256*1024||!decode)return null;const result=decode(bytes);
  if(result==null)return null;if(!(result instanceof Uint8Array)||result.length>256*1024)throw Error('Invalid native gzip result');return result;
 }
+
+import {utf8EncodeChunks as encodeTextParts,type SurrogatePolicy as Utf16Policy} from './byte-codecs.ts';
+export interface ByteStreamWriteOptions {maxBytes:number;blockBytes?:number;cancelled?:()=>boolean}
+/** Bounded, backpressured publication into any append sink. No full-stream copy;
+ * append receipts are checked before a caller may publish a durable reference. */
+export async function writeByteStream(parts:AsyncIterable<Uint8Array>|Iterable<Uint8Array>,append:(bytes:Uint8Array,offset:number)=>Promise<number>,options:ByteStreamWriteOptions):Promise<number>{
+ const block=options.blockBytes??65536;if(!Number.isSafeInteger(options.maxBytes)||options.maxBytes<0||!Number.isSafeInteger(block)||block<1||block>1024*1024)throw RangeError('invalid stream write bounds');
+ let offset=0,used=0;const buffer=new Uint8Array(block),check=()=>{if(options.cancelled?.())throw Error('stream write cancelled');};
+ const flush=async()=>{if(!used)return;check();const next=await append(buffer.subarray(0,used),offset);if(next!==offset+used)throw Error('stream append receipt mismatch');offset=next;used=0;check();};
+ for await(const part of parts){check();if(!(part instanceof Uint8Array)||part.length>options.maxBytes-offset-used)throw RangeError('stream write exceeds limit');for(let at=0;at<part.length;){const count=Math.min(part.length-at,block-used);buffer.set(part.subarray(at,at+count),used);used+=count;at+=count;if(used===block)await flush();}}
+ await flush();return offset;
+}
+export async function writeUtf8Stream(parts:AsyncIterable<string>|Iterable<string>,append:(bytes:Uint8Array,offset:number)=>Promise<number>,options:ByteStreamWriteOptions&{surrogatePolicy?:Utf16Policy}):Promise<number>{
+ async function* bytes(){for await(const text of parts)yield* encodeTextParts(text,options.surrogatePolicy??'strict');}
+ return writeByteStream(bytes(),append,options);
+}

@@ -44,6 +44,7 @@
     "./tiled-image": "./src/tiled-image.tsx",
     "./cache": "./src/cache.ts",
     "./regexp": "./src/regexp.ts",
+    "./sql-changes": "./src/sql-changes.ts",
     "./sql": "./src/sql.ts",
     "./frame-stream": "./src/frame-stream.ts",
     "./variable-list": "./src/variable-list.tsx",

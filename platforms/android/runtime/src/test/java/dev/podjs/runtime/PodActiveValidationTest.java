@@ -36,7 +36,11 @@ public class PodActiveValidationTest {
   new PodRoomV18Converter(null,ro,"fixture").activeFast(g);assertEquals(6,queries.size());assertEquals("PRAGMA user_version",queries.get(0));
   try(PodRoomAndroidDb db=new PodRoomAndroidDb(dbFile)){db.exec("PRAGMA user_version=3");}
   new PodRoomV18Converter(null,ro,"fixture").activeFast(g);
-  try(PodRoomAndroidDb db=new PodRoomAndroidDb(dbFile)){db.exec("PRAGMA user_version=4");}
+  try(PodRoomAndroidDb db=new PodRoomAndroidDb(dbFile)){db.exec("PRAGMA user_version=5");}
+  new PodRoomV18Converter(null,ro,"fixture").activeFast(g);
+  try(PodRoomAndroidDb db=new PodRoomAndroidDb(dbFile)){db.exec("PRAGMA user_version=6");}
+  new PodRoomV18Converter(null,ro,"fixture").activeFast(g);
+  try(PodRoomAndroidDb db=new PodRoomAndroidDb(dbFile)){db.exec("PRAGMA user_version=7");}
   try{new PodRoomV18Converter(null,ro,"fixture").activeFast(g);fail();}catch(IOException expected){assertEquals("active_schema_version_invalid",expected.getMessage());}
  }
  @Test public void readonlyConnectionRejectsWritesAndSeesAtomicCommits()throws Exception {

@@ -93,3 +93,11 @@ test('headless crypto uses caller request ports without bootstrapping the unrest
  expect(JSON.parse(JSON.stringify(await context.backgroundHandler()))).toEqual({lp:'00000001780000000131',code:'00000000',hmac:[1,2],valid:true,short:false,calls:['crypto.hmacSha256','crypto.verifyP256']});expect(context.pod).toBeUndefined();expect(context.frame).toBeUndefined();
  for(const denied of ['@podjs/framework/crypto/unsafe','@podjs/framework/services','@podjs/framework/watch']){const f=fixture(`import * as api from '${denied}';export default ()=>api;`);await expect(buildBackground({denied:f.entry},f.root)).rejects.toThrow('Background');}
 });
+
+test('headless changed-row SQL helper bundles without services and keeps unsafe subpaths denied',async()=>{
+ const {root,entry}=fixture("import {onlyChangedSql} from '@podjs/framework/sql-changes';export default ()=>onlyChangedSql('UPDATE things SET value=? WHERE id=?');");
+ mkdirSync(join(root,'node_modules/@podjs'),{recursive:true});symlinkSync(new URL('../packages/framework',import.meta.url).pathname,join(root,'node_modules/@podjs/framework'),'dir');
+ const artifacts=await buildBackground({sql:entry},root),context:Record<string,any>={};runInNewContext(readFileSync(join(root,artifacts.sql!.file),'utf8'),context);
+ expect(context.backgroundHandler()).toContain('IS NOT');expect(context.pod).toBeUndefined();expect(context.frame).toBeUndefined();
+ const denied=fixture("import * as api from '@podjs/framework/sql-changes/unsafe';export default ()=>api;");await expect(buildBackground({denied:denied.entry},denied.root)).rejects.toThrow('Background');
+});

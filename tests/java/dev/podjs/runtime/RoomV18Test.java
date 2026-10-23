@@ -82,6 +82,19 @@ public final class RoomV18Test {
             String dbHash=PodRoomV18Converter.hash(source),walHash=PodRoomV18Converter.hash(new File(source+"-wal")),shmHash=PodRoomV18Converter.hash(new File(source+"-shm"));
             int[] batches={0};PodRoomV18Converter converter=new PodRoomV18Converter(source,Jdbc::new,"fixture-设备😀",2,committed->{if(committed)batches[0]++;});
             File full=child(root,"full");converter.snapshot(full);converter.copy(full);String expected=converter.verify(full);
+            // Published data upgraded by the current guest must survive a cold
+            // host admission; unknown future schemas still fail closed.
+            for(int guestVersion=0;guestVersion<=4;guestVersion++) {
+                try(Jdbc upgraded=new Jdbc(new File(full,"podjs.sqlite"))){upgraded.exec("PRAGMA user_version="+guestVersion);}
+                converter.activeFast(full);
+            }
+            try(Jdbc upgraded=new Jdbc(new File(full,"podjs.sqlite"))){upgraded.exec("PRAGMA user_version=5");}
+            converter.activeFast(full);
+            try(Jdbc upgraded=new Jdbc(new File(full,"podjs.sqlite"))){upgraded.exec("PRAGMA user_version=6");}
+            converter.activeFast(full);
+            try(Jdbc upgraded=new Jdbc(new File(full,"podjs.sqlite"))){upgraded.exec("PRAGMA user_version=7");}
+            try {converter.activeFast(full);throw new AssertionError("future schema admitted");}catch(IOException expectedFailure){require("active_schema_version_invalid".equals(expectedFailure.getMessage()),"future schema reason");}
+            try(Jdbc upgraded=new Jdbc(new File(full,"podjs.sqlite"))){upgraded.exec("PRAGMA user_version=0");}
             require(batches[0]==30,"all 15 tables paged");
             require(dbHash.equals(PodRoomV18Converter.hash(source))&&walHash.equals(PodRoomV18Converter.hash(new File(source+"-wal")))&&shmHash.equals(PodRoomV18Converter.hash(new File(source+"-shm"))),"source bytes unchanged with live WAL");
             // Interrupt before and after EACH batch transaction, then use a new converter.

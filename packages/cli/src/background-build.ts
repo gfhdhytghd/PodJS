@@ -15,7 +15,7 @@ export async function buildBackground(entries: Record<string, string>, output: s
           if (args.path === "pod-background:entry") return { path: "entry", namespace: "pod-background" };
           if (args.kind === "dynamic-import") throw new Error("Background bundles cannot dynamically import code");
           // These helpers are query-port/algorithm-only: no UI, services or host bootstrap.
-          if (["@podjs/framework/background-handler", "@podjs/framework/bytes", "@podjs/framework/crypto", "@podjs/framework/frame-stream", "@podjs/framework/sql", "@podjs/framework/regexp", "@podjs/framework/json-numbers", "@podjs/framework/json-string", "@podjs/framework/build-gate", "@podjs/framework/text-compat"].includes(args.path)) return undefined;
+          if (["@podjs/framework/background-handler", "@podjs/framework/bytes", "@podjs/framework/crypto", "@podjs/framework/frame-stream", "@podjs/framework/sql", "@podjs/framework/sql-changes", "@podjs/framework/regexp", "@podjs/framework/json-numbers", "@podjs/framework/json-string", "@podjs/framework/build-gate", "@podjs/framework/text-compat"].includes(args.path)) return undefined;
           if (/^(node:|bun:|solid-js(?:\/|$)|react(?:\/|$)|@pocketjs\/framework(?:\/|$)|@podjs\/framework(?:\/|$))/.test(args.path)) {
             throw new Error(`Background entry cannot import UI or unrestricted host module: ${args.path}`);
           }

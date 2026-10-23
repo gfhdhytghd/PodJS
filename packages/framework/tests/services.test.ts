@@ -689,3 +689,12 @@ test('splash API uses normal lifecycle host services, validates owners, and prop
  }
  expect(()=>splash.hold('<bad>')).toThrow('Invalid splash owner');
 });
+
+test('single SQL change receipt is committed, labelled and rejects malformed counters',async()=>{
+ for(const [reply,expected]of [[[0],0],[[2],2]] as const){const pending=sqlite.executeChanges('UPDATE rows SET value=?',['v'],'fixture.update'),request=emitted.at(-1)!;expect(request).toMatchObject({method:'sql.transaction',args:{reportChanges:true,traceLabel:'fixture.update',statements:[{sql:'UPDATE rows SET value=?',params:['v']}]}});events.push({t:'service.result',id:request.id,ok:true,value:reply});api.__pumpPodEvents();expect(await pending).toBe(expected);}
+ for(const value of [[],[-1],[1,2],[1.5]]){const pending=sqlite.executeChanges('UPDATE rows SET value=1'),request=emitted.at(-1)!;events.push({t:'service.result',id:request.id,ok:true,value});api.__pumpPodEvents();await expect(pending).rejects.toThrow('Invalid SQL change receipt');}
+});
+
+test('pure codec scheduler yields without a runtime.timer host capability',async()=>{
+ const before=emitted.length;await (globalThis as any).__podYieldCodecTurn();expect(emitted).toHaveLength(before);
+});

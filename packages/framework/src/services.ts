@@ -171,6 +171,12 @@ export const sqlite = {
   async execute(sql: string, params: readonly SqlValue[] = [], traceLabel?:string): Promise<void> {
     await hostOperation("sql.execute", { sql, params, ...(traceLabel?{traceLabel}:{}) }).result;
   },
+  /** Committed changes() receipt for one transactional statement. */
+  async executeChanges(sql:string,params:readonly SqlValue[]=[],traceLabel?:string):Promise<number> {
+    const counts=await hostOperation<number[]>("sql.transaction",{statements:[{sql,params}],reportChanges:true,...(traceLabel?{traceLabel}:{})}).result;
+    if(counts.length!==1||!Number.isSafeInteger(counts[0])||counts[0]!<0)throw Error('Invalid SQL change receipt');
+    return counts[0]!;
+  },
   async transaction(statements: readonly SqlStatement[]): Promise<void> {
     await hostOperation("sql.transaction", { statements }).result;
   },
@@ -556,7 +562,7 @@ export const fileChunks = {
   gunzip(path:string,maxOutputBytes=32*1024*1024,allowPlain=false):Promise<{path:string;size:number;sha256:string}> {
     return hostOperation<{path:string;size:number;sha256:string}>("file.gunzip",{path,maxOutputBytes,allowPlain}).result;
   },
-  openText(path:string):Promise<{id:string}> {return hostOperation<{id:string}>("file.openText",{path}).result;},
+  openText(path:string,options:{strictUtf8?:boolean}={}):Promise<{id:string}> {return hostOperation<{id:string}>("file.openText",{path,...options}).result;},
   readTextChunk(id:string,maxChars=16384):Promise<{text:string;eof:boolean}> {return hostOperation<{text:string;eof:boolean}>("file.readTextChunk",{id,maxChars}).result;},
   closeText(id:string):Promise<{closed:boolean}> {return hostOperation<{closed:boolean}>("file.closeText",{id}).result;},
   createTemp(directory:string):Promise<{path:string}> {
@@ -792,7 +798,7 @@ export const debugAcoustic = Object.freeze({
 
 // Realm-local foreground scheduler; pure codecs also work in headless bundles.
 // Match the runtime.timer minimum on Android, including portable codec jobs.
-(globalThis as {__podYieldCodecTurn?:()=>Promise<void>}).__podYieldCodecTurn=()=>delay(1).result;
+(globalThis as {__podYieldCodecTurn?:()=>Promise<void>}).__podYieldCodecTurn=()=>hasCapability("runtime.timer")?delay(1).result:new Promise<void>(resolve=>setTimeout(resolve,0));
 
 export interface DebugExternalEvent {deadline?:number;id:number;kind:'intent'|'dump';action:string;extras:Record<string,string|number|boolean>;args:string[]}
 export interface DebugExternalReply {code?:number;data?:string;result?:{code:number;extras?:Record<string,string|number|boolean>}}

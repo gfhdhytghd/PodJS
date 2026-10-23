@@ -123,6 +123,18 @@ public final class PodTakeoverCoordinator {
                     checkpoint.timed("activeConverters",System.nanoTime()-began);
                     began=System.nanoTime();publisher.afterActive(g);checkpoint.timed("activePublisher",System.nanoTime()-began);return p;
                 }
+                // A fixed host may recognize a guest schema rejected by an older
+                // fast check. Revalidate the published generation in place. Never
+                // copy/import, change the pointer, or override a durable deep FAIL.
+                if (phase==Phase.BLOCKED && activeValidation!=null && "ACTIVE".equals(p.getProperty("blockedFromPhase")) && "active_validation_failed".equals(p.getProperty("reason"))) {
+                    validatePointer(p);File published=generation(p.getProperty("generation"));
+                    try {
+                        activeValidation.require(published,p.getProperty("receipt"),()->converter.activeFast(published));
+                        converter.active(published);
+                    } catch(Exception error) { checkpoint.failed(Phase.ACTIVE,error);return p; }
+                    activeValidation.completed(published,p.getProperty("receipt"),true);
+                    save(p,Phase.ACTIVE);publisher.afterActive(published);return p;
+                }
                 if (phase==Phase.BLOCKED) {
                     if(!"unknown_user_files".equals(p.getProperty("reason")))return p;
                     File previous=generation(p.getProperty("generation"));

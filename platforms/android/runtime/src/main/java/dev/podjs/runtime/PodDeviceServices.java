@@ -416,7 +416,10 @@ public final class PodDeviceServices implements AutoCloseable {
         File file = safeFile(required(a,"path"));
         if (!file.isFile()) throw new IOException("file_not_found");
         String id = "text-" + (++nextTextReader);
-        textReaders.put(id,new java.io.BufferedReader(new java.io.InputStreamReader(new FileInputStream(file),StandardCharsets.UTF_8)));
+        java.nio.charset.CharsetDecoder decoder=StandardCharsets.UTF_8.newDecoder();
+        java.nio.charset.CodingErrorAction errors=a.optBoolean("strictUtf8",false)?java.nio.charset.CodingErrorAction.REPORT:java.nio.charset.CodingErrorAction.REPLACE;
+        decoder.onMalformedInput(errors).onUnmappableCharacter(errors);
+        textReaders.put(id,new java.io.BufferedReader(new java.io.InputStreamReader(new FileInputStream(file),decoder)));
         return new JSONObject().put("id",id);
     }
     private JSONObject fileReadTextChunk(JSONObject a) throws Exception {

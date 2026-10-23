@@ -186,11 +186,12 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/media-prefix-cache` | Bounded range-aware Media3 prefix transport and cancellable windows |
 | `@podjs/framework/regexp` | Lazy RegExp construction to defer guest startup work. |
 | `@podjs/framework/sql` | Bounded SQL result pagination and UTF-8-safe large text reads. |
+| `@podjs/framework/sql-changes` | `onlyChangedSql`: value-change guards for code-authored deterministic UPDATE/UPSERT statements. |
 | `@podjs/framework/json-string` | Android-compatible JSON string quoting, including slash escaping and lone UTF-16 preservation. |
 | `@podjs/framework/frame-stream` | Opaque signed/unsigned frame facade with caller codecs, error/poison/EOF policies; bounded connections with deadlines, cancellation and progress. |
 | `@podjs/framework/texture-upload` | Shared raw/sample RGBA uploads and explicit file ownership/release policies; no lifetime scheduling or pixel conversion. |
 | `@podjs/framework/variable-list` | Variable-height windowed viewport; opt-in `round` adds minimal safe-circle endpoint space, `ScrollEntry.bounds` describes visible content, and `round.development` warns about impossible rows. |
-| `@podjs/framework/round-list` | `roundRowRange`, `roundListInsets`, `RoundListOptions`: four-corner circle/viewport fitting, including displaced viewports and narrow visible-content bounds. |
+| `@podjs/framework/round-list` | `roundRowRange`, `roundListInsets`, `roundRowInteractionBounds`, `RoundListOptions`: adaptive circle/viewport fitting with independent visible and clipped interaction bounds; see [round lists](round-lists.md). |
 | `@podjs/framework/text-environment` | Native text environment lookup and font selection helpers. |
 | `@podjs/framework/text-carets` | Preserve caret map identity when row positions are unchanged. |
 | `@podjs/framework/text-lines` | Pure line breaking, measured titles and UI text layout helpers. |
