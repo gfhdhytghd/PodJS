@@ -3,7 +3,7 @@ import type {RouteStateMemory} from './route-state.ts';
 export interface ListRestorationOwner {memory:RouteStateMemory;checkpoints:Set<()=>void>;scrollSlots:Set<number>;changed:()=>void}
 import {createIndexedWindowSource,createWindowedList,visibleWindowRange,type IndexedWindowEntries} from "./windowed-list.ts";
 import {ScrollRestoration,validScrollSnapshot} from './scroll-restoration.ts';
-import {roundListInsets,type RoundListOptions} from './round-list.ts';
+import {roundListInsets,roundRowInteractionBounds,type RoundListOptions} from './round-list.ts';
 import type {QrRect} from './safe-qr-layout.ts';
 import { For, createMemo, onCleanup, untrack, type JSX } from "solid-js";
 import { View, type NodeMirror } from "@pocketjs/framework/components";
@@ -12,10 +12,10 @@ import { createScroller, bindDpadScroll, type Scroller } from "@pocketjs/framewo
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import { pressNode, hitNode } from "@pocketjs/framework/input";
 
-export interface ScrollEntry { height: number; render: (current?:()=>ScrollEntry) => JSX.Element; retain?:boolean; key?:unknown; data?:unknown; /** Visible content bounds relative to the row's padded left/top, for round-screen fitting. */ bounds?:QrRect }
+export interface ScrollEntry { height: number; render: (current?:()=>ScrollEntry) => JSX.Element; retain?:boolean; key?:unknown; data?:unknown; /** Legacy visible content bounds relative to the row's padded left/top. */ bounds?:QrRect; /** Preferred explicit visible bounds; overrides bounds. */ visibleBounds?:QrRect; /** Existing child hit targets: may extend outside the circle, but must fit the viewport/screen. */ interactionBounds?:QrRect }
 export interface PositionedScrollEntry extends ScrollEntry {top:number}
 export type IndexedScrollEntries=IndexedWindowEntries<PositionedScrollEntry,unknown>;
-export interface VariableListHandle {scroller:Scroller;/** Additional layout whitespace, for caller-owned hit tests and overlays. */ roundInsets:()=>{start:number;end:number}}
+export interface VariableListHandle {scroller:Scroller;/** Additional layout whitespace, for caller-owned hit tests and overlays. */ roundInsets:()=>{start:number;end:number};/** Round-list touch rectangle in display coordinates at the current offset; independent of visible bounds. */ interactionBounds:(index:number)=>QrRect|undefined}
 /** Variable-height, windowed column; the clipping viewport never translates. */
 export function VariableList(props: { height: number; round?:RoundListOptions|null; entries: ScrollEntry[]; indexedEntries?:IndexedScrollEntries; footerEntries?:ScrollEntry[]; gap?: number; padding?: number; verticalPadding?: number; retainRows?:number; fixed?: boolean; controller?: Scroller; inputActive?: () => boolean; accessibilityLabel?:string; onRefresh?: () => void; onManualScroll?:()=>void; onTap?:(contact:GestureContact)=>boolean|void; onLongPress?: (contact: GestureContact) => void; onScrollStateChange?:(scrolling:boolean)=>void; onOffsetChange?:(previous:number,current:number)=>void; onSettledRange?:(first:number,last:number)=>void; settleKey?:unknown; restorationOwner?:()=>ListRestorationOwner|undefined; overscan?:number;refreshDistance?:number; ref?: (handle: VariableListHandle) => void }) {
   let viewport: NodeMirror | undefined;
@@ -30,8 +30,8 @@ export function VariableList(props: { height: number; round?:RoundListOptions|nu
     if(!props.round||props.fixed)return {start:0,end:0,unfit:[]};
     const value=roundListInsets(rawRows(),rawTotal(),props.height,props.round,props.padding??0);
     if(props.round.development)for(const index of value.unfit){
-      const row=rawRows().at(index)!,key=JSON.stringify([index,row.height,row.bounds,props.round,props.height,props.padding]);
-      if(!warned.has(key)){warned.add(key);console.warn(`[VariableList] round row ${index} cannot fit completely in the safe circle and viewport; reduce/split its visible bounds.`,row.bounds??{width:(props.round.viewport?.width??props.round.width)-2*(props.padding??0),height:row.height});}
+      const row=rawRows().at(index)!,key=JSON.stringify([index,row.height,row.visibleBounds,row.bounds,row.interactionBounds,props.round,props.height,props.padding]);
+      if(!warned.has(key)){warned.add(key);console.warn(`[VariableList] round row ${index} cannot fit completely in the safe circle and viewport; reduce/split its visible bounds.`,row.visibleBounds??row.bounds??{width:(props.round.viewport?.width??props.round.width)-2*(props.padding??0),height:row.height});}
     }
     return value;
   });
@@ -89,7 +89,10 @@ export function VariableList(props: { height: number; round?:RoundListOptions|nu
     props.onSettledRange(range.first,range.last);
   });
   onCleanup(() => {scroller.stop();if(wasScrolling)props.onScrollStateChange?.(false);});
-  props.ref?.({scroller,roundInsets:insets});
+  props.ref?.({scroller,roundInsets:insets,interactionBounds(index){
+    const row=rows().at(index);
+    return row&&props.round?roundRowInteractionBounds(row,row.top-scroller.offset(),props.round,props.height,props.padding??0):undefined;
+  }});
   return <View ref={n => viewport = n} class="relative w-full overflow-hidden" style={{height: props.height}}
     accessibilityLabel={props.accessibilityLabel} accessibilityRole={props.accessibilityLabel?"list":undefined}
     accessibilityState={props.accessibilityLabel?{disabled:!active()}:undefined}

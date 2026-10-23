@@ -62,3 +62,24 @@ test('round diagnostics require development opt-in and fixed/non-round geometry 
  let dispose!:()=>void;const tree=createRoot(d=>{dispose=d;return VariableList({height:233,entries:[{height:48,render:()=>null}],padding:18,round:{width:233,height:233},fixed:true});});expect(children(tree)[2].props.style.insetT).toBe(18);expect(children(tree)[1].props.style.height).toBe(84);dispose();
  }finally{warn.mockRestore();}
 });
+
+test('production round list places different-width endpoint rows safely and keeps declared hit targets on screen',()=>{
+ let stop!:()=>void,scroller:any,handle:any;
+ const entries=[
+  {height:48,visibleBounds:{x:58.5,y:14,width:80,height:20},interactionBounds:{x:-18,y:0,width:233,height:48},render:()=>null},
+  ...Array.from({length:12},()=>({height:48,bounds:{x:28.5,y:0,width:140,height:48},render:()=>null})),
+  {height:48,visibleBounds:{x:0,y:0,width:197,height:48},interactionBounds:{x:0,y:0,width:197,height:48},render:()=>null},
+ ];
+ const tree=createRoot(d=>{stop=d;return VariableList({height:233,round:{width:233,height:233},padding:18,gap:6,entries,ref:v=>{handle=v;scroller=v.scroller;}});});
+ const rowNodes=()=>children(tree).filter(n=>n.props.style?.insetR===18);
+ const first=rowNodes()[0].props.style;
+ expect(rectInsideCircle({x:76.5,y:first.insetT+14,width:80,height:20},{cx:116.5,cy:116.5,radius:116.5},2)).toBe(true);
+ expect(first.insetT).toBeGreaterThanOrEqual(0);expect(first.insetT+48).toBeLessThanOrEqual(233);
+ expect(handle.interactionBounds(0)).toEqual({x:0,y:first.insetT,width:233,height:48});
+ scroller.scrollTo(1e6,{immediate:true});
+ const last=rowNodes().at(-1)!.props.style,y=last.insetT-scroller.offset();
+ expect(rectInsideCircle({x:18,y,width:197,height:48},{cx:116.5,cy:116.5,radius:116.5},2)).toBe(true);
+ expect(handle.interactionBounds(0)).toBeUndefined();
+ expect(handle.interactionBounds(entries.length-1)).toEqual({x:18,y,width:197,height:48});
+ stop();
+});

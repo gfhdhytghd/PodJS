@@ -1,5 +1,5 @@
 import {expect,test} from 'bun:test';
-import {roundListInsets,roundRowRange,type RoundListOptions,type RoundListRow} from '../src/round-list.ts';
+import {roundListInsets,roundRowRange,roundRowInteractionBounds,type RoundListOptions,type RoundListRow} from '../src/round-list.ts';
 import {rectInsideCircle} from '../src/safe-qr-layout.ts';
 
 function verify(rows:RoundListRow[],round:RoundListOptions,viewHeight=round.height,padding=18,endPadding=padding){
@@ -45,4 +45,61 @@ test('unfit rows warn through indices without resizing, while inset text may sti
  expect(roundRowRange({height:400},round,233,18)).toBeUndefined();
  expect(roundRowRange({height:48},{width:NaN,height:233},233,18)).toBeUndefined();
  expect(roundListInsets([],0,233,round,18)).toEqual({start:0,end:0,unfit:[]});
+});
+
+test('long lists solve independent endpoint chords for different first and last widths',()=>{
+ const round={width:233,height:233},padding=18;
+ for(const firstWidth of [40,120,197])for(const lastWidth of [52,156,197]){
+  const first={top:18,height:26,visibleBounds:{x:(197-firstWidth)/2,y:0,width:firstWidth,height:26}};
+  const last={top:700,height:48,visibleBounds:{x:(197-lastWidth)/2,y:0,width:lastWidth,height:48}};
+  const rows=[first,last],total=766,insets=roundListInsets(rows,total,233,round,padding);
+  const max=total+insets.start+insets.end-233;
+  for(const [row,offset] of [[first,0],[last,max]] as const){
+   const b=row.visibleBounds;
+   expect(rectInsideCircle({x:18+b.x,y:row.top+insets.start-offset+b.y,width:b.width,height:b.height},{cx:116.5,cy:116.5,radius:116.5},2)).toBe(true);
+  }
+  expect(insets.unfit).toEqual([]);
+ }
+});
+
+test('long legacy pages retain safe first/top and last/bottom content without fixed spacers',()=>{
+ let top=18;
+ const rows=[
+  {height:52,bounds:{x:12.5,y:0,width:172,height:52}},
+  {height:6},{height:34,bounds:{x:12.5,y:0,width:172,height:34}},
+  {height:14},{height:48,bounds:{x:28.5,y:0,width:140,height:48}},
+  {height:2},{height:40,bounds:{x:72.5,y:10,width:52,height:20}},
+ ].map(v=>{const row={...v,top};top+=row.height;return row;});
+ const total=top+18,round={width:233,height:233},insets=roundListInsets(rows,total,233,round,18);
+ const max=total+insets.start+insets.end-233;
+ expect(max).toBeGreaterThan(0);expect(insets.unfit).toEqual([]);
+ for(const [row,offset] of [[rows[0]!,0],[rows.at(-1)!,max]] as const){
+  const b=row.bounds!;
+  expect(rectInsideCircle({x:18+b.x,y:row.top+insets.start-offset+b.y,width:b.width,height:b.height},{cx:116.5,cy:116.5,radius:116.5},2)).toBe(true);
+ }
+});
+
+test('already-safe short pages keep their original position and zero scroll range',()=>{
+ const rows=[{top:80,height:48,bounds:{x:28.5,y:0,width:140,height:48}}];
+ expect(roundListInsets(rows,180,233,{width:233,height:233},18)).toEqual({start:0,end:0,unfit:[]});
+});
+
+test('visible bounds retain legacy compatibility; interaction rectangles do not affect circle layout',()=>{
+ const round={width:233,height:233},bounds={x:58.5,y:14,width:80,height:20};
+ const legacy=roundRowRange({height:48,bounds},round,233,18)!;
+ expect(legacy).toBeDefined();
+ expect(roundRowRange({height:48,visibleBounds:bounds},round,233,18)).toEqual(legacy);
+ const row={height:48,bounds:{x:-500,y:0,width:1000,height:48},visibleBounds:bounds,interactionBounds:{x:-18,y:0,width:233,height:48}};
+ const range=roundRowRange(row,round,233,18)!;
+ expect(range).toEqual(legacy);
+ // The hit target is intentionally wider than the circle at the endpoint.
+ const hit=roundRowInteractionBounds(row,range.min,round,233,18)!;
+ expect(hit).toBeDefined();expect(hit.x).toBe(0);expect(hit.width).toBe(233);expect(hit.y).toBeGreaterThanOrEqual(0);
+ expect(rectInsideCircle(hit,{cx:116.5,cy:116.5,radius:116.5},2)).toBe(false);
+ expect(roundRowRange({...row,interactionBounds:{x:-100,y:-80,width:500,height:500}},round,233,18)).toEqual(legacy);
+ expect(roundRowInteractionBounds({...row,interactionBounds:{x:-100,y:-80,width:500,height:500}},range.min,round,233,18)).toEqual({x:0,y:0,width:233,height:233});
+ expect(roundRowInteractionBounds({...row,interactionBounds:{x:0,y:0,width:10,height:NaN}},range.min,round,233,18)).toBeUndefined();
+ expect(roundRowInteractionBounds(row,500,round,233,18)).toBeUndefined();
+ // A displaced viewport clips independently against both its own box and screen.
+ expect(roundRowInteractionBounds({height:100,interactionBounds:{x:-20,y:-20,width:400,height:400}},0,{width:300,height:260,viewport:{x:40,y:30,width:220}},190,8)).toEqual({x:40,y:30,width:220,height:190});
 });
