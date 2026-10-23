@@ -55,6 +55,7 @@ public final class PodDeviceServices implements AutoCloseable {
     private final File root;
     private final File secureFile;
     private final PodSecureLease secureLeases;
+    private final SecureReadCache secureReadCache = new SecureReadCache();
     private final SecureRandom random = new SecureRandom();
     private boolean closed;
     private DeviceServiceTrace secureTrace=new DeviceServiceTrace(false,line->{});
@@ -117,6 +118,7 @@ public final class PodDeviceServices implements AutoCloseable {
     }
 
     @Override public synchronized void close() {
+        secureReadCache.clear();
         closed = true;
         secureLeases.close();
         for (File file : temporaryFiles) file.delete();
@@ -210,10 +212,17 @@ public final class PodDeviceServices implements AutoCloseable {
         if (removed) writeSecure(values); return new JSONObject().put("deleted", removed);
     }
     private JSONObject readSecure(int id) throws Exception {
-        if (!secureFile.isFile()) return new JSONObject();
-        long began=secureTrace.begin();SecretKey key;
-        try{key=getKey(SECURE_ALIAS);}finally{secureTrace.end("secure.key",began,id);}
-        return readSecureFile(secureFile,key,secureTrace,id);
+        if (!secureFile.isFile()) { secureReadCache.clear(); return new JSONObject(); }
+        // Read and compare ciphertext under SECURE_LOCK + the OS file lease.
+        // Separate foreground/background instances and processes remain coherent.
+        byte[] bytes = readAll(secureFile, MAX_CHUNK_BYTES + 64);
+        String json = secureReadCache.read(bytes, encoded -> {
+            long began=secureTrace.begin();SecretKey key;
+            try{key=getKey(SECURE_ALIAS);}finally{secureTrace.end("secure.key",began,id);}
+            return decodeSecureBytes(encoded,key,secureTrace,id).toString();
+        });
+        // Writers receive a fresh map. Failed writes cannot mutate the cache.
+        return new JSONObject(json);
     }
     /** Shared production decoder for private candidate verification; does not open/create aliases. */
     static JSONObject readSecureFile(File file, SecretKey key) throws Exception {
@@ -236,6 +245,7 @@ public final class PodDeviceServices implements AutoCloseable {
         finally{Arrays.fill(plain,(byte)0);trace.end("secure.json",began,id);}
     }
     private void writeSecure(JSONObject values) throws Exception {
+        secureReadCache.clear();
         byte[] plain=values.toString().getBytes(StandardCharsets.UTF_8);
         try { atomicWrite(secureFile,encryptWithKey(getKey(SECURE_ALIAS),plain)); }
         finally { Arrays.fill(plain,(byte)0); }

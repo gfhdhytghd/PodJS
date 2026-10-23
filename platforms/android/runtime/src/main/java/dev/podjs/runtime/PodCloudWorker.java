@@ -15,15 +15,28 @@ public final class PodCloudWorker extends Worker {
         "app.buildInfo","cloud.acquire","cloud.release","discovery.networkSnapshot",
         "sql.query","sql.execute","sql.transaction","secure.get","secure.set","secure.delete","secure.update","secure.acquire","secure.release",
         "crypto.random","crypto.hash","crypto.hmacSha256","crypto.verifyP256","crypto.ecdhPublicKey","crypto.ecdhUnwrap","crypto.hkdfSha256",
-        "crypto.largeAesGcmEncrypt","crypto.largeAesGcmDecrypt","crypto.gzip","crypto.gunzip",
+        "crypto.aesGcmEncrypt","crypto.aesGcmDecrypt","crypto.largeAesGcmEncrypt","crypto.largeAesGcmDecrypt","crypto.gzip","crypto.gunzip",
         "http.download","uri.parse","file.list","file.createTemp","file.read","file.write","file.stat","file.hash","file.commit","file.delete",
         "file.gzip","file.gunzip","file.htmlText","file.openText","file.readTextChunk","file.closeText"
     )));
     public PodCloudWorker(Context context,WorkerParameters params){super(context,params);}
+    /** A hard guest budget/failure is deterministic work, not a network retry.
+     * Periodic WorkManager failure waits for the next normal period; only an
+     * explicitly completed handler retry gets the short bounded backoff. */
+    static Result resultFor(JSONObject outcome,int attempts){
+        if(!"completed".equals(outcome.optString("code")))return Result.failure();
+        if("success".equals(outcome.optString("status")))return Result.success();
+        if("retry".equals(outcome.optString("status"))&&attempts<3)return Result.retry();
+        return Result.failure();
+    }
     @Override public Result doWork(){
         Context context=getApplicationContext();
         if(!PodTakeover.ready(context))return Result.retry();
         ExecutorService executor=Executors.newSingleThreadExecutor();
+        // Only trusted method names and aggregate counts: never host arguments,
+        // credentials, guest source, request bodies or exception messages.
+        long began=android.os.SystemClock.elapsedRealtime(),lastReport=began;
+        Map<String,Integer> calls=new TreeMap<>();String status="failed";
         try{
             PodBackgroundPackage approved=PodCloudWork.installed(context);
             String route=approved.cloudHostMethod(PodCloudWork.debug(context));
@@ -45,18 +58,23 @@ public final class PodCloudWorker extends Worker {
                         if(request==null){Thread.sleep(2);continue;}
                         JSONObject args=request.optJSONObject("args");String method=args==null?"":args.optString("method");
                         if(!route.equals(request.optString("method"))||!METHODS.contains(method)){
+                            calls.merge("permission_denied",1,Integer::sum);
                             run.reply(new JSONObject().put("id",request.getLong("id")).put("ok",false).put("code","permission_denied"));continue;
                         }
+                        calls.merge(method,1,Integer::sum);
+                        long now=android.os.SystemClock.elapsedRealtime();
+                        if(now-lastReport>=30000){android.util.Log.i("PodJSCloudWorker","progress elapsedMs="+(now-began)+" calls="+calls);lastReport=now;}
                         host.dispatch(new JSONObject().put("t","service.request").put("version",1).put("id",request.getInt("id")).put("method",method).put("args",args.getJSONObject("args")));
                     }
                     JSONObject outcome=result.get(10,TimeUnit.SECONDS);
-                    if(isStopped())return Result.retry();
-                    if("success".equals(outcome.optString("status")))return Result.success();
-                    return getRunAttemptCount()<3?Result.retry():Result.failure();
+                    if(isStopped()){status="stopped";return Result.retry();}
+                    String code=outcome.optString("code"),guestStatus=outcome.optString("status");
+                    status="deadline_exceeded".equals(code)?"deadline_exceeded":"completed".equals(code)&&"success".equals(guestStatus)?"success":"completed".equals(code)&&"retry".equals(guestStatus)?"retry":"guest_failed";
+                    return resultFor(outcome,getRunAttemptCount());
                 }finally{services=null;active=null;}
             }
         }catch(Exception error){return getRunAttemptCount()<3?Result.retry():Result.failure();}
-        finally{executor.shutdownNow();}
+        finally{executor.shutdownNow();android.util.Log.i("PodJSCloudWorker","finished status="+status+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-began)+" calls="+calls);}
     }
     @Override public void onStopped(){PodBackgroundRun run=active;if(run!=null)run.cancel();PodServices host=services;if(host!=null)host.close();}
 }

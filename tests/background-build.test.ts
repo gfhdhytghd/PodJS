@@ -12,6 +12,13 @@ function fixture(source: string) {
   writeFileSync(join(root,"helper.ts"),"export const outcome = 'success' as const;");
   return { root, entry };
 }
+test('headless bounded sort uses caller yield ports without UI or host bootstrap',async()=>{
+ const {root,entry}=fixture("import {runWorkSteps,stableSortSteps} from '@podjs/framework/async';export default async()=>{let turns=0;return {rows:await runWorkSteps(stableSortSteps([3,1,2],(a,b)=>a-b),{yieldTurn:async()=>{turns++;},stepLimit:2}),turns};};");
+ mkdirSync(join(root,'node_modules/@podjs'),{recursive:true});symlinkSync(new URL('../packages/framework',import.meta.url).pathname,join(root,'node_modules/@podjs/framework'),'dir');
+ const artifacts=await buildBackground({sort:entry},root),context:Record<string,any>={};runInNewContext(readFileSync(join(root,artifacts.sort!.file),'utf8'),context);
+ const result=JSON.parse(JSON.stringify(await context.backgroundHandler()));expect(result.rows).toEqual([1,2,3]);expect(result.turns).toBeGreaterThan(1);expect(context.pod).toBeUndefined();expect(context.frame).toBeUndefined();
+ for(const denied of ['@podjs/framework/async/unsafe','@podjs/framework/text-layout','@podjs/framework/services']){const f=fixture(`import * as api from '${denied}';export default ()=>api;`);await expect(buildBackground({denied:f.entry},f.root)).rejects.toThrow('Background');}
+});
 test("builds a separate headless IIFE with exact artifact hash",async () => {
   const {root,entry}=fixture("import { outcome } from './helper.ts'; export default async (job: {taskId: string}) => job.taskId === 'refresh' ? outcome : 'failure';");
   const artifacts=await buildBackground({refresh:entry},root);

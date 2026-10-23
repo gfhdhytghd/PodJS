@@ -1,3 +1,54 @@
+import {traceServiceWork} from './service-trace.ts';
+
+export interface WorkSliceOptions {
+  /** Must cross a host/macrotask boundary, not just resolve a Promise. */
+  yieldTurn:()=>Promise<unknown>;
+  check?:()=>void;
+  budgetMs?:number;
+  stepLimit?:number;
+  clock?:()=>number;
+  traceLabel?:string;
+  onSlice?:(milliseconds:number,steps:number)=>void;
+}
+/** Consume bounded iterator steps without retaining a history of their yields.
+ * Each next()/comparator must itself be bounded. Cancellation closes the input. */
+export async function runWorkSteps<T>(steps:Iterator<unknown,T>,options:WorkSliceOptions):Promise<T> {
+  const budget=options.budgetMs??2,limit=options.stepLimit??2048,clock=options.clock??Date.now;
+  if(!Number.isFinite(budget)||budget<=0||!Number.isSafeInteger(limit)||limit<1)throw RangeError('Invalid work slice budget');
+  let complete=false;
+  try {
+    for(;;){
+      options.check?.();await options.yieldTurn();options.check?.();
+      const began=clock();let count=0,result:IteratorResult<unknown,T>|undefined;
+      const work=()=>{do{result=steps.next();if(result.done)break;count++;}while(count<limit&&clock()-began<budget);};
+      if(options.traceLabel)traceServiceWork(options.traceLabel,work);else work();
+      options.onSlice?.(clock()-began,count);options.check?.();
+      if(result!.done){complete=true;return result!.value;}
+    }
+  }finally{if(!complete)steps.return?.();}
+}
+
+/** Stable bottom-up merge sort, one copy/comparison move per iterator step.
+ * No input mutation; O(n log n) comparisons and O(n) storage even on sorted,
+ * reversed and lexically ordered numeric keys. NaN compares as an equal key. */
+export function* stableSortSteps<T>(input:Iterable<T>,compare:(a:T,b:T)=>number):Generator<void,T[]> {
+  let source:T[]=[];for(const value of input){source.push(value);yield;}
+  let target=new Array<T>(source.length);
+  for(let width=1;width<source.length;width*=2){
+    for(let start=0;start<source.length;start+=width*2){
+      const middle=Math.min(start+width,source.length),end=Math.min(start+width*2,source.length);
+      let left=start,right=middle;
+      for(let at=start;at<end;at++){
+        if(right>=end||left<middle&&!(compare(source[left]!,source[right]!)>0))target[at]=source[left++]!;
+        else target[at]=source[right++]!;
+        yield;
+      }
+    }
+    [source,target]=[target,source];
+  }
+  return source;
+}
+
 /** Serializes bridge writes and exposes the exact tail that exit paths must await. */
 export class SerialWriteQueue {
   private tail: Promise<void> = Promise.resolve();
