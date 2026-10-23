@@ -33,6 +33,7 @@ final class PodBleProvisionServices implements Closeable {
         final ProvisioningSession active;
         synchronized(this){if(closed||session==null||starting||!args.optString("sessionId").equals(sessionId))throw new IllegalStateException("配对未启动");active=session;}
         if("provision.receive".equals(method))return active.receive();
+        if("provision.check".equals(method)){active.checkActive();return new JSONObject().put("active",true);}
         if("provision.respond".equals(method)){active.respond(args.getInt("sequence"),args.getJSONObject("result"));return new JSONObject().put("sent",true);}
         throw new IllegalArgumentException("不支持的配对操作");
     }

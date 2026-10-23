@@ -12,6 +12,8 @@ public interface ProvisioningSession extends Closeable {
     String qr() throws Exception;
     String sessionId();
     JSONObject receive() throws Exception;
+    /** Non-consuming liveness check, including while a request awaits user confirmation. */
+    void checkActive() throws Exception;
     void respond(int sequence,JSONObject result) throws Exception;
     @Override void close();
 

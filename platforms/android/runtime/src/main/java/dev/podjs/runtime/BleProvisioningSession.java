@@ -61,6 +61,7 @@ public final class BleProvisioningSession implements ProvisioningSession {
     public JSONObject descriptor() throws Exception { check();return new JSONObject(descriptor.toString()); }
     public String qr() throws Exception {return "wrss-pair:"+Base64.encodeToString(descriptor().toString().getBytes(StandardCharsets.UTF_8),Base64.URL_SAFE|Base64.NO_WRAP|Base64.NO_PADDING);}
     private void check(){if(closed||SystemClock.elapsedRealtime()>=deadline){close();throw new IllegalStateException("配对已结束，请在手表重新打开配对页面");}}
+    @Override public void checkActive(){check();}
     public void start() throws Exception {
         check();expiry.postDelayed(expire,300000);BluetoothManager manager=(BluetoothManager)context.getSystemService(Context.BLUETOOTH_SERVICE);
         BluetoothAdapter adapter=manager==null?null:manager.getAdapter();

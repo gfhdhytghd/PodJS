@@ -89,6 +89,13 @@ public final class OnlineProvisioningSession implements ProvisioningSession {
         return "wrss-pair:"+Base64.getUrlEncoder().withoutPadding().encodeToString(descriptor.toString().getBytes(StandardCharsets.UTF_8));
     }
 
+    @Override public void checkActive() throws Exception {
+        final String token;
+        synchronized(this){check();if(watchToken==null)throw new IllegalStateException("配对未启动");token=watchToken;}
+        // Probe the same authenticated relay without consuming/decrypting a wire or advancing seq.
+        if(send("GET",SESSIONS+"/"+sessionId+"/request",token,null)==null)
+            throw new Failure(Failure.OFFLINE,"手表暂时连不上网络");
+    }
     @Override public JSONObject receive() throws Exception {
         final String token;final int expected;
         synchronized(this){check();if(watchToken==null||awaiting>=0)throw new IllegalStateException("配对响应次序错误");if(receiveSequence>15)throw reject();token=watchToken;expected=receiveSequence;}

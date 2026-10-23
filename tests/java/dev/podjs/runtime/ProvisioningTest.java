@@ -12,7 +12,7 @@ public final class ProvisioningTest {
     interface Throwing{void run()throws Exception;}
     static void failure(String reason,Throwing action)throws Exception{try{action.run();throw new AssertionError("accepted invalid operation");}catch(ProvisioningSession.Failure e){check(reason.equals(e.reason));}}
     static class Relay implements OnlineProvisioningSession.Http {
-        String id;byte[] secret;int seq;boolean transientResponse;byte[] firstResponse;JSONObject received;
+        String id;byte[] secret;int seq;boolean transientResponse,phoneClosed,offlineProbe;byte[] firstResponse;JSONObject received;
         final List<String> calls=new ArrayList<>();
         public OnlineProvisioningSession.Reply exchange(String method,String path,String token,byte[] body){
             calls.add(method+" "+path);
@@ -24,6 +24,8 @@ public final class ProvisioningTest {
                 }
                 check("a".repeat(64).equals(token));
                 if(path.endsWith("/request")){
+                    if(phoneClosed)return reply(410,new JSONObject());
+                    if(offlineProbe)return reply(503,new JSONObject());
                     byte[] nonce=new byte[12];nonce[0]=(byte)(seq+1);
                     byte[] plain=new JSONObject().put("action","configure").put("payload",new JSONObject().put("value","private-fixture")).toString().getBytes(StandardCharsets.UTF_8);
                     return reply(200,new JSONObject().put("wire",new JSONObject().put("seq",seq).put("n",b64(nonce)).put("c",b64(BleSetupCrypto.crypt(secret,id,Cipher.ENCRYPT_MODE,"phone",seq,nonce,plain)))));
@@ -69,6 +71,16 @@ public final class ProvisioningTest {
         Relay wrong=new Relay();OnlineProvisioningSession rejected=open(wrong,new long[]{0});wrong.seq=3;failure(ProvisioningSession.Failure.REJECTED,()->rejected.receive());
         Relay oversized=new Relay();OnlineProvisioningSession large=open(oversized,new long[]{0});large.receive();failure(ProvisioningSession.Failure.REJECTED,()->large.respond(0,new JSONObject().put("data","x".repeat(17000))));
     }
+    static void pendingConfirmationLiveness()throws Exception{
+        Relay relay=new Relay();OnlineProvisioningSession s=open(relay,new long[]{0});
+        check(s.receive().getInt("_sequence")==0);
+        s.checkActive();s.checkActive(); // No consume or sequence advance while configure is held.
+        relay.offlineProbe=true;failure(ProvisioningSession.Failure.OFFLINE,s::checkActive);relay.offlineProbe=false;
+        s.checkActive();s.respond(0,new JSONObject().put("bound",true));
+        relay.seq=1;check(s.receive().getInt("_sequence")==1);
+        relay.phoneClosed=true;failure(ProvisioningSession.Failure.EXPIRED,s::checkActive);
+        failure(ProvisioningSession.Failure.CLOSED,()->s.respond(1,new JSONObject().put("bound",true)));
+    }
     static void cancellation()throws Exception{
         CountDownLatch entered=new CountDownLatch(1),aborted=new CountDownLatch(1);
         Relay relay=new Relay(){public OnlineProvisioningSession.Reply exchange(String method,String path,String token,byte[] body){
@@ -77,5 +89,5 @@ public final class ProvisioningTest {
         OnlineProvisioningSession s=open(relay,new long[]{0});ExecutorService pool=Executors.newSingleThreadExecutor();
         try{Future<?> pending=pool.submit(()->{try{failure(ProvisioningSession.Failure.CLOSED,()->s.receive());}catch(Exception e){throw new RuntimeException(e);}});check(entered.await(2,TimeUnit.SECONDS));s.close();pending.get(2,TimeUnit.SECONDS);}finally{pool.shutdownNow();}
     }
-    public static void main(String[] args)throws Exception{crypto();roundtrip();expiryAndRejectedWire();cancellation();System.out.println("PASS: provisioning crypto direction/session/sequence, QR isolation, relay retry, ownership, expiry, bounded wire, cancellation and secret cleanup");}
+    public static void main(String[] args)throws Exception{crypto();roundtrip();expiryAndRejectedWire();pendingConfirmationLiveness();cancellation();System.out.println("PASS: provisioning crypto direction/session/sequence, QR isolation, relay retry, ownership, expiry, bounded wire, pending-confirmation liveness, cancellation and secret cleanup");}
 }
