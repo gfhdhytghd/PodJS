@@ -16,3 +16,18 @@ test('direct flat rows retain mixed order and optional host jobs close on cancel
   (globalThis as any).pod.htmlAppend=()=>false;expect(parseHtmlFragment('x')).toBeNull();expect(cancelled).toBe(3);expect(appends).toBeGreaterThan(0);
  }finally{(globalThis as any).pod=old;}
 });
+
+import {unwrapEscapedHtml,textWorkChunks} from '../src/html';
+const escape=(s:string)=>s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
+test('unwrap one or two complete envelopes without decoding HTML text twice',()=>{
+ const html='<p title="A &quot;B&quot;">A &amp; B <code>&lt;span&gt;</code></p>';
+ expect(unwrapEscapedHtml(escape(html))).toBe(html);
+ expect(unwrapEscapedHtml(escape(escape(html)))).toBe(html);
+ expect(unwrapEscapedHtml(html)).toBe(html);
+ for(const prose of ['literal &copy;','Use &lt;p&gt;tag&lt;/p&gt;','<pre>&lt;p&gt;text&lt;/p&gt;</pre>'])expect(unwrapEscapedHtml(prose)).toBe(prose);
+});
+test('work units retain every code unit, including surrogate pairs and newlines',()=>{
+ const text=('a😀\n𠮷z').repeat(1000),chunks=[...textWorkChunks(text,64)];
+ expect(chunks.join('')).toBe(text);expect(chunks.every(c=>c.length<=64&&!/[\uD800-\uDBFF]$/.test(c))).toBe(true);
+ expect(()=>[...textWorkChunks(text,1)]).toThrow();
+});

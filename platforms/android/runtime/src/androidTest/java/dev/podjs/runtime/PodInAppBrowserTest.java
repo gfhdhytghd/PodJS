@@ -71,8 +71,12 @@ public class PodInAppBrowserTest {
                 assertEquals(125,browser.web.getSettings().getTextZoom());
                 assertEquals("serif",browser.web.getSettings().getStandardFontFamily());
                 assertFalse(browser.web.getSettings().getAllowUniversalAccessFromFileURLs());
+                android.webkit.WebView retained=browser.web;
+                assertTrue(browser.updateTheme(new PodInAppBrowser.Options(args("https://unused.invalid").put("theme",new JSONObject().put("dark",false).put("textZoom",150).put("fontFamily","monospace")))));
+                assertSame(retained,browser.web);assertEquals(150,browser.web.getSettings().getTextZoom());assertEquals("monospace",browser.web.getSettings().getStandardFontFamily());
                 browser.onActivityPaused(activity);browser.onActivityResumed(activity);
                 browser.back();assertFalse(browser.isShowing());assertNull(browser.web);
+                assertFalse(browser.updateTheme(new PodInAppBrowser.Options(args("https://unused.invalid"))));
                 browser.dismiss();assertNull(browser.web);
             } catch (Throwable error) {failure.set(error);}
             finally {if(browser!=null)browser.dismiss();activity.finish();}
@@ -127,6 +131,8 @@ public class PodInAppBrowserTest {
         JSONObject state=new JSONObject().put("v",1).put("options",options).put("url","https://example.org/path")
             .put("scale","expanded").put("x",3).put("y",500).put("zoom",1.25);
         service.restoreState(state.toString());assertNotNull(service.savedState());
+        assertTrue(service.updateTheme(new JSONObject().put("theme",new JSONObject().put("dark",false))));
+        assertFalse(new JSONObject(service.savedState()).getJSONObject("options").getJSONObject("theme").getBoolean("dark"));
         for(JSONObject invalid:new JSONObject[]{new JSONObject(state.toString()).put("v",2),new JSONObject(state.toString()).put("zoom",0),new JSONObject(state.toString()).put("x",.5),new JSONObject(state.toString()).put("url","file:///data/private"),new JSONObject(state.toString()).put("dom","private")}){
             service.restoreState(invalid.toString());assertNull(service.savedState());
         }

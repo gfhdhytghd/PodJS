@@ -20,8 +20,9 @@ final class PodStoreMappings {
             case "bili_cache":bili(p,u,kv);break;
             case "app_resume_state":
                 if(p.containsKey("intent_uri")){
-                    String uri=text(p.get("intent_uri"));kv.put("watchrss.resume-state.v1",new JSONObject().put("version",1).put("kind","home"));
-                    if(uri.matches("intent:#Intent;component=com\\.lightningstudio\\.watchrss/(com\\.lightningstudio\\.watchrss)?\\.(MainActivity|HomeFeedListActivity);end"))u.remove("intent_uri");
+                    JSONObject target=PodNativeResume.target(text(p.get("intent_uri")));
+                    kv.put("watchrss.resume-state.v1",target==null?PodNativeResume.home():target);
+                    if(target!=null)u.remove("intent_uri");
                 }break;
             case "home_entry_placement":
                 if(p.containsKey("notes_sort_order")){kv.put("watchrss.home.notes-sort-order",integer(p.get("notes_sort_order"),1,9007199254740991L));u.remove("notes_sort_order");}

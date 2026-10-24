@@ -115,9 +115,9 @@ final class PodInAppBrowser extends Dialog implements Application.ActivityLifecy
         try { return new JSONObject(value.toString()); } catch (Exception error) { throw new IllegalArgumentException("Invalid browser options"); }
     }
     private final Activity owner;
-    private final Options options;
+    private Options options;
     WebView web;
-    private FrameLayout root;
+    private FrameLayout root, toolbar;
     private ProgressRing ring;
     private ScaleControl toggle;
     private String scale;
@@ -182,7 +182,7 @@ final class PodInAppBrowser extends Dialog implements Application.ActivityLifecy
         root.addView(ring, new FrameLayout.LayoutParams(-1, -1));
         ring.setVisibility(View.GONE);
         toggle = new ScaleControl(owner);
-        FrameLayout toolbar = new FrameLayout(owner);
+        toolbar = new FrameLayout(owner);
         toolbar.setBackground(new android.graphics.drawable.GradientDrawable(
             android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
             new int[]{(options.background & 0x00ffffff) | 0xcc000000, Color.TRANSPARENT}));
@@ -213,12 +213,7 @@ final class PodInAppBrowser extends Dialog implements Application.ActivityLifecy
         settings.setAllowFileAccess(true);
         settings.setAllowFileAccessFromFileURLs(false); settings.setAllowUniversalAccessFromFileURLs(false);
         settings.setSupportZoom(true); settings.setBuiltInZoomControls(false); settings.setDisplayZoomControls(false);
-        settings.setTextZoom(options.textZoom);
-        if (!options.font.isEmpty()) settings.setStandardFontFamily(options.font);
-        web.setBackgroundColor(options.background);
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) WebSettingsCompat.setForceDarkStrategy(settings, WebSettingsCompat.DARK_STRATEGY_PREFER_WEB_THEME_OVER_USER_AGENT_DARKENING);
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) WebSettingsCompat.setForceDark(settings, options.dark ? WebSettingsCompat.FORCE_DARK_ON : WebSettingsCompat.FORCE_DARK_OFF);
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) WebSettingsCompat.setAlgorithmicDarkeningAllowed(settings, options.dark);
+        applyTheme();
         web.setWebViewClient(new WebViewClient() {
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 // A remote page cannot navigate into local files or external apps.
@@ -242,6 +237,29 @@ final class PodInAppBrowser extends Dialog implements Application.ActivityLifecy
         web.setWebChromeClient(new WebChromeClient() {
             @Override public void onProgressChanged(WebView view, int progress) { setProgress(progress / 100f, progress >= 100); }
         });
+    }
+    /** Apply only presentation: preserve document/history, scale, scroll and form state. */
+    boolean updateTheme(Options checked) throws org.json.JSONException {
+        if (disposed || web == null || !isShowing()) return false;
+        JSONObject next = copy(options.source).put("theme", checked.source.getJSONObject("theme"));
+        options = new Options(next);
+        applyTheme();
+        root.setBackgroundColor(options.background);
+        toolbar.setBackground(new android.graphics.drawable.GradientDrawable(
+            android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
+            new int[]{(options.background & 0x00ffffff) | 0xcc000000, Color.TRANSPARENT}));
+        toggle.paint.setColor(options.dark ? Color.WHITE : Color.BLACK); toggle.invalidate();
+        return true;
+    }
+    @SuppressWarnings("deprecation")
+    private void applyTheme() {
+        WebSettings settings = web.getSettings();
+        settings.setTextZoom(options.textZoom);
+        if (!options.font.isEmpty()) settings.setStandardFontFamily(options.font);
+        web.setBackgroundColor(options.background);
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) WebSettingsCompat.setForceDarkStrategy(settings, WebSettingsCompat.DARK_STRATEGY_PREFER_WEB_THEME_OVER_USER_AGENT_DARKENING);
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) WebSettingsCompat.setForceDark(settings, options.dark ? WebSettingsCompat.FORCE_DARK_ON : WebSettingsCompat.FORCE_DARK_OFF);
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) WebSettingsCompat.setAlgorithmicDarkeningAllowed(settings, options.dark);
     }
     static String nextScale(String value) { return value.equals("standard") ? "expanded" : value.equals("expanded") ? "shrunk" : "standard"; }
     static int[] viewport(int width, int height, float padding, float verticalPadding, String mode) {

@@ -30,6 +30,7 @@
     "./html-slices": "./src/html-slices.ts",
     "./xml": "./src/xml.ts",
     "./json": "./src/json.ts",
+    "./json-raw": "./src/json-raw.ts",
     "./json-string": "./src/json-string.ts",
     "./text-compat": "./src/text-compat.ts",
     "./splash": "./src/splash.ts",
@@ -75,7 +76,9 @@
     "./media-prefix-cache": "./src/media-prefix-cache.ts",
     "./render-checkpoint": "./src/render-checkpoint.ts",
     "./render": "./src/render.ts",
-    "./crypto": "./src/crypto.ts"
+    "./crypto": "./src/crypto.ts",
+    "./acked-state-vector": "./src/acked-state-vector.ts",
+    "./directory-witness": "./src/directory-witness.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",

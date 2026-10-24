@@ -103,6 +103,7 @@ final class PodVideoSessionServices implements AutoCloseable {
             if (closed) { callback.fail("service_closed", "Video session service is closed"); return; }
             try {
                 switch (method) {
+                    case "video.session.captureFrame": captureFrame(args,callback); break;
                     case "video.session.capabilities": callback.complete(capabilities(args)); break;
                     case "video.session.prepare": prepare(args, callback); break;
                     case "video.session.play": play(args, callback); break;
@@ -112,6 +113,7 @@ final class PodVideoSessionServices implements AutoCloseable {
                     case "video.session.release": release(args, callback); break;
                     case "video.session.setBounds": setBounds(args, callback); break;
                     case "video.session.setTransform": setTransform(args, callback); break;
+                    case "video.session.setLoop": setLoop(args, callback); break;
                     case "video.session.setVolume": setVolume(args, callback); break;
                     case "video.session.state": callback.complete(require(args).snapshot()); break;
                     case "video.session.promote": promote(args, callback); break;
@@ -192,6 +194,7 @@ final class PodVideoSessionServices implements AutoCloseable {
         session.decoderLease = true;
         session.generation += 1;
         final long generation = session.generation;
+        session.frameSource=new JSONObject(args.toString());
         session.bounds = bounds;
         session.prewarming = prewarming;
         session.profile = profile;
@@ -220,6 +223,7 @@ final class PodVideoSessionServices implements AutoCloseable {
         session.player = player;
         Session own = session;
         player.setAudioAttributes(mediaAudioAttributes(), !session.prewarming);
+        session.completedLoops = 0;
         player.setRepeatMode(args.optBoolean("loop", false) ? Player.REPEAT_MODE_ONE : Player.REPEAT_MODE_OFF);
         player.setVolume(session.prewarming ? 0f : session.volume);
         player.addListener(new Player.Listener() {
@@ -245,6 +249,10 @@ final class PodVideoSessionServices implements AutoCloseable {
                 }
             }
 
+            @Override public void onMediaItemTransition(MediaItem item, int reason) {
+                if(own.matches(player, generation) && reason==Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT)own.completedLoops++;
+            }
+
             @Override public void onPlaybackStateChanged(int playbackState) {
                 if (!own.matches(player, generation)) return;
                 if (playbackState == Player.STATE_BUFFERING) own.state = "buffering";
@@ -257,7 +265,7 @@ final class PodVideoSessionServices implements AutoCloseable {
 
             @Override public void onIsPlayingChanged(boolean playing) {
                 if (!own.matches(player, generation) || own.prewarming) return;
-                own.state = playing ? "playing" : "paused";
+                own.state = player.getPlaybackState()==Player.STATE_ENDED ? "ended" : playing ? "playing" : "paused";
             }
 
             @Override public void onRenderedFirstFrame() {
@@ -321,6 +329,15 @@ final class PodVideoSessionServices implements AutoCloseable {
         if (pending != null) pending.fail(code, message);
     }
 
+    private void captureFrame(JSONObject args,Callback callback)throws Exception {
+        Session session=require(args);session.requirePlayer();
+        String key=PodVideoFrameCache.key(args),binding=PodVideoFrameCache.binding(args.getJSONObject("source"),mediaPrefixCache);
+        if(session.prewarming||!binding.equals(PodVideoFrameCache.binding(session.frameSource,mediaPrefixCache)))throw new IllegalStateException("frame_source_changed");
+        android.graphics.Bitmap frame=PodVideoFrameCache.capture(session.videoView,session.hasRenderedFirstFrame,session.generation,args);
+        long generation=session.generation,position=session.player.getCurrentPosition();
+        try{PodVideoFrameCache.IO.execute(()->{try{JSONObject result=new PodVideoFrameCache(mediaRoot).save(key,binding,generation,position,frame);main.post(()->callback.complete(result));}catch(Exception error){main.post(()->callback.fail("frame_unavailable","Frame snapshot unavailable"));}finally{frame.recycle();}});}catch(java.util.concurrent.RejectedExecutionException busy){frame.recycle();throw new IllegalStateException("frame_queue_busy");}
+    }
+
     private void play(JSONObject args, Callback callback) throws Exception {
         Session session = require(args); session.requirePlayer();
         session.prewarming = false;
@@ -376,6 +393,14 @@ final class PodVideoSessionServices implements AutoCloseable {
         float panY = finite(args, "panY", 0, -4096, 4096);
         session.scaleMode = mode; session.rotationDeg = Math.round(rotation * 100f) / 100f; session.panX = panX; session.panY = panY;
         session.fitVideo(); callback.complete(session.snapshot());
+    }
+
+    private void setLoop(JSONObject args, Callback callback) throws Exception {
+        Session session = require(args); session.requirePlayer();
+        Object loop=args.opt("loop");
+        if(!(loop instanceof Boolean))throw new IllegalArgumentException("loop_must_be_boolean");
+        session.player.setRepeatMode((Boolean)loop ? Player.REPEAT_MODE_ONE : Player.REPEAT_MODE_OFF);
+        callback.complete(session.snapshot());
     }
 
     private void setVolume(JSONObject args, Callback callback) throws Exception {
@@ -602,7 +627,8 @@ final class PodVideoSessionServices implements AutoCloseable {
         String scaleMode = "standard";
         float rotationDeg, panX, panY, volume = 1f;
         boolean decoderLease, prewarming, autoplay, muted, presented, hasRenderedFirstFrame, disposed;
-        long generation;
+        long generation, completedLoops;
+        JSONObject frameSource;
 
         Session(String id) { this.id = id; attachViews(parent); }
 
@@ -743,6 +769,7 @@ final class PodVideoSessionServices implements AutoCloseable {
                     .put("prewarming", prewarming)
                     .put("presented", presented)
                     .put("hasRenderedFirstFrame", hasRenderedFirstFrame)
+                    .put("sourceGeneration",generation).put("completedLoops", completedLoops).put("loop", player!=null && player.getRepeatMode()==Player.REPEAT_MODE_ONE)
                     .put("targetBufferBytes", TARGET_BUFFER_BYTES);
         }
 

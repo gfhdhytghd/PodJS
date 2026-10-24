@@ -29,7 +29,8 @@ final class PodTakeoverSource {
         Properties inventory=new Properties();
         if(!inventory(sandbox,inventory))return new PodTakeoverCoordinator.Source(false,null,0,0,0);
         File files=new File(sandbox,"files"),db=new File(sandbox,"databases/watchrss.db");
-        String block=null;int schema=18;
+        // Live main header can lag a schema change in WAL. Resolve version only on the private captured DB.
+        String block=null;int schema=0;
         if(!db.isFile()){block="source_database_missing";schema=-1;}
         if(new File(sandbox,"databases/podjs.sqlite").exists()||nonempty(new File(files,"podjs")))block="target_conflict";
         File backup=new File(sandbox,"no_backup");

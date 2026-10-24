@@ -542,6 +542,11 @@ fn mount_pod(
         )?;
 
         let store = kv.clone();
+        ns.set("kvFingerprint", Function::new(ctx.clone(), move |key:String| {
+            store.borrow_mut().fingerprint(&key).ok().flatten()
+        })?)?;
+
+        let store = kv.clone();
         ns.set(
             "kvSet",
             Function::new(ctx.clone(), move |key: String, value: String| -> i32 {

@@ -12,7 +12,7 @@ import org.json.*;
  * admission. The source is never opened by SQLite: DB/WAL are recovered only in
  * a private copy. Every source byte is checked before and after copying.
  * Reader catalogs are staged separately; this converter cannot activate stores. */
-public final class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
+public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
     public interface Db extends AutoCloseable {
         List<Map<String,Object>> query(String sql, Object... args) throws Exception;
         void exec(String sql, Object... args) throws Exception;
@@ -54,9 +54,9 @@ public final class PodRoomV18Converter implements PodTakeoverCoordinator.Convert
     public void activeFast(File g)throws Exception {
         long began=System.nanoTime();
         try(Db db=activeDb(new File(g,"podjs.sqlite"))){
-            // Published v18 conversion has user_version=0; guest initializes 1/2/3/4/5/6 (BLE v2, books and reading delta).
+            // Published v18 conversion has user_version=0; guest initializes versions 1..8 (BLE, books, reading, offline queue and durable keeps).
             long version=number(scalar(db,"PRAGMA user_version"));
-            if(version<0||version>6)throw new IOException("active_schema_version_invalid");
+            if(version<0||version>8)throw new IOException("active_schema_version_invalid");
             schemaIdentity(db);
         }
         timings.accept("activeFastSchema",System.nanoTime()-began);
@@ -155,15 +155,16 @@ public final class PodRoomV18Converter implements PodTakeoverCoordinator.Convert
             String before=capture.digest();sourceDigest=before;Capture.copy(capture.main,raw);Capture.copy(capture.wal,new File(raw+"-wal"));
             if(!before.equals(capture.digest()))throw new IOException("source_changed");
         }
+        long capturedSchema;String capturedContract;
         try(Db db=factory.open(raw)) {
-            validateRoom(db);
+            validateSource(db);capturedSchema=number(scalar(db,"PRAGMA user_version"));capturedContract=contractHash(db);
             // Only the private DB is checkpointed. Never copy source SHM (locks).
             db.query("PRAGMA wal_checkpoint(TRUNCATE)");
             db.query("PRAGMA journal_mode=DELETE");
         }
         File fixed=new File(g,"room.sqlite");Files.move(raw.toPath(),fixed.toPath(),StandardCopyOption.REPLACE_EXISTING);
         try(RandomAccessFile f=new RandomAccessFile(fixed,"rw")){f.getFD().sync();}
-        Properties p=new Properties();p.setProperty("sourceDigest",sourceDigest);p.setProperty("snapshot",hash(fixed));p.setProperty("version",version());
+        Properties p=new Properties();p.setProperty("sourceSchema",Long.toString(capturedSchema));p.setProperty("sourceContract",capturedContract);p.setProperty("sourceDigest",sourceDigest);p.setProperty("snapshot",hash(fixed));p.setProperty("version",version());
         // Identity remains private in candidate metadata, never the public journal.
         p.setProperty("identity",localIdentity.trim());p.setProperty("schema",hex(MessageDigest.getInstance("SHA-256").digest(resource("watchrss-schema.json").getBytes(StandardCharsets.UTF_8))));
         PodTakeoverCoordinator.atomic(receipt,p);
@@ -176,9 +177,13 @@ public final class PodRoomV18Converter implements PodTakeoverCoordinator.Convert
         if(!"ok".equals(scalar(db,"PRAGMA quick_check")))throw new IOException("quick_check_failed");
         if(!db.query("PRAGMA foreign_key_check").isEmpty())throw new IOException("foreign_key_check_failed");
     }
-    static void validateRoom(Db db)throws Exception {
-        JSONObject contract=new JSONObject(resource("room-v18.json"));
-        if(number(scalar(db,"PRAGMA user_version"))!=18 || !contract.getString("identity").equals(scalar(db,"SELECT identity_hash FROM room_master_table WHERE id=42")))throw new IOException("room_identity_invalid");
+    protected String sourceContract(Db db)throws Exception {return "room-v18.json";}
+    private String contractHash(Db db)throws Exception {return hex(MessageDigest.getInstance("SHA-256").digest(resource(sourceContract(db)).getBytes(StandardCharsets.UTF_8)));}
+    protected void validateSource(Db db)throws Exception { validateRoom(db); }
+    static void validateRoom(Db db)throws Exception { validateContract(db,18,"room-v18.json"); }
+    static void validateContract(Db db,int schema,String name)throws Exception {
+        JSONObject contract=new JSONObject(resource(name));
+        if(number(scalar(db,"PRAGMA user_version"))!=schema || !contract.getString("identity").equals(scalar(db,"SELECT identity_hash FROM room_master_table WHERE id=42")))throw new IOException("room_identity_invalid");
         JSONObject expected=contract.getJSONObject("tables");Set<String> names=new HashSet<>();
         for(Map<String,Object> r:db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name!='android_metadata'"))names.add((String)r.get("name"));
         Set<String> expectedNames=new HashSet<>();for(Iterator<String> it=expected.keys();it.hasNext();)expectedNames.add(it.next());
@@ -218,7 +223,10 @@ public final class PodRoomV18Converter implements PodTakeoverCoordinator.Convert
     public void resume(File g,PodTakeoverCoordinator.Phase phase)throws Exception {
         Properties p=PodTakeoverCoordinator.read(new File(g,"snapshot.properties"));
         if(!version().equals(p.getProperty("version")) || !hash(new File(g,"room.sqlite")).equals(p.getProperty("snapshot")) || !hex(MessageDigest.getInstance("SHA-256").digest(resource("watchrss-schema.json").getBytes(StandardCharsets.UTF_8))).equals(p.getProperty("schema")))throw new IOException("snapshot_changed");
-        try(Db s=factory.open(new File(g,"room.sqlite"))){validateRoom(s);}
+        try(Db s=factory.open(new File(g,"room.sqlite"))){validateSource(s);
+            if(p.containsKey("sourceContract")&&!contractHash(s).equals(p.getProperty("sourceContract"))||p.containsKey("sourceSchema")&&!Long.toString(number(scalar(s,"PRAGMA user_version"))).equals(p.getProperty("sourceSchema")))throw new IOException("source_contract_changed");
+            if(number(scalar(s,"PRAGMA user_version"))==19&&!p.containsKey("sourceContract"))throw new IOException("source_contract_missing");
+        }
         if(new File(g,"podjs.sqlite").exists())try(Db d=target(g)){
             Object digest=scalar(d,"SELECT digest FROM migration.receipt WHERE id=1");
             if(digest!=null&&!digest.equals(fingerprint(d))) {
@@ -244,6 +252,7 @@ public final class PodRoomV18Converter implements PodTakeoverCoordinator.Convert
         if(scalar(d,"SELECT name FROM sqlite_master WHERE type='table' AND name='sync_local_identity'")!=null)return;
         d.exec("BEGIN IMMEDIATE");try {
             JSONArray schema=new JSONArray(resource("watchrss-schema.json"));for(int i=0;i<schema.length();i++)d.exec(schema.getString(i));
+            d.exec("UPDATE offline_media_policy SET suppress_download=1 WHERE id=1");
             String id=PodTakeoverCoordinator.read(new File(g,"snapshot.properties")).getProperty("identity");
             insert(d,"sync_local_identity","id,device_id,device_order",1,id,deviceOrder(id));
             d.exec("COMMIT");
@@ -285,7 +294,7 @@ public final class PodRoomV18Converter implements PodTakeoverCoordinator.Convert
             }
             // Always reseal: a candidate created by the previous converter may
             // carry a valid per-batch receipt that predates the remaining rows.
-            d.exec("BEGIN IMMEDIATE");try {seal(d);d.exec("COMMIT");}
+            d.exec("BEGIN IMMEDIATE");try {d.exec("UPDATE offline_media_policy SET suppress_download=0 WHERE id=1");seal(d);d.exec("COMMIT");}
             catch(Exception e){d.exec("ROLLBACK");throw e;}
             progress.copied(new File(g,"podjs.sqlite").length());
         }
@@ -305,6 +314,7 @@ public final class PodRoomV18Converter implements PodTakeoverCoordinator.Convert
         if(bits.length!=4||!bits[0].equals("offline")||!bits[1].equals("rss")||p.contains("\\")||p.indexOf('\0')>=0)throw new IOException("offline_path_invalid");
         for(String bit:bits)if(bit.isEmpty()||bit.equals(".")||bit.equals(".."))throw new IOException("offline_path_invalid");return p;
     }
+    protected void migrateReadingSource(Db d,Map<String,Object> r)throws Exception { }
     private void convert(Db s,Db d,String t,Map<String,Object> r)throws Exception {
         Object id=r.get("id");
         switch(t){
@@ -326,7 +336,8 @@ public final class PodRoomV18Converter implements PodTakeoverCoordinator.Convert
             if(r.get("summary")!=null||r.get("previewImageUrl")!=null)insert(d,"article_previews","article_id,summary,image_url",id,r.get("summary"),r.get("previewImageUrl"));
             if(nonempty(r.get("originalContent"))){insert(d,"article_original_chunks","article_id,chunk_index,body",id,0,r.get("originalContent"));insert(d,"article_original_meta","article_id,source_url,fetched_at",id,r.get("link")==null?"":r.get("link"),r.get("fetchedAt"));}
             if(nonempty(r.get("syncBodyHash")))insert(d,"article_native_sync_hash","item_id,body_hash",id,r.get("syncBodyHash"));
-            if(((Number)r.get("readingProgress")).doubleValue()!=0||number(r.get("readingPositionChangedAt"))!=0)map(d,"article_reading_state","article_id,progress,changed_at,position_bytes,position_hash",r,"id,readingProgress,readingPositionChangedAt,readingPositionBytes,readingPositionContentHash");break;
+            if(((Number)r.get("readingProgress")).doubleValue()!=0||number(r.get("readingPositionChangedAt"))!=0)map(d,"article_reading_state","article_id,progress,changed_at,position_bytes,position_hash",r,"id,readingProgress,readingPositionChangedAt,readingPositionBytes,readingPositionContentHash");
+            migrateReadingSource(d,r);break;
         case "saved_sync_states":
             String device=(String)r.get("sourceDeviceId");Object aid=r.get("articleId");
             if("ARTICLE_DELETE".equals(r.get("saveType"))){insert(d,"sync_article_deletions","article_id,url,changed_at,source_device_id,source_order",aid,r.get("url"),r.get("changedAt"),device,deviceOrder(device));break;}
@@ -412,6 +423,7 @@ public final class PodRoomV18Converter implements PodTakeoverCoordinator.Convert
                     after=new JSONArray();for(String k:primary)after.put(rows.get(rows.size()-1).get(k));
                 }
             }
+            expected.exec("UPDATE offline_media_policy SET suppress_download=0 WHERE id=1");
             checks(expected);
         }
         try(Db expected=target(audit);Db s=factory.open(new File(g,"room.sqlite"));Db d=target(g)){

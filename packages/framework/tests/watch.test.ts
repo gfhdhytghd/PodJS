@@ -202,3 +202,14 @@ test('one failing lifecycle owner still commits other synchronous snapshots and 
  try {events.push({t:'checkpoint',reason:'screen-off'});expect(()=>services.runServicePumps()).toThrow('snapshot failed');expect(JSON.parse(values.get('healthy')!)).toBe(42);}
  finally {stopBad();stopGood();}
 });
+
+test('native KV fingerprint avoids JS value decoding and never certifies a staged write',()=>{
+ const host=(globalThis as any).pod,oldGet=host.kvGet,oldFingerprint=host.kvFingerprint,oldApply=host.kvApply;
+ try{
+  delete host.kvFingerprint;expect(api.kv.fingerprint('reader')).toBeUndefined();
+  let calls=0;host.kvFingerprint=(key:string)=>{calls++;return key==='reader'?'a'.repeat(64):undefined;};host.kvGet=()=>{throw Error('must not decode raw KV');};
+  expect(api.kv.fingerprint('reader')).toBe('a'.repeat(64));expect(calls).toBe(1);
+  host.kvApply=()=>0;api.kv.batch(()=>{api.kv.set('reader',{large:'object'});expect(api.kv.fingerprint('reader')).toBeUndefined();});expect(calls).toBe(1);
+  expect(()=>api.kv.fingerprint('')).toThrow();
+ }finally{host.kvGet=oldGet;if(oldFingerprint)host.kvFingerprint=oldFingerprint;else delete host.kvFingerprint;if(oldApply)host.kvApply=oldApply;else delete host.kvApply;}
+});

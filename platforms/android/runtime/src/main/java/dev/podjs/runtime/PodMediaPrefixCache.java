@@ -32,14 +32,16 @@ final class PodMediaPrefixCache implements AutoCloseable {
     private long totalBandwidth,foregroundBitrate,sampleStart,sampleBytes,bandwidthWindow,bandwidthUsed;
     private double bandwidthCredit;
     private boolean closed;
+    private java.util.function.Consumer<JSONObject> resultSink=value->{};
+    synchronized void setResultSink(java.util.function.Consumer<JSONObject> sink){resultSink=sink;}
     static final class Entry {
         final String token,remote;final Map<String,String> headers;final File file;
         long length=-1;int captureBytes=MAX_ENTRY;
         Entry(String token,String remote,Map<String,String> headers,File file){this.token=token;this.remote=remote;this.headers=headers;this.file=file;}
     }
     private final class Job {
-        final Entry entry;final int budget;final long epoch;volatile boolean active=true;volatile DataSource source;
-        Job(Entry e,int budget){entry=e;this.budget=budget;epoch=generation;}
+        final Entry entry;final int budget;final long epoch;final String itemToken;final long sourceGeneration;volatile boolean active=true;volatile DataSource source;
+        Job(Entry e,int budget,String itemToken,long sourceGeneration){entry=e;this.budget=budget;epoch=generation;this.itemToken=itemToken;this.sourceGeneration=sourceGeneration;}
         void cancel(){active=false;DataSource s=source;if(s!=null&&!cancellations.isShutdown())cancellations.execute(()->{try{s.close();}catch(Exception ignored){}});}
         boolean current(){synchronized(PodMediaPrefixCache.this){return active&&!closed&&epoch==generation&&entries.get(entry.token)==entry;}}
     }
@@ -74,27 +76,34 @@ final class PodMediaPrefixCache implements AutoCloseable {
             JSONArray items=a.optJSONArray("items");if(items==null||items.length()>MAX_ENTRIES)throw new IllegalArgumentException("invalid_media_cache_window");
             Set<String> wanted=new LinkedHashSet<>();List<Job> pending=new ArrayList<>();protectedTokens.clear();foregroundBitrate=Math.max(0,a.optLong("foregroundBitrate",0));
             for(int i=0;i<items.length();i++){JSONObject item=items.getJSONObject(i);Entry e=target(item.getString("uri"));wanted.add(e.token);if(i==0)protectedTokens.add(e.token);int budget=item.optInt("prefetchBytes",0);if(budget<0||budget>MAX_ENTRY)throw new IllegalArgumentException("invalid_prefix_budget");e.captureBytes=Math.max(budget,Math.min(MAX_ENTRY,item.optInt("captureBytes",MAX_ENTRY)));
-                Job existing=jobs.get(e.token);if(budget>e.file.length()&&(existing==null||!existing.active||existing.budget<budget)){if(existing!=null)existing.cancel();Job j=new Job(e,budget);jobs.put(e.token,j);pending.add(j);}}
+                String itemToken=item.optString("itemToken","");long sourceGeneration=item.optLong("generation",0);if(!itemToken.isEmpty()&&(!itemToken.matches("[A-Za-z0-9_-]{1,96}")||sourceGeneration<0||sourceGeneration>9007199254740991L))throw new IllegalArgumentException("invalid_prefetch_identity");Job existing=jobs.get(e.token);if(budget>e.file.length()&&(existing==null||!existing.active||existing.budget<budget||!existing.itemToken.equals(itemToken)||existing.sourceGeneration!=sourceGeneration)){if(existing!=null)existing.cancel();Job j=new Job(e,budget,itemToken,sourceGeneration);jobs.put(e.token,j);pending.add(j);}}
             for(Iterator<Map.Entry<String,Job>> it=jobs.entrySet().iterator();it.hasNext();){Map.Entry<String,Job> j=it.next();if(!wanted.contains(j.getKey())){j.getValue().cancel();it.remove();}}
             for(Job j:pending)workers.execute(()->prefetch(j));trim();return stats();
         }
         throw new IllegalArgumentException("unsupported_cache_method");
     }
     private void prefetch(Job job){
-        DataSource source=null;
+        DataSource source=null;boolean succeeded=false;int status=0;boolean failed=false;
         try{
             long position; synchronized(this){position=job.entry.file.length();}
             if(!job.current()||position>=job.budget)return;
             source=upstream.createDataSource();job.source=source;if(!job.current())return;
-            long remaining=source.open(new DataSpec.Builder().setUri(job.entry.remote).setPosition(position).setHttpRequestHeaders(job.entry.headers).build());metadata(job.entry,source,position,remaining,true);
+            long remaining=source.open(new DataSpec.Builder().setUri(job.entry.remote).setPosition(position).setHttpRequestHeaders(job.entry.headers).build());if(source instanceof androidx.media3.datasource.HttpDataSource)status=((androidx.media3.datasource.HttpDataSource)source).getResponseCode();metadata(job.entry,source,position,remaining,true);
             byte[] buffer=new byte[CHUNK];
             while(position<job.budget&&job.current()){
                 int limit=(int)Math.min(buffer.length,job.budget-position);
                 int n=source.read(buffer,0,limit);if(n==C.RESULT_END_OF_INPUT){synchronized(this){job.entry.length=position;}break;}if(n==0)continue;
                 recordNetwork(n);if(!throttle(job,n))break;synchronized(this){downloadedBytes+=n;}if(!job.current())break;append(job.entry,position,buffer,0,n,job.epoch);position+=n;
             }
-        }catch(Exception error){if(job.current()){int status=httpStatus(error);synchronized(this){failures++;}android.util.Log.i("PodMediaCache","prefetchFailure category="+(status>0?"http_"+status:"transport"));}}
-        finally{if(source!=null)try{source.close();}catch(Exception ignored){}synchronized(this){if(jobs.get(job.entry.token)==job)jobs.remove(job.entry.token);trim();android.util.Log.i("PodMediaCache","prefetchProgress downloadedBytes="+downloadedBytes+" cacheBytes="+fileBytes());}}
+            succeeded=job.current();
+        }catch(Exception error){if(job.current()){status=httpStatus(error);failed=true;synchronized(this){failures++;}android.util.Log.i("PodMediaCache","prefetchFailure category="+(status>0?"http_"+status:"transport"));}}
+        finally{if(source!=null)try{source.close();}catch(Exception ignored){}if((succeeded||failed)&&job.current())publish(job,succeeded,status);synchronized(this){if(jobs.get(job.entry.token)==job)jobs.remove(job.entry.token);trim();android.util.Log.i("PodMediaCache","prefetchProgress downloadedBytes="+downloadedBytes+" cacheBytes="+fileBytes());}}
+    }
+    private void publish(Job job,boolean success,int status){
+        if(job.itemToken.isEmpty())return;
+        try{JSONObject value=new JSONObject().put("itemToken",job.itemToken).put("generation",job.sourceGeneration).put("result",success?"success":"failure").put("httpStatus",status).put("category",success?"success":status==403?"http_403":status>=500?"http_5xx":status>=400?"http_4xx":"transport");
+            resultSink.accept(new JSONObject().put("t","video.cache.result").put("value",value));
+        }catch(Exception ignored){}
     }
     static int httpStatus(Throwable error){for(Throwable x=error;x!=null;x=x.getCause())if(x instanceof androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)return ((androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)x).responseCode;return 0;}
     private boolean throttle(Job j,int bytes)throws InterruptedException {

@@ -56,3 +56,34 @@ export function htmlTextPreview(source:string,maxUnits:number):HtmlTextPreview|n
  if(!host)return null;let result:[number,string,string]|null;try{result=host(source,maxUnits);}catch{return null;}
  return result?{units:result[0],prefix:result[1],imageSource:result[2]}:null;
 }
+
+/** Recover an entire HTML fragment carried inside one/two entity envelopes.
+ * Real markup (including pre/code examples) and prose with inline escaped tags
+ * stay untouched. Stop as soon as markup appears: entities inside text/attrs
+ * belong to the HTML parser, not to another global decoding pass. */
+export function unwrapEscapedHtml(source:string):string {
+ let value=source;
+ for(let layer=0;layer<2;layer++){
+  const head=value.slice(0,4096);
+  if(/<\s*\/?[a-z][\w:-]*\b/i.test(head))break;
+  if(!/^\s*&(?:amp;)?lt;(?:p|div|article|section|main|html|body|h[1-6]|blockquote|ul|ol|pre|span|img)\b/i.test(head))break;
+  // A complete closing tag or media tag distinguishes a fragment from prose.
+  if(!/&(?:amp;)?lt;\/(?:p|div|article|section|main|html|body|h[1-6]|blockquote|ul|ol|pre|span)\s*&(?:amp;)?gt;/i.test(value)&&!/^\s*&(?:amp;)?lt;img\b/i.test(head))break;
+  value=value.replace(/&(amp|lt|gt|quot|apos|nbsp|#(?:x[\da-f]+|\d+));/gi,(entity,key:string)=>{
+   const k=key.toLowerCase(),named:Record<string,string>={amp:'&',lt:'<',gt:'>',quot:'"',apos:"'",nbsp:' '};
+   if(k[0]!=='#')return named[k]??entity;
+   const n=k[1]==='x'?parseInt(k.slice(2),16):parseInt(k.slice(1),10);
+   return n>0&&n<=0x10ffff&&!(n>=0xd800&&n<=0xdfff)?String.fromCodePoint(n):entity;
+  });
+ }
+ return value;
+}
+/** Source-preserving UTF-16 work units; never cut a surrogate pair. Consumers
+ * can schedule a turn between units before shaping long unbroken paragraphs. */
+export function* textWorkChunks(source:string,maxUnits=1024):Generator<string> {
+ if(!Number.isSafeInteger(maxUnits)||maxUnits<2)throw new RangeError('Invalid text work chunk size');
+ for(let start=0;start<source.length;){let end=Math.min(source.length,start+maxUnits);
+  if(end<source.length&&source.charCodeAt(end-1)>=0xd800&&source.charCodeAt(end-1)<=0xdbff)end--;
+  yield source.slice(start,end);start=end;
+ }
+}

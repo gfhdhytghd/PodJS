@@ -19,10 +19,10 @@ fn exclusive_lock(file:&File)->io::Result<()> {
 #[cfg(not(unix))]
 fn exclusive_lock(file:&File)->io::Result<()> {file.lock()}
 
-pub struct KvStore { memory:Values, cached_bytes:Option<Vec<u8>>, path:Option<PathBuf>, quota:usize, budget:Option<(std::time::Instant,crate::background::Cancellation)> }
+pub struct KvStore { fingerprints:BTreeMap<String,(String,String)>, memory:Values, cached_bytes:Option<Vec<u8>>, path:Option<PathBuf>, quota:usize, budget:Option<(std::time::Instant,crate::background::Cancellation)> }
 impl KvStore {
     pub fn open(data_dir:Option<&str>) -> Self {
-        Self {memory:BTreeMap::new(),cached_bytes:None,path:data_dir.map(|root|PathBuf::from(root).join("podjs-kv.json")),quota:4*1024*1024,budget:None}
+        Self {fingerprints:BTreeMap::new(),memory:BTreeMap::new(),cached_bytes:None,path:data_dir.map(|root|PathBuf::from(root).join("podjs-kv.json")),quota:4*1024*1024,budget:None}
     }
     fn check_budget(&self)->io::Result<()> {
         if self.budget.as_ref().is_some_and(|(deadline,cancel)|std::time::Instant::now()>=*deadline || cancel.is_cancelled()) {
@@ -101,6 +101,19 @@ impl KvStore {
     }
     pub fn get_json(&mut self,key:&str)->io::Result<Option<String>> {
         self.operation(false,|values|Ok(values.get(key).map(|raw|raw.get().to_owned())))
+    }
+    /// Hash the authoritative canonical raw value without round-tripping its
+    /// object graph through JS. Reload/compare under the existing process lock;
+    /// same-length external writes and changes made by another handle count.
+    pub fn fingerprint(&mut self,key:&str)->io::Result<Option<String>> {
+        use sha2::{Digest,Sha256};
+        let Some(raw)=self.get_json(key)? else {self.fingerprints.remove(key);return Ok(None);};
+        if let Some((previous,digest))=self.fingerprints.get(key) {
+            if previous==&raw {return Ok(Some(digest.clone()));}
+        }
+        let digest=format!("{:x}",Sha256::digest(raw.as_bytes()));
+        self.fingerprints.insert(key.to_owned(),(raw,digest.clone()));
+        Ok(Some(digest))
     }
     pub fn keys(&mut self)->io::Result<Vec<String>> {self.operation(false,|values|Ok(values.keys().cloned().collect()))}
     pub fn set(&mut self,key:String,value:Value)->io::Result<()> {
@@ -278,4 +291,19 @@ mod tests {
         assert_eq!(std::fs::read(root.join("podjs-kv.json")).unwrap(),b"broken");
         std::fs::remove_dir_all(root).unwrap();
     }
+    #[test] fn fingerprints_follow_authoritative_values_and_survive_reopen() {
+        let root=std::env::temp_dir().join(format!("podjs-kv-fingerprint-{}",std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();let mut a=KvStore::open(root.to_str());let mut b=KvStore::open(root.to_str());
+        assert_eq!(a.fingerprint("x").unwrap(),None);
+        a.set("x".into(),Value::from("aa")).unwrap();let first=a.fingerprint("x").unwrap().unwrap();
+        assert_eq!(first,a.fingerprint("x").unwrap().unwrap());assert_eq!(first,b.fingerprint("x").unwrap().unwrap());
+        b.set("x".into(),Value::from("bb")).unwrap();assert_ne!(first,a.fingerprint("x").unwrap().unwrap());
+        assert_eq!(a.fingerprint("x").unwrap(),KvStore::open(root.to_str()).fingerprint("x").unwrap());
+        std::fs::write(root.join("podjs-kv.json"),br#"{"x":"cc"}"#).unwrap();let changed=a.fingerprint("x").unwrap().unwrap();
+        b.delete("x").unwrap();assert_eq!(a.fingerprint("x").unwrap(),None);
+        a.set("x".into(),Value::Null).unwrap();assert_ne!(Some(changed),a.fingerprint("x").unwrap());
+        std::fs::write(root.join("podjs-kv.json"),b"broken").unwrap();assert!(a.fingerprint("x").is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
 }

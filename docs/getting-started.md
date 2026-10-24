@@ -139,6 +139,8 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/testing/bun-runtime` | Isolated Bun test service-pump binding; never import in a production app. |
 | `@podjs/framework/targets` | Target profiles, host ABI and capability identifiers. |
 | `@podjs/framework/services` | Cancellable native operations for files, network, input, media, text, crypto and platform services; images.decodeOperation/decodeRegionOperation retain source dimensions and cancellation. |
+| `@podjs/framework/acked-state-vector` | Bilateral applied receipts for opaque per-domain roots; frozen windows and final-session ACK publication. |
+| `@podjs/framework/directory-witness` | Small immutable-resource directory metadata witnesses; missing native change tokens disable certification. |
 | `@podjs/framework/sync-state` | Versioned companion saved-state clocks, merge and persistence rules. |
 | `@podjs/framework/request-policy` | `RequestFilter`, `createRequestAllowlist`: generic request rejection hooks; app owns keys and rejection replies. |
 | `@podjs/framework/browser-qr-wait` | `BrowserQrWait`, `browserQrWaitStatus`, `BrowserQrWaitOptions`, `BrowserQrWaitStatus`: configurable QR waiting state independent of page loading; no UI rendering. |
@@ -166,6 +168,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/html` | Generic HTML parsing, entities and text extraction. |
 | `@podjs/framework/html-slices` | Incremental/cancellable HTML fragment parsing. |
 | `@podjs/framework/xml` | Generic XML parsing and document navigation. |
+| `@podjs/framework/json-raw` | Bounded immutable JSON token spans; patch understood fields while retaining unknown token bytes. |
 | `@podjs/framework/json` | Bounded JSON projection without materializing unused fields. |
 | `@podjs/framework/json-numbers` | JSON parsing that keeps lexical number tokens (`1` vs `1.0`). |
 | `@podjs/framework/text-compat` | Compatibility text policies including `kotlinTrim` (JVM whitespace), kept independent of application labels. |
@@ -279,3 +282,37 @@ return `{committed:false}`. Cancellation removes the registered commit callback
 and timeout. This is a scheduling boundary, not a panel scan-out guarantee, and
 does not make subsequent synchronous guest work inexpensive. Keep durability
 ordering explicit when placing persistence after this boundary.
+
+### Cached state and directory witnesses
+
+`AckedStateVector` compares both owners' current roots with mirrored durable
+receipts, without requiring different platforms to encode content identically.
+Call `completed(domain)` only after application and transport ACK succeed, stage
+only roots unchanged since summary, and call `applied()` only after the enclosing
+session's final applied ACK. Abort discards staged receipts. This is an
+optimization proof; it never advances an application's content cursors.
+`versionRootText(namespace, domain, epoch, revision)` formats a namespaced,
+owner-local monotonic version preimage for an application-provided SHA-256 port.
+
+`kv.fingerprint(key)` obtains the native store's cached SHA-256 of the canonical
+raw value without parsing a large object in JS. Missing keys, old hosts and keys
+with staged batch writes return `undefined`; callers must not certify unknown
+state as equal. The store rereads authoritative bytes under its existing file
+lock, including writes made by another handle/process.
+
+Android `fileChunks.list/stat` include an opaque `changeToken` containing inode,
+size and nanosecond mtime/ctime. `directoryWitness` hashes these small metadata
+records without reading file bodies. It is a cache-validity witness, not a
+content checksum: validate missing/changed resources through the normal content
+integrity path before acknowledging a completed domain. Old hosts without change
+tokens yield no witness. Android network snapshots also expose `localWifi`, which
+observes non-default Wi-Fi without requiring internet validation.
+
+`parseRawJson` rejects duplicate decoded keys, invalid Unicode, trailing syntax and
+container depth over 32 by default (UTF-8 input limit 16 MiB). `rawJsonProperty`
+selects a subtree; `patchRawJsonObject` accepts complete JSON tokens for explicit
+properties and copies every untouched key-through-value span verbatim. An
+`undefined` edit removes that property. This syntax helper does not authenticate
+input or decide application feature/compatibility policy. `parseRawJsonAsync`
+uses the same scanner, yielding between bounded pieces; optional `check` and
+`yield` ports support cancellation and host scheduling without changing tokens.

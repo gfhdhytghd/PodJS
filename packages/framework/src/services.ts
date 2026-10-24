@@ -50,6 +50,7 @@ const methods: Record<string, PodCapabilityId> = {
   "debug.external.subscribe":"host.lifecycle", "debug.external.unsubscribe":"host.lifecycle", "debug.external.reply":"host.lifecycle",
   "app.buildInfo": "host.lifecycle",
   "splash.hold": "host.lifecycle", "splash.release": "host.lifecycle",
+  "cloud.enqueue":"host.lifecycle", "cloud.localTransfer":"host.lifecycle", "cloud.workState":"host.lifecycle",
   "cloud.schedule":"host.lifecycle", "cloud.cancel":"host.lifecycle", "cloud.acquire":"host.lifecycle", "cloud.release":"host.lifecycle",
   "secure.acquire":"data.secure", "secure.release":"data.secure",
   "debug.memoryStats": "host.lifecycle",
@@ -70,6 +71,7 @@ const methods: Record<string, PodCapabilityId> = {
   "browser.challengeCookies": "system.browser.challenge", "browser.acquireChallengeCookies": "system.browser.challenge",
   "browser.open": "system.browser",
   "browser.openInApp": "system.browser.inApp",
+  "browser.updateTheme": "system.browser.inApp.theme",
   "browser.clearSiteData": "system.browser.siteData",
   "browser.availability": "system.browser.availability",
   "audio.start": "media.audio", "audio.pause": "media.audio", "audio.resume": "media.audio", "audio.setSpeed": "media.audio", "audio.stop": "media.audio", "audio.state": "media.audio",
@@ -78,13 +80,13 @@ const methods: Record<string, PodCapabilityId> = {
   "tts.init": "media.tts", "tts.speak": "media.tts", "tts.stop": "media.tts", "tts.state": "media.tts",
   "video.cache.register":"media.video", "video.cache.window":"media.video", "video.cache.stats":"media.video", "video.cache.clear":"media.video",
   "video.prepare": "media.video", "video.play": "media.video", "video.pause": "media.video", "video.seek": "media.video", "video.stop": "media.video", "video.setBounds": "media.video", "video.state": "media.video",
-  "video.captureBackdrop": "media.video", "video.setTransform": "media.video", "video.setVolume": "media.video",
-  "video.session.capabilities": "media.video.sessions", "video.session.prepare": "media.video.sessions", "video.session.play": "media.video.sessions", "video.session.pause": "media.video.sessions", "video.session.seek": "media.video.sessions", "video.session.stop": "media.video.sessions", "video.session.release": "media.video.sessions", "video.session.setBounds": "media.video.sessions", "video.session.setTransform": "media.video.sessions", "video.session.setVolume": "media.video.sessions", "video.session.state": "media.video.sessions", "video.session.promote": "media.video.sessions", "video.session.transition": "media.video.sessions",
+  "video.frame.clear":"media.video", "video.frame.capture":"media.video", "video.frame.restore":"media.video", "video.captureBackdrop": "media.video", "video.setTransform": "media.video", "video.setVolume": "media.video", "video.setLoop": "media.video",
+  "video.session.captureFrame":"media.video.sessions", "video.session.capabilities": "media.video.sessions", "video.session.prepare": "media.video.sessions", "video.session.play": "media.video.sessions", "video.session.pause": "media.video.sessions", "video.session.seek": "media.video.sessions", "video.session.stop": "media.video.sessions", "video.session.release": "media.video.sessions", "video.session.setBounds": "media.video.sessions", "video.session.setTransform": "media.video.sessions", "video.session.setVolume": "media.video.sessions", "video.session.setLoop": "media.video.sessions", "video.session.state": "media.video.sessions", "video.session.promote": "media.video.sessions", "video.session.transition": "media.video.sessions",
   "image.surface.open":"data.images", "image.surface.update":"data.images", "image.surface.state":"data.images", "image.surface.close":"data.images",
   "video.surface.open":"media.video", "video.surface.update":"media.video", "video.surface.state":"media.video", "video.surface.close":"media.video",
   "share.environment": "system.share", "share.text": "system.share",
   "image.decode": "data.images", "image.decodeRegion": "data.images", "image.release": "data.images", "browser.authorize": "system.browser.auth", "browser.authorizeWithStatus": "system.browser.auth.status",
-  "sql.query": "data.sqlite", "sql.execute": "data.sqlite", "sql.transaction": "data.sqlite",
+  "sql.query": "data.sqlite", "sql.gzipJson": "data.sqlite", "sql.execute": "data.sqlite", "sql.transaction": "data.sqlite",
   "input.text": "input.text", "input.text.pending": "input.text.state", "input.text.dismiss": "input.text.state", "secure.get": "data.secure", "secure.set": "data.secure", "secure.delete": "data.secure", "secure.update": "data.secure",
   "input.inline.open": "input.text", "input.inline.close": "input.text", "input.inline.set": "input.text",
   "text.layout": "text.layout", "text.layoutBatch": "text.layout", "text.measure": "text.layout", "text.raster": "text.raster", "text.environment": "text.environment",
@@ -165,6 +167,11 @@ export const silencePlayback={
 /** traceLabel is a code-authored diagnostic call-site name, never user input.
  * Hosts may ignore it; default operation/result semantics are unchanged. */
 export const sqlite = {
+  /** Code-authored SELECT/fields. Re-encodes on the SQL worker; returns no text. */
+  gzipJson(args:{sql:string;params?:readonly SqlValue[];keyColumn:string;expectedHashColumn?:string;fields:readonly {name:string;column:string;omitNull?:boolean;filePrefix?:string;filePattern?:string;directory?:string}[];maxRows?:number;maxInputBytes?:number;chunkSize?:number}) {
+    if(args.fields.some(f=>f.filePrefix)&&!hasCapability('data.files.chunks'))throw new Error('Missing capability: data.files.chunks');
+    return hostOperation<{key:string;oversized?:boolean;sha256:string;size:number;chunkSize:number;chunkHashes:string[]}[]>('sql.gzipJson',{...args,format:'android-json-gzip-v1'}).result;
+  },
   query(sql: string, params: readonly SqlValue[] = [], traceLabel?:string): Promise<Record<string, unknown>[]> {
     return hostOperation<Record<string, unknown>[]>("sql.query", { sql, params, ...(traceLabel?{traceLabel}:{}) }).result;
   },
@@ -310,8 +317,16 @@ export const speech = {
 };
 export interface VideoBounds { x:number; y:number; width:number; height:number; translateX?:number; translateY?:number; visible?:boolean; roundClip?:{cx:number;cy:number;radius:number} }
 export interface VideoPrepare { url?:string; videoUrl?:string; audioUrl?:string; type?:string; videoMime?:string; videoWidth?:number; videoHeight?:number; headers?:Record<string,string>; bounds:VideoBounds; autoplay?:boolean; muted?:boolean; loop?:boolean; backgroundPlayback?:boolean }
-export interface VideoState { hasRenderedFirstFrame?:boolean; errorCode?:string; ok:boolean; state:string; positionMs:number; durationMs:number; width:number; height:number; volume:number; volumeMax:number }
+export interface VideoFrameSource {url?:string;videoUrl?:string;audioUrl?:string;headers?:Record<string,string>}
+export interface VideoFrame {available:true;kind:"actual_frame";path:string;width:number;height:number;positionMs:number;capturedAt:number;capturedGeneration:number}
+export interface VideoFrameCapture {key:string;source:VideoFrameSource;sourceGeneration:number}
+export interface VideoState { sourceGeneration?:number; /** Completed native repeats since prepare; seeks do not increment it. */ completedLoops?:number; loop?:boolean; hasRenderedFirstFrame?:boolean; errorCode?:string; ok:boolean; state:string; positionMs:number; durationMs:number; width:number; height:number; volume:number; volumeMax:number }
 export const video = {
+  /** Capture only a rendered frame from the exact still-current source generation. */
+  clearFrames():Promise<{removedFiles:number}> {return hostOperation<{removedFiles:number}>("video.frame.clear",{}).result;},
+  captureFrame(options:VideoFrameCapture):Promise<VideoFrame> {return hostOperation<VideoFrame>("video.frame.capture",options as unknown as Record<string,unknown>).result;},
+  /** Image-only recovery: exact source/credential binding; never authorizes playback. */
+  restoreFrame(key:string,source:VideoFrameSource):Promise<VideoFrame|{available:false}> {return hostOperation<VideoFrame|{available:false}>("video.frame.restore",{key,source}).result;},
   prepare(options: VideoPrepare): HostOperation<VideoState> { return hostOperation<VideoState>("video.prepare", options as unknown as Record<string,unknown>); },
   play(): Promise<VideoState> { return hostOperation<VideoState>("video.play", {}).result; },
   pause(): Promise<VideoState> { return hostOperation<VideoState>("video.pause", {}).result; },
@@ -321,6 +336,8 @@ export const video = {
   state(): Promise<VideoState> { return hostOperation<VideoState>("video.state", {}).result; },
   captureBackdrop(): Promise<{ok:boolean}> { return hostOperation<{ok:boolean}>("video.captureBackdrop", {}).result; },
   setTransform(transform:{rotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}): Promise<VideoState> { return hostOperation<VideoState>("video.setTransform", transform as Record<string,unknown>).result; },
+  /** Change repeat mode on the current player without preparing or seeking. */
+  setLoop(loop:boolean): Promise<VideoState> { return hostOperation<VideoState>("video.setLoop", {loop}).result; },
   setVolume(volume:number): Promise<VideoState> { return hostOperation<VideoState>("video.setVolume", {volume}).result; },
 };
 
@@ -338,6 +355,8 @@ export interface VideoSessionPrepare extends Omit<VideoPrepare,"backgroundPlayba
   prewarm?:boolean;
 }
 export interface VideoSessionState {
+  sourceGeneration?:number;
+  completedLoops?:number; loop?:boolean;
   errorCode?:string;
   ok:boolean; sessionId:string; state:string; positionMs:number; durationMs:number;
   width:number; height:number; muted:boolean; volume:number; prewarming:boolean;
@@ -355,6 +374,7 @@ export interface VideoSessionTransitionState {
  * one-player host rejects every request before transport.
  */
 export const videoSessions = {
+  captureFrame(sessionId:string,options:VideoFrameCapture):Promise<VideoFrame> {return hostOperation<VideoFrame>("video.session.captureFrame",{sessionId,...options}).result;},
   capabilities(profile:Pick<VideoPrepare,"videoMime"|"videoWidth"|"videoHeight">={}):Promise<VideoSessionCapabilities> { return hostOperation<VideoSessionCapabilities>("video.session.capabilities",profile as Record<string,unknown>).result; },
   prepare(options:VideoSessionPrepare):HostOperation<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.prepare",options as unknown as Record<string,unknown>); },
   play(sessionId:string):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.play",{sessionId}).result; },
@@ -365,6 +385,7 @@ export const videoSessions = {
   setBounds(sessionId:string,bounds:VideoBounds):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setBounds",{sessionId,bounds}).result; },
   state(sessionId:string):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.state",{sessionId}).result; },
   setTransform(sessionId:string,transform:{rotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setTransform",{sessionId,...transform}).result; },
+  setLoop(sessionId:string,loop:boolean):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setLoop",{sessionId,loop}).result; },
   setVolume(sessionId:string,volume:number):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setVolume",{sessionId,volume}).result; },
   /** Reveals the retained target first frame before hiding the replaced session. */
   promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean}={}):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.promote",{sessionId,...options}).result; },
@@ -383,7 +404,7 @@ function browserUrl(url: string): string {
   return url;
 }
 /** Opt-in embedded browser. The promise resolves after opening, not after closing.
- * Omit options to retain the external-browser contract. Theme is a snapshot;
+ * Omit options to retain the external-browser contract. Use updateTheme for an open session;
  * omitted font settings preserve site fonts, as in native WatchRSS.
  */
 export interface BrowserOpenOptions {
@@ -421,6 +442,11 @@ export interface BrowserSiteDataResult {
   webStorage: { status: "deletion_requested" | "failed"; message?: string };
 }
 export const browser = {
+  /** Update the owned live browser without navigation, reload or changing its viewport. */
+  updateTheme(theme: NonNullable<BrowserOpenOptions["theme"]>): HostOperation<{updated:boolean}> {
+    inAppBrowserArgs("https://validation.invalid", {mode:"inApp",theme});
+    return hostOperation("browser.updateTheme", {theme});
+  },
   /** Probes the embedded Android WebView, not the external browser handler. */
   availability(): HostOperation<BrowserAvailability> { return hostOperation("browser.availability", {}); },
   /** Root-path cookies only, matching Android WatchRSS. Cookie domains are shared
@@ -581,12 +607,12 @@ export const fileChunks = {
     return hostOperation<{path:string;size:number;sha256:string;reused:boolean}>("file.commit",{path,target,expectedSize,expectedSha256}).result;
   },
   /** Enumerate one directory inside the app file root. Links and oversized directories fail closed. */
-  list(path:string):Promise<{entries:{path:string;file:boolean;directory:boolean;size:number;modified:number}[]}> {
-    return hostOperation<{entries:{path:string;file:boolean;directory:boolean;size:number;modified:number}[]}>("file.list",{path}).result;
+  list(path:string):Promise<{entries:{path:string;file:boolean;directory:boolean;size:number;modified:number;changeToken?:string}[]}> {
+    return hostOperation<{entries:{path:string;file:boolean;directory:boolean;size:number;modified:number;changeToken?:string}[]}>("file.list",{path}).result;
   },
   touch(path:string):Promise<{modified:number}> {return hostOperation<{modified:number}>("file.touch",{path}).result;},
-  stat(path:string): Promise<{exists:boolean;file:boolean;directory:boolean;size:number;modified:number}> {
-    return hostOperation<{exists:boolean;file:boolean;directory:boolean;size:number;modified:number}>("file.stat",{path}).result;
+  stat(path:string): Promise<{exists:boolean;file:boolean;directory:boolean;size:number;modified:number;changeToken?:string}> {
+    return hostOperation<{exists:boolean;file:boolean;directory:boolean;size:number;modified:number;changeToken?:string}>("file.stat",{path}).result;
   },
   /** Decode a byte range using Android's replacement behavior for malformed UTF-8. */
   readText(path:string,offset=0,maxBytes=65536): Promise<{text:string;bytesRead:number;offset:number;size:number;eof:boolean}> {
@@ -692,7 +718,7 @@ export const webSockets = {
 };
 
 /** Bounded IPv4 mDNS lookup; callers authenticate any discovered endpoint. */
-export interface NetworkSnapshot {metered?:boolean;active:boolean;internet:boolean;validated:boolean;wifi:boolean;cellular:boolean;bluetooth:boolean}
+export interface NetworkSnapshot {localWifi?:boolean;metered?:boolean;active:boolean;internet:boolean;validated:boolean;wifi:boolean;cellular:boolean;bluetooth:boolean}
 export const discovery = {
  networkSnapshot:()=>hostOperation<NetworkSnapshot>("discovery.networkSnapshot",{}).result,
  requestPermission:()=>hostOperation<"granted"|"required">("discovery.requestPermission",{}).result,

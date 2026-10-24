@@ -216,7 +216,7 @@ describe("host services", () => {
   test("staged file APIs require file capability and preserve commit integrity fields",async()=>{
     const hash="a".repeat(64);
     const calls=[
-      {call:()=>fileChunks.list("managed-cache/images"),method:"file.list",args:{path:"managed-cache/images"},value:{entries:[]}},
+      {call:()=>fileChunks.list("managed-cache/images"),method:"file.list",args:{path:"managed-cache/images"},value:{entries:[{path:"managed-cache/images/a",file:true,directory:false,size:8,modified:1,changeToken:"inode:1:ctime:2"}]}},
       {call:()=>fileChunks.touch("managed-cache/images/a.img"),method:"file.touch",args:{path:"managed-cache/images/a.img"},value:{modified:1}},
       {call:()=>fileChunks.createTemp("article_content"),method:"file.createTemp",args:{directory:"article_content"},value:{path:"article_content/.pod-write-1.part"}},
       {call:()=>fileChunks.append("stage","AQ==",7),method:"file.write",args:{path:"stage",dataBase64:"AQ==",append:true,expectedOffset:7},value:{size:8}},
@@ -697,4 +697,38 @@ test('single SQL change receipt is committed, labelled and rejects malformed cou
 
 test('pure codec scheduler yields without a runtime.timer host capability',async()=>{
  const before=emitted.length;await (globalThis as any).__podYieldCodecTurn();expect(emitted).toHaveLength(before);
+});
+
+test("video repeat changes are capability gated and target the retained player/session",async()=>{
+ const {video,videoSessions}=await import('../src/services.ts');
+ await expect(video.setLoop(true)).rejects.toMatchObject({code:'unsupported'});
+ await expect(videoSessions.setLoop('standby',true)).rejects.toMatchObject({code:'unsupported'});
+ expect(emitted).toHaveLength(0);host.capabilities=()=>JSON.stringify(['media.video','media.video.sessions']);
+ for(const loop of [true,false])for(const sessionId of [undefined,'active','standby']){
+  const task=sessionId?videoSessions.setLoop(sessionId,loop):video.setLoop(loop),request=emitted.at(-1)!;
+  expect(request).toMatchObject({method:sessionId?'video.session.setLoop':'video.setLoop',args:sessionId?{sessionId,loop}:{loop}});
+  const value={state:'playing',positionMs:1234,completedLoops:2,loop};events.push({t:'service.result',id:request.id,ok:true,value});api.__pumpPodEvents();
+  expect(await task).toMatchObject(value);
+ }
+});
+
+test('live browser theme updates are separately capability gated, strictly validated and return whether a session exists',async()=>{
+ await expect(browser.updateTheme({dark:true}).result).rejects.toMatchObject({code:'unsupported'});expect(emitted).toHaveLength(0);
+ host.capabilities=()=>JSON.stringify(['system.browser.inApp.theme']);
+ for(const theme of [{dark:'yes'},{dark:true,textZoom:0},{dark:true,backgroundColor:'red'},{dark:false,unknown:1}])expect(()=>browser.updateTheme(theme as never)).toThrow();
+ for(const updated of [true,false]){const operation=browser.updateTheme({dark:false,backgroundColor:'#ffffffff'}),request=emitted.at(-1)!;expect(request).toMatchObject({method:'browser.updateTheme',args:{theme:{dark:false,backgroundColor:'#ffffffff'}}});events.push({t:'service.result',id:request.id,ok:true,value:{updated}});api.__pumpPodEvents();expect(await operation.result).toEqual({updated});}
+});
+
+test('actual video frame capture/restore/clear are capability gated and retain exact source generation across both backends',async()=>{
+ const {video,videoSessions}=await import('../src/services.ts');const options={key:'opaque-item',source:{url:'https://fixture/video',headers:{Cookie:'fixture'}},sourceGeneration:8};
+ await expect(video.captureFrame(options)).rejects.toMatchObject({code:'unsupported'});await expect(video.restoreFrame(options.key,options.source)).rejects.toMatchObject({code:'unsupported'});await expect(videoSessions.captureFrame('slot',options)).rejects.toMatchObject({code:'unsupported'});expect(emitted).toHaveLength(0);
+ host.capabilities=()=>JSON.stringify(['media.video','media.video.sessions']);
+ const tasks=[()=>video.captureFrame(options),()=>videoSessions.captureFrame('slot',options),()=>video.restoreFrame(options.key,options.source),()=>video.clearFrames()];
+ const expected=[['video.frame.capture',options],['video.session.captureFrame',{sessionId:'slot',...options}],['video.frame.restore',{key:options.key,source:options.source}],['video.frame.clear',{}]];
+ for(let i=0;i<tasks.length;i++){const task=tasks[i]!(),request=emitted.at(-1)!;expect(request).toMatchObject({method:expected[i]![0],args:expected[i]![1]});events.push({t:'service.result',id:request.id,ok:true,value:{available:false}});api.__pumpPodEvents();expect(await task).toMatchObject({available:false});}
+});
+
+test('manual cloud enqueue and local transfer leases require lifecycle grant and carry no credentials',async()=>{
+ await expect(hostOperation('cloud.enqueue',{token:'opaque'}).result).rejects.toMatchObject({code:'unsupported'});expect(emitted).toHaveLength(0);host.capabilities=()=>JSON.stringify(['host.lifecycle']);
+ for(const [method,args] of [['cloud.enqueue',{token:'opaque'}],['cloud.localTransfer',{active:true,generation:1}],['cloud.workState',{}]] as const){const task=hostOperation(method,args).result,request=emitted.at(-1)!;expect(request).toMatchObject({method,args});events.push({t:'service.result',id:request.id,ok:true,value:{state:'queued'}});api.__pumpPodEvents();await task;}
 });

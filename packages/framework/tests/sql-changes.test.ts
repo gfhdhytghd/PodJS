@@ -18,3 +18,12 @@ test('portable/native byte SHA256 agrees on empty, binary, multiblock and Unicod
   let calls=0;(globalThis as any).pod={sha256Bytes:(b:Uint8Array)=>{calls++;return new Uint8Array(createHash('sha256').update(b).digest());}};for(const b of cases)expect(sha256Hex(b)).toBe(createHash('sha256').update(b).digest('hex'));expect(calls).toBe(cases.length);
  }finally{(globalThis as any).pod=prior;}
 });
+
+test('2135 repeated transaction templates have a bounded compilation budget and preserve SQL results',()=>{
+ const source='INSERT INTO rows(id,value,n) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET value=CASE WHEN ?=1 THEN excluded.value ELSE rows.value END,n=excluded.n WHERE ?=1';
+ const expected=onlyChangedSql(source),started=performance.now();for(let i=0;i<2135*30;i++)expect(onlyChangedSql(source)).toBe(expected);
+ expect(performance.now()-started).toBeLessThan(2000);
+ // Exercise eviction by count and bytes: no cross-template result or binding reuse.
+ for(let i=0;i<256;i++)expect(onlyChangedSql('UPDATE rows SET n='+i+' WHERE id=?')).toContain('rows.n IS NOT ('+i+')');
+ expect(onlyChangedSql(source)).toBe(expected);
+});

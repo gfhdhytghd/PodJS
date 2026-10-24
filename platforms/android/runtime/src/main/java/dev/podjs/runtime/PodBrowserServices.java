@@ -53,6 +53,12 @@ final class PodBrowserServices {
             throw new BrowserFailure("webview_unavailable", message);
         }
     }
+    boolean updateTheme(JSONObject args) throws org.json.JSONException {
+        // Validate even when no page is open. Never open a page as a side effect.
+        PodInAppBrowser.Options checked = new PodInAppBrowser.Options(new JSONObject().put("url","https://validation.invalid").put("mode","inApp").put("theme",args.getJSONObject("theme")));
+        if(pendingRestoration!=null){pendingRestoration.getJSONObject("options").put("theme",checked.source.getJSONObject("theme"));return true;}
+        return session != null && session.updateTheme(checked);
+    }
     void close() { pendingRestoration = null; if (session != null) { session.dismiss(); session = null; } }
     PodBrowserServices(Context context) { this.context = context; }
 

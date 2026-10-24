@@ -24,6 +24,7 @@ final class ServiceResultTrace {
             case "runtime.delay": return "runtime.delay";
             case "secure.get": return "secure.get";
             case "sql.query": return "sql.query";
+            case "sql.gzipJson": return "sql.gzipJson";
             case "browser.authorize": case "browser.authorizeWithStatus": return "browser.auth";
         }
         if (method.startsWith("file.")) return "file";
@@ -84,7 +85,7 @@ final class ServiceResultTrace {
         "audio.silenceLease", "audio.silenceState", "audio.start", "audio.state", "audio.stop",
         "audio.volumeState", "background.cancel", "background.register", "background.status", "browser.authorize",
         "browser.authorizeWithStatus", "browser.availability", "browser.clearSiteData", "browser.open", "browser.openInApp",
-        "cloud.acquire", "cloud.cancel", "cloud.release", "cloud.schedule", "crypto.aesGcmDecrypt",
+        "cloud.enqueue", "cloud.localTransfer", "cloud.workState", "cloud.acquire", "cloud.cancel", "cloud.release", "cloud.schedule", "crypto.aesGcmDecrypt",
         "crypto.aesGcmEncrypt", "crypto.decrypt", "crypto.ecdhPublicKey", "crypto.ecdhUnwrap", "crypto.encrypt",
         "crypto.gunzip", "crypto.gzip", "crypto.hash", "crypto.hkdfSha256", "crypto.hmacSha256",
         "crypto.largeAesGcmDecrypt", "crypto.largeAesGcmEncrypt", "crypto.random", "crypto.rsaOaepSha256", "debug.memoryStats",
@@ -100,7 +101,7 @@ final class ServiceResultTrace {
         "notifications.listPending", "notifications.registerRemote", "notifications.requestPermission", "notifications.schedule", "notifications.status",
         "notifications.unregisterRemote", "rfcomm.accept", "rfcomm.close", "rfcomm.listen", "rfcomm.requestPermission",
         "rfcomm.status", "runtime.delay", "secure.delete", "secure.get", "secure.set",
-        "share.environment", "share.text", "sql.execute", "sql.query", "sql.transaction",
+        "share.environment", "share.text", "sql.execute", "sql.query", "sql.transaction", "sql.gzipJson",
         "stream.close", "stream.read", "stream.write", "sync.files.accept", "sync.files.cancel",
         "sync.files.offer", "sync.files.save", "sync.files.status", "sync.messages.ack", "sync.messages.send",
         "sync.state.delete", "sync.state.get", "sync.state.set", "sync.state.synchronize", "takeover.status",
@@ -110,8 +111,8 @@ final class ServiceResultTrace {
         "uri.parse", "video.captureBackdrop", "video.pause", "video.play", "video.prepare",
         "video.seek", "video.session.capabilities", "video.session.pause", "video.session.play", "video.session.prepare",
         "video.session.promote", "video.session.release", "video.session.seek", "video.session.setBounds", "video.session.setTransform",
-        "video.session.setVolume", "video.session.state", "video.session.stop", "video.session.transition", "video.setBounds",
-        "video.setTransform", "video.setVolume", "video.state", "video.stop", "video.surface.close",
+        "video.frame.clear", "video.frame.capture", "video.frame.restore", "video.session.captureFrame", "video.session.setLoop", "video.session.setVolume", "video.session.state", "video.session.stop", "video.session.transition", "video.setBounds",
+        "video.setTransform", "video.setLoop", "video.setVolume", "video.state", "video.stop", "video.surface.close",
         "video.surface.open", "video.surface.state", "video.surface.update", "websocket.close", "websocket.connect",
         "websocket.readText", "websocket.writeText"
     )));

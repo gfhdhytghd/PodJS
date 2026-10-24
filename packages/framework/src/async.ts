@@ -127,3 +127,17 @@ export class ExitFlushGuard<T extends object> {
     });
   }
 }
+
+/** Bound synchronous work between real host completions. Waiting for I/O is
+ * already a cooperative boundary and must not spend the next CPU slice. */
+export class HostWorkBudget {
+ private steps=0;private started:number;
+ private readonly clock:()=>number;
+ constructor(private readonly options:WorkSliceOptions){this.clock=options.clock??Date.now;this.started=this.clock();}
+ boundary(){this.steps=0;this.started=this.clock();}
+ async checkpoint(weight=1){
+  this.options.check?.();this.steps+=weight;
+  if(this.steps<(this.options.stepLimit??32)&&this.clock()-this.started<(this.options.budgetMs??2))return;
+  await this.options.yieldTurn();this.boundary();this.options.check?.();
+ }
+}

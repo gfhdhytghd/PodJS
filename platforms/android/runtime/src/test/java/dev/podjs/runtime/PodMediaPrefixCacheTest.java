@@ -92,4 +92,17 @@ public class PodMediaPrefixCacheTest {
    String uri=register(c,"limits");try{c.execute("video.cache.window",window(uri,5*M));fail();}catch(IllegalArgumentException expected){}
   }
  }
+ @Test public void prefetchEventsBindOpaqueTokenGenerationAndClassify403WithoutSecrets()throws Exception {
+  java.util.List<JSONObject> events=new java.util.concurrent.CopyOnWriteArrayList<>();
+  try(java.net.ServerSocket server=new java.net.ServerSocket(0);PodMediaPrefixCache c=new PodMediaPrefixCache(root())){
+   FutureTask<Void> served=new FutureTask<>(()->{try(java.net.Socket socket=server.accept()){BufferedReader input=new BufferedReader(new InputStreamReader(socket.getInputStream()));String line;while((line=input.readLine())!=null&&!line.isEmpty()){}socket.getOutputStream().write("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".getBytes());}return null;});new Thread(served).start();
+   c.setResultSink(events::add);String uri=c.register("private-item","http://127.0.0.1:"+server.getLocalPort()+"/private",Map.of("Cookie","fixture-secret"));JSONObject window=window(uri,M);window.getJSONArray("items").getJSONObject(0).put("itemToken","opaque_7").put("generation",42);c.execute("video.cache.window",window);idle(c);served.get(3,TimeUnit.SECONDS);
+   assertEquals(1,events.size());JSONObject value=events.get(0).getJSONObject("value");assertEquals("opaque_7",value.getString("itemToken"));assertEquals(42,value.getLong("generation"));assertEquals(403,value.getInt("httpStatus"));assertEquals("http_403",value.getString("category"));assertFalse(events.toString().contains("fixture-secret"));assertFalse(events.toString().contains("127.0.0.1"));
+  }
+ }
+ @Test public void cancelledOldPrefetchCannotPublishLateFailure()throws Exception {
+  Remote r=new Remote(2*M);r.block=true;java.util.List<JSONObject> events=new java.util.concurrent.CopyOnWriteArrayList<>();try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
+   c.setResultSink(events::add);String uri=register(c,"old");JSONObject window=window(uri,M);window.getJSONArray("items").getJSONObject(0).put("itemToken","old").put("generation",1);c.execute("video.cache.window",window);assertTrue(r.readEntered.await(2,TimeUnit.SECONDS));c.execute("video.cache.window",new JSONObject().put("items",new JSONArray()));r.block=false;Thread.sleep(50);assertTrue(events.isEmpty());
+  }
+ }
 }

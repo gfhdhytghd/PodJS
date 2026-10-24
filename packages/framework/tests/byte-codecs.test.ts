@@ -63,3 +63,10 @@ test('optional bounded gzip view decode rejects malformed bridge results and kee
   root.pod={gunzipBytes:()=>null};expect(gunzipBytes(view)).toBeNull();root.pod={gunzipBytes:()=>new Uint8Array(256*1024+1)};expect(()=>gunzipBytes(view)).toThrow('Invalid native gzip result');
  }finally{root.pod=old;}
 });
+
+test('a completed short default codec slice does not add a timer per metadata hash',async()=>{
+ const root=globalThis as any,prior=root.__podYieldCodecTurn;let turns=0;try{root.__podYieldCodecTurn=async()=>{turns++;};
+  const text='a'.repeat(5000);expect(await encodeUtf8Async(text)).toEqual(new TextEncoder().encode(text));expect(turns).toBe(0);
+  await encodeUtf8Async('a'.repeat(200000));expect(turns).toBeGreaterThan(0);
+ }finally{root.__podYieldCodecTurn=prior;}
+});

@@ -2,7 +2,16 @@
  * SET expressions must be deterministic. Anonymous bindings are numbered once,
  * so the guard reuses their values without duplicating parameters. Not a SQL
  * sanitizer; identifiers/SQL must never come from an untrusted peer. */
+const changedSqlCache=new Map<string,string>();
+let changedSqlBytes=0;
+/** Bounded by count and UTF-16 storage; keys are code-authored templates only. */
 export function onlyChangedSql(input:string):string {
+ const cached=changedSqlCache.get(input);if(cached!==undefined)return cached;
+ const result=compileChangedSql(input),bytes=2*(input.length+result.length);
+ if(bytes<=512*1024){while(changedSqlCache.size>=128||changedSqlBytes+bytes>512*1024){const key=changedSqlCache.keys().next().value!;changedSqlBytes-=2*(key.length+changedSqlCache.get(key)!.length);changedSqlCache.delete(key);}changedSqlCache.set(input,result);changedSqlBytes+=bytes;}
+ return result;
+}
+function compileChangedSql(input:string):string {
  const table=/^\s*(?:UPDATE|INSERT(?:\s+OR\s+\w+)?\s+INTO)\s+([A-Za-z_]\w*)\b/i.exec(input)?.[1];
  if(!table||!/^\s*UPDATE\b/i.test(input)&&! /\bDO\s+UPDATE\s+SET\b/i.test(input))return input;
  let sql='',quote='',index=0;

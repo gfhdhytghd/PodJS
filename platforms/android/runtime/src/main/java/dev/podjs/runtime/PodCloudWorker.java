@@ -30,7 +30,9 @@ public final class PodCloudWorker extends Worker {
         return Result.failure();
     }
     @Override public Result doWork(){
-        Context context=getApplicationContext();
+        Context context=getApplicationContext();String manualToken=getInputData().getString("manualToken");
+        if(manualToken!=null&&!manualToken.matches("[a-zA-Z0-9_-]{1,96}"))return Result.failure();
+        if(PodCloudWork.held(context)){PodCloudWork.deferHeld(context,manualToken);return Result.success();}
         if(!PodTakeover.ready(context))return Result.retry();
         ExecutorService executor=Executors.newSingleThreadExecutor();
         // Only trusted method names and aggregate counts: never host arguments,
@@ -41,7 +43,7 @@ public final class PodCloudWorker extends Worker {
             PodBackgroundPackage approved=PodCloudWork.installed(context);
             String route=approved.cloudHostMethod(PodCloudWork.debug(context));
             String source=approved.cloudSource(PodCloudWork.debug(context));
-            try(PodBackgroundRun run=new PodBackgroundRun(context.getPackageName(),PodCloudWork.HANDLER,source,300000,256*1024*1024,JSONObject.NULL,new String[]{route,"kv.get"},PodTakeover.dataRoot(context).getAbsolutePath())){
+            try(PodBackgroundRun run=new PodBackgroundRun(context.getPackageName(),PodCloudWork.HANDLER,source,300000,256*1024*1024,manualToken==null?JSONObject.NULL:new JSONObject().put("manual",true).put("token",manualToken),new String[]{route,"kv.get"},PodTakeover.dataRoot(context).getAbsolutePath())){
                 active=run;
                 try(PodServices host=new PodServices(context,event->{
                     try{JSONObject e=new JSONObject(event);if(!"service.result".equals(e.optString("t")))return;
@@ -53,6 +55,7 @@ public final class PodCloudWorker extends Worker {
                     services=host;if(isStopped())run.cancel();
                     Future<JSONObject> result=executor.submit(run::run);
                     while(!result.isDone()){
+                        if(PodCloudWork.held(context)){PodCloudWork.deferHeld(context,manualToken);run.cancel();result.get(10,TimeUnit.SECONDS);status="local_transfer_held";return Result.success();}
                         if(isStopped()){run.cancel();break;}
                         JSONObject request=run.pollRequest();
                         if(request==null){Thread.sleep(2);continue;}
@@ -70,10 +73,12 @@ public final class PodCloudWorker extends Worker {
                     if(isStopped()){status="stopped";return Result.retry();}
                     String code=outcome.optString("code"),guestStatus=outcome.optString("status");
                     status="deadline_exceeded".equals(code)?"deadline_exceeded":"completed".equals(code)&&"success".equals(guestStatus)?"success":"completed".equals(code)&&"retry".equals(guestStatus)?"retry":"guest_failed";
-                    return resultFor(outcome,getRunAttemptCount());
+                    Result mapped=resultFor(outcome,getRunAttemptCount());
+                    if(!(mapped instanceof Result.Retry))PodCloudWork.finished(context,manualToken);
+                    return mapped;
                 }finally{services=null;active=null;}
             }
-        }catch(Exception error){return getRunAttemptCount()<3?Result.retry():Result.failure();}
+        }catch(Exception error){if(getRunAttemptCount()>=3)PodCloudWork.finished(context,manualToken);return getRunAttemptCount()<3?Result.retry():Result.failure();}
         finally{executor.shutdownNow();android.util.Log.i("PodJSCloudWorker","finished status="+status+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-began)+" calls="+calls);}
     }
     @Override public void onStopped(){PodBackgroundRun run=active;if(run!=null)run.cancel();PodServices host=services;if(host!=null)host.close();}

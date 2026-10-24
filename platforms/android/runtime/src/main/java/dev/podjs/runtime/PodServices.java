@@ -250,7 +250,7 @@ final class PodServices implements Closeable {
         volatile PodSiteChallengeServices.Callback challengeCallback;
         String videoSessionId;
     }
-    PodServices(Context context, Sink sink) { PodTakeover.requireReady(context); this.context = context; this.sink = sink; textBitmapStats=memoryEnabled(context)?new PodTextRasterServices.Stats():null; device = new PodDeviceServices(context); media = new PodMediaServices(context, event -> { if (!closed) sink.complete(event); }); videoDecoderBudget=new PodVideoDecoderBudget(PodVideoSessionServices.MAX_SESSIONS); mediaPrefixCache=new PodMediaPrefixCache(new java.io.File(context.getCacheDir(),"podjs-media-prefix"));video = new PodVideoServices(context,videoDecoderBudget,mediaPrefixCache); videoSessions=new PodVideoSessionServices(context,videoDecoderBudget,mediaPrefixCache); mediaSurfaces = new PodMediaSurfaceServices(context); inlineText = new PodInlineTextInput(context,event->{if(!closed)sink.complete(event);}); images = new PodImageServices(context); http = new PodHttpServices(context); byteStreams = new PodByteStreamServices(context); webSockets = new PodWebSocketServices(context,byteStreams); discovery = new PodDiscoveryServices(context); bleDiscovery = new PodBleDiscoveryServices(context); provisioning=new PodBleProvisionServices(context); provisionPermission=new PodBluetoothPermission(context,0x5056,PodBlePermissions.required(android.os.Build.VERSION.SDK_INT,false,true)); networks = new PodNetworkServices(context,event->{if(!closed)sink.complete(event);}); browser = new PodBrowserServices(context); browserAuth = new PodBrowserAuthServices(context); siteChallenge = new PodSiteChallengeServices(context); acoustic=new PodAcousticServices(context);guidedWifi=new PodGuidedWifiServices(context,acoustic);
+    PodServices(Context context, Sink sink) { PodTakeover.requireReady(context); this.context = context; this.sink = sink; textBitmapStats=memoryEnabled(context)?new PodTextRasterServices.Stats():null; device = new PodDeviceServices(context); media = new PodMediaServices(context, event -> { if (!closed) sink.complete(event); }); videoDecoderBudget=new PodVideoDecoderBudget(PodVideoSessionServices.MAX_SESSIONS); mediaPrefixCache=new PodMediaPrefixCache(new java.io.File(context.getCacheDir(),"podjs-media-prefix"));mediaPrefixCache.setResultSink(event->main.post(()->{if(!closed)sink.complete(event.toString());}));video = new PodVideoServices(context,videoDecoderBudget,mediaPrefixCache); videoSessions=new PodVideoSessionServices(context,videoDecoderBudget,mediaPrefixCache); mediaSurfaces = new PodMediaSurfaceServices(context); inlineText = new PodInlineTextInput(context,event->{if(!closed)sink.complete(event);}); images = new PodImageServices(context); http = new PodHttpServices(context); byteStreams = new PodByteStreamServices(context); webSockets = new PodWebSocketServices(context,byteStreams); discovery = new PodDiscoveryServices(context); bleDiscovery = new PodBleDiscoveryServices(context); provisioning=new PodBleProvisionServices(context); provisionPermission=new PodBluetoothPermission(context,0x5056,PodBlePermissions.required(android.os.Build.VERSION.SDK_INT,false,true)); networks = new PodNetworkServices(context,event->{if(!closed)sink.complete(event);}); browser = new PodBrowserServices(context); browserAuth = new PodBrowserAuthServices(context); siteChallenge = new PodSiteChallengeServices(context); acoustic=new PodAcousticServices(context);guidedWifi=new PodGuidedWifiServices(context,acoustic);
         acousticPermission=new PodBluetoothPermission(context,0x5045,new String[]{android.Manifest.permission.RECORD_AUDIO});
         guidedPermission=new PodBluetoothPermission(context,0x5046,android.os.Build.VERSION.SDK_INT>=33?new String[]{android.Manifest.permission.RECORD_AUDIO,android.Manifest.permission.ACCESS_FINE_LOCATION,android.Manifest.permission.NEARBY_WIFI_DEVICES}:new String[]{android.Manifest.permission.RECORD_AUDIO,android.Manifest.permission.ACCESS_FINE_LOCATION});
         notificationPermission=new PodNotificationPermission(context); bluetoothPermission=new PodBluetoothPermission(context); discoveryPermission=new PodBluetoothPermission(context,0x5044,PodBleDiscoveryServices.permissions()); location=new PodLocationServices(context); }
@@ -589,6 +589,14 @@ final class PodServices implements Closeable {
             });
             return;
         }
+        if ("browser.updateTheme".equals(method)) {
+            main.post(() -> { try {
+                request.cancellation.throwIfCanceled();
+                JSONObject value = new JSONObject().put("updated", browser.updateTheme(args));
+                if (requests.remove(id, request)) reply(id, true, value, null, null);
+            } catch (Exception error) { if (requests.remove(id, request)) failure(id,"invalid_argument",error.getMessage()); } });
+            return;
+        }
         if ("browser.open".equals(method) || "browser.openInApp".equals(method)) { openBrowser(id, request, args); return; }
         if ("share.environment".equals(method) || "share.text".equals(method)) {
             main.post(() -> {
@@ -785,6 +793,7 @@ final class PodServices implements Closeable {
             return reportChanges ? changes : JSONObject.NULL;
         }
         if ("sql.execute".equals(method)) { execute(args); return JSONObject.NULL; }
+        if ("sql.gzipJson".equals(method)) return PodSqlGzipJson.project(db(),PodTakeover.filesRoot(context),args,cancellation);
         if (!"sql.query".equals(method)) throw new IllegalArgumentException("Unknown SQL method");
         String sql = args.getString("sql");
         JSONArray params = args.optJSONArray("params");

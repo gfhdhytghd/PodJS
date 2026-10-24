@@ -607,8 +607,14 @@ public final class PodDeviceServices implements AutoCloseable {
         for (File file : files) entries.put(new JSONObject()
             .put("path", root.toPath().relativize(file.toPath()).toString())
             .put("file", file.isFile()).put("directory", file.isDirectory())
-            .put("size", file.isFile() ? file.length() : 0).put("modified", file.lastModified()));
+            .put("size", file.isFile() ? file.length() : 0).put("modified", file.lastModified()).put("changeToken", fileChangeToken(file)));
         return new JSONObject().put("entries", entries);
+    }
+    /** A metadata witness, not a content checksum. Nanosecond ctime/inode also
+     * observe same-length replacements with an unchanged millisecond mtime. */
+    private static String fileChangeToken(File file) throws android.system.ErrnoException {
+        android.system.StructStat s=android.system.Os.lstat(file.getPath());
+        return s.st_dev+":"+s.st_ino+":"+s.st_mode+":"+s.st_size+":"+s.st_mtim.tv_sec+":"+s.st_mtim.tv_nsec+":"+s.st_ctim.tv_sec+":"+s.st_ctim.tv_nsec;
     }
     private JSONObject fileTouch(JSONObject a) throws Exception {
         File file = safeFile(required(a, "path"));
@@ -616,7 +622,7 @@ public final class PodDeviceServices implements AutoCloseable {
         return new JSONObject().put("modified", file.lastModified());
     }
     private JSONObject fileStat(JSONObject a) throws Exception {
-        File f = safeFile(required(a, "path")); return new JSONObject().put("exists", f.exists()).put("file", f.isFile()).put("directory", f.isDirectory()).put("size", f.isFile() ? f.length() : 0).put("modified", f.exists() ? f.lastModified() : 0);
+        File f = safeFile(required(a, "path")); return new JSONObject().put("exists", f.exists()).put("file", f.isFile()).put("directory", f.isDirectory()).put("size", f.isFile() ? f.length() : 0).put("modified", f.exists() ? f.lastModified() : 0).put("changeToken", f.exists()?fileChangeToken(f):"missing");
     }
     private JSONObject fileDelete(JSONObject a) throws Exception { File f = safeFile(required(a, "path")); boolean deleted = f.isFile() && f.delete(); if (deleted || !f.exists()) temporaryFiles.remove(f); return new JSONObject().put("deleted", deleted); }
 

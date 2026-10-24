@@ -29,7 +29,7 @@ public final class PodTakeover {
     }
     private static PodTakeoverCoordinator coordinator(Context c,File sandbox,ProgressReporter progress) {
         return new PodTakeoverCoordinator(new File(sandbox,"files/package-takeover"),
-                () -> detect(c,sandbox),new PodTakeoverConverters(new PodRoomV18Converter(new File(sandbox,"databases/watchrss.db"),
+                () -> detect(c,sandbox),new PodTakeoverConverters(new PodRoomVersionsConverter(new File(sandbox,"databases/watchrss.db"),
                     PodRoomAndroidDb::new,(File generation) -> PodStoreConverter.identity(new File(generation,"stores-source")),progress::roomCopied).withActiveFactory(f->new PodRoomAndroidDb(f,true,null)).withTimings(PodTakeoverDiagnostics::timed),
                     new PodStoreConverter(sandbox,new PodStoreAndroidCrypto(c),
                         "com.lightningstudio.watchrss.podjs.rehearsal".equals(c.getPackageName())&&

@@ -29,7 +29,7 @@ async function collect<T>(pieces:Iterable<T>,options:CodecWorkOptions):Promise<T
   // Bound CPU work as well as bytes. Fast native pieces should share a turn,
   // rather than paying one Android timer/service roundtrip for every 4 KiB.
   if(piecesInSlice>=16||now()-sliceStart>=8){await yieldTurn(options);sliceStart=now();piecesInSlice=0;}
- }if(piecesInSlice)await yieldTurn(options);check(options);return out;}
+ }if(piecesInSlice&&(options.cancelled||options.yield))await yieldTurn(options);check(options);return out;}
  finally{iterator.return?.();}
 }
 /** Bounded 4 KiB pieces share a slice of at most 16 pieces / 8 ms before yielding. */

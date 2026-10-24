@@ -36,6 +36,7 @@ interface PodHost {
   kvDelete(key: string): number;
   kvKeys(): string;
   kvApply?(mutations:string):number;
+  kvFingerprint?(key:string):string|undefined;
 }
 
 type AxisHandler = (delta: number) => void;
@@ -227,6 +228,12 @@ export const kv = Object.freeze({
     validateKvKey(key);
     return traceServiceWork("kv.get",()=>{const value = kvBatch?.has(key)?kvBatch.get(key):host()?.kvGet(key);
     return value === undefined ? undefined : JSON.parse(value) as T;});
+  },
+  /** SHA-256 of the authoritative canonical raw value, computed/cached by the
+   * native store. Undefined also means an old host cannot provide a witness. */
+  fingerprint(key:string):string|undefined {
+    validateKvKey(key);if(kvBatch?.has(key))return undefined;
+    return host()?.kvFingerprint?.(key);
   },
   set(key: string, value: unknown): void {
     validateKvKey(key);

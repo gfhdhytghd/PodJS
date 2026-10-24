@@ -8,3 +8,10 @@ test('production default host operations retain opaque URI, headers, range-windo
  const window=mediaPrefixCache.window([{uri,prefetchBytes:2097152,captureBytes:4194304}],12345);const next=emitted.at(-1);expect(next.args).toEqual({items:[{uri,prefetchBytes:2097152,captureBytes:4194304}],foregroundBitrate:12345,revision:1});events.push({t:'service.result',id:next.id,ok:true,value:{bytes:2097152}});__pumpPodEvents();expect((await window.result).bytes).toBe(2097152);
  const clear=mediaPrefixCache.clear();const last=emitted.at(-1);expect(last.method).toBe('video.cache.clear');events.push({t:'service.result',id:last.id,ok:true,value:{removedBytes:2097152}});__pumpPodEvents();expect((await clear.result).removedBytes).toBe(2097152);
 });
+test('prefetch result events carry opaque identities, HTTP classification and generation; unsubscribe works',()=>{
+ const seen:any[]=[];const off=mediaPrefixCache.onResult(value=>seen.push(value));
+ const value={itemToken:'opaque_1',generation:7,result:'failure',httpStatus:403,category:'http_403'};
+ events.push({t:'video.cache.result',value});__pumpPodEvents();expect(seen).toEqual([value]);
+ for(const invalid of [{...value,itemToken:'https://secret'},{...value,generation:-1},{...value,httpStatus:900},{...value,category:'arbitrary'}]){events.push({t:'video.cache.result',value:invalid});__pumpPodEvents();}expect(seen).toHaveLength(1);
+ off();events.push({t:'video.cache.result',value});__pumpPodEvents();expect(seen).toHaveLength(1);
+});

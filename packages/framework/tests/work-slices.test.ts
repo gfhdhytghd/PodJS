@@ -23,3 +23,12 @@ test('work failures close the iterator and invalid budgets fail before executing
  await expect(runWorkSteps(steps(),{yieldTurn:async()=>{}})).rejects.toThrow('work failed');expect(closed).toBe(true);
  await expect(runWorkSteps(steps(),{yieldTurn:async()=>{},stepLimit:0})).rejects.toThrow('budget');
 });
+
+test('host I/O completions start a fresh CPU budget instead of causing an extra host request',async()=>{
+ const {HostWorkBudget}=await import('../src/async');let now=0,yields=0,cancelled=false;
+ const gate=new HostWorkBudget({clock:()=>now,yieldTurn:async()=>{yields++;now+=10;},check:()=>{if(cancelled)throw Error('cancelled');},budgetMs:2,stepLimit:32});
+ for(let i=0;i<2135;i++){now+=8;gate.boundary();await gate.checkpoint();}expect(yields).toBe(0);
+ now+=3;await gate.checkpoint();expect(yields).toBe(1);
+ for(let i=0;i<32;i++)await gate.checkpoint();expect(yields).toBe(2);
+ cancelled=true;await expect(gate.checkpoint()).rejects.toThrow('cancelled');
+});

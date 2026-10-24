@@ -30,7 +30,8 @@ test('default layout and byte codecs complete through Android timer validation a
  let complete=false,failure:unknown,turns=0;const published:any[]=[];
  const work=(async()=>{
   await prepareTextLayout(fixture(35),callbacks(value=>published.push(value))).done;
-  const text='中🙂'.repeat(3000),bytes=await encodeUtf8Async(text);
+  // Exceed a codec slice; completed small metadata codecs no longer add timers.
+  const text='中🙂'.repeat(14000),bytes=await encodeUtf8Async(text);
   const base64=await encodeBase64Async(bytes);expect(await decodeBase64Async(base64)).toEqual(bytes);
   expect(await decodeUtf8Async(bytes)).toBe(text);
  })().catch(error=>{failure=error;}).finally(()=>{complete=true;});
