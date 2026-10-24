@@ -44,3 +44,13 @@ test('owned state cleanup preserves a new publisher and original call order',()=
  state={};cleanup();expect(calls).toEqual(['apply','snapshot','snapshot']);
  calls=[];const owned=restoreIfOwned(()=>calls.push('apply'),()=>state,()=>calls.push('restore'));owned();expect(calls).toEqual(['apply','restore']);
 });
+
+test('large numeric JSON walks yield in bounded value groups and retain exact lexical metadata',async()=>{
+ const {parseJsonObjectNumbersAsync}=await import('../src/json-numbers');
+ const rows=Array.from({length:2135},(_,i)=>`{"id":${i},"clock":9007199254740991,"real":1.0,"exp":1e0,"negative":-0,"escaped":"\\\"a\\\\b","duplicate":1,"duplicate":null}`),text='{"rows":['+rows.join(',')+']}';let turns=0;
+ const out=await parseJsonObjectNumbersAsync(text,{yield:async()=>{turns++;}}),sync=parseJsonObjectNumbers(text);expect(out).toEqual(sync);expect(turns).toBeGreaterThan(100);
+ for(const row of out.rows as Record<string,unknown>[]){expect(jsonNumberToken(row,'clock')).toBe('9007199254740991');expect(jsonNumberToken(row,'real')).toBe('1.0');expect(jsonNumberToken(row,'exp')).toBe('1e0');expect(jsonNumberToken(row,'negative')).toBe('-0');expect(jsonNumberToken(row,'duplicate')).toBeUndefined();expect(isJsonInteger(row,'real')).toBe(false);}
+ let cancelled=false,steps=0;await expect(parseJsonObjectNumbersAsync(text,{cancelled:()=>cancelled,yield:async()=>{if(++steps===3)cancelled=true;}})).rejects.toThrow('JSON parse cancelled');expect(steps).toBe(3);
+ const longWhitespace='{'+ ' '.repeat(20000)+'"rows":['+rows.slice(0,150).join(',')+']}';let ticks=0;const timer=setInterval(()=>ticks++,0);try{expect((await parseJsonObjectNumbersAsync(longWhitespace)).rows).toHaveLength(150);expect(ticks).toBeGreaterThan(5);}finally{clearInterval(timer);}
+ await expect(parseJsonObjectNumbersAsync('{"x":'+ '['.repeat(130)+'0'+']'.repeat(130)+'}',{maxDepth:128})).rejects.toThrow('JSON nesting too deep');
+});
