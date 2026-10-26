@@ -43,3 +43,21 @@ export async function readSqlText(db:SqlQueryPort,select:string,params:SqlParams
  }
  return parts.join('');
 }
+
+/** Equivalent to ordered PRAGMA table_info for exact sqlite_master names.
+ * Table-valued PRAGMA batches metadata into bounded pages instead of one host
+ * round trip per table. Older SQLite hosts retain the individual-PRAGMA path. */
+export async function querySqlTableInfo(db:SqlQueryPort,names:readonly string[]):Promise<Map<string,Record<string,unknown>[]>>{
+ const unique=[...new Set(names)],out=new Map(unique.map(name=>[name,[] as Record<string,unknown>[]]));
+ try{
+  for(let at=0;at<unique.length;at+=200){const page=unique.slice(at,at+200);
+   const rows=await querySqlPages(db,"SELECT m.name AS table_name,p.* FROM sqlite_master m JOIN pragma_table_info(m.name) p WHERE m.type IN ('table','view') AND m.name IN ("+page.map(()=>'?').join(',')+") ORDER BY m.name,p.cid",page);
+   for(const row of rows){const {table_name,...columns}=row;out.get(String(table_name))?.push(columns);}
+  }return out;
+ }catch(error){
+  if(!/no such (?:table|function):\s*pragma_table_info|near ["']\(["']:\s*syntax error/i.test(String(error)))throw error;
+  // Discard any partial batch before falling back; no failed query certifies metadata.
+  out.clear();for(const name of unique)out.set(name,await db.query('PRAGMA table_info("'+name.replaceAll('"','""')+'")'));
+  return out;
+ }
+}

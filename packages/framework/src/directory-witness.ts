@@ -27,7 +27,14 @@ export async function directoryWitnessWindow(paths:readonly string[],list:(path:
  if(!digest)return undefined;
  const valid=async()=>{
   for(const [p,token]of directories){const s=await stat(p);if(token===null?s.exists:!s.exists||!s.directory||s.changeToken!==token)return false;}
-  for(const [p,token]of files){const s=await stat(p);if(!s.exists||!s.file||s.changeToken!==token)return false;}
+  // Independent metadata probes share a bounded host turn. Sequential awaits
+  // cost one bridge/looper round trip per immutable file on a cold connection.
+  // Drain the entire batch even on rejection, then preserve ordered failure semantics.
+  const entries=[...files];
+  for(let at=0;at<entries.length;at+=8){
+   const results=await Promise.allSettled(entries.slice(at,at+8).map(async([p,token])=>{const s=await stat(p);return s.exists&&s.file&&s.changeToken===token;}));
+   for(const r of results){if(r.status==='rejected')throw r.reason;if(!r.value)return false;}
+  }
   return true;
  };
  if(!await valid())return undefined;

@@ -169,6 +169,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/html-slices` | Incremental/cancellable HTML fragment parsing. |
 | `@podjs/framework/xml` | Generic XML parsing and document navigation. |
 | `@podjs/framework/json-raw` | Bounded immutable JSON token spans; patch understood fields while retaining unknown token bytes. |
+| `@podjs/framework/record-tuples` | Compact ordered JSON values for derived indexes; unknown names retained, original records remain authoritative |
 | `@podjs/framework/json` | Bounded JSON projection without materializing unused fields. |
 | `@podjs/framework/json-numbers` | JSON parsing that keeps lexical number tokens (`1` vs `1.0`). |
 | `@podjs/framework/text-compat` | Compatibility text policies including `kotlinTrim` (JVM whitespace), kept independent of application labels. |
@@ -316,3 +317,17 @@ properties and copies every untouched key-through-value span verbatim. An
 input or decide application feature/compatibility policy. `parseRawJsonAsync`
 uses the same scanner, yielding between bounded pieces; optional `check` and
 `yield` ports support cancellation and host scheduling without changing tokens.
+
+`jsonRecordTupleCodec(fields)` encodes ordered object entries as known numeric
+indexes or unknown string names. Decode after JSON parsing restores own properties
+(including `__proto__`) and rejects duplicate fields/unknown numeric indexes. Keep
+ordinals append-only within a cache format. This is a JSON-value codec for derived
+metadata, not a substitute for raw-token preservation in authenticated documents.
+
+`querySqlTableInfo(db, names)` batches exact sqlite_master table/view names while
+retaining PRAGMA column order and values; unsupported older SQLite uses quoted
+individual PRAGMAs. `ProgressDeadline` bounds a single asynchronous I/O operation
+by first-byte and positive-byte idle limits; the caller retains its total budget
+and closes its transport on timeout. Disarm it after byte input completes, before
+long decoding or application work. Directory witnesses batch at most eight file
+stat probes and drain each batch on errors; changed/missing tokens still fail.

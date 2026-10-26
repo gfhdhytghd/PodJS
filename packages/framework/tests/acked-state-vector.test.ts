@@ -13,7 +13,7 @@ describe('bilateral applied state receipts',()=>{
  it('rejects unknown, duplicate, invalid roots and unsafe integer versions',async()=>{expect(()=>checkedStateRoots({no:a},['one'])).toThrow();expect(()=>checkedStateReceipts({one:{localRoot:a,remoteRoot:{toString:()=>b}}},['one'])).toThrow();for(const n of [-1,1.1,Number.MAX_SAFE_INTEGER+1])expect(()=>versionRootText('example.state.v1','one','0'.repeat(32),n)).toThrow();const x=setup();const w=await x.v.summary({one:b},{});x.v.completed('one');await expect(x.v.stage(w.windowId,{one:b},['one','one'])).rejects.toThrow();});
 });
 
-import {directoryWitness} from '../src/directory-witness';
+import {directoryWitness,directoryWitnessWindow} from '../src/directory-witness';
 it('directory witnesses observe replacement tokens without reading file bodies',async()=>{
  let token='inode:1:ctime:1';const list=async()=>({entries:[{path:'assets/a',file:true,directory:false,size:100,modified:5,changeToken:token}]});
  const hash=async(s:string)=>new Bun.CryptoHasher('sha256').update(s).digest('hex');
@@ -35,4 +35,13 @@ it('publication identifies actual original-domain completion separately from an 
  const root='a'.repeat(64),peer='b'.repeat(64);let publication:unknown;
  const v=new AckedStateVector(['one','two'],async()=>({one:root,two:root}),async()=>({one:{localRoot:root,remoteRoot:peer}}),async(_rows,context)=>{publication=context;},()=> 'window');
  const s=await v.summary({one:peer,two:peer},{one:{localRoot:peer,remoteRoot:root}});v.completed('two');await v.stage(s.windowId,{one:peer,two:peer},['two']);await v.applied();expect(publication).toEqual({completedDomains:['two'],skippedDomains:['one']});
+});
+
+it('directory witness bounds independent metadata probes, drains failures and rejects changed files',async()=>{
+ let active=0,max=0,changed='',failure='';
+ const names=Array.from({length:25},(_,i)=>'assets/f'+i);
+ const stat=async(path:string)=>{active++;max=Math.max(max,active);try{await Promise.resolve();if(path===failure)throw Error('stat failed');return {exists:true,file:path!=='assets',directory:path==='assets',size:10,modified:1,changeToken:path===changed?'changed':'stable'};}finally{active--;}};
+ const w=await directoryWitnessWindow(['assets'],async()=>({entries:names.map(path=>({path,file:true,directory:false,size:10,modified:1,changeToken:'stable'}))}),stat,async()=> 'digest');
+ expect(w).toBeDefined();expect(max).toBe(8);expect(active).toBe(0);expect(await w!.valid()).toBe(true);
+ changed=names[20]!;expect(await w!.valid()).toBe(false);changed='';failure=names[3]!;await expect(w!.valid()).rejects.toThrow('stat failed');expect(active).toBe(0);
 });

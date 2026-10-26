@@ -20,6 +20,9 @@ export class StreamFrameConnection<T> {
  private reading=false;
  private writing=false;
  private timing:((sample:FrameTiming)=>void)|undefined;
+ private readBytesComplete:(()=>void)|undefined;
+ /** Byte input is complete; codec work may still be running. */
+ setReadBytesComplete(listener:(()=>void)|undefined){this.readBytesComplete=listener;}
  setFrameTiming(listener:((sample:FrameTiming)=>void)|undefined){this.timing=listener;}
  private reportTiming(sample:FrameTiming){try{this.timing?.(sample);}catch{/* Observability must not fail a transfer. */}}
  private progress:((progress:TransferByteProgress)=>void)|undefined;
@@ -33,9 +36,9 @@ export class StreamFrameConnection<T> {
   if(!Number.isFinite(timeoutMs)||timeoutMs<=0)throw new Error('Invalid sync read deadline');
   this.reading=true;const deadline=this.now()+timeoutMs;
   try{
-   const began=this.now();const header=new Uint8Array(4);await this.readInto(header,deadline,false);this.progress?.({direction:'read',bytes:4});
+   const began=this.now();const header=new Uint8Array(4);await this.readInto(header,deadline);
    const length=new DataView(header.buffer).getInt32(0,false);if(length<1||length>this.codec.maxFrameBytes)throw new Error('Sync frame length out of range');
-   const frame=new Uint8Array(length+4);frame.set(header);await this.readInto(frame.subarray(4),deadline);const received=this.now();const value=await this.codec.decode(frame,{cancelled:()=>this.closed});this.reportTiming({direction:'read',bytes:frame.length,readMs:Math.max(0,received-began),decodeMs:Math.max(0,this.now()-received),encodeMs:0,writeMs:0});return value;
+   const frame=new Uint8Array(length+4);frame.set(header);await this.readInto(frame.subarray(4),deadline);const received=this.now();try{this.readBytesComplete?.();}catch{}const value=await this.codec.decode(frame,{cancelled:()=>this.closed});this.reportTiming({direction:'read',bytes:frame.length,readMs:Math.max(0,received-began),decodeMs:Math.max(0,this.now()-received),encodeMs:0,writeMs:0});return value;
   }catch(error){await this.close();throw error;}finally{this.reading=false;}
  }
  private async readInto(target:Uint8Array,deadline:number,report=true):Promise<void>{
@@ -150,4 +153,31 @@ export function createFrameFacade<T, Work>(options:FrameFacadeOptions<T,Work>) {
   decodeFrameAsync:async(frame:Uint8Array,work:Work)=>options.decodeBodyAsync(unwrap(frame),work),
   FrameDecoder,
  };
+}
+
+export interface DeadlineTimer {result:Promise<unknown>;cancel():void}
+/** Optional idle bound around an async operation. Only positive byte progress
+ * renews it; the caller retains its independent total deadline. Timer work is
+ * bounded: bursts update a timestamp rather than creating a timer per chunk. */
+export class ProgressDeadline {
+ private timer:DeadlineTimer|undefined;private end=0;private running=false;private done=false;private settled=false;private first=true;
+ private reject:((error:Error)=>void)|undefined;
+ constructor(private readonly delay:(ms:number)=>DeadlineTimer,private readonly firstMs:number,private readonly idleMs:number,private readonly now=Date.now,private readonly onTimeout=()=>{}){
+  if(!Number.isFinite(firstMs)||firstMs<=0||!Number.isFinite(idleMs)||idleMs<=0)throw new RangeError('Invalid progress deadline');
+ }
+ stop(){if(!this.running)return;this.done=true;this.timer?.cancel();this.timer=undefined;}
+ cancel(){if(!this.running||this.settled)return;this.stop();this.reject?.(new Error('Stream operation cancelled'));}
+ progress(bytes:number){if(!this.running||this.done||!Number.isFinite(bytes)||bytes<=0)return;this.end=this.now()+this.idleMs;if(this.first){this.first=false;this.timer?.cancel();this.arm();}}
+ private arm(){
+  const timer=this.delay(Math.max(1,this.end-this.now()));this.timer=timer;
+  void timer.result.then(()=>{
+   if(this.done||this.timer!==timer)return;if(this.end>this.now()){this.arm();return;}
+   this.done=true;try{this.onTimeout();}catch{}this.reject?.(new Error('Stream made no byte progress before idle deadline'));
+  },error=>{if(!this.done&&this.timer===timer){this.done=true;this.reject?.(error instanceof Error?error:new Error(String(error)));}});
+ }
+ async run<T>(work:()=>Promise<T>):Promise<T>{
+  if(this.running)throw new Error('Progress deadline is single use');this.running=true;this.end=this.now()+this.firstMs;
+  const timeout=new Promise<never>((_,reject)=>{this.reject=reject;this.arm();});
+  try{return await Promise.race([work(),timeout]);}finally{this.settled=true;this.done=true;this.timer?.cancel();this.timer=undefined;}
+ }
 }
