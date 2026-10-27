@@ -17,3 +17,11 @@ test('async raw JSON yields bounded work, agrees with sync and checks cancellati
  const node=await parseRawJsonAsync(text,{yield:async()=>{turns++;}});expect(rawJsonText(node)).toBe(rawJsonText(parseRawJson(text)));expect(turns).toBeGreaterThan(5);
  let cancelled=false;await expect(parseRawJsonAsync(text,{yield:async()=>{cancelled=true;},check:()=>{if(cancelled)throw Error('cancelled');}})).rejects.toThrow('cancelled');
 });
+
+test('integer JCS sorts UTF16 keys, canonicalizes strings and exact integral tokens',()=>{
+ const {canonicalIntegerJson}=require('../src/json-raw');
+ expect(canonicalIntegerJson('{"z":1e3,"a":-0,"中":"\\u4e2d","😀":12.00,"￿":true}')).toBe('{"a":0,"z":1000,"中":"中","😀":12,"￿":true}');
+ expect(canonicalIntegerJson('[9007199254740991,90071992547409910e-1,0.001e3,null]')).toBe('[9007199254740991,9007199254740991,1,null]');
+ for(const token of ['9007199254740992','9007199254740991.1','1e-324','-1','1.1','1e99999'])expect(()=>canonicalIntegerJson(token)).toThrow('json_integer_required');
+ for(const source of ['{"a":1,"\\u0061":2}','"\\ud800"'])expect(()=>canonicalIntegerJson(source)).toThrow();
+});

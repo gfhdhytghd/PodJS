@@ -48,6 +48,7 @@
     "./regexp": "./src/regexp.ts",
     "./sql-changes": "./src/sql-changes.ts",
     "./sql": "./src/sql.ts",
+    "./digest-cache": "./src/digest-cache.ts",
     "./frame-stream": "./src/frame-stream.ts",
     "./variable-list": "./src/variable-list.tsx",
     "./text-environment": "./src/text-environment.ts",

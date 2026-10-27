@@ -16,6 +16,24 @@ export async function querySqlPages(db:SqlQueryPort,query:string,params:SqlParam
  }
 }
 
+/** Ascending positive integer key pagination. The caller supplies the key
+ * predicate as the last placeholder (for example `id>? ORDER BY id`); no OFFSET
+ * is evaluated. Surrounding revision guards still own snapshot consistency. */
+export async function querySqlKeysetPages(db:SqlQueryPort,query:string,params:SqlParams=[],options:{key:string;after?:number;pageSize?:number}={key:'id'}):Promise<Record<string,unknown>[]>{
+ let cursor=options.after??0,size=options.pageSize??400;
+ if(!options.key||!Number.isSafeInteger(cursor)||cursor<0||!Number.isSafeInteger(size)||size<1||size>1000)throw Error('Invalid SQL keyset options');
+ const result:Record<string,unknown>[]=[];
+ for(;;){
+  let rows:Record<string,unknown>[];
+  try{rows=await db.query(query+' LIMIT ?',[...params,cursor,size]);}
+  catch(error){if(size>1&&/query result too large/i.test(String(error))){size=Math.max(1,Math.floor(size/2));continue;}throw error;}
+  if(rows.length>size)throw Error('SQL keyset page exceeds requested limit');
+  let next=cursor;
+  for(const row of rows){const key=Number(row[options.key]);if(!Number.isSafeInteger(key)||key<=next)throw Error('SQL keyset cursor did not advance');next=key;}
+  result.push(...rows);cursor=next;if(rows.length<size)return result;
+ }
+}
+
 export interface SqlTextOptions {maxBytes?:number;errors?:{invalid:string;changed:string;boundary:string}}
 /** Read a trusted single-column SELECT (aliased `value`) in bounded byte pages.
  * BLOB substr preserves embedded NULs. A four-byte boundary probe keeps each

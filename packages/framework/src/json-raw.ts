@@ -34,6 +34,31 @@ export function parseRawJson(source:string,options:RawJsonOptions={}):RawJsonNod
  * cap remain owned by the caller; cancellation is checked at every boundary. */
 export async function parseRawJsonAsync(source:string,options:RawJsonOptions&{yield?:()=>Promise<void>;check?:()=>void}={}):Promise<RawJsonNode> {const steps=parseRawJsonSteps(source,options);const pause=options.yield??(()=>new Promise<void>(resolve=>setTimeout(resolve,0)));for(;;){options.check?.();const next=steps.next();if(next.done)return next.value;await pause();}}
 export const rawJsonText=(node:RawJsonNode)=>node.source.slice(node.start,node.end);
+/** RFC 8785 canonical JSON for protocols restricted to nonnegative safe
+ * integers. Parse the original tokens first: JSON.parse alone rounds fractions
+ * and underflow before Number.isSafeInteger can reject them. Unknown extension
+ * data must use raw spans instead; this function deliberately canonicalizes. */
+export function canonicalIntegerJson(source:string,options:RawJsonOptions={}):string {
+ const root=parseRawJson(source,options);
+ const integer=(token:string)=>{
+  const m=/^(-?)([0-9]+)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?$/.exec(token);
+  if(!m)throw new Error('json_integer_required');
+  let digits=(m[2]+(m[3]??'')).replace(/^0+/,'');if(!digits)return '0';
+  if(m[1])throw new Error('json_integer_required');
+  const exponent=Number(m[4]??0)-(m[3]?.length??0);
+  if(!Number.isSafeInteger(exponent)||Math.abs(exponent)>source.length+16)throw new Error('json_integer_required');
+  if(exponent<0){const n=-exponent;if(n>digits.length||!/^0*$/.test(digits.slice(-n)))throw new Error('json_integer_required');digits=digits.slice(0,-n);}
+  else {if(digits.length+exponent>16)throw new Error('json_integer_required');digits+='0'.repeat(exponent);}
+  if(digits.length>16||(digits.length===16&&digits>'9007199254740991'))throw new Error('json_integer_required');
+  return digits;
+ };
+ const emit=(node:RawJsonNode):string=>{
+  if(node.kind==='array')return '['+(node.items??[]).map(emit).join(',')+']';
+  if(node.kind==='object')return '{'+[...(node.properties??[])].sort((a,b)=>a.key<b.key?-1:a.key>b.key?1:0).map(p=>JSON.stringify(p.key)+':'+emit(p.value)).join(',')+'}';
+  const token=rawJsonText(node);return token[0]==='"'?JSON.stringify(rawJsonValue(node)):['true','false','null'].includes(token)?token:integer(token);
+ };
+ return emit(root);
+}
 export function rawJsonProperty(node:RawJsonNode,key:string){return node.properties?.find(p=>p.key===key)?.value;}
 export function rawJsonValue<T=unknown>(node:RawJsonNode):T{return JSON.parse(rawJsonText(node)) as T;}
 /** Values in edits are already complete JSON tokens. Only named properties are

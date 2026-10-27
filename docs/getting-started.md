@@ -168,7 +168,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/html` | Generic HTML parsing, entities and text extraction. |
 | `@podjs/framework/html-slices` | Incremental/cancellable HTML fragment parsing. |
 | `@podjs/framework/xml` | Generic XML parsing and document navigation. |
-| `@podjs/framework/json-raw` | Bounded immutable JSON token spans; patch understood fields while retaining unknown token bytes. |
+| `@podjs/framework/json-raw` | Bounded immutable JSON token spans; patch known fields retaining unknown bytes. `canonicalIntegerJson` provides RFC 8785 JCS with exact nonnegative safe integer token validation for signed protocols; never use it to rewrite unknown extensions. |
 | `@podjs/framework/record-tuples` | Compact ordered JSON values for derived indexes; unknown names retained, original records remain authoritative |
 | `@podjs/framework/json` | Bounded JSON projection without materializing unused fields. |
 | `@podjs/framework/json-numbers` | JSON parsing that keeps lexical number tokens (`1` vs `1.0`). |

@@ -108,3 +108,12 @@ test('headless changed-row SQL helper bundles without services and keeps unsafe 
  expect(context.backgroundHandler()).toContain('IS NOT');expect(context.pod).toBeUndefined();expect(context.frame).toBeUndefined();
  const denied=fixture("import * as api from '@podjs/framework/sql-changes/unsafe';export default ()=>api;");await expect(buildBackground({denied:denied.entry},denied.root)).rejects.toThrow('Background');
 });
+
+
+test('headless exact-byte digest memo stays host-free and denies unrestricted subpaths',async()=>{
+ const {root,entry}=fixture("import {memoizeSmallDigest} from '@podjs/framework/digest-cache';export default async()=>{let calls=0,checks=0;const digest=memoizeSmallDigest(async b=>{calls++;return [...b].join(',');},{beforeUse:()=>{checks++;}});return{one:await digest(Uint8Array.of(1,2)),two:await digest(Uint8Array.of(1,2)),calls,checks};};");
+ mkdirSync(join(root,'node_modules/@podjs'),{recursive:true});symlinkSync(new URL('../packages/framework',import.meta.url).pathname,join(root,'node_modules/@podjs/framework'),'dir');
+ const artifacts=await buildBackground({digest:entry},root),context:Record<string,any>={};runInNewContext(readFileSync(join(root,artifacts.digest!.file),'utf8'),context);
+ expect(JSON.parse(JSON.stringify(await context.backgroundHandler()))).toEqual({one:'1,2',two:'1,2',calls:1,checks:2});expect(context.pod).toBeUndefined();expect(context.frame).toBeUndefined();
+ const denied=fixture("import * as api from '@podjs/framework/digest-cache/unsafe';export default()=>api;");await expect(buildBackground({denied:denied.entry},denied.root)).rejects.toThrow('Background');
+});
