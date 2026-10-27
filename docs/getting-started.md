@@ -141,6 +141,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/services` | Cancellable native operations for files, network, input, media, text, crypto and platform services; images.decodeOperation/decodeRegionOperation retain source dimensions and cancellation. |
 | `@podjs/framework/acked-state-vector` | Bilateral applied receipts for opaque per-domain roots; frozen windows and final-session ACK publication. |
 | `@podjs/framework/directory-witness` | Small immutable-resource directory metadata witnesses; missing native change tokens disable certification. |
+| `@podjs/framework/digest-cache` | Bounded memory-only memoization of exact small byte digests; checks the caller fence on hits and never retains failures. |
 | `@podjs/framework/sync-state` | Versioned companion saved-state clocks, merge and persistence rules. |
 | `@podjs/framework/request-policy` | `RequestFilter`, `createRequestAllowlist`: generic request rejection hooks; app owns keys and rejection replies. |
 | `@podjs/framework/browser-qr-wait` | `BrowserQrWait`, `browserQrWaitStatus`, `BrowserQrWaitOptions`, `BrowserQrWaitStatus`: configurable QR waiting state independent of page loading; no UI rendering. |
