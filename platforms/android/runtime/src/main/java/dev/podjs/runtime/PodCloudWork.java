@@ -14,7 +14,7 @@ import org.json.JSONObject;
 final class PodCloudWork implements Closeable {
     static final String NAME="podjs-cloud-sync-6h",MANUAL_NAME="podjs-cloud-sync-manual",HANDLER="watchrss-cloud-sync";
     private final Context context;
-    private RandomAccessFile leaseFile;private FileLock lease;private boolean localHold;private long localRevision=-1;
+    private final CloudWriterLease writer=new CloudWriterLease();private boolean localHold;private long localRevision=-1;
     private static final java.util.Set<PodCloudWork> HOLDERS=new java.util.HashSet<>();
     private static RandomAccessFile holdFile;private static FileLock holdLock;
     PodCloudWork(Context context){this.context=context.getApplicationContext();}
@@ -48,15 +48,16 @@ final class PodCloudWork implements Closeable {
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(NAME,ExistingPeriodicWorkPolicy.UPDATE,work).getResult().get(10,TimeUnit.SECONDS);resumeHeld(context);return JSONObject.NULL;
         }
         if("cloud.acquire".equals(method)){
-            if(held(context))return new JSONObject().put("acquired",false);
-            if(lease!=null)throw new IllegalStateException("Cloud lease already owned");
-            leaseFile=new RandomAccessFile(new java.io.File(context.getNoBackupFilesDir(),"podjs-cloud-writer.lock"),"rw");
-            try{lease=leaseFile.getChannel().tryLock();}catch(java.nio.channels.OverlappingFileLockException busy){lease=null;}
-            if(lease==null){leaseFile.close();leaseFile=null;return new JSONObject().put("acquired",false);}return new JSONObject().put("acquired",true);
+            Object owner=args.opt("localTransferOwner");
+            if(owner!=null&&owner!=JSONObject.NULL&&!(owner instanceof Boolean))throw new IllegalArgumentException("localTransferOwner_must_be_boolean");
+            synchronized(HOLDERS){
+                boolean ownPause=Boolean.TRUE.equals(owner)&&localHold&&HOLDERS.size()==1&&HOLDERS.contains(this);
+                return new JSONObject().put("acquired",writer.acquire(context.getNoBackupFilesDir(),held(context),ownPause));
+            }
         }
         throw new IllegalArgumentException("Unknown cloud lifecycle method");
     }
     static PodBackgroundPackage installed(Context context)throws Exception{try{return PodBackgroundPackage.installed(context,"android-watch");}catch(SecurityException wrongTarget){return PodBackgroundPackage.installed(context,"wearos-watch");}}
-    private synchronized void releaseWriter(){try{if(lease!=null)lease.release();}catch(Exception ignored){}finally{lease=null;try{if(leaseFile!=null)leaseFile.close();}catch(Exception ignored){}leaseFile=null;}}
+    private synchronized void releaseWriter(){writer.close();}
     @Override public synchronized void close(){releaseWriter();try{hold(false);}catch(Exception ignored){}}
 }

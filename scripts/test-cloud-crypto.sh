@@ -11,3 +11,6 @@ javac -d "$task_tmp" platforms/android/runtime/src/main/java/dev/podjs/runtime/P
 java -cp "$task_tmp" dev.podjs.runtime.SecureLeaseTest
 javac -d "$task_tmp" platforms/android/runtime/src/main/java/dev/podjs/runtime/SecureReadCache.java tests/java/dev/podjs/runtime/SecureReadCacheTest.java
 java -cp "$task_tmp" dev.podjs.runtime.SecureReadCacheTest
+
+javac -d "$task_tmp" platforms/android/runtime/src/main/java/dev/podjs/runtime/CloudWriterLease.java tests/java/dev/podjs/runtime/CloudWriterLeaseTest.java
+java -cp "$task_tmp" dev.podjs.runtime.CloudWriterLeaseTest

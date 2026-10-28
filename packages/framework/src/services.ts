@@ -52,6 +52,8 @@ const methods: Record<string, PodCapabilityId> = {
   "app.buildInfo": "host.lifecycle",
   "splash.hold": "host.lifecycle", "splash.release": "host.lifecycle",
   "cloud.enqueue":"host.lifecycle", "cloud.localTransfer":"host.lifecycle", "cloud.workState":"host.lifecycle",
+  // cloud.acquire accepts localTransferOwner:true only for this host's sole active
+  // cloud.localTransfer pause; the process-independent writer lock still applies.
   "cloud.schedule":"host.lifecycle", "cloud.cancel":"host.lifecycle", "cloud.acquire":"host.lifecycle", "cloud.release":"host.lifecycle",
   "secure.acquire":"data.secure", "secure.release":"data.secure",
   "debug.memoryStats": "host.lifecycle",

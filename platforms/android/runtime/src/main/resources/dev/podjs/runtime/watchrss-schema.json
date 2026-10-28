@@ -1,4 +1,5 @@
 [
+  "CREATE TABLE IF NOT EXISTS library_clear_journal (id INTEGER PRIMARY KEY CHECK(id=1),private_data INTEGER NOT NULL CHECK(private_data IN (0,1)),content_json TEXT NOT NULL)",
   "CREATE TABLE IF NOT EXISTS article_register_state(article_id TEXT PRIMARY KEY,item_id INTEGER REFERENCES articles(id) ON DELETE SET NULL,state_json TEXT NOT NULL,legacy_json TEXT,materialized_json TEXT,pending_json TEXT,raw_json TEXT NOT NULL,raw_conflict INTEGER NOT NULL DEFAULT 0,body_pending INTEGER NOT NULL DEFAULT 0)",
   "CREATE INDEX IF NOT EXISTS article_register_state_item ON article_register_state(item_id)",
   "CREATE TABLE IF NOT EXISTS article_register_conflicts(article_id TEXT NOT NULL REFERENCES article_register_state(article_id) ON DELETE CASCADE,version_hash TEXT NOT NULL,raw_json TEXT NOT NULL,PRIMARY KEY(article_id,version_hash))",
