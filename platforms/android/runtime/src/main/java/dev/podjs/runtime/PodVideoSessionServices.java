@@ -176,7 +176,8 @@ final class PodVideoSessionServices implements AutoCloseable {
             PodVideoDecoderCapabilities.Result capability = decoderCapabilities.inspect(profile);
             lastProfile = profile; lastCapability = capability; decoderBudget.restrictTo(capability.limit);
         }
-        MediaSource source = mediaSource(args);
+        PodVideoAnalytics analytics=new PodVideoAnalytics();
+        MediaSource source = mediaSource(args,analytics);
         Session session = sessions.get(id);
         boolean created = false;
         if (session == null) {
@@ -194,6 +195,7 @@ final class PodVideoSessionServices implements AutoCloseable {
         session.decoderLease = true;
         session.generation += 1;
         final long generation = session.generation;
+        session.analytics=analytics;
         session.frameSource=new JSONObject(args.toString());
         session.bounds = bounds;
         session.prewarming = prewarming;
@@ -222,6 +224,7 @@ final class PodVideoSessionServices implements AutoCloseable {
         }
         session.player = player;
         Session own = session;
+        player.addAnalyticsListener(session.analytics);player.addAnalyticsListener(session.analytics.playbackStats);
         player.setAudioAttributes(mediaAudioAttributes(), !session.prewarming);
         session.completedLoops = 0;
         player.setRepeatMode(args.optBoolean("loop", false) ? Player.REPEAT_MODE_ONE : Player.REPEAT_MODE_OFF);
@@ -285,7 +288,7 @@ final class PodVideoSessionServices implements AutoCloseable {
                 boolean decoderFailure = error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED
                         || error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED
                         || error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED;
-                String code = PodPlaybackFailure.isNetwork(error) ? "network_error" : "prepare_failed";
+                String code = PodVideoAnalytics.errorCode(error);
                 if ("network_error".equals(code) && own.prepareCallback == null) {
                     // Retain the terminal state for polling, but release decoder/player resources.
                     own.errorCode = code; own.state = "error"; own.resetPlayer(); own.hideOffscreen();
@@ -478,14 +481,14 @@ final class PodVideoSessionServices implements AutoCloseable {
         return new float[]{-p * heightPx, (1f - p) * heightPx};
     }
 
-    private MediaSource mediaSource(JSONObject args) throws Exception {
+    private MediaSource mediaSource(JSONObject args,PodVideoAnalytics analytics) throws Exception {
         String videoUrl = args.optString("videoUrl", "");
         String audioUrl = args.optString("audioUrl", "");
         String url = videoUrl.isEmpty() || audioUrl.isEmpty() ? source(args, "url") : sourceValue(videoUrl);
         if (!audioUrl.isEmpty()) audioUrl = sourceValue(audioUrl);
         if (!videoUrl.isEmpty()) videoUrl = sourceValue(videoUrl);
         Map<String, String> headers = headers(args.optJSONObject("headers"));
-        DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory();
+        DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory().setTransferListener(analytics);
         if (!headers.isEmpty()) http.setDefaultRequestProperties(headers);
         DefaultMediaSourceFactory factory = new DefaultMediaSourceFactory(mediaPrefixCache==null?new DefaultDataSource.Factory(context,http):mediaPrefixCache.factory(new DefaultDataSource.Factory(context,http)));
         if (!videoUrl.isEmpty() && !audioUrl.isEmpty()) {
@@ -629,6 +632,7 @@ final class PodVideoSessionServices implements AutoCloseable {
         boolean decoderLease, prewarming, autoplay, muted, presented, hasRenderedFirstFrame, disposed;
         long generation, completedLoops;
         JSONObject frameSource;
+        PodVideoAnalytics analytics;
 
         Session(String id) { this.id = id; attachViews(parent); }
 
@@ -759,7 +763,7 @@ final class PodVideoSessionServices implements AutoCloseable {
 
         JSONObject snapshot() throws Exception {
             return new JSONObject()
-                    .put("ok", true).put("sessionId", id).put("state", state).put("errorCode", "error".equals(state) ? errorCode : null)
+                    .put("metrics",analytics==null?null:analytics.snapshot()).put("ok", true).put("sessionId", id).put("state", state).put("errorCode", "error".equals(state) ? errorCode : null)
                     .put("positionMs", player == null ? 0 : player.getCurrentPosition())
                     .put("durationMs", player == null ? 0 : Math.max(0, player.getDuration()))
                     .put("width", player == null ? 0 : player.getVideoSize().width)

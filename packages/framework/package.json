@@ -63,6 +63,7 @@
     "./disclosure": "./src/disclosure.ts",
     "./build-gate": "./src/build-gate.ts",
     "./media-volume": "./src/media-volume.ts",
+    "./media-policy": "./src/media-policy.ts",
     "./private-response": "./src/private-response.ts",
     "./preview-session": "./src/preview-session.ts",
     "./text-match": "./src/text-match.ts",

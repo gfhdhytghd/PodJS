@@ -67,6 +67,7 @@ public final class PodVideoServices implements AutoCloseable {
     private long completedLoops;
     private int observedTextureFrames;
     private PodVideoFrameStats frameStats;
+    private PodVideoAnalytics analytics;
     private int statsSequence;
     private boolean statsWindowLogged;
     private boolean boundsVisible=true;
@@ -171,7 +172,8 @@ public final class PodVideoServices implements AutoCloseable {
         decoderLease=true;
         applyBounds(a.optJSONObject("bounds")); autoplay=a.optBoolean("autoplay", true); backgroundPlayback=a.optBoolean("backgroundPlayback",false); lifecyclePaused=false; density=context.getResources().getDisplayMetrics().density;
         Map<String,String> headers = headers(a.optJSONObject("headers"));
-        DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory(); if (!headers.isEmpty()) http.setDefaultRequestProperties(headers);
+        analytics=new PodVideoAnalytics();
+        DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory().setTransferListener(analytics); if (!headers.isEmpty()) http.setDefaultRequestProperties(headers);
         DefaultDataSource.Factory data = new DefaultDataSource.Factory(context, http);
         DefaultMediaSourceFactory factory = new DefaultMediaSourceFactory(mediaPrefixCache==null?data:mediaPrefixCache.factory(data));
         MediaSource source;
@@ -212,8 +214,9 @@ public final class PodVideoServices implements AutoCloseable {
             @Override public void onVideoSizeChanged(androidx.media3.common.VideoSize size){if(player==session)fitVideo();}
             @Override public void onPlaybackStateChanged(int s) { if(player!=session)return; if(frameStats!=null&&hasRenderedFirstFrame)frameStats.buffering(s==Player.STATE_BUFFERING,android.os.SystemClock.elapsedRealtimeNanos()); if (s==Player.STATE_BUFFERING) { if (player.getPlayWhenReady()) state="buffering"; } else if(s==Player.STATE_READY && player!=null && player.isPlaying()) state="playing"; else if(s==Player.STATE_ENDED) { state="ended"; if(videoView!=null)videoView.setKeepScreenOn(false); } else if(s==Player.STATE_READY && !"paused".equals(state)) state="ready"; if (s==Player.STATE_READY && prepareCallback != null) { Callback c=prepareCallback; prepareCallback=null; try { c.complete(state()); } catch (Exception e) { c.fail("video_error", e.getMessage()); } } }
             @Override public void onIsPlayingChanged(boolean playing) { if(player!=session)return; if(frameStats!=null)frameStats.playing(playing&&hasRenderedFirstFrame,android.os.SystemClock.elapsedRealtimeNanos()); if (playing) state="playing"; else if (state.equals("playing")) state="paused"; }
-            @Override public void onPlayerError(PlaybackException error) { if(player!=session)return; state="error"; playbackErrorCode=PodPlaybackFailure.isNetwork(error)?"network_error":"prepare_failed"; Callback c=prepareCallback; prepareCallback=null; releasePlayer(); if(c!=null)c.fail(playbackErrorCode,"Video playback failed"); if(videoView!=null)videoView.setVisibility(View.GONE); }
+            @Override public void onPlayerError(PlaybackException error) { if(player!=session)return; state="error"; playbackErrorCode=PodVideoAnalytics.errorCode(error); Callback c=prepareCallback; prepareCallback=null; releasePlayer(); if(c!=null)c.fail(playbackErrorCode,"Video playback failed"); if(videoView!=null)videoView.setVisibility(View.GONE); }
         };
+        player.addAnalyticsListener(analytics);player.addAnalyticsListener(analytics.playbackStats);
         player.addListener(playerListener);
         state=lifecyclePaused?"paused":"preparing"; if(videoView!=null)videoView.setKeepScreenOn(true); player.setMediaSource(source); player.setVideoTextureView(videoView); android.util.Log.i("PodVideoTiming","prepareCall seq="+prepareSequence+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-prepareStartedMs));player.prepare();
         if (autoplay && !lifecyclePaused) player.play(); else player.pause();
@@ -268,7 +271,7 @@ public final class PodVideoServices implements AutoCloseable {
     }
     private int dp(double v) { if(!Double.isFinite(v)) throw new IllegalArgumentException("invalid_bounds"); return Math.max(-100000,Math.min(100000,(int)Math.round(v*density))); }
     private void require(){if(player==null)throw new IllegalStateException("video_not_ready");}
-    private JSONObject state() throws Exception { AudioManager am=(AudioManager)context.getSystemService(Context.AUDIO_SERVICE);return new JSONObject().put("ok",true).put("state",state).put("hasRenderedFirstFrame",hasRenderedFirstFrame).put("sourceGeneration",prepareSequence).put("completedLoops",completedLoops).put("loop",player!=null&&player.getRepeatMode()==Player.REPEAT_MODE_ONE).put("errorCode", "error".equals(state)?playbackErrorCode:null).put("positionMs",player==null?0:player.getCurrentPosition()).put("durationMs",player==null?0:Math.max(0,player.getDuration())).put("width",player==null?0:player.getVideoSize().width).put("height",player==null?0:player.getVideoSize().height).put("volume",am.getStreamVolume(AudioManager.STREAM_MUSIC)/(double)Math.max(1,am.getStreamMaxVolume(AudioManager.STREAM_MUSIC))).put("volumeMax",am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)); }
+    private JSONObject state() throws Exception { AudioManager am=(AudioManager)context.getSystemService(Context.AUDIO_SERVICE);return new JSONObject().put("metrics",analytics==null?null:analytics.snapshot()).put("ok",true).put("state",state).put("hasRenderedFirstFrame",hasRenderedFirstFrame).put("sourceGeneration",prepareSequence).put("completedLoops",completedLoops).put("loop",player!=null&&player.getRepeatMode()==Player.REPEAT_MODE_ONE).put("errorCode", "error".equals(state)?playbackErrorCode:null).put("positionMs",player==null?0:player.getCurrentPosition()).put("durationMs",player==null?0:Math.max(0,player.getDuration())).put("width",player==null?0:player.getVideoSize().width).put("height",player==null?0:player.getVideoSize().height).put("volume",am.getStreamVolume(AudioManager.STREAM_MUSIC)/(double)Math.max(1,am.getStreamMaxVolume(AudioManager.STREAM_MUSIC))).put("volumeMax",am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)); }
     private String source(JSONObject a,String key)throws Exception{String s=a.optString(key,"");if(s.isEmpty())throw new IllegalArgumentException("missing_url");return sourceValue(s);}
     private String sourceValue(String s)throws Exception{if(mediaPrefixCache!=null&&mediaPrefixCache.owns(s))return s;if(s.startsWith("http://")||s.startsWith("https://")){Uri u=Uri.parse(s);if(u.getHost()==null)throw new IllegalArgumentException("invalid_url");return s;}File f=new File(mediaRoot,s).getCanonicalFile();if(s.startsWith("/")||!f.getPath().startsWith(mediaRoot.getPath()+File.separator)||!f.isFile())throw new SecurityException("invalid_media_path");return f.toURI().toString();}
     private Map<String,String> headers(JSONObject o)throws Exception{Map<String,String> m=new HashMap<>();if(o==null)return m; if(o.length()>32)throw new IllegalArgumentException("too_many_headers");int total=0;java.util.Iterator<String> i=o.keys();while(i.hasNext()){String k=i.next();String v=o.optString(k,null);if(v==null||k.length()>128||v.length()>65536||k.indexOf('\r')>=0||k.indexOf('\n')>=0||v.indexOf('\r')>=0||v.indexOf('\n')>=0)throw new IllegalArgumentException("invalid_headers");total+=k.length()+v.length();if(total>65536)throw new IllegalArgumentException("headers_too_large");m.put(k,v);}return m;}
@@ -282,7 +285,7 @@ public final class PodVideoServices implements AutoCloseable {
     private void detachPlayer(boolean keepPlaying){
         if(!statsWindowLogged)logFrameStats("end");frameStats=null;
         ExoPlayer previous=player;player=null;
-        if(previous!=null){if(playerListener!=null)previous.removeListener(playerListener);previous.clearVideoSurface();if(!keepPlaying){previous.stop();previous.clearMediaItems();}}
+        if(previous!=null){if(analytics!=null){previous.removeAnalyticsListener(analytics);previous.removeAnalyticsListener(analytics.playbackStats);}if(playerListener!=null)previous.removeListener(playerListener);previous.clearVideoSurface();if(!keepPlaying){previous.stop();previous.clearMediaItems();}}
         playerListener=null;
         ServiceConnection previousConnection=connection;connection=null;
         if(previousConnection!=null){try{context.unbindService(previousConnection);}catch(IllegalArgumentException ignored){}}

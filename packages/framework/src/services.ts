@@ -320,7 +320,8 @@ export interface VideoPrepare { url?:string; videoUrl?:string; audioUrl?:string;
 export interface VideoFrameSource {url?:string;videoUrl?:string;audioUrl?:string;headers?:Record<string,string>}
 export interface VideoFrame {available:true;kind:"actual_frame";path:string;width:number;height:number;positionMs:number;capturedAt:number;capturedGeneration:number}
 export interface VideoFrameCapture {key:string;source:VideoFrameSource;sourceGeneration:number}
-export interface VideoState { sourceGeneration?:number; /** Completed native repeats since prepare; seeks do not increment it. */ completedLoops?:number; loop?:boolean; hasRenderedFirstFrame?:boolean; errorCode?:string; ok:boolean; state:string; positionMs:number; durationMs:number; width:number; height:number; volume:number; volumeMax:number }
+export interface VideoPlaybackMetrics { bytesLoaded:number; droppedFrames:number; rebufferCount:number; rebufferMs:number; firstByteMs?:number; firstFrameMs?:number; throughputBps?:number; [key:string]:number|undefined }
+export interface VideoState { presented?:boolean; metrics?:VideoPlaybackMetrics; sourceGeneration?:number; /** Completed native repeats since prepare; seeks do not increment it. */ completedLoops?:number; loop?:boolean; hasRenderedFirstFrame?:boolean; errorCode?:string; ok:boolean; state:string; positionMs:number; durationMs:number; width:number; height:number; volume:number; volumeMax:number }
 export const video = {
   /** Capture only a rendered frame from the exact still-current source generation. */
   clearFrames():Promise<{removedFiles:number}> {return hostOperation<{removedFiles:number}>("video.frame.clear",{}).result;},
@@ -355,6 +356,7 @@ export interface VideoSessionPrepare extends Omit<VideoPrepare,"backgroundPlayba
   prewarm?:boolean;
 }
 export interface VideoSessionState {
+  metrics?:VideoPlaybackMetrics;
   sourceGeneration?:number;
   completedLoops?:number; loop?:boolean;
   errorCode?:string;
