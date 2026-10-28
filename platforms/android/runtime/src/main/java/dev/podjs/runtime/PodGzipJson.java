@@ -57,6 +57,9 @@ final class PodGzipJson {
         String json=json(row,fields,root,limit,check);if(json==null)return new JSONObject().put("oversized",true);
         byte[] plain=json.getBytes(StandardCharsets.UTF_8);if(plain.length>limit)return new JSONObject().put("oversized",true);check.run();
         ByteArrayOutputStream sink=new ByteArrayOutputStream();try(GZIPOutputStream gzip=new GZIPOutputStream(sink)){gzip.write(plain);}byte[] zipped=sink.toByteArray();
+        // Pin newly encoded members across Android/JVM releases. Existing
+        // advertised OS variants still require an exact whole-body digest.
+        for(int at=4;at<8;at++)zipped[at]=0;zipped[9]=(byte)255;
         String digest=hash(zipped,0,zipped.length);int original=zipped[9]&255;
         if(!expected.isEmpty()&&!expected.matches("[0-9a-f]{64}"))throw new IllegalArgumentException("invalid_projection_hash");
         if(!expected.isEmpty()&&!expected.equals(digest)){

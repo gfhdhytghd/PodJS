@@ -43,3 +43,12 @@ export async function matchGzipHash(bytes:Uint8Array,expected:string,sha256:(byt
  for(const os of [0,3,255]){if(os===bytes[9])continue;candidate[9]=os;if(await sha256(candidate)===expected)return candidate;}
  return null;
 }
+
+/** Deterministic base header for newly encoded gzip members. Deflate and the
+ * trailer are unchanged; callers still verify any previously advertised hash.
+ * Optional headers (in particular FHCRC) cannot be patched by this helper. */
+export function stableGzipHeader(bytes:Uint8Array):Uint8Array {
+ if(bytes.length<18||bytes[0]!==31||bytes[1]!==139||bytes[2]!==8||bytes[3]!==0)throw Error('invalid_stable_gzip_header');
+ if(bytes[4]===0&&bytes[5]===0&&bytes[6]===0&&bytes[7]===0&&bytes[9]===255)return bytes;
+ const stable=new Uint8Array(bytes);stable.fill(0,4,8);stable[9]=255;return stable;
+}
