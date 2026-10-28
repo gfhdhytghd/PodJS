@@ -69,6 +69,32 @@ public final class RoomV18Test {
             }
         }
     }
+    static void auxiliaryAdmission(PodRoomV18Converter converter,File source,File target)throws Exception {
+        Files.copy(new File(source,"podjs.sqlite").toPath(),new File(target,"podjs.sqlite").toPath());
+        try(Jdbc db=new Jdbc(new File(target,"podjs.sqlite"))) {
+            db.exec("DROP TABLE article_register_conflicts");db.exec("DROP TABLE article_register_state");db.exec("DROP TABLE library_clear_journal");
+            db.exec("PRAGMA user_version=9");
+        }
+        // Admission precedes guest initializeSchema: old installed v9 may lack
+        // additive guest helpers. New helpers must also be accepted next boot.
+        converter.activeFast(target);converter.active(target);
+        try(Jdbc db=new Jdbc(new File(target,"podjs.sqlite"))) {
+            String identity=String.valueOf(PodRoomV18Converter.scalar(db,"SELECT device_id FROM sync_local_identity WHERE id=1"));
+            db.exec("BEGIN IMMEDIATE");
+            try {
+                JSONArray ddl=new JSONArray(PodRoomV18Converter.resource("watchrss-schema.json"));
+                for(int i=0;i<ddl.length();i++) {
+                    String sql=ddl.getString(i);
+                    if(sql.startsWith("CREATE TABLE IF NOT EXISTS library_clear_journal ")||sql.startsWith("CREATE TABLE IF NOT EXISTS article_register_")||sql.startsWith("CREATE INDEX IF NOT EXISTS article_register_"))db.exec(sql);
+                }
+                db.exec("CREATE TABLE unrelated_extension(value TEXT)");db.exec("INSERT INTO unrelated_extension VALUES('preserve')");db.exec("COMMIT");
+            }catch(Exception e){db.exec("ROLLBACK");throw e;}
+            require(identity.equals(String.valueOf(PodRoomV18Converter.scalar(db,"SELECT device_id FROM sync_local_identity WHERE id=1"))),"auxiliary changed identity");
+            require(PodRoomV18Converter.scalar(db,"SELECT name FROM sqlite_master WHERE name='library_clear_journal'")!=null,"journal resource missing");
+            require(PodRoomV18Converter.scalar(db,"SELECT name FROM sqlite_master WHERE name='article_register_conflicts'")!=null,"register resource missing");
+        }
+        converter.activeFast(target);converter.active(target);
+    }
     public static void main(String[] args)throws Exception {
         if(args.length>1 && args[1].equals("crash")) {
             int at=Integer.parseInt(args[3]);boolean when=Boolean.parseBoolean(args[4]);int[] seen={0};
@@ -82,6 +108,7 @@ public final class RoomV18Test {
             String dbHash=PodRoomV18Converter.hash(source),walHash=PodRoomV18Converter.hash(new File(source+"-wal")),shmHash=PodRoomV18Converter.hash(new File(source+"-shm"));
             int[] batches={0};PodRoomV18Converter converter=new PodRoomV18Converter(source,Jdbc::new,"fixture-设备😀",2,committed->{if(committed)batches[0]++;});
             File full=child(root,"full");converter.snapshot(full);converter.copy(full);String expected=converter.verify(full);
+            auxiliaryAdmission(converter,full,child(root,"auxiliary-admission"));
             // Published data upgraded by the current guest must survive a cold
             // host admission; unknown future schemas still fail closed.
             for(int guestVersion=0;guestVersion<=9;guestVersion++) {
