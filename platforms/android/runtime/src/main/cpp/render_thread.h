@@ -1,5 +1,6 @@
 #pragma once
 #include "vulkan_renderer.h"
+#include "stall_watchdog.h"
 #include <atomic>
 #include <condition_variable>
 #include <functional>
@@ -64,6 +65,11 @@ class RenderThread {
   // discard pending pins, drain Vulkan via replaceWindow/destruction, then ack.
   void control(std::function<void()>, bool cancelPending=true);
   void run();
+  void observeStalls();
+  podjs_health::StallWatchdog health_;
+  std::atomic<bool> healthStopping_{};
+  std::mutex healthMutex_;
+  std::condition_variable healthWake_;
   mutable std::mutex mutex_;
   std::condition_variable wake_;
   std::unique_ptr<Frame> pending_;
@@ -81,4 +87,5 @@ class RenderThread {
   std::unique_ptr<VulkanRenderer> renderer_; // worker only
   std::vector<uint8_t> fallback_; // worker only, allocated on demand
   std::thread worker_;
+  std::thread observer_;
 };

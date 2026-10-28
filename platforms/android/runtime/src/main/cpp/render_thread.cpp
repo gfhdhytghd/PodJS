@@ -4,9 +4,10 @@
 
 namespace {
 double nowMs() { return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+uint64_t nowNs() { return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 }
 RenderThread::RenderThread(ANativeWindow* window, uint32_t w, uint32_t h, uint32_t rw, uint32_t rh)
-    : rasterBytes_(size_t{rw}*rh*4), worker_([this]{ run(); }) {
+    : rasterBytes_(size_t{rw}*rh*4), worker_([this]{ run(); }), observer_([this]{ observeStalls(); }) {
   ANativeWindow_acquire(window);
   control([&, window] {
     renderer_ = std::make_unique<VulkanRenderer>(window,w,h,rw,rh);
@@ -23,6 +24,23 @@ RenderThread::~RenderThread() {
   }
   wake_.notify_one();
   worker_.join();
+  // Change the wait predicate under the observer's mutex: otherwise a notify
+  // between its predicate check and wait could add a full 250ms to UI teardown.
+  {std::lock_guard lock(healthMutex_);healthStopping_=true;}
+  healthWake_.notify_one();observer_.join();
+  const auto summary=health_.summary();
+  __android_log_print(ANDROID_LOG_INFO,"PodWatchdog","lane=renderer summary=true stalls=%llu maxDelayMs=%llu logs=%llu",
+      (unsigned long long)summary.stalls,(unsigned long long)(summary.delayNs/1000000),(unsigned long long)summary.logs);
+}
+void RenderThread::observeStalls(){
+  std::unique_lock lock(healthMutex_);
+  while(!healthWake_.wait_for(lock,std::chrono::milliseconds(250),[this]{return healthStopping_.load();})){
+    lock.unlock();
+    if(auto report=health_.observe(nowNs()))__android_log_print(ANDROID_LOG_WARN,"PodWatchdog",
+        "lane=renderer phase=%s delayMs=%llu stalls=%llu logs=%llu",podjs_health::StallWatchdog::label(report->stage),
+        (unsigned long long)(report->delayNs/1000000),(unsigned long long)report->stalls,(unsigned long long)report->logs);
+    lock.lock();
+  }
 }
 void RenderThread::control(std::function<void()> fn, bool cancelPending) {
   auto ack=std::make_shared<std::promise<void>>();
@@ -40,6 +58,7 @@ void RenderThread::control(std::function<void()> fn, bool cancelPending) {
       }
       ack->set_value();
     };
+    health_.stage(podjs_health::StallWatchdog::Stage::control,nowNs());
   }
   discarded.reset();
   wake_.notify_one();
@@ -76,6 +95,7 @@ bool RenderThread::handoff(Snapshot snapshot,uint64_t sequence) {
     if(pending_) ++replaced_;
     discarded=std::move(pending_);
     pending_=std::move(frame);
+    health_.demand(nowNs());
     acceptedHash_=list.content_hash;
   }
   // Drop old revision/font pins promptly, outside the queue lock.
@@ -108,7 +128,12 @@ void RenderThread::run() {
       if(command_) command=std::move(command_);
       else frame=std::move(pending_);
     }
-    if(command) { command(); continue; }
+    if(command) {
+      command();
+      std::lock_guard lock(mutex_);health_.progress(nowNs(),bool(pending_)||bool(command_));
+      continue;
+    }
+    health_.stage(podjs_health::StallWatchdog::Stage::render,nowNs());
     const double began=nowMs();
     Completion result{}; result.sequence=frame->sequence;result.hash=frame->hash;result.startedMonoMs=began;
     PodDrawList list{};
@@ -143,6 +168,7 @@ void RenderThread::run() {
       std::lock_guard lock(mutex_);
       result.lagFrames=latestSequence_>=frame->sequence?latestSequence_-frame->sequence:0;
       lastCompleted_=frame->sequence;
+      health_.progress(nowNs(),bool(pending_)||bool(command_));
       // Between host polls only executing+pending can complete. Lifecycle/debug
       // loops can run without polls; diagnostics history is explicitly bounded.
       completed_.push(result);lastCompletion_=result;

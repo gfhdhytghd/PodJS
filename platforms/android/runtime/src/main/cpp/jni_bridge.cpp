@@ -255,6 +255,9 @@ const char* capabilities = "[\"input.touch\",\"input.rotary\",\"data.kv\",\"devi
     env->ReleaseStringUTFChars(target, t); env->ReleaseStringUTFChars(dataDir, d);
     fail(env, pod_runtime_last_error()); return 0;
   }
+  // Android supplies a coalesced host continuation even without visual frames.
+  // Both limits apply between FIFO reactions; a single JS job remains atomic.
+  pod_runtime_set_job_budget(host->runtime,64,2000);
   env->GetJavaVM(&host->vm);
   auto fontClass=env->FindClass("dev/podjs/runtime/PodSystemFontFallback");
   if(fontClass) {
@@ -421,6 +424,13 @@ extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePu
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePumpServiceResults(JNIEnv*,jclass,jlong p) {
   auto* h = reinterpret_cast<Host*>(p); if (!h) return;
   if (pod_runtime_pump_service_results(h->runtime) < 0) __android_log_print(ANDROID_LOG_ERROR,"PodJS","Service result pump failed: %s",pod_runtime_last_error());
+}
+extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePumpJobs(JNIEnv*,jclass,jlong p) {
+  auto* h=reinterpret_cast<Host*>(p);if(!h)return;
+  if(pod_runtime_pump_jobs(h->runtime)<0)__android_log_print(ANDROID_LOG_ERROR,"PodJS","Job pump failed: %s",pod_runtime_last_error());
+}
+extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeHasPendingJobs(JNIEnv*,jclass,jlong p) {
+  auto* h=reinterpret_cast<Host*>(p);return h&&pod_runtime_has_pending_jobs(h->runtime)?JNI_TRUE:JNI_FALSE;
 }
 extern "C" JNIEXPORT jint JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeMediaTexture(JNIEnv* env,jclass,jlong p,jint handle,jintArray pixels,jint width,jint height,jboolean linear) {
   auto* h=reinterpret_cast<Host*>(p); if(!h||!pixels||width<1||height<1||width>1024||height>1024)return -1;

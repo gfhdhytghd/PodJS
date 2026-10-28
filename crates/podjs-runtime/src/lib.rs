@@ -1345,6 +1345,36 @@ pub extern "C" fn pod_runtime_pump_services(runtime: *mut PodRuntime) -> i32 {
     OK
 }
 
+/// Opt-in interactive host budget. No ABI struct is enlarged; existing hosts
+/// keep their drain-to-quiescence behavior. Zero/zero disables the budget.
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_set_job_budget(runtime: *mut PodRuntime, max_jobs: u32, max_micros: u32) -> i32 {
+    let Ok(runtime) = runtime_mut(runtime) else { return ERR_ARGUMENT; };
+    let budget = if max_jobs == 0 && max_micros == 0 { None } else {
+        if !(1..=4096).contains(&max_jobs) || !(1..=16000).contains(&max_micros) { return ERR_ARGUMENT; }
+        Some(pocket_mod::JobBudget { max_jobs, max_time: std::time::Duration::from_micros(max_micros as u64) })
+    };
+    runtime.guest.set_job_budget(budget);
+    OK
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_has_pending_jobs(runtime: *mut PodRuntime) -> bool {
+    runtime_mut(runtime).is_ok_and(|r| r.mounted && r.guest.has_pending_jobs())
+}
+
+/// Continue only the existing FIFO, without re-running framework service pumps
+/// or visual ticks. Non-result host events remain reserved for frame/lifecycle.
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_pump_jobs(runtime: *mut PodRuntime) -> i32 {
+    let Ok(runtime) = runtime_mut(runtime) else { return ERR_ARGUMENT; };
+    if !runtime.mounted { return ERR_STATE; }
+    let previous = std::mem::replace(&mut runtime.bridge.borrow_mut().service_results_only, true);
+    runtime.guest.drain_jobs();
+    runtime.bridge.borrow_mut().service_results_only = previous;
+    OK
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn pod_runtime_pump_service_results(runtime: *mut PodRuntime) -> i32 {
     let Ok(runtime) = runtime_mut(runtime) else {
@@ -1840,11 +1870,13 @@ impl PodRuntime {
                 .map(numeric_sdk_memory).unwrap_or(Value::Null)
         });
         let q = self.guest.memory_usage();
+        let jobs = self.guest.job_stats();
         let ui = self.surface.with_ui(|ui| ui.memory_stats());
         let (glyph, source, seeds) = self.surface.glyph_cache_stats();
         let bridge = self.bridge.borrow();
         json!({
             "schema": 1, "frame": self.frame_number,
+            "jobPump": {"jobs":jobs.jobs,"yields":jobs.yields,"errors":jobs.errors,"maxJobMicros":jobs.max_job_micros},
             "quickjs": {"gcThresholdBytes":self.guest.gc_threshold(), "mallocBytes":q.malloc_size, "usedBytes":q.memory_used_size,
                 "mallocCount":q.malloc_count, "usedCount":q.memory_used_count,
                 "objects":q.obj_count, "objectBytes":q.obj_size,
@@ -2122,6 +2154,7 @@ pub extern "C" fn pod_runtime_destroy(runtime: *mut PodRuntime) {
 
 #[cfg(test)]
 mod tests {
+    include!("job_pump_tests.rs");
     use super::*;
 
     fn config(target: &CString) -> PodRuntimeConfig {

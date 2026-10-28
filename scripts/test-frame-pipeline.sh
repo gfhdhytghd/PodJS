@@ -12,3 +12,5 @@ flags=(-std=c++20 -O2 -pthread ${PODJS_TEST_CXXFLAGS:-} -Itests/cpp -Icrates/pod
 "$build/pipeline"
 "$cxx" "${flags[@]}" "$cpp/frame_perf_window_test.cpp" -o "$build/perf"
 "$build/perf"
+"$cxx" "${flags[@]}" "$cpp/stall_watchdog_test.cpp" -o "$build/watchdog"
+"$build/watchdog"

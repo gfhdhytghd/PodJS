@@ -43,6 +43,16 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private volatile HostLifetime hostLifetime;
     private HostLifetime rendererTimingOwner;
     private final Handler serviceHandler = new Handler(Looper.getMainLooper());
+    private final HostTurnQueue completionQueue = new HostTurnQueue(new HostTurnQueue.Poster(){
+        public void post(Runnable job,long delayMs){serviceHandler.postDelayed(job,delayMs);}
+        public void remove(Runnable job){serviceHandler.removeCallbacks(job);}
+    },System::nanoTime);
+    private final HostEffectPump effectPump=new HostEffectPump(
+        ()->nativePollEffect(host),()->nativePollNet(host),this::dispatchHostEffect,this::handleNetwork,System::nanoTime);
+    private PodHostWatchdog hangWatchdog;
+    private HostLifetime queuedJobTurn;
+    private Runnable jobContinuation;
+    private boolean effectsPending;
     private boolean serviceTurnRunning;
     private HostLifetime queuedServiceTurn;
     private boolean rootSwipeEnabled = true;
@@ -69,8 +79,9 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
             nativePostEvent(host, "{\"t\":\"checkpoint\",\"reason\":\"screen-off\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
             // SCREEN_OFF can precede Activity.onPause. Run a nonvisual guest turn
             // inline so durable checkpoints complete before this receiver returns.
-            nativePumpServices(host);
-            drainHostEffects(false);
+            hangPhase(MainThreadWatchdog.Phase.LIFECYCLE);
+            try {nativePumpServices(host);drainHostEffects(false,true);}
+            finally {hangPhase(MainThreadWatchdog.Phase.IDLE);}
         }
     };
     private final ExecutorService network = Executors.newCachedThreadPool();
@@ -79,6 +90,8 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private final Choreographer.FrameCallback frameCallback = new Choreographer.FrameCallback() {
         @Override public void doFrame(long frameTime) {
             if (host != 0 && active) {
+                hangPhase(MainThreadWatchdog.Phase.FRAME);
+                try {
                 long frameBegan = android.os.SystemClock.elapsedRealtimeNanos();
                 boolean enabled = accessibility.enabled();
                 if (enabled != accessibilityEnabled) {
@@ -118,6 +131,10 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                         + " effectsMs=" + ((effectsDone-accessibilityDone)/1_000_000.0)
                         + " notificationsMs=" + ((frameDone-effectsDone)/1_000_000.0));
                 }
+                } finally {
+                    hangPhase(MainThreadWatchdog.Phase.IDLE);
+                    scheduleJobContinuation(hostLifetime);
+                }
             }
             if (active) Choreographer.getInstance().postFrameCallback(this);
         }
@@ -129,8 +146,13 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     }
 
     private void drainHostEffects(boolean foreground) {
-        String effect;
-        while ((effect = nativePollEffect(host)) != null) {
+        drainHostEffects(foreground,false);
+    }
+    private void drainHostEffects(boolean foreground,boolean checkpoint) {
+        effectsPending=effectPump.drain(foreground,checkpoint);
+        scheduleJobContinuation(hostLifetime);
+    }
+    private void dispatchHostEffect(String effect,boolean foreground) {
             try {
                 JSONObject command = new JSONObject(effect);
                 if ("haptic".equals(command.optString("t"))) { if (foreground) performHapticFeedback(6); }
@@ -159,21 +181,57 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                 }
                 else if ("notification.ack".equals(command.optString("t"))) services.acknowledgeNotification(command.getString("eventId"));
             } catch (Exception error) { android.util.Log.e("PodJS", "Invalid host effect", error); }
-        }
-        String command;
-        while ((command = nativePollNet(host)) != null) handleNetwork(command);
     }
     private void pumpServicesWhileSuspended() {
         if (host == 0 || lifecycleState == 0) return;
-        nativePumpServices(host);
-        drainHostEffects(false);
+        hangPhase(MainThreadWatchdog.Phase.SERVICE);
+        try {nativePumpServices(host);drainHostEffects(false);}
+        finally {hangPhase(MainThreadWatchdog.Phase.IDLE);}
     }
 
     private void setHost(long handle) {
+        completionQueue.clear();
+        effectPump.reset();
+        if(jobContinuation!=null)serviceHandler.removeCallbacks(jobContinuation);
+        queuedJobTurn=null;jobContinuation=null;effectsPending=false;
+        if(hangWatchdog!=null){hangWatchdog.close();hangWatchdog=null;}
         host = handle;
         renderCheckpoint.reset();
         serviceTraceGuestEnabled=false;
         hostLifetime = handle == 0 ? null : new HostLifetime(handle);
+        if(handle!=0){
+            hangWatchdog=new PodHostWatchdog(serviceHandler);
+            hangWatchdog.state.active(lifecycleState==0);
+        }
+    }
+
+    private void hangPhase(MainThreadWatchdog.Phase phase){
+        if(hangWatchdog==null)return;
+        hangWatchdog.state.phase(phase);
+        // Background idle has no responsiveness obligation; an executing
+        // background service/job/checkpoint still must not disappear silently.
+        hangWatchdog.state.active(lifecycleState==0||phase!=MainThreadWatchdog.Phase.IDLE);
+    }
+
+    private void scheduleJobContinuation(final HostLifetime owner){
+        if(!ownsHost(owner)||queuedJobTurn==owner||(!effectsPending&&!nativeHasPendingJobs(owner.handle)))return;
+        queuedJobTurn=owner;
+        jobContinuation=()->{
+            if(!ownsHost(owner)||queuedJobTurn!=owner)return;
+            queuedJobTurn=null;jobContinuation=null;
+            hangPhase(MainThreadWatchdog.Phase.JOBS);
+            try{
+                nativePumpJobs(owner.handle);
+                drainHostEffects(lifecycleState==0);
+            }finally{
+                hangPhase(MainThreadWatchdog.Phase.IDLE);
+                scheduleJobContinuation(owner);
+            }
+        };
+        // A real looper boundary, coalesced and never postponed by more work.
+        // Delay gives due input/Choreographer work priority without stopping IO
+        // when no frames arrive (background, surface loss, static content).
+        serviceHandler.postDelayed(jobContinuation,HostTurnQueue.YIELD_MS);
     }
     private void destroyHost() {
         long previous = host;
@@ -229,8 +287,9 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     }
     private void postHostCompletion(HostLifetime owner, Runnable completion, ServiceResultTrace.Completion category) {
         if (owner == null) return;
-        serviceHandler.post(() -> {
+        completionQueue.post(() -> {
             if (!ownsHost(owner)) return;
+            hangPhase(MainThreadWatchdog.Phase.SERVICE);
             long began=category==null?0:System.nanoTime();
             try {
                 completion.run();
@@ -240,6 +299,8 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                     String record=serviceResultTrace.finish(category,System.nanoTime()-began);
                     if(record!=null)android.util.Log.i("PodJSService",record);
                 }
+                hangPhase(MainThreadWatchdog.Phase.IDLE);
+                scheduleJobContinuation(owner);
             }
         });
     }
@@ -676,6 +737,8 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
 
     public void setLifecycle(int state) {
         lifecycleState=state;
+        hangPhase(MainThreadWatchdog.Phase.LIFECYCLE);
+        try {
         services.acousticLifecycle(state);
         services.screenLifecycle(state==0);
         if(state!=0)services.pauseVideoForLifecycle();
@@ -687,6 +750,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         pumpServicesWhileSuspended();
         Choreographer.getInstance().removeFrameCallback(frameCallback);
         if (active) Choreographer.getInstance().postFrameCallback(frameCallback);
+        }finally {hangPhase(MainThreadWatchdog.Phase.IDLE);}
     }
     /** Native host UI only; pairing approval is a separate prerequisite. */
     public void connectCompanion(String peer,java.net.InetSocketAddress address,boolean listen,PodSyncHostConnection.Listener listener) {
@@ -710,7 +774,15 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     public String savedModalState() { flushActivityState(); return services.savedModalState(); }
     public String retainedModalState() { flushActivityState(); return services.retainedModalState(); }
     public void restoreActivityState(String saved, String retained) { services.activityState.restore(saved, retained); }
-    private void flushActivityState() { if (host != 0) { nativePumpServices(host); drainHostEffects(false); } }
+    // Android's save-state/screen-off contract must copy the final state before
+    // returning; these explicit durability barriers cannot leave state writes
+    // in a later host turn. Ordinary completion/frame effects remain bounded.
+    private void flushActivityState() {
+        if(host==0)return;
+        hangPhase(MainThreadWatchdog.Phase.LIFECYCLE);
+        try {nativePumpServices(host);drainHostEffects(false,true);}
+        finally {hangPhase(MainThreadWatchdog.Phase.IDLE);}
+    }
     public String savedActivityState() { flushActivityState(); return services.activityState.saved(); }
     public String retainedActivityState() { flushActivityState(); return services.activityState.retained(); }
     public boolean canNavigateBack() { return host != 0 && nativeCanGoBack(host); }
@@ -739,6 +811,8 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private static native void nativeInput(long host, int[] ids, float[] xy, int count, int rotaryMilliDegrees);
     private static native void nativePumpServices(long host);
     private static native void nativePumpServiceResults(long host);
+    private static native void nativePumpJobs(long host);
+    private static native boolean nativeHasPendingJobs(long host);
     private static native boolean nativeHasContent(long host);
     private static native void nativeRenderCheckpoint(long host,long sequence);
     private static native void nativeFrame(long host, long frameTimeNanos);

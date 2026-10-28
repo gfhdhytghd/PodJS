@@ -38,6 +38,47 @@ import java.util.concurrent.atomic.AtomicReference;
 /** Exercises real Java completion jobs and JNI without Choreographer assistance.
  * The raw guest observes frame/event entry, not the framework's virtual clock. */
 public final class PodRuntimeForegroundServicesTest {
+    @Test public void saveStateBarrierCompletesPriorWritesBeyondOrdinaryEffectBatchLimit() throws Exception {
+        try(Harness h=new Harness("checkpoint-effect-boundary-"+UUID.randomUUID())){
+            onMain(()->{
+                h.install("globalThis.frame=()=>{};globalThis.__pocketPumpServices=()=>pod.takeEvents();"
+                    +"for(let i=0;i<130;i++)pod.emit(JSON.stringify({t:'service.request',version:1,id:i+1,"
+                    +"method:'app.activityState.write',args:{saved:{marker:i},retained:{}}}));");
+                // This is Android's real pre-save durability barrier, not a test
+                // rescue pump. A normal bounded effects batch cannot stop it at64.
+                JSONObject saved=new JSONObject(h.view.savedActivityState());
+                assertEquals("last prior write must be durable before returning",129,saved.getInt("marker"));
+                return null;
+            });
+        }
+    }
+    @Test public void longJsonPromiseChainYieldsToRealMainTouchBeforeCompletionWithoutFrames() throws Exception {
+        String nonce=UUID.randomUUID().toString();
+        try(Harness h=new Harness("bounded-jobs-"+nonce)){
+            String source=fixture(nonce,"(async function(){"
+                +"await request('runtime.delay',{milliseconds:20});"
+                +"report('started',{});const chunk=JSON.stringify(Array.from({length:1024},(_,i)=>i));let checksum=0;"
+                +"for(let i=0;i<30000;i++){checksum+=JSON.parse(chunk)[i%1024];await Promise.resolve();}"
+                +"await report('done',{checksum});})().catch(failed);");
+            onMain(()->{h.install(source);h.postNonResultSentinels();h.startOnce();return null;});
+            assertEquals("old drain-to-empty completes before this state can be observed","started",h.awaitReport(nonce).getString("status"));
+            long queued=System.nanoTime();
+            onMain(()->{
+                long handle=(Long)field(h.view,"host");
+                assertTrue("touch must interleave with unfinished JS work",(Boolean)nativeCall("nativeHasPendingJobs",new Class<?>[]{long.class},handle));
+                long time=android.os.SystemClock.uptimeMillis();
+                android.view.MotionEvent event=android.view.MotionEvent.obtain(time,time,android.view.MotionEvent.ACTION_DOWN,16,16,0);
+                try{assertTrue(h.view.onTouchEvent(event));}finally{event.recycle();}
+                event=android.view.MotionEvent.obtain(time,time,android.view.MotionEvent.ACTION_UP,16,16,0);
+                try{assertTrue(h.view.onTouchEvent(event));}finally{event.recycle();}
+                assertTrue("main touch dispatch exceeded fixed 50ms budget",System.nanoTime()-queued<50_000_000L);
+                return null;
+            });
+            JSONObject result=h.awaitReport(nonce,"done");assertCleanCompletion(result);
+            long expected=0;for(int i=0;i<30000;i++)expected+=i%1024;
+            assertEquals(expected,result.getLong("checksum"));
+        }
+    }
     @Test public void foregroundCompletionsDriveFileHttpReadAndDeleteWithoutFramesOrInput() throws Exception {
         String nonce = UUID.randomUUID().toString();
         String prefix = "foreground-services-" + nonce;
@@ -219,8 +260,8 @@ public final class PodRuntimeForegroundServicesTest {
             assertTrue(directory.mkdir());
             nativeDirectories.add(directory);
             long handle = (Long) nativeCall("nativeCreate",
-                    new Class<?>[] {Surface.class, String.class, int.class, int.class, float.class, String.class},
-                    surface, "android-watch", 64, 64, 1f, directory.getAbsolutePath());
+                    new Class<?>[] {Surface.class, String.class, int.class, int.class, float.class, int.class, int.class, int.class, String.class},
+                    surface, "android-watch", 64, 64, 1f, 8, 50, 8000, directory.getAbsolutePath());
             assertNotEquals(0, handle);
             invoke(view, "setHost", new Class<?>[] {long.class}, handle);
             // Like the existing semantic JNI fixture, this needs a valid native
@@ -258,13 +299,16 @@ public final class PodRuntimeForegroundServicesTest {
         }
 
         JSONObject awaitReport(String nonce) throws Exception {
+            return awaitReport(nonce,null);
+        }
+        JSONObject awaitReport(String nonce,String status) throws Exception {
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
             JSONObject last = new JSONObject();
             do {
                 // This getter only copies state. PodRuntimeView.savedActivityState
                 // would pump services and invalidate the purpose of this test.
                 last = new JSONObject(services.activityState.saved());
-                if (nonce.equals(last.optString("nonce"))) return last;
+                if (nonce.equals(last.optString("nonce"))&&(status==null||status.equals(last.optString("status")))) return last;
                 Thread.sleep(10);
             } while (System.nanoTime() < deadline);
             throw new AssertionError("foreground completion chain stalled; last state=" + last);

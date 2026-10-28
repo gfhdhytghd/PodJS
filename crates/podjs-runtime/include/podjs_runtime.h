@@ -304,6 +304,15 @@ int32_t pod_runtime_pump_services(PodRuntime *runtime);
  * Does not advance the frame clock, layout/animation, or draw snapshot. Hosts
  * must serialize this call with frames and runtime destruction. */
 int32_t pod_runtime_pump_service_results(PodRuntime *runtime);
+/* Cooperative interactive scheduling. Zero/zero keeps legacy behavior; other
+ * valid budgets are 1..4096 jobs and 1..16000 microseconds. One JS job is atomic
+ * and may exceed this target. Callers must schedule a host continuation while
+ * has_pending_jobs; do not busy-spin or drop unfinished reactions. */
+int32_t pod_runtime_set_job_budget(PodRuntime *runtime, uint32_t max_jobs, uint32_t max_micros);
+bool pod_runtime_has_pending_jobs(PodRuntime *runtime);
+/* Drain one budget of existing FIFO jobs only; no frame or repeated pump entry.
+ * takeEvents remains service-result-only for this nonvisual continuation. */
+int32_t pod_runtime_pump_jobs(PodRuntime *runtime);
 int32_t pod_runtime_frame(PodRuntime *runtime, const PodInputFrame *input);
 int32_t pod_runtime_snapshot(PodRuntime *runtime, PodDrawList *out);
 /* Opt in to primary-output semantics. Collection is off by default. */
