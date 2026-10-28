@@ -43,6 +43,8 @@ public class PodActiveValidationTest {
   try(PodRoomAndroidDb db=new PodRoomAndroidDb(dbFile)){db.exec("PRAGMA user_version=8");}
   new PodRoomV18Converter(null,ro,"fixture").activeFast(g);
   try(PodRoomAndroidDb db=new PodRoomAndroidDb(dbFile)){db.exec("PRAGMA user_version=9");}
+  new PodRoomV18Converter(null,ro,"fixture").activeFast(g);
+  try(PodRoomAndroidDb db=new PodRoomAndroidDb(dbFile)){db.exec("PRAGMA user_version=10");}
   try{new PodRoomV18Converter(null,ro,"fixture").activeFast(g);fail();}catch(IOException expected){assertEquals("active_schema_version_invalid",expected.getMessage());}
  }
  @Test public void readonlyConnectionRejectsWritesAndSeesAtomicCommits()throws Exception {

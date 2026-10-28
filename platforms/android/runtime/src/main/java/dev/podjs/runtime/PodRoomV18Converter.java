@@ -51,12 +51,13 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
     PodRoomV18Converter withTimings(java.util.function.BiConsumer<String,Long> sink){timings=sink;return this;}
     PodRoomV18Converter withActiveFactory(Factory readOnly){activeFactory=readOnly;return this;}
     private Db activeDb(File f)throws Exception{return (activeFactory==null?factory:activeFactory).open(f);}
+    private static final int MAX_GUEST_SCHEMA_VERSION=9;
     public void activeFast(File g)throws Exception {
         long began=System.nanoTime();
         try(Db db=activeDb(new File(g,"podjs.sqlite"))){
-            // Published v18 conversion has user_version=0; guest initializes versions 1..8 (BLE, books, reading, offline queue and durable keeps).
+            // Published v18 conversion has user_version=0; guest initializes versions 1..9 (BLE, books, reading, offline queue, durable keeps and article registers).
             long version=number(scalar(db,"PRAGMA user_version"));
-            if(version<0||version>8)throw new IOException("active_schema_version_invalid");
+            if(version<0||version>MAX_GUEST_SCHEMA_VERSION)throw new IOException("active_schema_version_invalid");
             schemaIdentity(db);
         }
         timings.accept("activeFastSchema",System.nanoTime()-began);

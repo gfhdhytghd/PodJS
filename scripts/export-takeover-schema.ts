@@ -2,7 +2,7 @@
 import {resolve} from 'node:path';
 const app = process.argv[2];
 if (!app) throw new Error('Usage: bun scripts/export-takeover-schema.ts APP [--check]');
-const {SCHEMA} = await import(resolve(app, 'src/core/schema.ts'));
+const {SCHEMA,SCHEMA_VERSION} = await import(resolve(app, 'src/core/schema.ts'));
 const {BOOK_READING_SCHEMA} = await import(resolve(app, 'src/books/reading-schema.ts'));
 const memo = await Bun.file(resolve(app, 'src/notes/repository.ts')).text();
 const block = memo.slice(memo.indexOf('const MEMO_SCHEMA'), memo.indexOf('export async function initializeMemoSchema'));
@@ -12,5 +12,11 @@ const statements = [...SCHEMA.filter((sql:string)=>!BOOK_READING_SCHEMA.includes
 const path = 'platforms/android/runtime/src/main/resources/dev/podjs/runtime/watchrss-schema.json';
 const content = JSON.stringify(statements, null, 2) + '\n';
 if (process.argv.includes('--check')) {
+  // The guest may migrate after first admission. Its next cold admission must
+  // still accept the resulting schema, while unknown future schemas fail closed.
+  const converter = await Bun.file('platforms/android/runtime/src/main/java/dev/podjs/runtime/PodRoomV18Converter.java').text();
+  const maximum = Number(converter.match(/MAX_GUEST_SCHEMA_VERSION=(\d+)/)?.[1]);
+  if (!Number.isInteger(maximum) || SCHEMA_VERSION > maximum) throw new Error(`WatchRSS guest schema ${SCHEMA_VERSION} exceeds host admission ${maximum}`);
+
   if (await Bun.file(path).text() !== content) throw new Error('WatchRSS schema resource drift');
 } else await Bun.write(path, content);

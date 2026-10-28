@@ -88,6 +88,18 @@ pub fn sha256_bytes<'js>(ctx: Ctx<'js>, input: TypedArray<'js, u8>) -> rquickjs:
     TypedArray::new(ctx, Sha256::digest(bytes).to_vec()).map(Some)
 }
 
+/// Incremental IEEE CRC32, bounded to one guest view and no retained buffers.
+pub fn crc32_bytes(input: TypedArray<'_, u8>, initial: f64) -> Option<f64> {
+    let bytes = input.as_bytes()?;
+    if bytes.len() > 256 * 1024 || !initial.is_finite() || initial.fract() != 0.0
+        || initial < 0.0 || initial > u32::MAX as f64 { return None; }
+    let mut hash = crc32fast::Hasher::new_with_initial(initial as u32);
+    hash.update(bytes);
+    // rquickjs' u32 IntoJs uses an int32 value. IEEE CRC32 needs the unsigned
+    // range, so publish an exactly representable JS Number instead.
+    Some(hash.finalize() as f64)
+}
+
 /// Optional bounded gzip decompression. Oversized/invalid input uses the caller's fallback.
 pub fn gunzip_bytes<'js>(ctx: Ctx<'js>, input: TypedArray<'js, u8>) -> rquickjs::Result<Option<TypedArray<'js, u8>>> {
     use std::io::Read;
@@ -118,6 +130,7 @@ pub fn android_json_quoted_byte_length(input: JsString<'_>) -> rquickjs::Result<
 }
 
 pub fn mount<'js>(ctx: Ctx<'js>, pod: &Object<'js>) -> rquickjs::Result<()> {
+    pod.set("crc32Bytes", Function::new(ctx.clone(), crc32_bytes)?)?;
     pod.set("gunzipBytes", Function::new(ctx.clone(), gunzip_bytes)?)?;
     pod.set("androidJsonQuotedByteLength", Function::new(ctx.clone(), android_json_quoted_byte_length)?)?;
     pod.set("sha256Bytes", Function::new(ctx.clone(), sha256_bytes)?)?;
@@ -134,6 +147,40 @@ pub fn mount<'js>(ctx: Ctx<'js>, pod: &Object<'js>) -> rquickjs::Result<()> {
 mod tests {
     use super::*;
     use rquickjs::{CatchResultExt, Context, Runtime};
+    #[test]
+    fn crc32_bridge_preserves_views_incremental_seed_and_bounds() {
+        let rt=Runtime::new().unwrap();let context=Context::full(&rt).unwrap();
+        context.with(|ctx| {
+            let pod=Object::new(ctx.clone()).unwrap();mount(ctx.clone(),&pod).unwrap();ctx.globals().set("pod",pod).unwrap();
+            let ok:bool=ctx.eval(r#"
+              const b=new Uint8Array([0,49,50,51,52,53,54,55,56,57,0]).subarray(1,10);
+              const first=pod.crc32Bytes(b.subarray(0,4),0);
+              pod.crc32Bytes(b,0)===0xcbf43926 && pod.crc32Bytes(b.subarray(4),first)===0xcbf43926 &&
+              pod.crc32Bytes(new Uint8Array(),0xffffffff)===0xffffffff &&
+              pod.crc32Bytes(new Uint8Array(256*1024),0)!=null && pod.crc32Bytes(new Uint8Array(256*1024+1),0)==null &&
+              [-1,1.5,NaN,Infinity,4294967296].every(seed=>pod.crc32Bytes(b,seed)==null);
+            "#).unwrap();assert!(ok);
+        });
+    }
+    #[test]
+    fn crc32_large_guest_stream_has_a_bounded_native_time_budget() {
+        let rt=Runtime::new().unwrap();let context=Context::full(&rt).unwrap();
+        let bytes:Vec<u8>=(0..32*1024*1024).map(|n|(n*31) as u8).collect();
+        let expected=crc32fast::hash(&bytes);
+        context.with(|ctx| {
+            let pod=Object::new(ctx.clone()).unwrap();mount(ctx.clone(),&pod).unwrap();ctx.globals().set("pod",pod).unwrap();
+            ctx.globals().set("input",TypedArray::new(ctx.clone(),bytes).unwrap()).unwrap();
+            let started=std::time::Instant::now();
+            let got:u32=ctx.eval("let crc=0;for(let at=0;at<input.length;at+=256*1024)crc=pod.crc32Bytes(input.subarray(at,at+256*1024),crc);crc").unwrap();
+            let elapsed=started.elapsed();assert_eq!(got,expected);
+            assert!(elapsed<std::time::Duration::from_secs(5),"32 MiB guest CRC native budget exceeded: {elapsed:?}");
+            eprintln!("32 MiB guest CRC /128 bounded native calls: {elapsed:?}");
+            let old_started=std::time::Instant::now();
+            let old:u32=ctx.eval("(function oldBitwiseCrc(bytes){let crc=0xffffffff;for(const b of bytes){crc^=b;for(let i=0;i<8;i++)crc=(crc>>>1)^((crc&1)?0xedb88320:0);}return (crc^0xffffffff)>>>0;})(input.subarray(0,1024*1024))").unwrap();
+            assert_eq!(old,crc32fast::hash(&(0..1024*1024).map(|n|(n*31) as u8).collect::<Vec<_>>()));
+            eprintln!("old bitwise CRC, 1 MiB real guest: {:?}",old_started.elapsed());
+        });
+    }
     #[test]
     fn gunzip_bridge_validates_crc_views_members_and_output_bound() {
         use std::io::Write;

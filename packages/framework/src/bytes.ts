@@ -29,6 +29,7 @@ export function decodeUtf8Chunk(bytes:Uint8Array,start=0,options:Utf8ChunkOption
 
 export {encodeUtf8Async,decodeUtf8Async,encodeBase64Async,decodeBase64Async} from './async-bytes.ts';
 export type {CodecWorkOptions} from './async-bytes.ts';
+export {crc32,crc32Async} from './checksum.ts';
 
 /** Optional pure native SHA-256 for at most 256 KiB; null requests a caller's fallback. */
 export function sha256Bytes(bytes:Uint8Array):Uint8Array|null {

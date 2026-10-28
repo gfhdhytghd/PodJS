@@ -84,7 +84,7 @@ public final class RoomV18Test {
             File full=child(root,"full");converter.snapshot(full);converter.copy(full);String expected=converter.verify(full);
             // Published data upgraded by the current guest must survive a cold
             // host admission; unknown future schemas still fail closed.
-            for(int guestVersion=0;guestVersion<=8;guestVersion++) {
+            for(int guestVersion=0;guestVersion<=9;guestVersion++) {
                 try(Jdbc upgraded=new Jdbc(new File(full,"podjs.sqlite"))){upgraded.exec("PRAGMA user_version="+guestVersion);}
                 converter.activeFast(full);
             }
@@ -92,7 +92,7 @@ public final class RoomV18Test {
             converter.activeFast(full);
             try(Jdbc upgraded=new Jdbc(new File(full,"podjs.sqlite"))){upgraded.exec("PRAGMA user_version=6");}
             converter.activeFast(full);
-            try(Jdbc upgraded=new Jdbc(new File(full,"podjs.sqlite"))){upgraded.exec("PRAGMA user_version=9");}
+            try(Jdbc upgraded=new Jdbc(new File(full,"podjs.sqlite"))){upgraded.exec("PRAGMA user_version=10");}
             try {converter.activeFast(full);throw new AssertionError("future schema admitted");}catch(IOException expectedFailure){require("active_schema_version_invalid".equals(expectedFailure.getMessage()),"future schema reason");}
             try(Jdbc upgraded=new Jdbc(new File(full,"podjs.sqlite"))){upgraded.exec("PRAGMA user_version=0");}
             require(batches[0]==30,"all 15 tables paged");

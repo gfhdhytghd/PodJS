@@ -206,7 +206,7 @@ mod tests {
             return (await c.request('kv.keys',{})).includes('back')?'success':'failure';
         }"#;
         let result=crate::background::run_with_services(source,crate::background::Options {app_id:"kv-bg",task_id:"task",budget_ms:1000,memory_bytes:8*1024*1024,payload_json:"null"},crate::background::Cancellation::default(),Some(services));
-        assert_eq!(result.status,crate::background::Status::Success);
+        assert_eq!(result.status,crate::background::Status::Success,"{result:?}");
         assert_eq!(front.get("back").unwrap().unwrap()["text"],"汉字😀");
         assert_eq!(front.get("front").unwrap(),None);
         std::fs::remove_dir_all(root).unwrap();
