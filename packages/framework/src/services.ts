@@ -209,12 +209,17 @@ export const textInput = {
     return hostOperation("input.text", { title, value,...options });
   },
   async openInline(value:string,bounds:{x:number;y:number;width:number;height:number},onChange:(value:string)=>void,onSubmit?:()=>void,options:{hint?:string;fontSizeSp?:number;fontAsset?:string;fontWeight?:number;includeFontPadding?:boolean;inputType?:"text"|"uri";multiline?:boolean;keepExisting?:boolean;selectionStart?:number;textAlign?:"start"|"center"|"end";horizontalPaddingDp?:number;verticalPaddingDp?:number;autoFocus?:boolean;document?:{id:string;role:"title"|"body";viewportHeight:number;viewportOverhangDp?:number;metadata?:string;unfocusedCaretColor?:string}}={}):Promise<{close():Promise<void>;setValue(value:string):Promise<void>}> {
-    let session:number|undefined,closed=false;
+    let session:number|undefined,closed=false,lastValue=value;
     const early:Record<string,unknown>[]=[];
     const deliver=(event:Record<string,unknown>)=>{
       if(closed||event.session!==session)return;
-      if(event.t==="input.inline.change"&&typeof event.value==="string")onChange(event.value);
-      if(event.t==="input.inline.submit")onSubmit?.();
+      if(event.t==="input.inline.change"&&typeof event.value==="string"){lastValue=event.value;onChange(event.value);}
+      if(event.t==="input.inline.submit"){
+        // The submit event owns the field's final value, including an early
+        // IME/physical-key submit before a separate change was delivered.
+        if(typeof event.value==="string"&&event.value!==lastValue){lastValue=event.value;onChange(event.value);}
+        onSubmit?.();
+      }
     };
     const unsubscribe=__onHostEvent(event=>{
       if(session===undefined){if(early.length<32&&event.t?.toString().startsWith("input.inline."))early.push(event);return;}
@@ -225,7 +230,7 @@ export const textInput = {
     for(const event of early)deliver(event);
     return {async setValue(value:string){
       if(closed)return;
-      await hostOperation<void>("input.inline.set",{session,value}).result;
+      await hostOperation<void>("input.inline.set",{session,value}).result;lastValue=value;
     },async close(){
       if(closed)return;
       closed=true;unsubscribe();

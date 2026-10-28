@@ -751,3 +751,10 @@ test('manual cloud enqueue and local transfer leases require lifecycle grant and
  await expect(hostOperation('cloud.enqueue',{token:'opaque'}).result).rejects.toMatchObject({code:'unsupported'});expect(emitted).toHaveLength(0);host.capabilities=()=>JSON.stringify(['host.lifecycle']);
  for(const [method,args] of [['cloud.enqueue',{token:'opaque'}],['cloud.localTransfer',{active:true,generation:1}],['cloud.workState',{}]] as const){const task=hostOperation(method,args).result,request=emitted.at(-1)!;expect(request).toMatchObject({method,args});events.push({t:'service.result',id:request.id,ok:true,value:{state:'queued'}});api.__pumpPodEvents();await task;}
 });
+
+ test('inline submit delivers its final text before submit even before open resolves; closed sessions ignore it',async()=>{
+  const order:string[]=[];const pending=textInput.openInline('',{x:18,y:44,width:197,height:56},v=>order.push('change:'+v),()=>order.push('submit'));
+  const open=emitted.at(-1)!;events.push({t:'input.inline.submit',session:open.id,value:'599'},{t:'service.result',id:open.id,ok:true,value:open.id});api.__pumpPodEvents();
+  const session=await pending;expect(order).toEqual(['change:599','submit']);
+  const closing=session.close(),close=emitted.at(-1)!;events.push({t:'input.inline.submit',session:open.id,value:'stale'},{t:'service.result',id:close.id,ok:true,value:null});api.__pumpPodEvents();await closing;expect(order).toEqual(['change:599','submit']);
+ });

@@ -8,6 +8,7 @@ import android.text.Editable;
 import android.text.InputType;
 import android.text.TextWatcher;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
@@ -132,7 +133,12 @@ final class PodInlineTextInput {
             }
         });
         input.setOnEditorActionListener((view,action,event)->{
-            if(action!=EditorInfo.IME_ACTION_SEARCH)return false;
+            if(multiline)return false;
+            // Physical/ADB ENTER arrives as IME_NULL, unlike the soft keyboard's
+            // SEARCH action. Consume both edges, submit once on a valid key-up.
+            boolean enter=action==EditorInfo.IME_NULL&&event!=null&&event.getKeyCode()==KeyEvent.KEYCODE_ENTER;
+            if(action!=EditorInfo.IME_ACTION_SEARCH&&!enter)return false;
+            if(enter&&(event.getAction()!=KeyEvent.ACTION_UP||event.isCanceled()||event.getRepeatCount()!=0))return true;
             if(fields.get(id)==input)emit("input.inline.submit",id,input.getText().toString());
             return true;
         });
