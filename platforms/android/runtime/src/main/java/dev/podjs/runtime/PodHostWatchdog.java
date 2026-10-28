@@ -14,6 +14,8 @@ final class PodHostWatchdog implements AutoCloseable {
     private final ScheduledExecutorService observer;
     private Runnable ping;
     private boolean closed;
+    private static final long JS_STACK_DELAY_MS=300;
+    private long pingToken,stackToken;
     interface StackSampler {
         void request(int phase,long delayMs);
         void cancel();
@@ -27,7 +29,8 @@ final class PodHostWatchdog implements AutoCloseable {
         this.main=main;
         this.stacks=stacks;
         observer=Executors.newSingleThreadScheduledExecutor(r->{Thread t=new Thread(r,"PodWatchdog");t.setDaemon(true);return t;});
-        observer.scheduleWithFixedDelay(this::tick,250,250,TimeUnit.MILLISECONDS);
+        long period=stacks==null?250:100;
+        observer.scheduleWithFixedDelay(this::tick,period,period,TimeUnit.MILLISECONDS);
     }
     private static void log(String value){if(value!=null)Log.w("PodWatchdog",value);}
     // A suspended device cannot acknowledge anything. Exclude deep sleep,
@@ -36,16 +39,22 @@ final class PodHostWatchdog implements AutoCloseable {
     private synchronized void tick(){
         if(closed)return;
         long now=awakeNanos();String report=state.observe(now);log(report);
-        if(report!=null&&stacks!=null)stacks.request(state.phaseCode(),state.delayMs(now));
+        // Diagnostic sampling precedes the unchanged one-second stall counter.
+        // One sample per outstanding ping prevents flooding a single long job.
+        long delay=state.delayMs(now);
+        if(stacks!=null&&delay>=JS_STACK_DELAY_MS&&stackToken!=pingToken){
+            stackToken=pingToken;stacks.request(state.phaseCode(),delay);
+        }
         long token=state.probe(now);
         if(token==0)return;
+        pingToken=token;
         ping=()->acknowledge(token);
         main.post(ping);
     }
     private synchronized void acknowledge(long token){
         if(closed)return;
         log(state.acknowledge(token,awakeNanos()));
-        if(stacks!=null)stacks.cancel();
+        if(stacks!=null&&token==pingToken)stacks.cancel();
     }
     @Override public synchronized void close(){
         if(closed)return;

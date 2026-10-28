@@ -45,3 +45,18 @@ function* utf8DecodeChunks(bytes:Uint8Array):Generator<string> {
 }
 /** Strict decoding reuses the existing native UTF-8 bridge with frame yields. */
 export async function decodeUtf8Async(bytes:Uint8Array,options:CodecWorkOptions={}):Promise<string>{check(options);if(bytes.length<=4096)return [...utf8DecodeChunks(bytes)].join('');return (await collect(utf8DecodeChunks(bytes),options)).join('');}
+
+/** Exact comparison of stable byte views. Callers retain immutable input until
+ * completion, as with asynchronous hashing. At most 16 x 4 KiB / 8 ms per turn;
+ * no per-byte callbacks, copies, digest shortcuts or probabilistic equality. */
+export async function equalBytesAsync(a:Uint8Array,b:Uint8Array,options:CodecWorkOptions={}):Promise<boolean>{
+ check(options);if(a.length!==b.length)return false;if(a===b)return true;
+ const now=()=>globalThis.performance?.now?.()??Date.now();let start=now(),pieces=0;
+ for(let at=0;at<a.length;){
+  check(options);const end=Math.min(a.length,at+4096);
+  for(;at<end;at++)if(a[at]!==b[at])return false;
+  pieces++;
+  if(at<a.length&&(pieces>=16||now()-start>=8)){await yieldTurn(options);start=now();pieces=0;}
+ }
+ check(options);return true;
+}

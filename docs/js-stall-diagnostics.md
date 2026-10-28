@@ -8,8 +8,12 @@ metadata override, `adb -s SERIAL shell setprop log.tag.PodJSStack DEBUG` enable
 sampling on the next host/view creation, including release. Restore the prior
 property after the run. An explicit metadata `false` also disables debug capture.
 
-The independent watchdog requests a sample after its existing one-second awake
-heartbeat deadline. Only an atomic request crosses threads. At the next QuickJS
+With sampling enabled, the independent watchdog requests one sample when an
+outstanding awake heartbeat reaches 300 ms, checked on a 100 ms observer tick.
+Without a sampler, the lightweight observer retains its 250 ms tick.
+The release stall counter and warning retain their one-second deadline. One
+request per outstanding heartbeat avoids repeated captures of the same job.
+Only an atomic request crosses threads. At the next QuickJS
 interrupt point the executing thread reads the live stack and immediately writes
 `PodJSPerf jsStack phase=... delayMs=... record=... frames=...` to the existing
 Android perf log. Phase values are idle=1, service=2, jobs=3, frame=4,

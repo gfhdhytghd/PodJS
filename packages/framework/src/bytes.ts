@@ -27,7 +27,7 @@ export function decodeUtf8Chunk(bytes:Uint8Array,start=0,options:Utf8ChunkOption
   return {text:utf8ToString(bytes.subarray(start,end)),next:end};
 }
 
-export {encodeUtf8Async,decodeUtf8Async,encodeBase64Async,decodeBase64Async} from './async-bytes.ts';
+export {encodeUtf8Async,decodeUtf8Async,encodeBase64Async,decodeBase64Async,equalBytesAsync} from './async-bytes.ts';
 export type {CodecWorkOptions} from './async-bytes.ts';
 export {crc32,crc32Async} from './checksum.ts';
 

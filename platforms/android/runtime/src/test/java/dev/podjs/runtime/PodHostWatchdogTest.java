@@ -19,6 +19,31 @@ import static org.junit.Assert.*;
 @RunWith(RobolectricTestRunner.class) @Config(sdk=30)
 @LooperMode(LooperMode.Mode.PAUSED)
 public class PodHostWatchdogTest {
+    @Test public void diagnosticSamplePrecedesStallThresholdAndCoalescesUntilAcknowledged() throws Exception {
+        final int[] requested={0},cancelled={0};
+        PodHostWatchdog w=new PodHostWatchdog(new Handler(Looper.getMainLooper()),new PodHostWatchdog.StackSampler(){
+            public void request(int phase,long delay){assertTrue(delay>=300);requested[0]++;}
+            public void cancel(){cancelled[0]++;}
+            public void close(){}
+        });
+        Method tick=PodHostWatchdog.class.getDeclaredMethod("tick");tick.setAccessible(true);
+        try{
+            w.state.active(true);w.state.phase(MainThreadWatchdog.Phase.FRAME);tick.invoke(w);
+            ShadowSystemClock.simulateDeepSleep(Duration.ofMinutes(5));tick.invoke(w);
+            assertEquals("sleep cannot request a diagnostic sample",0,requested[0]);
+            ShadowSystemClock.advanceBy(Duration.ofMillis(299));tick.invoke(w);
+            assertEquals(0,requested[0]);
+            ShadowSystemClock.advanceBy(Duration.ofMillis(76));tick.invoke(w);
+            assertEquals("sample a live sub-second job before it returns",1,requested[0]);
+            assertEquals("release stall counter retains one-second threshold",0,w.state.stalls());
+            tick.invoke(w);ShadowSystemClock.advanceBy(Duration.ofMillis(375));tick.invoke(w);
+            assertEquals("one request per unacknowledged ping",1,requested[0]);
+            Shadows.shadowOf(Looper.getMainLooper()).idle();assertEquals(1,cancelled[0]);
+            tick.invoke(w);ShadowSystemClock.advanceBy(Duration.ofMillis(375));tick.invoke(w);
+            assertEquals("a subsequent blocked turn can be sampled",2,requested[0]);
+            assertEquals(0,w.state.stalls());
+        }finally{w.close();Shadows.shadowOf(Looper.getMainLooper()).idle();}
+    }
     @Test public void stackRequestRunsOffMainAndCloseCancelsPendingProbe() throws Exception {
         final int[] requested={0},cancelled={0},closed={0},phase={0};
         PodHostWatchdog w=new PodHostWatchdog(new Handler(Looper.getMainLooper()),new PodHostWatchdog.StackSampler(){
