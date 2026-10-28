@@ -13,6 +13,14 @@ export interface FrameByteStream {
  write(bytes:Uint8Array):Promise<void>;
  close():Promise<void>;
 }
+// A second wrapper must not consume the first wrapper's body as a new header,
+// or insert its own prefix between another writer's prefix and body. Acquire
+// before any codec/transport await; reads and writes remain independent.
+const streamReaders=new WeakSet<FrameByteStream>();
+const streamWriters=new WeakSet<FrameByteStream>();
+export class FrameLengthError extends RangeError {
+ constructor(readonly length:number,readonly maxFrameBytes:number){super('Sync frame length out of range');this.name='FrameLengthError';}
+}
 /** A bounded, single-reader connection. Read deadlines cover the entire frame,
  * so a peer cannot extend a deadline by sending one byte at a time. */
 export class StreamFrameConnection<T> {
@@ -32,14 +40,15 @@ export class StreamFrameConnection<T> {
   if(codec.chunkBytes!==undefined&&(!Number.isSafeInteger(codec.chunkBytes)||codec.chunkBytes<1))throw new RangeError('Invalid frame chunk budget');
  }
  async readFrame(timeoutMs:number):Promise<T>{
-  if(this.closed)throw new Error('Sync connection closed');if(this.reading)throw new Error('Concurrent sync frame reads');
+  if(this.closed)throw new Error('Sync connection closed');if(this.reading||streamReaders.has(this.stream))throw new Error('Concurrent sync frame reads');
   if(!Number.isFinite(timeoutMs)||timeoutMs<=0)throw new Error('Invalid sync read deadline');
-  this.reading=true;const deadline=this.now()+timeoutMs;
+  this.reading=true;streamReaders.add(this.stream);
   try{
+   const deadline=this.now()+timeoutMs;
    const began=this.now();const header=new Uint8Array(4);await this.readInto(header,deadline);
-   const length=new DataView(header.buffer).getInt32(0,false);if(length<1||length>this.codec.maxFrameBytes)throw new Error('Sync frame length out of range');
+   const length=new DataView(header.buffer).getInt32(0,false);if(length<1||length>this.codec.maxFrameBytes)throw new FrameLengthError(length,this.codec.maxFrameBytes);
    const frame=new Uint8Array(length+4);frame.set(header);await this.readInto(frame.subarray(4),deadline);const received=this.now();try{this.readBytesComplete?.();}catch{}const value=await this.codec.decode(frame,{cancelled:()=>this.closed});this.reportTiming({direction:'read',bytes:frame.length,readMs:Math.max(0,received-began),decodeMs:Math.max(0,this.now()-received),encodeMs:0,writeMs:0});return value;
-  }catch(error){await this.close();throw error;}finally{this.reading=false;}
+  }catch(error){await this.close();throw error;}finally{this.reading=false;streamReaders.delete(this.stream);}
  }
  private async readInto(target:Uint8Array,deadline:number,report=true):Promise<void>{
   let offset=0;
@@ -52,7 +61,7 @@ export class StreamFrameConnection<T> {
   }
  }
  async writeFrame(frame:T):Promise<void>{
-  if(this.closed)throw new Error('Sync connection closed');if(this.writing)throw new Error('Concurrent sync frame writes');this.writing=true;
+  if(this.closed)throw new Error('Sync connection closed');if(this.writing||streamWriters.has(this.stream))throw new Error('Concurrent sync frame writes');this.writing=true;streamWriters.add(this.stream);
   try{
    const began=this.now();const bytes=await this.codec.encode(frame,{cancelled:()=>this.closed});const encoded=this.now();
    const write=async(part:Uint8Array)=>{if(this.closed)throw new Error('Sync connection closed');await this.stream.write(part);if(this.closed)throw new Error('Sync connection closed');this.progress?.({direction:'write',bytes:part.length});};
@@ -60,7 +69,7 @@ export class StreamFrameConnection<T> {
    for(let i=4;i<bytes.length;i+=(this.codec.chunkBytes??TRANSFER_CHUNK_BYTES))await write(bytes.subarray(i,i+(this.codec.chunkBytes??TRANSFER_CHUNK_BYTES)));
    this.reportTiming({direction:'write',bytes:bytes.length,readMs:0,decodeMs:0,encodeMs:Math.max(0,encoded-began),writeMs:Math.max(0,this.now()-encoded)});
   }catch(error){await this.close();throw error;}
-  finally{this.writing=false;}
+  finally{this.writing=false;streamWriters.delete(this.stream);}
  }
  async close():Promise<void>{if(this.closed)return;this.closed=true;await this.stream.close();}
 }
