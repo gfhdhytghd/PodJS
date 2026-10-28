@@ -154,6 +154,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/text-layout` | Cancellable sliced layout preparation and native paragraph measurement. |
 | `@podjs/framework/text-wrap` | Pure compatibility wrapping/line-breaking helpers. |
 | `@podjs/framework/media-surface` | Host-backed image/video surface components and lifecycle. |
+| `@podjs/framework/media-policy` | Session-local playback recovery budgets, prepare deadlines and source-expiry policy. |
 | `@podjs/framework/crypto` | Length-prefixed binary framing, hex, bounded decimal SAS, host HMAC-SHA256 (32-byte keys) and P-256/P1363 signature verification. |
 | `@podjs/framework/bytes` | Portable UTF-8, byte and Base64 codecs. |
 | `@podjs/framework/async-bytes` | Chunked/yielding byte codecs for bounded guest work. |
