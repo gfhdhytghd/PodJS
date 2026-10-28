@@ -1,4 +1,4 @@
-import {traceServiceWork,__setServiceTraceEnabled} from './service-trace.ts';
+import {traceServiceWork,__setServiceTraceEnabled,__setServiceCallbackTraceEnabled} from './service-trace.ts';
 import { cancelActiveTouches } from "@pocketjs/framework/gesture";
 import { dispatchAccessibilityAction } from "@pocketjs/framework/input";
 import { registerServicePump } from "@pocketjs/framework/services";
@@ -275,6 +275,10 @@ export function __pumpPodEvents(): void {
   for (const event of events) {
     if (event.t === "touchCancel" || (event.t === "lifecycle" && event.state !== "active")) cancelActiveTouches();
     if ((event as {t:string}).t === 'diagnostic.serviceTrace') __setServiceTraceEnabled((event as unknown as {enabled?:boolean}).enabled===true);
+    if ((event as {t:string}).t === 'diagnostic.jsStack') {
+      __setServiceCallbackTraceEnabled((event as unknown as {enabled?:boolean}).enabled===true);
+      continue; // Host diagnostic control is not a product event.
+    }
     if(event.t === "lifecycle" && event.state !== "active")checkpoint(event.state);
     else if(event.t === "checkpoint" && event.reason === "screen-off")checkpoint("screen-off");
     for (const handler of hostEventHandlers) handler(event as unknown as Record<string, unknown>);

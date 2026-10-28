@@ -19,6 +19,25 @@ beforeEach(() => {
 afterEach(() => { events.length = 0; emitted.length = 0; });
 
 describe("host services", () => {
+ test('diagnostic controls stay private and real status callbacks retain settlement/order with slow labels',async()=>{
+  const realClock=Date.now;let now=0;const seen:string[]=[];
+  const remove=api.__onHostEvent(event=>seen.push(String(event.t)));
+  host.capabilities=()=>JSON.stringify(['system.browser.auth.status']);
+  try{
+   Date.now=()=>now;
+   const operation=browserAuth.authorize({url:'https://example.com',cookieOrigin:'https://example.com',requiredCookieNames:['sid'],qrExtractionScript:'null',onStatus:()=>{now+=75;}});
+   const request=emitted.at(-1)!;
+   events.push({t:'diagnostic.jsStack',enabled:true},{t:'browser.auth.status',id:request.id,value:{type:'pageState',loading:true,private:'PRIVATE_VALUE'}});
+   api.__pumpPodEvents();
+   expect(seen).toEqual(['browser.auth.status']);
+   const records=emitted.filter(x=>x.t==='diagnostic.serviceCallback');
+   expect(records).toEqual([{t:'diagnostic.serviceCallback',service:'browser.authorizeWithStatus',callback:'status',elapsedMs:75}]);
+   expect(JSON.stringify(records)).not.toContain('PRIVATE');
+   events.push({t:'service.result',id:request.id,ok:true,value:{cookie:'PRIVATE_COOKIE',origin:'https://example.com'}});api.__pumpPodEvents();
+   await expect(operation.result).resolves.toEqual({cookie:'PRIVATE_COOKIE',origin:'https://example.com'});
+   expect(seen).toEqual(['browser.auth.status','service.result']);
+  }finally{Date.now=realClock;events.push({t:'diagnostic.jsStack',enabled:false});api.__pumpPodEvents();remove();}
+ });
  test('secure leases require data.secure and expose nonblocking ownership without secrets',async()=>{
   await expect(secureStorage.acquire('account')).rejects.toMatchObject({code:'unsupported'});expect(emitted).toHaveLength(0);
   host.capabilities=()=>JSON.stringify(['data.secure']);

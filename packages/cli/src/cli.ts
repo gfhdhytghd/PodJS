@@ -79,7 +79,7 @@ function doctor(): void {
   if (revision !== expected) process.exitCode = 1;
 }
 
-async function build(target: Target, project?: ResolvedPodProject): Promise<ResolvedPodProject | undefined> {
+async function build(target: Target, project?: ResolvedPodProject, diagnosticJsStack=false): Promise<ResolvedPodProject | undefined> {
   const profile = POD_TARGETS[target];
   if(project?.config.resources?.glyphCache&&target!=="android-watch"&&target!=="wearos-watch") fail("runtime glyph pages currently require android-watch or wearos-watch");
   if (project) {
@@ -106,6 +106,7 @@ async function build(target: Target, project?: ResolvedPodProject): Promise<Reso
     "bun", "vendor/pocketjs/tools/build.ts", app,
     "--framework=solid", `--density=${density}`, "--hz=60",
     ...(target === "android-watch" || target === "wearos-watch" ? ["--minify"] : []),
+    ...(diagnosticJsStack ? ["--diagnostic-js-stack"] : []),
     ...(project?.fontSlots.length ? [`--font-slots-json=${JSON.stringify(project.fontSlots)}`] : []),
     ...(glyphCache ? [`--glyph-cache-json=${JSON.stringify(glyphCache)}`] : []),
     ...(project?.extraChars ? [`--extra-chars=${project.extraChars}`] : []),
@@ -178,14 +179,14 @@ function test(): void {
   run(["bun", "run", "test"]);
 }
 
-async function packageTarget(target: Target, project?: ResolvedPodProject, release = false, debuggable = false, versionCode?: unknown): Promise<void> {
+async function packageTarget(target: Target, project?: ResolvedPodProject, release = false, debuggable = false, versionCode?: unknown, diagnosticJsStack=false): Promise<void> {
   if (release && target !== "android-watch" && target !== "wearos-watch") fail("--release currently requires an Android target");
   if ((debuggable || versionCode !== undefined) && target !== "android-watch" && target !== "wearos-watch") fail("--debuggable and --version-code require an Android target");
   const overrides = androidPackageOptions(release, project?.androidSigning, debuggable, versionCode);
   // Change only the resolved in-memory configuration, before generating build metadata.
   if (project && overrides.versionCode !== undefined) project.config.versionCode = overrides.versionCode;
   if (debuggable) console.warn("pod: verification-only debuggable release APK; DO NOT PUBLISH");
-  await build(target, project);
+  await build(target, project,diagnosticJsStack);
   if (target === "android-watch" || target === "wearos-watch") {
     run(["bash", "scripts/build-android-runtime.sh"]);
     const app = target === "android-watch" ? ":androidApp" : ":wearApp";
@@ -242,6 +243,7 @@ function projectOption(path?: string): ResolvedPodProject | undefined {
 }
 
 interface TargetOptions {
+  diagnosticJsStack?: boolean;
   target?: string;
   project?: string;
   release?: boolean;
@@ -266,10 +268,11 @@ cli
 
 cli
   .command("build [target]", "Build an app for a watch target")
+  .option("--diagnostic-js-stack", "Preserve code identifiers and line maps for interrupt stack attribution")
   .option("--target <target>", "Watch target (can also be passed positionally)")
   .option("--project <path>", "Project directory or pod.config.json")
   .action(async (target: string | undefined, options: TargetOptions) => {
-    await build(targetArg(target, options.target), projectOption(options.project));
+    await build(targetArg(target, options.target), projectOption(options.project),options.diagnosticJsStack===true);
   });
 
 cli
@@ -278,13 +281,14 @@ cli
 
 cli
   .command("package [target]", "Build and package a watch target")
+  .option("--diagnostic-js-stack", "Preserve code names and bundle locations for JS stall attribution")
   .option("--target <target>", "Watch target (can also be passed positionally)")
   .option("--project <path>", "Project directory or pod.config.json")
   .option("--release", "Build a release APK using android.signing (non-debuggable by default)")
   .option("--debuggable", "Verification-only release APK; DO NOT PUBLISH (requires --release)")
   .option("--version-code <N>", "Override Android versionCode for this package invocation")
   .action(async (target: string | undefined, options: TargetOptions) => {
-    await packageTarget(targetArg(target, options.target), projectOption(options.project), options.release, options.debuggable, options.versionCode);
+    await packageTarget(targetArg(target, options.target), projectOption(options.project), options.release, options.debuggable, options.versionCode,options.diagnosticJsStack===true);
   });
 
 cli

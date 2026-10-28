@@ -168,6 +168,11 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                         nativeRenderCheckpoint(host,id);
                     }
                 }
+                else if ("diagnostic.serviceCallback".equals(command.optString("t"))) {
+                    String callback=command.optString("callback");
+                    if(slowServiceCallbacks.enabled&&guestCallbackLogs++<64&&("resolve".equals(callback)||"reject".equals(callback)||"status".equals(callback))&&command.optLong("elapsedMs")>50)
+                        android.util.Log.w("PodJSPerf","serviceCallback service="+ServiceResultTrace.exactMethod(command.optString("service"))+" callback="+callback+" elapsedMs="+command.optLong("elapsedMs"));
+                }
                 else if ("diagnostic.serviceWork".equals(command.optString("t"))) {
                     if(serviceResultTrace.enabled && command.optString("label").matches("[a-zA-Z][a-zA-Z0-9_.:-]{0,79}"))
                         android.util.Log.i("PodJSService", "guest label="+command.optString("label")+" ms="+command.optLong("elapsedMs")+" exclusiveMs="+command.optLong("exclusiveMs")+" beginEpochMs="+command.optLong("beginEpochMs")+" endEpochMs="+command.optLong("endEpochMs")+(command.has("units")?" units="+command.optLong("units"):""));
@@ -177,6 +182,8 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                         if ("service.request".equals(command.optString("t"))) serviceResultTrace.request(command.optInt("id"),command.optString("method"),command.optJSONObject("args")==null?null:command.optJSONObject("args").optString("traceLabel",null),command.optJSONObject("args")==null?null:command.optJSONObject("args").optString("sql",null));
                         else if ("service.cancel".equals(command.optString("t"))) serviceResultTrace.cancel(command.optInt("id"));
                     }
+                    if("service.request".equals(command.optString("t")))slowServiceCallbacks.request(command.optInt("id"),command.optString("method"));
+                    else if("service.cancel".equals(command.optString("t")))slowServiceCallbacks.cancel(command.optInt("id"));
                     services.dispatch(command);
                 }
                 else if ("notification.ack".equals(command.optString("t"))) services.acknowledgeNotification(command.getString("eventId"));
@@ -198,10 +205,17 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         host = handle;
         renderCheckpoint.reset();
         serviceTraceGuestEnabled=false;
+        slowServiceCallbacks.clear();guestCallbackLogs=0;
         hostLifetime = handle == 0 ? null : new HostLifetime(handle);
         if(handle!=0){
-            hangWatchdog=new PodHostWatchdog(serviceHandler);
+            final long probe=slowServiceCallbacks.enabled?nativeCreateJsStackProbe(handle):0;
+            hangWatchdog=new PodHostWatchdog(serviceHandler,probe==0?null:new PodHostWatchdog.StackSampler(){
+                public void request(int phase,long delay){nativeRequestJsStack(probe,phase,delay);}
+                public void cancel(){nativeCancelJsStack(probe);}
+                public void close(){nativeCloseJsStackProbe(probe);}
+            });
             hangWatchdog.state.active(lifecycleState==0);
+            nativePostEvent(handle,("{\"t\":\"diagnostic.jsStack\",\"enabled\":"+slowServiceCallbacks.enabled+"}").getBytes(java.nio.charset.StandardCharsets.UTF_8));
         }
     }
 
@@ -281,16 +295,21 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     // Every completion enters through a new main-looper job. A token identifies
     // the guest lifetime even if the allocator later reuses its native address.
     private final ServiceResultTrace serviceResultTrace;
+    private final SlowServiceCallbacks slowServiceCallbacks;
+    private int guestCallbackLogs;
     private boolean serviceTraceGuestEnabled;
     private void postHostCompletion(HostLifetime owner, Runnable completion) {
         postHostCompletion(owner,completion,null);
     }
     private void postHostCompletion(HostLifetime owner, Runnable completion, ServiceResultTrace.Completion category) {
+        postHostCompletion(owner,completion,category,null,false);
+    }
+    private void postHostCompletion(HostLifetime owner,Runnable completion,ServiceResultTrace.Completion category,String method,boolean status) {
         if (owner == null) return;
         completionQueue.post(() -> {
             if (!ownsHost(owner)) return;
             hangPhase(MainThreadWatchdog.Phase.SERVICE);
-            long began=category==null?0:System.nanoTime();
+            long began=category==null&&method==null?0:System.nanoTime();
             try {
                 completion.run();
                 pumpServiceResults(owner);
@@ -299,6 +318,8 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                     String record=serviceResultTrace.finish(category,System.nanoTime()-began);
                     if(record!=null)android.util.Log.i("PodJSService",record);
                 }
+                String slow=slowServiceCallbacks.finish(method,status,System.nanoTime()-began);
+                if(slow!=null)android.util.Log.w("PodJSPerf",slow);
                 hangPhase(MainThreadWatchdog.Phase.IDLE);
                 scheduleJobContinuation(owner);
             }
@@ -309,18 +330,40 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         if (owner == null) return;
         byte[] bytes = event.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         ServiceResultTrace.Completion category=null;
+        String callbackMethod=null;boolean callbackStatus=false;
         if(serviceResultTrace.enabled)try {
             JSONObject value=new JSONObject(event);
             String type=value.optString("t");
-            if("service.result".equals(type)||"browser.auth.status".equals(type))category=serviceResultTrace.completion(value.optInt("id"),"service.result".equals(type),bytes.length,value.optJSONArray("value")==null?-1:value.optJSONArray("value").length());
+            if("service.result".equals(type)||"browser.auth.status".equals(type)) {
+                callbackStatus="browser.auth.status".equals(type);
+                category=serviceResultTrace.completion(value.optInt("id"),!callbackStatus,bytes.length,value.optJSONArray("value")==null?-1:value.optJSONArray("value").length());
+                callbackMethod=slowServiceCallbacks.complete(value.optInt("id"),!callbackStatus);
+            }
         } catch(Exception ignored) { /* Diagnostics never block delivery. */ }
+        else if(slowServiceCallbacks.enabled)try {
+            // Bounded header-only parse. Do not build a second full response
+            // tree merely to label it; absent/late metadata remains unknown.
+            android.util.JsonReader header=new android.util.JsonReader(new java.io.StringReader(event.substring(0,Math.min(1024,event.length()))));
+            String type=null;Integer id=null;header.beginObject();
+            while(header.hasNext()&&(type==null||id==null)){
+                String name=header.nextName();
+                if("t".equals(name))type=header.nextString();
+                else if("id".equals(name))id=header.nextInt();
+                else header.skipValue();
+            }
+            header.close();
+            if(id!=null&&("service.result".equals(type)||"browser.auth.status".equals(type))){
+                callbackStatus="browser.auth.status".equals(type);
+                callbackMethod=slowServiceCallbacks.complete(id,!callbackStatus);
+            }
+        }catch(Exception ignored){ /* No additional response scan on this path. */ }
         postHostCompletion(owner, () -> {
             if(serviceResultTrace.enabled&&!serviceTraceGuestEnabled) {
                 nativePostEvent(owner.handle,"{\"t\":\"diagnostic.serviceTrace\",\"enabled\":true}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
                 serviceTraceGuestEnabled=true;
             }
             nativePostEvent(owner.handle, bytes);
-        },category);
+        },category,callbackMethod,callbackStatus);
     }
     private void pumpServiceResults(HostLifetime owner) {
         if (Looper.myLooper() != Looper.getMainLooper()) throw new IllegalStateException("Service turns require the main looper");
@@ -355,6 +398,14 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         serviceResultTrace = new ServiceResultTrace(
             (context.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0,
             android.util.Log.isLoggable("PodJSService",android.util.Log.DEBUG));
+        Boolean stackOverride=null;
+        try {
+            android.content.pm.ApplicationInfo info=context.getPackageManager().getApplicationInfo(context.getPackageName(),android.content.pm.PackageManager.GET_META_DATA);
+            if(info.metaData!=null&&info.metaData.containsKey("dev.podjs.diagnostics.jsStack"))stackOverride=info.metaData.getBoolean("dev.podjs.diagnostics.jsStack");
+        }catch(android.content.pm.PackageManager.NameNotFoundException ignored){}
+        slowServiceCallbacks=new SlowServiceCallbacks(SlowServiceCallbacks.enabled(
+            (context.getApplicationInfo().flags&android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0,
+            stackOverride,android.util.Log.isLoggable("PodJSStack",android.util.Log.DEBUG)));
         accessibility = new PodAccessibility(this, (id, hash, action) -> host != 0 && nativeAccessibilityAction(host, id, hash, action));
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
         long servicesBegan = PodStartupTrace.now();
@@ -827,5 +878,9 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private static native void nativeLifecycle(long host, int state);
     private static native void nativeTheme(long host, String theme);
     private static native boolean nativeBack(long host);
+    private static native long nativeCreateJsStackProbe(long host);
+    private static native void nativeRequestJsStack(long probe,int phase,long delayMs);
+    private static native void nativeCancelJsStack(long probe);
+    private static native void nativeCloseJsStackProbe(long probe);
     private static native void nativeDestroy(long host);
 }

@@ -309,6 +309,16 @@ int32_t pod_runtime_pump_service_results(PodRuntime *runtime);
  * and may exceed this target. Callers must schedule a host continuation while
  * has_pending_jobs; do not busy-spin or drop unfinished reactions. */
 int32_t pod_runtime_set_job_budget(PodRuntime *runtime, uint32_t max_jobs, uint32_t max_micros);
+/* Observational interrupt sampling; no JS cancellation/exception mutation.
+ * Create on runtime thread, sink on runtime thread (no reentry, bounded).
+ * Request/cancel may run off-thread; serialize them with close. The handle
+ * contains no runtime pointer and may safely outlive runtime destruction. */
+typedef struct PodJsStackProbe PodJsStackProbe;
+typedef void (*PodJsStackSink)(uintptr_t userdata, const uint8_t *line, size_t length);
+PodJsStackProbe *pod_runtime_js_stack_probe(PodRuntime *runtime, PodJsStackSink sink, uintptr_t userdata);
+void pod_js_stack_probe_request(const PodJsStackProbe *probe, uint32_t phase, uint32_t delay_ms);
+void pod_js_stack_probe_cancel(const PodJsStackProbe *probe);
+void pod_js_stack_probe_close(PodJsStackProbe *probe);
 bool pod_runtime_has_pending_jobs(PodRuntime *runtime);
 /* Drain one budget of existing FIFO jobs only; no frame or repeated pump entry.
  * takeEvents remains service-result-only for this nonvisual continuation. */

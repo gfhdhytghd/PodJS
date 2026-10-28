@@ -33,5 +33,7 @@ final class MainThreadWatchdog {
         String record=observe(now);pending=0;reported=false;return record;
     }
     synchronized long stalls(){return stalls;}
+    synchronized int phaseCode(){return phase.ordinal()+1;}
+    synchronized long delayMs(long now){return pending==0?0:Math.max(0,now-sentNs)/1_000_000L;}
     synchronized String summary(){return "lane=main summary=true stalls="+stalls+" maxDelayMs="+(maxDelayNs/1_000_000)+" logs="+logs;}
 }

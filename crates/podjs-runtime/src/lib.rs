@@ -29,6 +29,7 @@ pub mod json_projection;
 pub mod text_wrap;
 mod pak_reader;
 mod pak_integrity;
+pub mod stall_diagnostics;
 pub use pak_reader::PodPakReadAt;
 use kv::KvStore;
 use std::collections::{BTreeMap, VecDeque};
@@ -2155,6 +2156,7 @@ pub extern "C" fn pod_runtime_destroy(runtime: *mut PodRuntime) {
 #[cfg(test)]
 mod tests {
     include!("job_pump_tests.rs");
+    include!("stall_diagnostics_tests.rs");
     use super::*;
 
     fn config(target: &CString) -> PodRuntimeConfig {

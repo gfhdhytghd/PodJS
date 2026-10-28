@@ -14,8 +14,18 @@ final class PodHostWatchdog implements AutoCloseable {
     private final ScheduledExecutorService observer;
     private Runnable ping;
     private boolean closed;
+    interface StackSampler {
+        void request(int phase,long delayMs);
+        void cancel();
+        void close();
+    }
+    private final StackSampler stacks;
     PodHostWatchdog(Handler main){
+        this(main,null);
+    }
+    PodHostWatchdog(Handler main,StackSampler stacks){
         this.main=main;
+        this.stacks=stacks;
         observer=Executors.newSingleThreadScheduledExecutor(r->{Thread t=new Thread(r,"PodWatchdog");t.setDaemon(true);return t;});
         observer.scheduleWithFixedDelay(this::tick,250,250,TimeUnit.MILLISECONDS);
     }
@@ -25,16 +35,24 @@ final class PodHostWatchdog implements AutoCloseable {
     private static long awakeNanos(){return SystemClock.uptimeMillis()*1_000_000L;}
     private synchronized void tick(){
         if(closed)return;
-        long now=awakeNanos();log(state.observe(now));
+        long now=awakeNanos();String report=state.observe(now);log(report);
+        if(report!=null&&stacks!=null)stacks.request(state.phaseCode(),state.delayMs(now));
         long token=state.probe(now);
         if(token==0)return;
-        ping=()->log(state.acknowledge(token,awakeNanos()));
+        ping=()->acknowledge(token);
         main.post(ping);
+    }
+    private synchronized void acknowledge(long token){
+        if(closed)return;
+        log(state.acknowledge(token,awakeNanos()));
+        if(stacks!=null)stacks.cancel();
     }
     @Override public synchronized void close(){
         if(closed)return;
         closed=true;state.active(false);
         if(ping!=null)main.removeCallbacks(ping);
         observer.shutdownNow();Log.i("PodWatchdog",state.summary());
+        // Same lock as tick/ack: no request can race native handle destruction.
+        if(stacks!=null){stacks.cancel();stacks.close();}
     }
 }

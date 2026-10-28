@@ -90,6 +90,23 @@ static int32_t systemGlyph(uintptr_t userdata,const uint16_t* text,size_t units,
 static void renderFrame(Host* h, int64_t frameTimeNanos = 0);
 static void fail(JNIEnv* env, const char* message) { jclass c = env->FindClass("java/lang/IllegalStateException"); env->ThrowNew(c, message); }
 
+static void jsStackLog(uintptr_t, const uint8_t* line, size_t length) {
+  __android_log_print(ANDROID_LOG_WARN,"PodJSPerf","%.*s",int(std::min(length,size_t(2200))),reinterpret_cast<const char*>(line));
+}
+extern "C" JNIEXPORT jlong JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeCreateJsStackProbe(JNIEnv*,jclass,jlong p) {
+  auto* h=reinterpret_cast<Host*>(p);
+  return h?reinterpret_cast<jlong>(pod_runtime_js_stack_probe(h->runtime,jsStackLog,0)):0;
+}
+extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeRequestJsStack(JNIEnv*,jclass,jlong p,jint phase,jlong delay) {
+  pod_js_stack_probe_request(reinterpret_cast<PodJsStackProbe*>(p),uint32_t(phase),uint32_t(std::clamp<jlong>(delay,0,UINT32_MAX)));
+}
+extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeCancelJsStack(JNIEnv*,jclass,jlong p) {
+  pod_js_stack_probe_cancel(reinterpret_cast<PodJsStackProbe*>(p));
+}
+extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeCloseJsStackProbe(JNIEnv*,jclass,jlong p) {
+  pod_js_stack_probe_close(reinterpret_cast<PodJsStackProbe*>(p));
+}
+
 extern "C" JNIEXPORT jint JNICALL Java_dev_podjs_runtime_PodSyncGuestFiles_publishNoReplace(
     JNIEnv* env,jclass,jint from,jbyteArray source,jint to,jbyteArray target) {
   auto component=[env](jbyteArray bytes,std::string& result) {

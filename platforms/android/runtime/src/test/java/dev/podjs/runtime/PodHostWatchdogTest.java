@@ -19,6 +19,22 @@ import static org.junit.Assert.*;
 @RunWith(RobolectricTestRunner.class) @Config(sdk=30)
 @LooperMode(LooperMode.Mode.PAUSED)
 public class PodHostWatchdogTest {
+    @Test public void stackRequestRunsOffMainAndCloseCancelsPendingProbe() throws Exception {
+        final int[] requested={0},cancelled={0},closed={0},phase={0};
+        PodHostWatchdog w=new PodHostWatchdog(new Handler(Looper.getMainLooper()),new PodHostWatchdog.StackSampler(){
+            public void request(int value,long delay){assertTrue(delay>1000);phase[0]=value;requested[0]++;}
+            public void cancel(){cancelled[0]++;}
+            public void close(){closed[0]++;}
+        });
+        Method tick=PodHostWatchdog.class.getDeclaredMethod("tick");tick.setAccessible(true);
+        try{
+            w.state.active(true);w.state.phase(MainThreadWatchdog.Phase.SERVICE);tick.invoke(w);
+            ShadowSystemClock.advanceBy(Duration.ofMillis(1251));tick.invoke(w);tick.invoke(w);
+            assertEquals(1,requested[0]);assertEquals(2,phase[0]);
+            Shadows.shadowOf(Looper.getMainLooper()).idle();assertEquals(1,cancelled[0]);
+            w.close();tick.invoke(w);assertEquals(1,closed[0]);assertEquals(2,cancelled[0]);assertEquals(1,requested[0]);
+        }finally{w.close();}
+    }
     @Test public void deepSleepIsExcludedWhileAwakeBlockedMainStillCounts() throws Exception {
         PodHostWatchdog w=new PodHostWatchdog(new Handler(Looper.getMainLooper()));
         Method tick=PodHostWatchdog.class.getDeclaredMethod("tick");tick.setAccessible(true);

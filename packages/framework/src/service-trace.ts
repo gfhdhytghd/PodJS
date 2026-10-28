@@ -1,6 +1,24 @@
 // Enabled only by an explicitly opted-in diagnostic host. No clock, allocations
 // or effects on the default path. Spans measure synchronous CPU work, not awaits.
 let enabled=false;
+let callbackEnabled=false,callbackLogs=0;
+export function __setServiceCallbackTraceEnabled(value:boolean):void {callbackEnabled=value;if(!value)callbackLogs=0;}
+/** Synchronous service callback only. Promise continuations run later and are
+ * attributed by the interrupt stack sampler, not charged to resolve/reject. */
+export function traceServiceCallback<T>(service:string,callback:'resolve'|'reject'|'status',work:()=>T):T {
+ if(!callbackEnabled)return work();
+ let begin:number;try{begin=Date.now();}catch{return work();}
+ try{return work();}finally{
+  try{
+  const elapsedMs=Date.now()-begin;
+  if(elapsedMs>50&&callbackLogs<64){
+   callbackLogs++;
+   try{(globalThis as {pod?:{emit:(line:string)=>void}}).pod?.emit(JSON.stringify({t:'diagnostic.serviceCallback',service,callback,elapsedMs}));}
+   catch{/* Preserve callback results and errors even if diagnostics fail. */}
+  }
+  }catch{/* A replaced clock cannot prevent settlement or replace its error. */}
+ }
+}
 const stack:{child:number}[]=[];
 /** @internal The host event pump owns this flag; it grants no host permission. */
 export function __setServiceTraceEnabled(value:boolean):void {enabled=value;}

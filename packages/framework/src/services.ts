@@ -2,6 +2,7 @@ import { bytesToBase64 as portableBytesToBase64 } from "../../../vendor/pocketjs
 import { __onHostEvent, hasCapability } from "./watch.ts";
 import type { PodCapabilityId } from "./targets.ts";
 import { platformMethods } from "./platform-contract.ts";
+import {traceServiceCallback} from './service-trace.ts';
 
 /** Native byte conversion avoids per-character guest work for file/stream payloads.
  * Older hosts retain the portable codec, including an empty result. */
@@ -36,7 +37,7 @@ export class HostServiceError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = "HostServiceError"; }
 }
 export interface HostOperation<T> { result: Promise<T>; cancel(): void }
-const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void; status?:(value:unknown)=>void }>();
+const pending = new Map<number, { method:string;resolve(value: unknown): void; reject(error: Error): void; status?:(value:unknown)=>void }>();
 let nextId = 1;
 /** Live promise/callback table, including the stats request if called by a guest. */
 export const serviceResourceCounts=()=>({pending:pending.size});
@@ -118,15 +119,15 @@ __onHostEvent(event => {
   if (typeof event.id !== "number") return;
   if (event.t === "browser.auth.status") {
     const request = pending.get(event.id);
-    try { request?.status?.(event.value); } catch { /* Observers cannot break service settlement. */ }
+    try { if(request?.status)traceServiceCallback(request.method,'status',()=>request.status!(event.value)); } catch { /* Observers cannot break service settlement. */ }
     return;
   }
   if (event.t !== "service.result") return;
   const request = pending.get(event.id);
   if (!request) return;
   pending.delete(event.id);
-  if (event.ok === true) request.resolve(event.value);
-  else request.reject(new HostServiceError(String(event.code ?? "host_error"), String(event.message ?? "Host operation failed")));
+  if (event.ok === true) traceServiceCallback(request.method,'resolve',()=>request.resolve(event.value));
+  else traceServiceCallback(request.method,'reject',()=>request.reject(new HostServiceError(String(event.code ?? "host_error"), String(event.message ?? "Host operation failed"))));
 });
 /** Cancellation stops delivery; a mutation already committed by the host is not undone. */
 export function hostOperation<T>(method: string, args: Record<string, unknown>): HostOperation<T> {
@@ -138,7 +139,7 @@ function serviceOperation<T>(method: string, args: Record<string, unknown>, stat
     const capability = methods[method];
     if (!capability || !hasCapability(capability)) { reject(new HostServiceError("unsupported", `Unsupported host service: ${method}`)); return; }
     if (pending.size >= 64) { reject(new HostServiceError("busy", "Too many pending host operations")); return; }
-    pending.set(id, { resolve: value => resolve(value as T), reject, status });
+    pending.set(id, { method:Object.prototype.hasOwnProperty.call(methods,method)?method:'other',resolve: value => resolve(value as T), reject, status });
     try { emit({ t: "service.request", version: 1, id, method, args }); }
     catch (error) { pending.delete(id); reject(error); }
   });

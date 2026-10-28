@@ -30,3 +30,7 @@ lto = "thin"
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+
+# Bounded, allocation-free QuickJS interrupt stack reader (see its PATCH.md).
+[patch.crates-io]
+rquickjs-sys = { path = "vendor/pocketjs/engine/vendor/rquickjs-sys" }
