@@ -44,6 +44,12 @@ describe("host services", () => {
   for(const acquired of [true,false]){const task=secureStorage.acquire('account'),request=emitted.at(-1)!;expect(request).toMatchObject({method:'secure.acquire',args:{key:'account'}});events.push({t:'service.result',id:request.id,ok:true,value:{acquired}});api.__pumpPodEvents();expect(await task).toBe(acquired);}
   const task=secureStorage.release('account'),request=emitted.at(-1)!;expect(request).toMatchObject({method:'secure.release',args:{key:'account'}});events.push({t:'service.result',id:request.id,ok:true,value:{ok:true}});api.__pumpPodEvents();await task;
  });
+ test('secure compare-and-set uses a distinct capability-gated atomic host operation',async()=>{
+  await expect(secureStorage.compareAndSet('intent','old',undefined)).rejects.toMatchObject({code:'unsupported'});expect(emitted).toHaveLength(0);
+  host.capabilities=()=>JSON.stringify(['data.secure']);
+  for(const updated of [false,true]){const result=secureStorage.compareAndSet('intent','old',undefined),request=emitted.at(-1)!;expect(request).toMatchObject({method:'secure.compareAndSet',args:{key:'intent',expected:'old',value:null}});events.push({t:'service.result',id:request.id,ok:true,value:{updated}});api.__pumpPodEvents();expect(await result).toBe(updated);}
+  const unsupported=secureStorage.compareAndSet('intent',undefined,'next'),request=emitted.at(-1)!;events.push({t:'service.result',id:request.id,ok:false,code:'unknown_method',message:'unknown_method'});api.__pumpPodEvents();await expect(unsupported).rejects.toThrow();
+ });
  test('afterPaint requests commits and cancellation remains owned by the caller',async()=>{
   host.capabilities=()=>JSON.stringify(['runtime.timer']);const {afterPaint}=await import('../src/render.ts');
   const op=afterPaint(),request=emitted.at(-1)!;expect(request).toMatchObject({method:'runtime.afterPaint',args:{}});

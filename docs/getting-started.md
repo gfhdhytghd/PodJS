@@ -141,6 +141,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/services` | Cancellable native operations for files, network, input, media, text, crypto and platform services; images.decodeOperation/decodeRegionOperation retain source dimensions and cancellation. |
 | `@podjs/framework/acked-state-vector` | Bilateral applied receipts for opaque per-domain roots; frozen windows and final-session ACK publication. |
 | `@podjs/framework/directory-witness` | Small immutable-resource directory metadata witnesses; missing native change tokens disable certification. |
+| `@podjs/framework/work-receipts` | Caller-scoped bounded receipts for deterministic work; persistence and authentication belong to the caller, and receipts are never remote ACKs. |
 | `@podjs/framework/digest-cache` | Bounded memory-only memoization of exact small byte digests; checks the caller fence on hits and never retains failures. |
 | `@podjs/framework/sync-state` | Versioned companion saved-state clocks, merge and persistence rules. |
 | `@podjs/framework/request-policy` | `RequestFilter`, `createRequestAllowlist`: generic request rejection hooks; app owns keys and rejection replies. |
@@ -333,3 +334,10 @@ by first-byte and positive-byte idle limits; the caller retains its total budget
 and closes its transport on timeout. Disarm it after byte input completes, before
 long decoding or application work. Directory witnesses batch at most eight file
 stat probes and drain each batch on errors; changed/missing tokens still fail.
+
+`secureStorage.compareAndSet(key, expected, value)` atomically replaces one public
+secure string only when its current value matches `expected`. `undefined` means
+absent for the expectation and deletion for the new value. It returns `false` on
+a conflict. Hosts without `secure.compareAndSet` reject the operation; callers
+must not fall back to an unconditional write. Android checks and publishes under
+the same secure-store process and file locks used by batch updates.

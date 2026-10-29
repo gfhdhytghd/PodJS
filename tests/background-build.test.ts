@@ -125,3 +125,11 @@ test('headless work receipts resume without host bootstrap and keep unsafe subpa
  expect(context.backgroundHandler()).toBe(1);expect(context.pod).toBeUndefined();expect(context.frame).toBeUndefined();
  const denied=fixture("import * as api from '@podjs/framework/work-receipts/unsafe';export default ()=>api;");await expect(buildBackground({denied:denied.entry},denied.root)).rejects.toThrow('Background');
 });
+
+test('headless escaped HTML recovery bundles without UI bootstrap and denies unsafe subpaths',async()=>{
+ const {root,entry}=fixture("import {unwrapEscapedHtml} from '@podjs/framework/html';export default ()=>unwrapEscapedHtml('&lt;p&gt;restored&lt;/p&gt;');");
+ mkdirSync(join(root,'node_modules/@podjs'),{recursive:true});symlinkSync(new URL('../packages/framework',import.meta.url).pathname,join(root,'node_modules/@podjs/framework'),'dir');
+ const artifacts=await buildBackground({html:entry},root),context:Record<string,any>={};runInNewContext(readFileSync(join(root,artifacts.html!.file),'utf8'),context);
+ expect(context.backgroundHandler()).toBe('<p>restored</p>');expect(context.pod).toBeUndefined();expect(context.frame).toBeUndefined();
+ const denied=fixture("import * as api from '@podjs/framework/html/unsafe';export default()=>api;");await expect(buildBackground({denied:denied.entry},denied.root)).rejects.toThrow('Background');
+});

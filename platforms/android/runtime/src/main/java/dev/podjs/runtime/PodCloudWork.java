@@ -15,6 +15,7 @@ final class PodCloudWork implements Closeable {
     static final String NAME="podjs-cloud-sync-6h",MANUAL_NAME="podjs-cloud-sync-manual",HANDLER="watchrss-cloud-sync";
     private final Context context;
     private final CloudWriterLease writer=new CloudWriterLease();private boolean localHold;private long localRevision=-1;
+    private static final Object QUEUE=new Object();
     private static final java.util.Set<PodCloudWork> HOLDERS=new java.util.HashSet<>();
     private static RandomAccessFile holdFile;private static FileLock holdLock;
     PodCloudWork(Context context){this.context=context.getApplicationContext();}
@@ -26,22 +27,41 @@ final class PodCloudWork implements Closeable {
         if(active){if(HOLDERS.isEmpty()){holdFile=new RandomAccessFile(new java.io.File(context.getNoBackupFilesDir(),"podjs-cloud-local.lock"),"rw");try{holdLock=holdFile.getChannel().tryLock();}catch(java.nio.channels.OverlappingFileLockException busy){holdLock=null;}if(holdLock==null){holdFile.close();holdFile=null;throw new IllegalStateException("local_transfer_lease_busy");}}HOLDERS.add(this);localHold=true;
         }else {HOLDERS.remove(this);localHold=false;if(HOLDERS.isEmpty()){try{if(holdLock!=null)holdLock.release();}finally{holdLock=null;if(holdFile!=null)holdFile.close();holdFile=null;}resumeHeld(context);}}
     }}
-    static OneTimeWorkRequest manualWork(String token){return new OneTimeWorkRequest.Builder(PodCloudWorker.class).setInputData(new Data.Builder().putString("manualToken",token).build()).setConstraints(new Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).setBackoffCriteria(BackoffPolicy.EXPONENTIAL,30,TimeUnit.SECONDS).build();}
-    static void enqueue(Context c,String token)throws Exception {
+    static OneTimeWorkRequest manualWork(String token){return manualWork(token,false);}
+    static OneTimeWorkRequest manualWork(String token,boolean standby){return new OneTimeWorkRequest.Builder(PodCloudWorker.class).setInputData(new Data.Builder().putString("manualToken",token).build()).setInitialDelay(standby?30:0,TimeUnit.SECONDS).setConstraints(new Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).setBackoffCriteria(BackoffPolicy.EXPONENTIAL,30,TimeUnit.SECONDS).build();}
+    static void enqueue(Context c,String token)throws Exception {enqueue(c,token,false);}
+    static void enqueue(Context c,String token,boolean standby)throws Exception {
         if(token==null||!token.matches("[a-zA-Z0-9_-]{1,96}"))throw new IllegalArgumentException("invalid_manual_token");
-        String previous=pending(c).getString("token",null);boolean paused=held(c);
-        pending(c).edit().putString("token",token).putBoolean("held",paused).commit();if(paused)return;
-        WorkManager.getInstance(c).enqueueUniqueWork(MANUAL_NAME,token.equals(previous)?ExistingWorkPolicy.KEEP:ExistingWorkPolicy.REPLACE,manualWork(token)).getResult().get(10,TimeUnit.SECONDS);
+        // Read the local-transfer lock before taking QUEUE: hold release also
+        // reconciles this queue while holding HOLDERS.
+        boolean paused=held(c);synchronized(QUEUE){
+        String previous=pending(c).getString("token",null);boolean wasStandby=pending(c).getBoolean("standby",false);
+        // Publish before WorkManager: process death or scheduler initialization
+        // failure leaves an opaque continuation to reconcile on the next start.
+        if(!pending(c).edit().putString("token",token).putBoolean("held",paused).putBoolean("standby",standby&&(!token.equals(previous)||wasStandby)).commit())throw new java.io.IOException("cloud_queue_persist_failed");if(paused)return;
+        ExistingWorkPolicy policy=token.equals(previous)&&(!wasStandby||standby)?ExistingWorkPolicy.KEEP:ExistingWorkPolicy.REPLACE;
+        WorkManager.getInstance(c).enqueueUniqueWork(MANUAL_NAME,policy,manualWork(token,standby&&(!token.equals(previous)||wasStandby))).getResult().get(10,TimeUnit.SECONDS);
+        }
     }
-    static void deferHeld(Context c,String token){if(token!=null&&token.equals(pending(c).getString("token",null)))pending(c).edit().putBoolean("held",true).commit();}
-    static void resumeHeld(Context c)throws Exception {String token=pending(c).getString("token",null);if(token!=null&&pending(c).getBoolean("held",false)&&!held(c)){pending(c).edit().putBoolean("held",false).commit();WorkManager.getInstance(c).enqueueUniqueWork(MANUAL_NAME,ExistingWorkPolicy.REPLACE,manualWork(token)).getResult().get(10,TimeUnit.SECONDS);}}
-    static void finished(Context c,String token){if(token!=null&&token.equals(pending(c).getString("token",null))&&!pending(c).getBoolean("held",false))pending(c).edit().clear().commit();}
+    static void deferHeld(Context c,String token){synchronized(QUEUE){if(token!=null&&token.equals(pending(c).getString("token",null)))pending(c).edit().putBoolean("held",true).commit();}}
+    static void resumeHeld(Context c)throws Exception {
+        if(held(c))return;synchronized(QUEUE){
+        String token=pending(c).getString("token",null);if(token==null)return;
+        boolean paused=pending(c).getBoolean("held",false);
+        // KEEP also re-enqueues a missing/finished job, including a crash
+        // between preferences publication and WorkManager's own transaction.
+        boolean live=false;for(WorkInfo info:WorkManager.getInstance(c).getWorkInfosForUniqueWork(MANUAL_NAME).get(10,TimeUnit.SECONDS))if(!info.getState().isFinished())live=true;
+        WorkManager.getInstance(c).enqueueUniqueWork(MANUAL_NAME,paused?ExistingWorkPolicy.REPLACE:ExistingWorkPolicy.KEEP,manualWork(token)).getResult().get(10,TimeUnit.SECONDS);
+        if(token.equals(pending(c).getString("token",null))){android.content.SharedPreferences.Editor edit=pending(c).edit().putBoolean("held",false);if(paused||!live)edit.putBoolean("standby",false);edit.commit();}
+        }
+    }
+    static void finished(Context c,String token){synchronized(QUEUE){if(token!=null&&token.equals(pending(c).getString("token",null))&&!pending(c).getBoolean("held",false))pending(c).edit().clear().commit();}}
     synchronized Object execute(String method,JSONObject args)throws Exception{
-        if("cloud.cancel".equals(method)){WorkManager.getInstance(context).cancelUniqueWork(NAME).getResult().get(10,TimeUnit.SECONDS);WorkManager.getInstance(context).cancelUniqueWork(MANUAL_NAME).getResult().get(10,TimeUnit.SECONDS);pending(context).edit().clear().commit();return JSONObject.NULL;}
+        if("cloud.cancel".equals(method)){synchronized(QUEUE){WorkManager.getInstance(context).cancelUniqueWork(NAME).getResult().get(10,TimeUnit.SECONDS);WorkManager.getInstance(context).cancelUniqueWork(MANUAL_NAME).getResult().get(10,TimeUnit.SECONDS);pending(context).edit().clear().commit();return JSONObject.NULL;}}
         if("cloud.release".equals(method)){releaseWriter();return JSONObject.NULL;}
         PodBackgroundPackage approved=installed(context);approved.cloudSource(debug(context));
         if("cloud.localTransfer".equals(method)){Object value=args.opt("active");if(!(value instanceof Boolean))throw new IllegalArgumentException("active_must_be_boolean");long revision=args.getLong("generation");if(revision<0)throw new IllegalArgumentException("invalid_generation");if(revision>localRevision){hold((Boolean)value);localRevision=revision;}return JSONObject.NULL;}
-        if("cloud.enqueue".equals(method)){enqueue(context,args.getString("token"));return JSONObject.NULL;}
+        if("cloud.enqueue".equals(method)){enqueue(context,args.getString("token"),args.optBoolean("standby",false));return JSONObject.NULL;}
         if("cloud.workState".equals(method)){java.util.List<WorkInfo> states=WorkManager.getInstance(context).getWorkInfosForUniqueWork(MANUAL_NAME).get(10,TimeUnit.SECONDS);String state=states.isEmpty()?"idle":states.get(0).getState().name().toLowerCase(java.util.Locale.ROOT);for(WorkInfo info:states)if(!info.getState().isFinished()){state=info.getState().name().toLowerCase(java.util.Locale.ROOT);break;}if(pending(context).getBoolean("held",false))state="held";return new JSONObject().put("state",state);}
         if("cloud.schedule".equals(method)){
             PeriodicWorkRequest work=new PeriodicWorkRequest.Builder(PodCloudWorker.class,6,TimeUnit.HOURS).setInitialDelay(6,TimeUnit.HOURS).setConstraints(new Constraints.Builder().setRequiredNetworkType(NetworkType.UNMETERED).build()).setBackoffCriteria(BackoffPolicy.EXPONENTIAL,30,TimeUnit.SECONDS).build();

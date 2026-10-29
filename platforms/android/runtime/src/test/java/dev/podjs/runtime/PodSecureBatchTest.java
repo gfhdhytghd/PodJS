@@ -46,4 +46,14 @@ public class PodSecureBatchTest {
    assertEquals("old",old.getString("watchrss.cloud.state.fixture"));assertEquals("native-private",old.getString(nativeKey));assertFalse(old.has("normal"));
   }
  }
+ @Test public void conditionalUpdateRejectsStaleGuestWithoutErasingANewerGrant()throws Exception {
+  JSONObject current=new JSONObject().put("intent","old");
+  current=PodDeviceServices.conditionalSecure(current,new JSONObject().put("intent","old"),new JSONObject().put("intent","new"),null);
+  assertNull(PodDeviceServices.conditionalSecure(current,new JSONObject().put("intent","old"),new JSONObject().put("intent",JSONObject.NULL),null));assertEquals("new",current.getString("intent"));
+  current=PodDeviceServices.conditionalSecure(current,new JSONObject().put("intent","new"),new JSONObject().put("intent",JSONObject.NULL),null);assertFalse(current.has("intent"));
+  current=PodDeviceServices.conditionalSecure(current,new JSONObject().put("intent",JSONObject.NULL),new JSONObject().put("intent","restarted"),null);assertEquals("restarted",current.getString("intent"));
+  try{PodDeviceServices.secureMatches(new JSONObject(),new JSONObject().put("__podjs_native_ecdh_v1.secret",JSONObject.NULL));fail();}catch(SecurityException expected){}
+  try{PodDeviceServices.secureMatches(new JSONObject(),new JSONObject().put("intent",7));fail();}catch(IllegalArgumentException expected){}
+ }
+
 }

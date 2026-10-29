@@ -79,7 +79,7 @@ public final class PodDeviceServices implements AutoCloseable {
         switch (method) {
             case "secure.acquire": return new JSONObject().put("acquired",secureLeases.acquire(required(args,"key")));
             case "secure.release": secureLeases.release(required(args,"key")); return new JSONObject().put("ok",true);
-            case "secure.get": case "secure.set": case "secure.delete": case "secure.update": return secureOperation(method,args);
+            case "secure.get": case "secure.set": case "secure.delete": case "secure.update": case "secure.compareAndSet": return secureOperation(method,args);
             case "crypto.verifyP256": return new JSONObject().put("valid",PodCloudCrypto.verifyP256(decode(args,"publicKeySpki"),decode(args,"dataBase64"),decode(args,"signatureBase64")));
             case "crypto.ecdhPublicKey": return ecdhPublicKey(args);
             case "crypto.ecdhPossessionProof": return ecdhPossessionProof(args);
@@ -153,6 +153,12 @@ public final class PodDeviceServices implements AutoCloseable {
                 secureTrace.end("secure.lock",waiting,id);
                 if("secure.get".equals(method))return secureGet(args);
                 if("secure.set".equals(method))return secureSet(args);
+                if("secure.compareAndSet".equals(method)){
+                    String key=required(args,"key");
+                    JSONObject next=conditionalSecure(readSecure(id),new JSONObject().put(key,args.get("expected")),new JSONObject().put(key,args.get("value")),null);
+                    if(next==null)return new JSONObject().put("updated",false);
+                    writeSecure(next);return new JSONObject().put("updated",true);
+                }
                 if("secure.update".equals(method)){
                     writeSecure(mergeSecure(readSecure(id),args.getJSONObject("values"),args.optJSONArray("removePrefixes")));
                     return new JSONObject().put("ok",true);
@@ -163,6 +169,24 @@ public final class PodDeviceServices implements AutoCloseable {
     }
     private static void checkPublicSecureKey(String key) {
         if(key.startsWith(ECDH_PRIVATE_PREFIX)) throw new SecurityException("reserved_secure_key");
+    }
+    static JSONObject conditionalSecure(JSONObject current,JSONObject expected,JSONObject updates,org.json.JSONArray prefixes)throws Exception {
+        if(expected!=null&&!secureMatches(current,expected))return null;
+        return mergeSecure(current,updates,prefixes);
+    }
+    /** Compare and update share the encrypted store's process/OS lock. Null
+     * means absent; no values or mismatch details cross this boundary. */
+    static boolean secureMatches(JSONObject current,JSONObject expected)throws Exception {
+        if(expected.length()>128)throw new IllegalArgumentException("secure_batch_limit");
+        boolean matches=true;
+        for(java.util.Iterator<String> names=expected.keys();names.hasNext();){
+            String key=names.next();checkPublicSecureKey(key);
+            if(key.isEmpty()||key.length()>1024)throw new IllegalArgumentException("secure_key_invalid");
+            Object value=expected.get(key);
+            if(value!=JSONObject.NULL&&!(value instanceof String))throw new IllegalArgumentException("secure_value_invalid");
+            matches&=value==JSONObject.NULL?!current.has(key):value.equals(current.opt(key));
+        }
+        return matches;
     }
     /** Validate the whole batch on a copy before the single encrypted atomic publication. */
     static JSONObject mergeSecure(JSONObject current,JSONObject updates)throws Exception {

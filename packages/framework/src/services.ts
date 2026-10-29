@@ -90,7 +90,7 @@ const methods: Record<string, PodCapabilityId> = {
   "share.environment": "system.share", "share.text": "system.share",
   "image.decode": "data.images", "image.decodeRegion": "data.images", "image.release": "data.images", "browser.authorize": "system.browser.auth", "browser.authorizeWithStatus": "system.browser.auth.status",
   "sql.query": "data.sqlite", "sql.gzipJson": "data.sqlite", "sql.execute": "data.sqlite", "sql.transaction": "data.sqlite",
-  "input.text": "input.text", "input.text.pending": "input.text.state", "input.text.dismiss": "input.text.state", "secure.get": "data.secure", "secure.set": "data.secure", "secure.delete": "data.secure", "secure.update": "data.secure",
+  "input.text": "input.text", "input.text.pending": "input.text.state", "input.text.dismiss": "input.text.state", "secure.get": "data.secure", "secure.set": "data.secure", "secure.delete": "data.secure", "secure.update": "data.secure", "secure.compareAndSet": "data.secure",
   "input.inline.open": "input.text", "input.inline.close": "input.text", "input.inline.set": "input.text",
   "text.layout": "text.layout", "text.layoutBatch": "text.layout", "text.measure": "text.layout", "text.raster": "text.raster", "text.environment": "text.environment",
   "input.time": "input.time",
@@ -260,6 +260,10 @@ export const secureStorage = {
   async release(key:string):Promise<void> { await hostOperation("secure.release",{key}).result; },
   /** Publish a bounded set of updates/deletions in one encrypted store transaction. */
   async update(values:Record<string,string|null>):Promise<void> { await hostOperation("secure.update",{values}).result; },
+  async compareAndSet(key:string,expected:string|undefined,value:string|undefined):Promise<boolean> {
+    const result=await hostOperation<{updated:boolean}>("secure.compareAndSet",{key,expected:expected??null,value:value??null}).result;
+    if(typeof result.updated!=='boolean')throw Error('secure_compare_unavailable');return result.updated;
+  },
   async get(key: string): Promise<string | undefined> { const value = await hostOperation<{exists:boolean;value?:string}>("secure.get",{key}).result; return value.exists ? value.value : undefined; },
   async set(key: string,value: string): Promise<void> { await hostOperation("secure.set",{key,value}).result; },
   async delete(key: string): Promise<void> { await hostOperation("secure.delete",{key}).result; },

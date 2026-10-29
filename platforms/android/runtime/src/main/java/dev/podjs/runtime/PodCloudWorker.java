@@ -13,7 +13,7 @@ public final class PodCloudWorker extends Worker {
     private volatile PodServices services;
     static final Set<String> METHODS=Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
         "app.buildInfo","cloud.acquire","cloud.release","discovery.networkSnapshot",
-        "sql.query","sql.execute","sql.transaction","secure.get","secure.set","secure.delete","secure.update","secure.acquire","secure.release",
+        "sql.query","sql.execute","sql.transaction","secure.get","secure.set","secure.delete","secure.update","secure.compareAndSet","secure.acquire","secure.release",
         "crypto.random","crypto.hash","crypto.hmacSha256","crypto.verifyP256","crypto.ecdhPublicKey","crypto.ecdhUnwrap","crypto.hkdfSha256",
         "crypto.aesGcmEncrypt","crypto.aesGcmDecrypt","crypto.largeAesGcmEncrypt","crypto.largeAesGcmDecrypt","crypto.gzip","crypto.gunzip",
         "http.download","uri.parse","file.list","file.createTemp","file.read","file.write","file.stat","file.hash","file.commit","file.delete",
@@ -28,6 +28,13 @@ public final class PodCloudWorker extends Worker {
         if("success".equals(outcome.optString("status")))return Result.success();
         if("retry".equals(outcome.optString("status"))&&attempts<3)return Result.retry();
         return Result.failure();
+    }
+    /** A still-authorized manual restore may span many checkpoint windows.
+     * Only the guest's completed/retry outcome continues it; every next guest
+     * revalidates token/account/epoch. Hard failures keep the bounded policy. */
+    static Result resultFor(JSONObject outcome,int attempts,boolean manual){
+        if(manual&&"completed".equals(outcome.optString("code"))&&"retry".equals(outcome.optString("status")))return Result.retry();
+        return resultFor(outcome,attempts);
     }
     @Override public Result doWork(){
         Context context=getApplicationContext();String manualToken=getInputData().getString("manualToken");
@@ -73,7 +80,7 @@ public final class PodCloudWorker extends Worker {
                     if(isStopped()){status="stopped";return Result.retry();}
                     String code=outcome.optString("code"),guestStatus=outcome.optString("status");
                     status="deadline_exceeded".equals(code)?"deadline_exceeded":"completed".equals(code)&&"success".equals(guestStatus)?"success":"completed".equals(code)&&"retry".equals(guestStatus)?"retry":"guest_failed";
-                    Result mapped=resultFor(outcome,getRunAttemptCount());
+                    Result mapped=resultFor(outcome,getRunAttemptCount(),manualToken!=null);
                     if(!(mapped instanceof Result.Retry))PodCloudWork.finished(context,manualToken);
                     return mapped;
                 }finally{services=null;active=null;}

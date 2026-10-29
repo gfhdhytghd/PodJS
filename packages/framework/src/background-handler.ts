@@ -2,6 +2,7 @@
 export interface BackgroundContext {
   readonly appId: string;
   readonly taskId: string;
+  /** Absolute Unix milliseconds for the native hard deadline, not a duration. */
   readonly deadlineMs: number;
   readonly payload: unknown;
   readonly isCancelled: () => boolean;

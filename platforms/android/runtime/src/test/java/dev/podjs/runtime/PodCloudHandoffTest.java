@@ -22,4 +22,21 @@ public class PodCloudHandoffTest {
   PodCloudWork.finished(context,"opaque_3");PodCloudWork.resumeHeld(context);assertNull(PodCloudWork.pending(context).getString("token",null));assertTrue(work.getWorkInfosForUniqueWork(PodCloudWork.MANUAL_NAME).get().isEmpty());
  }
  @Test public void midWorkerLocalHoldRetainsOnlyMatchingContinuation()throws Exception {PodCloudWork.pending(context).edit().putString("token","opaque_4").putBoolean("held",false).commit();PodCloudWork.deferHeld(context,"old");assertFalse(PodCloudWork.pending(context).getBoolean("held",true));PodCloudWork.deferHeld(context,"opaque_4");PodCloudWork.finished(context,"opaque_4");assertEquals("opaque_4",PodCloudWork.pending(context).getString("token",null));}
+ @Test public void standbyIsDurableBeforeForegroundAndHomeExpeditesSameOpaqueGrant()throws Exception {
+  PodCloudWork.enqueue(context,"opaque_restart",true);assertEquals("opaque_restart",PodCloudWork.pending(context).getString("token",null));assertTrue(PodCloudWork.pending(context).getBoolean("standby",false));assertEquals(30000,PodCloudWork.manualWork("opaque_restart",true).getWorkSpec().initialDelay);
+  PodCloudWork.enqueue(context,"opaque_restart",false);java.util.List<WorkInfo> next=work.getWorkInfosForUniqueWork(PodCloudWork.MANUAL_NAME).get();
+  assertEquals(1,next.stream().filter(v->!v.getState().isFinished()).count());assertFalse(PodCloudWork.pending(context).getBoolean("standby",true));
+ }
+ @Test public void restartReconcilesPublishedTokenEvenWhenPreviousEnqueueNeverReachedWorkManager()throws Exception {
+  PodCloudWork.pending(context).edit().putString("token","opaque_crash").putBoolean("held",false).commit();assertTrue(work.getWorkInfosForUniqueWork(PodCloudWork.MANUAL_NAME).get().isEmpty());
+  PodCloudWork.resumeHeld(context);java.util.UUID id=work.getWorkInfosForUniqueWork(PodCloudWork.MANUAL_NAME).get().get(0).getId();
+  PodCloudWork.resumeHeld(context);assertEquals(id,work.getWorkInfosForUniqueWork(PodCloudWork.MANUAL_NAME).get().get(0).getId());assertEquals("opaque_crash",PodCloudWork.pending(context).getString("token",null));
+ }
+
+ @Test public void authorizedManualCheckpointRetryOutlivesThreeAttemptsButHardFailureStillStops()throws Exception {
+  JSONObject retry=new JSONObject().put("code","completed").put("status","retry");
+  assertEquals(ListenableWorker.Result.retry().getClass(),PodCloudWorker.resultFor(retry,20,true).getClass());assertEquals(ListenableWorker.Result.failure().getClass(),PodCloudWorker.resultFor(retry,20,false).getClass());
+  assertEquals(ListenableWorker.Result.failure().getClass(),PodCloudWorker.resultFor(new JSONObject().put("code","deadline_exceeded").put("status","retry"),0,true).getClass());
+ }
+
 }
