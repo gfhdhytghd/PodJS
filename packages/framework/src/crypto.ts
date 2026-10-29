@@ -33,6 +33,19 @@ export function sha256Hex(input:Uint8Array):string {
   return h.map(v=>v.toString(16).padStart(8,"0")).join("");
 }
 
+/** RFC 2104 HMAC. Small messages stay in the guest/native byte fast path,
+ * without one asynchronous host request per digest. No key material is cached. */
+export function hmacSha256Bytes(key:Uint8Array,input:Uint8Array):Uint8Array {
+ const block=new Uint8Array(64),inner=new Uint8Array(64+input.length),outer=new Uint8Array(96);
+ let normalized:Uint8Array|undefined,digest:Uint8Array|undefined;
+ try{
+  if(key.length>64){normalized=unhex(sha256Hex(key));block.set(normalized);}else block.set(key);
+  for(let i=0;i<64;i++){inner[i]=block[i]^0x36;outer[i]=block[i]^0x5c;}
+  inner.set(input,64);digest=unhex(sha256Hex(inner));outer.set(digest,64);
+  return unhex(sha256Hex(outer));
+ }finally{block.fill(0);inner.fill(0);outer.fill(0);normalized?.fill(0);digest?.fill(0);}
+}
+
 /** Java/Android releases write different gzip OS header bytes for identical
  * deflate streams. Recover an advertised encoding only after its entire digest
  * matches; never reinterpret a body or accept a hash mismatch. Input is immutable. */

@@ -117,3 +117,11 @@ test('headless exact-byte digest memo stays host-free and denies unrestricted su
  expect(JSON.parse(JSON.stringify(await context.backgroundHandler()))).toEqual({one:'1,2',two:'1,2',calls:1,checks:2});expect(context.pod).toBeUndefined();expect(context.frame).toBeUndefined();
  const denied=fixture("import * as api from '@podjs/framework/digest-cache/unsafe';export default()=>api;");await expect(buildBackground({denied:denied.entry},denied.root)).rejects.toThrow('Background');
 });
+
+test('headless work receipts resume without host bootstrap and keep unsafe subpaths denied',async()=>{
+ const {root,entry}=fixture("import {WorkReceipts} from '@podjs/framework/work-receipts';export default ()=>{const a=new WorkReceipts([['a',1]],2);a.set('b',2);return new WorkReceipts(a.snapshot(),2).get('a');};");
+ mkdirSync(join(root,'node_modules/@podjs'),{recursive:true});symlinkSync(new URL('../packages/framework',import.meta.url).pathname,join(root,'node_modules/@podjs/framework'),'dir');
+ const artifacts=await buildBackground({work:entry},root),context:Record<string,any>={};runInNewContext(readFileSync(join(root,artifacts.work!.file),'utf8'),context);
+ expect(context.backgroundHandler()).toBe(1);expect(context.pod).toBeUndefined();expect(context.frame).toBeUndefined();
+ const denied=fixture("import * as api from '@podjs/framework/work-receipts/unsafe';export default ()=>api;");await expect(buildBackground({denied:denied.entry},denied.root)).rejects.toThrow('Background');
+});
