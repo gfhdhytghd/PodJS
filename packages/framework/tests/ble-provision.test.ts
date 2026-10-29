@@ -6,7 +6,7 @@ const {hostOperation}=await import('../src/services.ts');
 test('foreground BLE setup operations require the dedicated capability and preserve session ownership on the wire',async()=>{
  await expect(hostOperation('provision.start',{deviceId:'watch',installId:'install'}).result).rejects.toThrow();expect(emitted).toHaveLength(0);
  capabilities=['net.ble.provision'];
- for(const [method,args] of [['provision.requestPermission',{}],['provision.start',{deviceId:'watch',installId:'install',transport:'internet'}],['provision.receive',{sessionId:'current'}],['provision.check',{sessionId:'current'}],['provision.respond',{sessionId:'current',sequence:0,result:{success:true}}],['provision.close',{sessionId:'current'}]] as const){
+ for(const [method,args] of [['provision.requestPermission',{}],['provision.start',{deviceId:'watch',installId:'install',transport:'internet'}],['provision.receive',{sessionId:'current'}],['provision.check',{sessionId:'current'}],['provision.sessionRequest',{sessionId:'current',path:'ownership/challenge',body:{}}],['provision.respond',{sessionId:'current',sequence:0,result:{success:true}}],['provision.close',{sessionId:'current'}]] as const){
   const op=hostOperation(method,args);const request=emitted.at(-1)!;expect(request.method).toBe(method);expect(request.args).toEqual(args);events.push({t:'service.result',id:request.id,ok:true,value:{accepted:true}});api.__pumpPodEvents();await expect(op.result).resolves.toEqual({accepted:true});
  }
 });

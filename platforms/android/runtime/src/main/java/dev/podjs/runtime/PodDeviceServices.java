@@ -82,6 +82,7 @@ public final class PodDeviceServices implements AutoCloseable {
             case "secure.get": case "secure.set": case "secure.delete": case "secure.update": return secureOperation(method,args);
             case "crypto.verifyP256": return new JSONObject().put("valid",PodCloudCrypto.verifyP256(decode(args,"publicKeySpki"),decode(args,"dataBase64"),decode(args,"signatureBase64")));
             case "crypto.ecdhPublicKey": return ecdhPublicKey(args);
+            case "crypto.ecdhPossessionProof": return ecdhPossessionProof(args);
             case "crypto.ecdhUnwrap": return ecdhUnwrap(args);
             case "crypto.hkdfSha256": return new JSONObject().put("keyBase64", enc(PodCloudCrypto.hkdf(decode(args,"inputBase64"),decode(args,"saltBase64"),decode(args,"infoBase64"))));
             case "crypto.largeAesGcmEncrypt": return largeAes(args,true);
@@ -263,7 +264,10 @@ public final class PodDeviceServices implements AutoCloseable {
     }
     /** Caller holds both the process and OS secure-store locks, including generation. */
     private java.security.KeyPair ecdhPair(JSONObject args, boolean create) throws Exception {
-        String alias=ecdhAlias(args), softwareKey=ECDH_PRIVATE_PREFIX+alias;
+        return ecdhPairAlias(ecdhAlias(args),create);
+    }
+    private java.security.KeyPair ecdhPairAlias(String alias,boolean create) throws Exception {
+        String softwareKey=ECDH_PRIVATE_PREFIX+alias;
         JSONObject values=readSecure(-1);
         KeyStore store=ecdhStore();
         // Keep Android 11 keys after an OS upgrade; never rotate an established device identity.
@@ -305,6 +309,22 @@ public final class PodDeviceServices implements AutoCloseable {
     }
     private JSONObject ecdhPublicKey(JSONObject args) throws Exception {
         return new JSONObject().put("publicKeySpki",enc(lockedEcdhPair(args,true).getPublic().getEncoded()));
+    }
+    private byte[] digestHex(JSONObject args,String field) throws Exception {
+        String hex=required(args,field);if(!hex.matches("[0-9a-f]{64}"))throw new IllegalArgumentException("invalid_key_digest");
+        byte[] bytes=new byte[32];for(int i=0;i<32;i++)bytes[i]=(byte)Integer.parseInt(hex.substring(i*2,i*2+2),16);return bytes;
+    }
+    private JSONObject ecdhPossessionProof(JSONObject args) throws Exception {
+        String alias="podjs.ecdh.v1."+enc(digestHex(args,"keyIdSha256"));
+        final java.security.KeyPair pair;
+        synchronized(SECURE_LOCK){
+            try(java.io.RandomAccessFile file=new java.io.RandomAccessFile(new File(secureFile.getParentFile(),"secure.store.lock"),"rw");java.nio.channels.FileLock lock=file.getChannel().lock()){
+                // Never create an identity to answer a possession challenge.
+                pair=ecdhPairAlias(alias,false);
+            }
+        }
+        byte[] proof=PodCloudCrypto.possessionProof(pair,digestHex(args,"recipientSpkiSha256"),decode(args,"publicKeySpki"),decode(args,"saltBase64"),decode(args,"infoBase64"),decode(args,"nonceBase64"),decode(args,"ciphertextBase64"),decode(args,"aadBase64"),decode(args,"dataBase64"));
+        try{return new JSONObject().put("proofBase64",enc(proof));}finally{Arrays.fill(proof,(byte)0);}
     }
     private JSONObject ecdhUnwrap(JSONObject args) throws Exception {
         java.security.PrivateKey privateKey=lockedEcdhPair(args,false).getPrivate();

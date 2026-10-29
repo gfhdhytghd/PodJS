@@ -1,0 +1,101 @@
+{
+  "protocol": "pairing-ux-v1",
+  "testOnly": true,
+  "now": 1800000000000,
+  "qr": "wrss-pair:eyJwcm90b2NvbCI6IndhdGNocnNzLW9ubGluZS1zZXR1cC12MSIsInRyYW5zcG9ydCI6ImludGVybmV0Iiwic2Vzc2lvbklkIjoiQ0FnSUNBZ0lDQWdJQ0FnSUNBZ0lDQSIsInNlY3JldCI6IkJ3Y0hCd2NIQndjSEJ3Y0hCd2NIQndjSEJ3Y0hCd2NIQndjSEJ3Y0hCd2M9IiwiZGV2aWNlSWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJpbnN0YWxsSWQiOiIyMjIyMjIyMi0yMjIyLTQyMjItODIyMi0yMjIyMjIyMjIyMjIiLCJjbGFpbVRva2VuIjoiYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSIsImV4cGlyZXNBdCI6MTgwMDAwMDMwMDAwMH0",
+  "userId": "33333333-3333-4333-8333-333333333333",
+  "sas": "61099432",
+  "messageSequenceMax": 255,
+  "vectors": [
+    {
+      "name": "prepare",
+      "direction": "phone",
+      "plaintext": "{\"action\":\"prepare\",\"pairingUxVersion\":1,\"userId\":\"33333333-3333-4333-8333-333333333333\",\"phoneMasked\":\"当前账号\"}",
+      "wire": {
+        "seq": 0,
+        "n": "AQEBAQEBAQEBAQEB",
+        "c": "FH1VSjq8wfbTYzC2zVuWYUBQV0M2GmwdVkxYZchf69NZFKey1++QfNDeBkkugVudPB/zaRdpf2ed0hQnhCbH2ToKADdU1+ndkUyQMAqLx7ehw3MUyKYBBvnO+i8do+4dAzYsNbjQ0EB1GDhvsO6vN03YIZPTwbQtt3kjbpRgFiq27Q0I1XQ="
+      }
+    },
+    {
+      "name": "prepare-reply",
+      "direction": "watch",
+      "plaintext": "{\"success\":true,\"userId\":\"33333333-3333-4333-8333-333333333333\",\"deviceId\":\"11111111-1111-4111-8111-111111111111\",\"installId\":\"22222222-2222-4222-8222-222222222222\",\"publicKeySpki\":\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaxfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpZP40Li/hp/m47n60p8D54WK84zV2sxXs7LtkBoN79R9Q==\",\"pairingUxVersion\":1,\"messageSequenceMax\":255,\"capabilities\":{\"pairingConfirmV1\":true,\"pairingReplaceAccountV1\":false},\"confirmation\":{\"phone\":\"pending\",\"watch\":\"pending\"},\"accountConflict\":false}",
+      "wire": {
+        "seq": 0,
+        "n": "AgICAgICAgICAgIC",
+        "c": "nIHciy4HjLQ0cpyAVCFRKWbp7fZphlIGLSecskK1DjKx3izSFv9AKtvPSBdgepicj7IKVwm2pH9bhCrIZePIRnQszrQ0Xz1J1LOvSBABHI86L3MWT03hwE4xE/NTixW75OgZF5RtH6989P6B8sy/IliweSaMPuXSyt3lylSFC2R6iEfjkrK2/WfyjT1okHMqmIQZliyCWpxOYZ+zr9TjSOhrw05xLuBmRl4MvetNhRABb5bCgXl2LlbSnZcVYxAYUpOiaE1Y3/jQTyqdYjUscxbEMHtYx+HzDocZBfkB2zxGLIsgZZGSv9bttPWgHGlO0+RJiPPWTJ0BqXzo8Syn3/ZTtd5D83oD/Cs7GCaDdwhghdqxq3LVQt7X8uzlX7rVarphJELM9TGwoVqeQxni0OIXKYTK4ZEeJB6bOt+V50arf7aNOR/p3oGAHpu0SHZJkAmowfZ6GjE3FgDMSeYkFJDLkOLVeXkynJCZvWzU8+kMN03XRD+w00e68AkL6O/rffj7+Z9cPQRNfN4yACfjLVgsoxK5PNN0xY5xk68Ac5aXwhxXA3w4EB1x9XABL/pALcWrEx58ZNCZoXWVlc2S3imGQJxH2sIZAoOQM9JE23mNkdvdLM+9Eu7bHUDRfYee3XhA2Ia9frguOFp7ZAYGi1pcFTJ9BahLHhLhixS2i5fXjyf309bH5A=="
+      }
+    },
+    {
+      "name": "phone-confirm",
+      "direction": "phone",
+      "plaintext": "{\"action\":\"pairingStatus\",\"userId\":\"33333333-3333-4333-8333-333333333333\",\"decision\":\"confirmed\"}",
+      "wire": {
+        "seq": 16,
+        "n": "AwMDAwMDAwMDAwMD",
+        "c": "8iOgcB893wxlXaQNtXm7z3PEfx75D3P5DlUHBDZbonxU7rOWfQYRfN+9w7pBl+X2vC1EoFuwhBLaqDZjT/bzkfqE15WXbKo//INMDcfL63bZ0d1VT/IcnuX8x0wDYT1zHbzvouR95d0R1AAvxhQN17Q="
+      }
+    },
+    {
+      "name": "watch-pending",
+      "direction": "watch",
+      "plaintext": "{\"success\":true,\"action\":\"pairingStatus\",\"userId\":\"33333333-3333-4333-8333-333333333333\",\"deviceId\":\"11111111-1111-4111-8111-111111111111\",\"installId\":\"22222222-2222-4222-8222-222222222222\",\"publicKeySpki\":\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaxfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpZP40Li/hp/m47n60p8D54WK84zV2sxXs7LtkBoN79R9Q==\",\"confirmation\":{\"phone\":\"confirmed\",\"watch\":\"pending\"},\"accountConflict\":false}",
+      "wire": {
+        "seq": 16,
+        "n": "BAQEBAQEBAQEBAQE",
+        "c": "lM/indD/YoEN1zNMb6/3mZEr8nLoH4Aqw1LaW9lI37QAwn89RtVrnx8rXNXg5fmqM/26jCQae8vRxBq8rckYJc5y617iliTBa2S4+AEKZ/uLPfzkGcjUvIlaQlDsHAKQzVmGjfkJf9vDsYcG9Oj/Vt3GTrNWqDEPSCuc7IGHSspwOlz4fhAgihARUKV93QQVhBACvwYujiUNOz6jzN6ksbD7Dg6vG6Wk6RU7ySpFOM/jeYmUB9IR+cvRzHa5GgoWbsOrPyhzy8VJeflO47LvAtoEB8srx4fuklKBxXc4awYDFGlG0OKxgQOWFHEsusFH6+3aVi33EdJK4zKUYirYuOWlmayuAma4O3wzdADrJZuUyNGLeVb6xmnGc1xGAFgkYtmgLv+7FMgxZtiueXViVQVjBNHELndenYRfmf9CrJ4dKtmnuf2vbpOZNnl+DSQ0lyS23j9HgDzp0w66l0HjrQBzEALW+p6h3CK4iRdjfTW7WFkMOs5PTmu/jzp86Rsn9rLCfjUJJxCmiOh8rGWdYt8TX5vvkf5Om8aiBp7E3jB1NBf1vna1oxsNE+U="
+      }
+    },
+    {
+      "name": "both-confirmed",
+      "direction": "watch",
+      "plaintext": "{\"success\":true,\"action\":\"pairingStatus\",\"userId\":\"33333333-3333-4333-8333-333333333333\",\"deviceId\":\"11111111-1111-4111-8111-111111111111\",\"installId\":\"22222222-2222-4222-8222-222222222222\",\"publicKeySpki\":\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaxfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpZP40Li/hp/m47n60p8D54WK84zV2sxXs7LtkBoN79R9Q==\",\"confirmation\":{\"phone\":\"confirmed\",\"watch\":\"confirmed\"},\"accountConflict\":false}",
+      "wire": {
+        "seq": 17,
+        "n": "BQUFBQUFBQUFBQUF",
+        "c": "xfpSxlKHRPkJBBW2G1suhT2rt8VQT7VZvRTxMTTECB0jWqfupWPUXyYgJ+0xvnJ9V4GEdCGgd+AVbzuUl8CNzE6xBprjOfGOUkOjqu6p2FC75sNSZis8s3te3iOULCqVQBHhZ3ATSXiBsn9sd9ZLYPpzKYFWWfbx0Eu0KvGxhBpdobdO4gCCpK55GenWlUgAHHpYV3ZbMkcZIBe0dzYfDmSml6KHNO+nu3tXkPPUUTNfmlDubSRCfi87oaaezI/9Nl/Measxy8nTFI8JWQLsa2YX3YVV1DoY8mLjPfTrIs9f6+SaIX9ZJjqL7pnHsgjIpFgSFMcWOEdHkVejCUTg3Ny87jmxGvO5YPiD6ZVYs4/18ot2jBcqB7Q76ZBYeF0GMcmm4FDCLTK+TUyXqGTdgK61DbBBPdpJuuyyCryUnyZER+5jK7KAobqJaFc1iLuWk+0SpMKcDE33fq/QTMVV5aQ2herIt48HXkzp0CQ58vr4Tr6jGX7TRA3OyT1cwgGOhGfntKyaC+DS1oYHLBF+4c/2J/plKzcikNALBITsxyeciXfbtKBUhyUVI/OJgA=="
+      }
+    },
+    {
+      "name": "watch-rejected",
+      "direction": "watch",
+      "plaintext": "{\"success\":false,\"action\":\"pairingStatus\",\"userId\":\"33333333-3333-4333-8333-333333333333\",\"deviceId\":\"11111111-1111-4111-8111-111111111111\",\"installId\":\"22222222-2222-4222-8222-222222222222\",\"publicKeySpki\":\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaxfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpZP40Li/hp/m47n60p8D54WK84zV2sxXs7LtkBoN79R9Q==\",\"confirmation\":{\"phone\":\"confirmed\",\"watch\":\"rejected\"},\"accountConflict\":false,\"errorCode\":\"pairing_rejected\"}",
+      "wire": {
+        "seq": 18,
+        "n": "BgYGBgYGBgYGBgYG",
+        "c": "LWCmh5gGI2WyGXQh/Zx+OhzIaCfuFAjpwvLvi238m7jHD3RJ/O6lD/OGrYjcXumuSDePOOEtxjdPvtDhxZoVT8y60HJ1/Ogo8bxCfAk4WUnPAv45nKZx8x77snXwTk4jp8+fYfkoviFS5/TBclas8ZMrlDy4EksOCx2mCS2bITjPibdq80Oga80kmMV9U23Umn4TTzhE2RyWowlNKpKQ6pJeXFCsCfElAfOYTslXE/HwrQJhqZ4zGxLHmatNW8251OxQbEMFH6+S6vxe6KWyA349fcjkQV1WPC4B6UQbLF0KP5uu2vcmH8ndvp+J9dFUCCcaACOy35V2Ous+j8JXjMQMVnWKJ9dT134FA9VY3347Ejj3RrmdFl/MM6QnfkrIt9XqZpnTZ3O+TBXjy187jb98It2tOi/YmOQEZVj1alF9lMkPDPRXy4ird3v9ibBA/Csy+rQfSNRR+Ed5OhlU93Yj8/h8t5/oEp273X3lGynWcynfTBYXB+zTsr8UIKqdjOkFQKfS0hn9sqNAKa/2y1t9BfX1i027W7MjqkpMK4cWpQG74PueaFrFAJBfbs7oVS8cyPUMmm8irn+SoCtdq+N6qZdFtK8t+1hdksg="
+      }
+    },
+    {
+      "name": "replace",
+      "direction": "phone",
+      "plaintext": "{\"action\":\"replaceAccount\",\"userId\":\"33333333-3333-4333-8333-333333333333\",\"confirmClearLocal\":true}",
+      "wire": {
+        "seq": 254,
+        "n": "BwcHBwcHBwcHBwcH",
+        "c": "x4djlCrR7Zi7SrI5cWAAKbqP+vyy4AYP9TNt2NGi0ILJlSczFIi35RNg0OYgAEUJj4HQbdxiLrrsmP8mBzxdvkgAdrinBqucqmltJUIJjwSoXOaJMGBhhmFG+UuCP3ctU4MF45QztJGI+mxLTuTFiLF9eQI="
+      }
+    },
+    {
+      "name": "replace-receipt",
+      "direction": "watch",
+      "plaintext": "{\"success\":true,\"action\":\"replaceAccount\",\"userId\":\"33333333-3333-4333-8333-333333333333\",\"deviceId\":\"11111111-1111-4111-8111-111111111111\",\"installId\":\"22222222-2222-4222-8222-222222222222\",\"publicKeySpki\":\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaxfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpZP40Li/hp/m47n60p8D54WK84zV2sxXs7LtkBoN79R9Q==\",\"released\":true,\"cleared\":true}",
+      "wire": {
+        "seq": 254,
+        "n": "CAgICAgICAgICAgI",
+        "c": "InJOyJhywCb2D04brX8Mca00bHVqL+6/0bKPyYSa/g/UFHMbczBX6xcZZRapGjSlgk3edHe2Y/Ps0tJp2Ke5eVR/WtO+OYvj27/fkYU1kZ5dUg33R1H6R79Yjm15QKc1clGDUreFXeo13SIKINKS/Wh8jX8M3IulV2t57BEKx9+Aic7KQ6fhhIqfJap3qMCqs5FhnEXAceEmp5BnpIDeA3c1OquTDi29/hL/Z1/0uqdzX/R1fkW6I7s4Qi+Cc91oB9tpVEJfvh4dbcUwdvjouqdt1bJui1HHFv2bHqyNak/dptoPbRwXsGG3WbmPmNmXHEaneWRPlOiXi8EKwrwASJIze7nGlSYAIFVU9oJt1PvkYMrF6JyPwHjDCiEzGSyHgSHo9otJEuWtNnR5bIue7GOhFxZXPGJ+ME5WeoHxTn83DyUvRkHaJwEajAuOtHWP8JkpkMUrl6M2xMi1BeDgD66qpsmxtZ68w6Z7k1WRsa59ZnSqENpV8k0WNW23"
+      }
+    },
+    {
+      "name": "last-sequence",
+      "direction": "phone",
+      "plaintext": "{\"action\":\"finish\",\"cloudReady\":true}",
+      "wire": {
+        "seq": 255,
+        "n": "CQkJCQkJCQkJCQkJ",
+        "c": "DzItSuZHPd4VKrHOAmyEN0t9vhxBnlrNk5ug7wizKIoNFnIgBfN9c8j+JKF05Nrlk02vle0="
+      }
+    }
+  ]
+}

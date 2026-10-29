@@ -42,6 +42,16 @@ public final class PodCloudCrypto {
         try { key = hkdf(secret,salt,info); return aes(false,key,nonce,ciphertext,aad); }
         finally { Arrays.fill(secret,(byte)0); if(key != null) Arrays.fill(key,(byte)0); }
     }
+    /** Prove possession by MACing an authenticated challenge with its unwrapped
+     * one-time secret. Neither secret nor raw ECDH output leaves this method. */
+    public static byte[] possessionProof(KeyPair pair,byte[] recipientDigest,byte[] publicSpki,byte[] salt,byte[] info,byte[] nonce,byte[] ciphertext,byte[] aad,byte[] data) throws Exception {
+        if(recipientDigest.length!=32||salt.length!=32||nonce.length!=12||ciphertext.length!=48||info.length>4096||aad.length>4096||data.length>4096)
+            throw new IllegalArgumentException("invalid_possession_challenge");
+        if(!MessageDigest.isEqual(recipientDigest,MessageDigest.getInstance("SHA-256").digest(pair.getPublic().getEncoded())))throw new GeneralSecurityException("device_public_key_mismatch");
+        byte[] secret=unwrap(pair.getPrivate(),publicSpki,salt,info,nonce,ciphertext,aad);
+        try {if(secret.length!=32)throw new GeneralSecurityException("invalid_possession_secret");Mac mac=Mac.getInstance("HmacSHA256");mac.init(new SecretKeySpec(secret,"HmacSHA256"));return mac.doFinal(data);}
+        finally {Arrays.fill(secret,(byte)0);}
+    }
     /** P1363 fixed-width r||s input, converted to minimal positive DER integers. */
     public static boolean verifyP256(byte[] spki, byte[] input, byte[] signature) throws Exception {
         if(signature.length != 64 || input.length > 256*1024) return false;

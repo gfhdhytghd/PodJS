@@ -27,11 +27,12 @@ final class PodBleProvisionServices implements Closeable {
                 opened=internet?new OnlineProvisioningSession(args.getString("deviceId"),args.getString("installId")):new BleProvisioningSession(context,args.getString("deviceId"),args.getString("installId"));
                 session=opened;openedId=opened.sessionId();sessionId=openedId;starting=true;startOwner=args.getString("requestId");
             }
-            try{opened.start();JSONObject value=new JSONObject().put("qr",opened.qr()).put("sessionId",openedId).put("transport",internet?ProvisioningSession.INTERNET:ProvisioningSession.BLUETOOTH);synchronized(this){if(session==opened)starting=false;}return value;}
+            try{opened.start();JSONObject value=new JSONObject().put("qr",opened.qr()).put("sessionId",openedId).put("messageSequenceMax",opened.messageSequenceMax()).put("ownershipReleaseV1",opened.ownershipReleaseSupported()).put("transport",internet?ProvisioningSession.INTERNET:ProvisioningSession.BLUETOOTH);synchronized(this){if(session==opened)starting=false;}return value;}
             catch(Exception e){synchronized(this){if(session==opened)closeSession();}throw e;}
         }
         final ProvisioningSession active;
         synchronized(this){if(closed||session==null||starting||!args.optString("sessionId").equals(sessionId))throw new IllegalStateException("配对未启动");active=session;}
+        if("provision.sessionRequest".equals(method))return active.sessionRequest(args.getString("path"),args.getJSONObject("body"));
         if("provision.receive".equals(method))return active.receive();
         if("provision.check".equals(method)){active.checkActive();return new JSONObject().put("active",true);}
         if("provision.respond".equals(method)){active.respond(args.getInt("sequence"),args.getJSONObject("result"));return new JSONObject().put("sent",true);}

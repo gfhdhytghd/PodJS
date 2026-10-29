@@ -7,6 +7,8 @@ javac -d "$task_tmp" platforms/android/runtime/src/main/java/dev/podjs/runtime/P
 java -cp "$task_tmp" PodCloudCryptoTest "$@"
 
 java -cp "$task_tmp" dev.podjs.runtime.SoftwareEcdhTest
+javac -cp "$task_tmp" -d "$task_tmp" tests/java/dev/podjs/runtime/PossessionProofTest.java
+java -cp "$task_tmp" dev.podjs.runtime.PossessionProofTest tests/fixtures/pairing-possession-v1.tsv
 javac -d "$task_tmp" platforms/android/runtime/src/main/java/dev/podjs/runtime/PodSecureLease.java tests/java/dev/podjs/runtime/SecureLeaseTest.java
 java -cp "$task_tmp" dev.podjs.runtime.SecureLeaseTest
 javac -d "$task_tmp" platforms/android/runtime/src/main/java/dev/podjs/runtime/SecureReadCache.java tests/java/dev/podjs/runtime/SecureReadCacheTest.java

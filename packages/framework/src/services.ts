@@ -62,7 +62,7 @@ const methods: Record<string, PodCapabilityId> = {
   "rfcomm.requestPermission": "net.rfcomm", "rfcomm.status": "net.rfcomm", "rfcomm.listen": "net.rfcomm", "rfcomm.accept": "net.rfcomm", "rfcomm.close": "net.rfcomm",
   "tcp.listen":"net.tcp", "tcp.accept":"net.tcp", "tcp.close":"net.tcp", "tcp.addresses":"net.tcp",
   "discovery.networkSnapshot": "net.discovery", "discovery.networkSubscribe": "net.discovery", "discovery.networkUnsubscribe": "net.discovery",
-  "provision.start": "net.ble.provision", "provision.receive": "net.ble.provision", "provision.check": "net.ble.provision", "provision.respond": "net.ble.provision", "provision.close": "net.ble.provision", "provision.requestPermission": "net.ble.provision",
+  "provision.start": "net.ble.provision", "provision.receive": "net.ble.provision", "provision.check": "net.ble.provision", "provision.sessionRequest": "net.ble.provision", "provision.respond": "net.ble.provision", "provision.close": "net.ble.provision", "provision.requestPermission": "net.ble.provision",
   "discovery.mdns": "net.discovery", "discovery.status": "net.discovery", "discovery.requestPermission": "net.discovery", "discovery.bleReadCharacteristic": "net.discovery",
   "websocket.connect": "net.websocket", "websocket.readText": "net.websocket", "websocket.writeText": "net.websocket", "websocket.close": "net.websocket",
   "stream.read": "net.stream", "stream.write": "net.stream", "stream.close": "net.stream",
@@ -96,7 +96,7 @@ const methods: Record<string, PodCapabilityId> = {
   "input.time": "input.time",
   "location.current": "device.location",
   "battery.percent": "device.battery",
-  "crypto.verifyP256": "crypto.basic", "crypto.ecdhPublicKey": "crypto.basic", "crypto.ecdhUnwrap": "crypto.basic", "crypto.hkdfSha256": "crypto.basic",
+  "crypto.verifyP256": "crypto.basic", "crypto.ecdhPublicKey": "crypto.basic", "crypto.ecdhUnwrap": "crypto.basic", "crypto.ecdhPossessionProof": "crypto.basic", "crypto.hkdfSha256": "crypto.basic",
   "crypto.largeAesGcmEncrypt": "crypto.basic", "crypto.largeAesGcmDecrypt": "crypto.basic", "crypto.gzip": "crypto.basic", "crypto.gunzip": "crypto.basic",
   "crypto.rsaOaepSha256": "crypto.basic", "crypto.random": "crypto.basic", "crypto.hash": "crypto.basic", "crypto.hmacSha256": "crypto.basic", "crypto.aesGcmEncrypt": "crypto.basic", "crypto.aesGcmDecrypt": "crypto.basic", "crypto.encrypt": "crypto.basic", "crypto.decrypt": "crypto.basic",
   "uri.parse": "data.uri", "file.htmlText": "data.files.chunks", "file.gzip": "data.files.chunks", "file.gzipBytes": "data.files.chunks", "file.gunzip": "data.files.chunks", "file.openText": "data.files.chunks", "file.readTextChunk": "data.files.chunks", "file.closeText": "data.files.chunks", "file.createTemp": "data.files.chunks", "file.hash": "data.files.chunks", "file.commit": "data.files.chunks", "file.read": "data.files.chunks", "file.write": "data.files.chunks", "file.list": "data.files.chunks", "file.touch": "data.files.chunks", "file.stat": "data.files.chunks", "file.delete": "data.files.chunks",
@@ -801,6 +801,8 @@ export const takeover = Object.freeze({
 
 /** Android 12+ non-exportable P-256 key. keyId is scoped to this host application. */
 export const deviceAgreement = {
+  /** Existing opaque identity only; one-time unwrapped secret stays native. */
+  possessionProof(args:{keyIdSha256:string;recipientSpkiSha256:string;publicKeySpki:string;saltBase64:string;infoBase64:string;nonceBase64:string;ciphertextBase64:string;aadBase64:string;dataBase64:string}):Promise<{proofBase64:string}>{return hostOperation<{proofBase64:string}>("crypto.ecdhPossessionProof",args).result;},
   publicKey(keyId:string):Promise<{publicKeySpki:string}> {return hostOperation<{publicKeySpki:string}>("crypto.ecdhPublicKey",{keyId}).result;},
   /** Authenticated 32-byte key unwrap; neither the private key nor ECDH secret is returned. */
   unwrap(args:{keyId:string;publicKeySpki:string;saltBase64:string;infoBase64:string;nonceBase64:string;ciphertextBase64:string;aadBase64:string}):Promise<{dataBase64:string}> {return hostOperation<{dataBase64:string}>("crypto.ecdhUnwrap",args).result;},

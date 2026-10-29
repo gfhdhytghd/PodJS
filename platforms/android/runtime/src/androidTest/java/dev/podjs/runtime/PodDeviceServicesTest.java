@@ -123,6 +123,31 @@ public class PodDeviceServicesTest {
             }
         }
     }
+    @Test public void possessionProofUsesExistingOpaqueIdentityWithoutExportOrRegeneration() throws Exception {
+        String id="instrumentation-possession-"+java.util.UUID.randomUUID();
+        byte[] idHash=java.security.MessageDigest.getInstance("SHA-256").digest(id.getBytes(StandardCharsets.UTF_8));
+        String hex=bytesHex(idHash),alias="podjs.ecdh.v1."+b64(idHash),publicSpki;
+        try(PodDeviceServices host=new PodDeviceServices(context())) {
+            try{host.execute("crypto.ecdhPossessionProof",new JSONObject().put("keyIdSha256",hex));fail("generated missing identity");}
+            catch(IllegalStateException expected){assertEquals("device_private_key_missing",expected.getMessage());}
+            java.security.KeyStore store=java.security.KeyStore.getInstance("AndroidKeyStore");store.load(null);assertFalse(store.containsAlias(alias));assertFalse(store.containsAlias(alias+".software"));
+            publicSpki=host.execute("crypto.ecdhPublicKey",new JSONObject().put("keyId",id)).getString("publicKeySpki");
+        }
+        java.security.KeyPair peer=PodSoftwareEcdh.generate();
+        java.security.PublicKey recipient=java.security.KeyFactory.getInstance("EC").generatePublic(new java.security.spec.X509EncodedKeySpec(Base64.decode(publicSpki,Base64.DEFAULT)));
+        javax.crypto.KeyAgreement agreement=javax.crypto.KeyAgreement.getInstance("ECDH");agreement.init(peer.getPrivate());agreement.doPhase(recipient,true);
+        byte[] salt=new byte[32],nonce=new byte[12],secret=new byte[32],info="proof-info".getBytes(StandardCharsets.UTF_8),aad="proof-aad".getBytes(StandardCharsets.UTF_8),data="bound-transcript".getBytes(StandardCharsets.UTF_8);new java.security.SecureRandom().nextBytes(secret);
+        byte[] cipher=PodCloudCrypto.aes(true,PodCloudCrypto.hkdf(agreement.generateSecret(),salt,info),nonce,secret,aad);
+        javax.crypto.Mac mac=javax.crypto.Mac.getInstance("HmacSHA256");mac.init(new javax.crypto.spec.SecretKeySpec(secret,"HmacSHA256"));
+        JSONObject request=new JSONObject().put("keyIdSha256",hex).put("recipientSpkiSha256",bytesHex(java.security.MessageDigest.getInstance("SHA-256").digest(recipient.getEncoded()))).put("publicKeySpki",b64(peer.getPublic().getEncoded())).put("saltBase64",b64(salt)).put("infoBase64",b64(info)).put("nonceBase64",b64(nonce)).put("ciphertextBase64",b64(cipher)).put("aadBase64",b64(aad)).put("dataBase64",b64(data));
+        try(PodDeviceServices host=new PodDeviceServices(context())) {
+            JSONObject result=host.execute("crypto.ecdhPossessionProof",request);assertEquals(1,result.length());assertArrayEquals(mac.doFinal(data),Base64.decode(result.getString("proofBase64"),Base64.DEFAULT));
+            assertEquals(publicSpki,host.execute("crypto.ecdhPublicKey",new JSONObject().put("keyId",id)).getString("publicKeySpki"));
+            request.put("recipientSpkiSha256",new String(new char[64]).replace('\0','0'));
+            try{host.execute("crypto.ecdhPossessionProof",request);fail("accepted different recipient");}catch(java.security.GeneralSecurityException expected){}
+        }finally{java.util.Arrays.fill(secret,(byte)0);}
+    }
+    private static String bytesHex(byte[] bytes){StringBuilder s=new StringBuilder();for(byte b:bytes)s.append(String.format(java.util.Locale.ROOT,"%02x",b&255));return s.toString();}
     private static String b64(byte[] bytes) { return Base64.encodeToString(bytes,Base64.NO_WRAP); }
 
 }

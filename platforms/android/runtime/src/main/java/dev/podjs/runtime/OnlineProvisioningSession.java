@@ -50,7 +50,8 @@ public final class OnlineProvisioningSession implements ProvisioningSession {
     private volatile boolean closed;
     private String watchToken,claimToken;
     private long expiresAt;
-    private int receiveSequence,awaiting=-1;
+    private boolean releaseSupported;
+    private int receiveSequence,awaiting=-1,sequenceMax=15;
     private byte[] pendingResponse;
 
     public OnlineProvisioningSession(String deviceId,String installId){
@@ -64,6 +65,8 @@ public final class OnlineProvisioningSession implements ProvisioningSession {
         deadline=clock.millis()+LIFETIME_MS;
     }
     @Override public String sessionId(){return sessionId;}
+    @Override public synchronized int messageSequenceMax(){return sequenceMax;}
+    @Override public synchronized boolean ownershipReleaseSupported(){return releaseSupported;}
     private void check(){
         if(!closed&&clock.millis()>=deadline){close();throw new Failure(Failure.EXPIRED,"二维码已过期，请重新开始");}
         if(closed)throw new Failure(Failure.CLOSED,"配对已结束，请在手表重新打开配对页面");
@@ -79,7 +82,9 @@ public final class OnlineProvisioningSession implements ProvisioningSession {
         String watch=value.optString("watchToken"),claim=value.optString("claimToken");
         long expires=value.optLong("expiresAt",0);
         if(!sessionId.equals(value.optString("sessionId"))||!TOKEN.matcher(watch).matches()||!TOKEN.matcher(claim).matches()||expires<=0)throw reject();
-        synchronized(this){check();watchToken=watch;claimToken=claim;expiresAt=expires;}
+        Object advertised=value.opt("messageSequenceMax");
+        int maximum=advertised instanceof Number&&((Number)advertised).doubleValue()==255?255:15;
+        synchronized(this){check();watchToken=watch;claimToken=claim;expiresAt=expires;sequenceMax=maximum;releaseSupported=maximum==255&&Boolean.TRUE.equals(value.opt("ownershipReleaseV1"));}
     }
     @Override public synchronized String qr() throws Exception {
         check();if(claimToken==null)throw new IllegalStateException("配对尚未开始");
@@ -96,9 +101,26 @@ public final class OnlineProvisioningSession implements ProvisioningSession {
         if(send("GET",SESSIONS+"/"+sessionId+"/request",token,null)==null)
             throw new Failure(Failure.OFFLINE,"手表暂时连不上网络");
     }
+    @Override public JSONObject sessionRequest(String path,JSONObject body)throws Exception {
+        if(!"ownership/challenge".equals(path)&&!"ownership/release".equals(path))throw new IllegalArgumentException("invalid_session_rpc");
+        final String token;
+        synchronized(this){check();if(!releaseSupported||watchToken==null)throw new UnsupportedOperationException("session_rpc_unavailable");token=watchToken;}
+        byte[] request=body.toString().getBytes(StandardCharsets.UTF_8);if(request.length>2048)throw new IllegalArgumentException("session_rpc_too_large");
+        Reply reply;
+        try{reply=http.exchange("POST",SESSIONS+"/"+sessionId+"/"+path,token,request);}
+        catch(IOException error){check();return new JSONObject().put("status",0).put("body",new JSONObject().put("code","pairing_release_network"));}
+        check();JSONObject result;
+        if(reply.status>=200&&reply.status<300)result=parse(reply);
+        else {
+            String code="pairing_release_http";
+            try{String value=new JSONObject(new String(reply.body,StandardCharsets.UTF_8)).optString("code");if(value.matches("pairing_release_[a-z_]{1,64}"))code=value;}catch(Exception ignored){}
+            result=new JSONObject().put("code",code);
+        }
+        return new JSONObject().put("status",reply.status).put("body",result);
+    }
     @Override public JSONObject receive() throws Exception {
         final String token;final int expected;
-        synchronized(this){check();if(watchToken==null||awaiting>=0)throw new IllegalStateException("配对响应次序错误");if(receiveSequence>15)throw reject();token=watchToken;expected=receiveSequence;}
+        synchronized(this){check();if(watchToken==null||awaiting>=0)throw new IllegalStateException("配对响应次序错误");if(receiveSequence>sequenceMax)throw reject();token=watchToken;expected=receiveSequence;}
         while(true){
             Reply reply=send("GET",SESSIONS+"/"+sessionId+"/request",token,null);
             if(reply!=null){
@@ -122,7 +144,7 @@ public final class OnlineProvisioningSession implements ProvisioningSession {
         try{
             if(wire.toString().length()>MAX_WIRE)throw new IllegalArgumentException();
             byte[] nonce=Base64.getDecoder().decode(wire.getString("n")),cipher=Base64.getDecoder().decode(wire.getString("c"));
-            synchronized(this){check();plain=BleSetupCrypto.crypt(secret,sessionId,Cipher.DECRYPT_MODE,"phone",sequence,nonce,cipher);}
+            synchronized(this){check();plain=BleSetupCrypto.crypt(secret,sessionId,Cipher.DECRYPT_MODE,"phone",sequence,nonce,cipher,sequenceMax);}
             JSONObject message=new JSONObject(new String(plain,StandardCharsets.UTF_8));
             message.put("_sequence",sequence);
             return message;
@@ -140,7 +162,7 @@ public final class OnlineProvisioningSession implements ProvisioningSession {
                 byte[] nonce=new byte[12];random.nextBytes(nonce);byte[] plain=result.toString().getBytes(StandardCharsets.UTF_8);
                 try{
                     JSONObject wire=new JSONObject().put("seq",sequence).put("n",Base64.getEncoder().encodeToString(nonce))
-                        .put("c",Base64.getEncoder().encodeToString(BleSetupCrypto.crypt(secret,sessionId,Cipher.ENCRYPT_MODE,"watch",sequence,nonce,plain)));
+                        .put("c",Base64.getEncoder().encodeToString(BleSetupCrypto.crypt(secret,sessionId,Cipher.ENCRYPT_MODE,"watch",sequence,nonce,plain,sequenceMax)));
                     if(wire.toString().length()>MAX_WIRE)throw reject();
                     pendingResponse=new JSONObject().put("seq",sequence).put("wire",wire).toString().getBytes(StandardCharsets.UTF_8);
                 }finally{Arrays.fill(plain,(byte)0);}
@@ -212,7 +234,7 @@ public final class OnlineProvisioningSession implements ProvisioningSession {
                     try(OutputStream out=connection.getOutputStream()){out.write(body);}
                 }
                 int status=connection.getResponseCode();
-                if(status<200||status>=300)return new Reply(status,new byte[0]);
+                if(status<200||status>=300){InputStream error=connection.getErrorStream();if(error==null)return new Reply(status,new byte[0]);try(InputStream in=error){return new Reply(status,readBounded(in));}}
                 try(InputStream in=connection.getInputStream()){return new Reply(status,readBounded(in));}
             }finally{open.remove(connection);connection.disconnect();}
         }

@@ -11,6 +11,11 @@ public interface ProvisioningSession extends Closeable {
     void start() throws Exception;
     String qr() throws Exception;
     String sessionId();
+    /** Legacy relays permit 0..15. An extension requires an authenticated server advertisement. */
+    default int messageSequenceMax(){return 15;}
+    default boolean ownershipReleaseSupported(){return false;}
+    /** Bounded RPC within the owned session; watch capability stays native. */
+    default JSONObject sessionRequest(String path,JSONObject body)throws Exception{throw new UnsupportedOperationException("session_rpc_unavailable");}
     JSONObject receive() throws Exception;
     /** Non-consuming liveness check, including while a request awaits user confirmation. */
     void checkActive() throws Exception;
