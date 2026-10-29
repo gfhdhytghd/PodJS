@@ -98,6 +98,7 @@ public final class PodDeviceServices implements AutoCloseable {
             case "crypto.decrypt": return cryptoDecrypt(args);
             case "crypto.rsaOaepSha256": return cryptoRsaOaepSha256(args);
             case "file.read": return fileRead(args);
+            case "log.append": return new JSONObject().put("bytes",PodAppendLog.append(safeFile(required(args,"path")),required(args,"text"),args.optInt("maxBytes",5*1024*1024)));
             case "file.write": return fileWrite(args);
             case "file.hash": return fileHash(args);
             case "uri.parse": return uriParse(args);

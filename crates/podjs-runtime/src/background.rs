@@ -114,6 +114,11 @@ pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellatio
             Object.defineProperty(globalThis, 'Atomics', {value:undefined,writable:false,configurable:false});
             Object.defineProperty(globalThis, 'SharedArrayBuffer', {value:undefined,writable:false,configurable:false});
         "#).map_err(|_| "sandbox_setup_failed")?;
+        // Pure bounded codecs only: never mount the UI/host `pod` object here.
+        // Sharing these routines avoids service IPC for each small digest.
+        let bytes = Object::new(ctx.clone()).map_err(|_| "context_unavailable")?;
+        crate::byte_codecs::mount(ctx.clone(), &bytes).map_err(|_| "context_unavailable")?;
+        ctx.globals().set("__podByteCodecs", bytes).map_err(|_| "context_unavailable")?;
         let job = Object::new(ctx.clone()).map_err(|_| "context_unavailable")?;
         job.set("appId",options.app_id).map_err(|_| "context_unavailable")?;
         job.set("taskId",options.task_id).map_err(|_| "context_unavailable")?;
@@ -179,6 +184,16 @@ pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellatio
 mod tests {
     use super::*;
     fn options(app: &str) -> Options<'_> { Options { app_id:app,task_id:"refresh",budget_ms:100,memory_bytes:8*1024*1024,payload_json:"null" } }
+    #[test] fn headless_byte_codecs_are_bounded_and_do_not_mount_host_or_ui() {
+        let source=r#"globalThis.backgroundHandler=()=>{
+          if(typeof pod!=='undefined'||typeof frame!=='undefined'||__podByteCodecs.request!==undefined)return 'failure';
+          const hash=Array.from(__podByteCodecs.sha256Bytes(new Uint8Array([97,98,99]))).map(x=>x.toString(16).padStart(2,'0')).join('');
+          if(hash!=='ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')return 'failure';
+          if(__podByteCodecs.sha256Bytes(new Uint8Array(256*1024+1))!=null)return 'failure';
+          if(__podByteCodecs.encodeBase64Chunk(new Uint8Array([0,255]))!=='AP8=')return 'failure';
+          return 'success';};"#;
+        assert_eq!(run(source,options("pure-codecs"),Cancellation::default()).status,Status::Success);
+    }
     #[test] fn cloud_profile_is_explicit_and_preserves_default_budgets() {
         let source="globalThis.backgroundHandler=async c=>{for(let i=0;i<40;i++){const v=await c.request('cloud.host',{method:'file.read',args:{}});if(v.length!==100000)return 'failure'}try{await c.request('ui.draw',{});return 'failure'}catch(e){return e==='permission_denied'?'success':'failure'}}";
         let make=|| Services {allowed_methods:HashSet::from(["cloud.host".into()]),dispatch:Arc::new(|_| {

@@ -33,7 +33,7 @@ export {crc32,crc32Async} from './checksum.ts';
 
 /** Optional pure native SHA-256 for at most 256 KiB; null requests a caller's fallback. */
 export function sha256Bytes(bytes:Uint8Array):Uint8Array|null {
- const hash=(globalThis as {pod?:{sha256Bytes?:(bytes:Uint8Array)=>Uint8Array|null|undefined}}).pod?.sha256Bytes;
+ const hash=((globalThis as {pod?:{sha256Bytes?:(bytes:Uint8Array)=>Uint8Array|null|undefined};__podByteCodecs?:{sha256Bytes?:(bytes:Uint8Array)=>Uint8Array|null|undefined}}).pod??(globalThis as any).__podByteCodecs)?.sha256Bytes;
  if(bytes.length>256*1024||typeof hash!=='function')return null;
  const digest=hash(bytes);
  if(digest==null)return null;

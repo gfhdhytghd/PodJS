@@ -6,7 +6,7 @@ type CodecHost={
   encodeBase64Chunk?:(bytes:Uint8Array)=>string|null|undefined;
   decodeBase64Chunk?:(value:string)=>Uint8Array|null|undefined;
 };
-const host=()=>(globalThis as {pod?:CodecHost}).pod;
+const host=()=>((globalThis as {pod?:CodecHost;__podByteCodecs?:CodecHost}).pod??(globalThis as {__podByteCodecs?:CodecHost}).__podByteCodecs);
 const alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 const UTF16_BUDGET=4096,BASE64_CHARS=4096,BASE64_BYTES=3072;
 
