@@ -354,3 +354,5 @@ chunk codecs use this pure CPU path; older hosts retain their fallback. SHA-256
 input remains limited to 256 KiB. JSON delta journal dictionary values are
 immutable: replace an entry when editing it. Complete checksummed frames are
 local persistence receipts and never authenticate application data.
+
+Headless native guests run one handler invocation and do not install browser timers or the UI service bridge. `defineBackgroundHandler(handler, {yieldTurn: context => ...})` optionally scopes the pure byte codecs' default scheduler to a caller-owned asynchronous yield port, then restores the previous scheduler on success or failure. The caller checks cancellation/deadlines and uses only its manifest-authorized request route; this option grants no services. Android cloud workers admit the bounded `runtime.delay` timer (1..120000ms) through their closed method set. Keep application host-port literals within that set; the CLI's `host-method-contract` source inspector supports executable-source/Java-set contract tests without importing host services.
