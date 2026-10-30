@@ -77,5 +77,17 @@ public final class WindowedWorkQueueTest {
         Disk p=new Disk(fixture());WindowedWorkQueue q=new WindowedWorkQueue(p);q.enqueue("grant",false,false);String first=p.read().id;p.jobs.get(first).scheduled=p.now()+18000000;p.save();q.resume(false);check(!p.read().id.equals(first)&&p.read().due-p.now()<=900000,"old 5h OS delay survived");
         p=new Disk(fixture());q=new WindowedWorkQueue(p);q.enqueue("grant",false,false);first=p.take();p.write(new WindowedWorkQueue.Job("grant",null,null,0,0,false,false));q.resume(false);check(first.equals(p.read().id),"running legacy request cancelled");q.finished("grant",first);check(p.read()==null,"legacy terminal not cleared");
     }
-    public static void main(String[] args)throws Exception{progress59();backoff();crashes();fences();foregroundProgress();migration();System.out.println("WindowedWorkQueueTest PASS: durable progress/retry bounds, dependency success, crash publication/uncertain enqueue, grant fencing, network/hold/KEEP/REPLACE, periodic handoff and legacy delay migration");}
+    static void benignConcurrency()throws Exception{
+        Disk p=new Disk(fixture());WindowedWorkQueue q=new WindowedWorkQueue(p);q.enqueue("grant",false,false);String id=p.take();check(q.start("grant",id)&&q.active(),"manual not active");WindowedWorkQueue.Job before=p.read();
+        check(CloudWorkerOutcome.decide("active_writer","",0)==CloudWorkerOutcome.Decision.SUCCESS,"periodic collision failed");
+        check(p.read().id.equals(before.id)&&p.read().failures==before.failures&&p.jobs.size()==1,"periodic changed manual queue");
+        check(CloudWorkerOutcome.decide("already_running","retry",50)==CloudWorkerOutcome.Decision.SUCCESS,"Rust guard failed");
+        check(CloudWorkerOutcome.decide("yielded","success",0)==CloudWorkerOutcome.Decision.SUCCESS,"writer yield failed");
+        check(q.yielded("grant",id),"manual collision lost continuation");check(p.read().failures==before.failures&&p.read().due-p.now()==30000,"yield changed retry counter");p.success(id);
+        check(!q.yielded("old",id),"old collision replaced successor");check(CloudWorkerOutcome.code("private arbitrary error").equals("unknown_outcome"),"raw code leaked");
+        for(String code:CloudWorkerOutcome.CODES)check(!code.contains(" "),"invalid closed code");
+        check(CloudWorkerOutcome.decide("deadline_exceeded","failure",0)==CloudWorkerOutcome.Decision.FAILURE,"hard failure hidden");
+        System.out.println("CONCURRENT_PERIODIC_MANUAL_PASS active_writer/already_running/yielded success; queue counters retained; genuine failures retained");
+    }
+    public static void main(String[] args)throws Exception{progress59();backoff();crashes();fences();foregroundProgress();migration();benignConcurrency();System.out.println("WindowedWorkQueueTest PASS: durable progress/retry bounds, dependency success, crash publication/uncertain enqueue, grant fencing, network/hold/KEEP/REPLACE, periodic handoff and legacy delay migration");}
 }

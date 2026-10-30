@@ -17,5 +17,5 @@ java -cp "$task_tmp" dev.podjs.runtime.SecureReadCacheTest
 javac -d "$task_tmp" platforms/android/runtime/src/main/java/dev/podjs/runtime/CloudWriterLease.java tests/java/dev/podjs/runtime/CloudWriterLeaseTest.java
 java -cp "$task_tmp" dev.podjs.runtime.CloudWriterLeaseTest
 
-javac -d "$task_tmp" platforms/android/runtime/src/main/java/dev/podjs/runtime/WindowedWorkQueue.java tests/java/dev/podjs/runtime/WindowedWorkQueueTest.java
+javac -d "$task_tmp" platforms/android/runtime/src/main/java/dev/podjs/runtime/CloudWorkerOutcome.java platforms/android/runtime/src/main/java/dev/podjs/runtime/WindowedWorkQueue.java tests/java/dev/podjs/runtime/WindowedWorkQueueTest.java
 java -cp "$task_tmp" dev.podjs.runtime.WindowedWorkQueueTest

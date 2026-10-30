@@ -46,6 +46,8 @@ final class PodCloudWork implements Closeable {
     static void enqueue(Context c,String token,boolean standby)throws Exception {boolean paused=held(c);synchronized(QUEUE){queue(c).enqueue(token,standby,paused);}}
     static void deferHeld(Context c,String token)throws Exception{synchronized(QUEUE){queue(c).defer(token);}}
     static void resumeHeld(Context c)throws Exception {boolean paused=held(c);synchronized(QUEUE){queue(c).resume(paused);}}
+    static boolean manualRunning(Context c)throws Exception{synchronized(QUEUE){return queue(c).active();}}
+    static boolean yielded(Context c,String token,String id)throws Exception{synchronized(QUEUE){return queue(c).yielded(token,id);}}
     static boolean start(Context c,String token,String id)throws Exception{synchronized(QUEUE){return queue(c).start(token,id);}}
     static boolean next(Context c,String token,String id,boolean progress,boolean periodic)throws Exception{synchronized(QUEUE){return queue(c).next(token,id,progress,periodic);}}
     static void progressed(Context c,String token)throws Exception{boolean paused=held(c);synchronized(QUEUE){queue(c).progress(token,paused);}}

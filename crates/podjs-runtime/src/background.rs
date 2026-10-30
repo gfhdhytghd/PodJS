@@ -181,10 +181,10 @@ pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellatio
             return Ok((Status::Retry,Some(true)));
         }
         let result = value.as_string().ok_or("invalid_result")?.to_string().map_err(|_| "invalid_result")?;
-        match result.as_str() { "success" => Ok((Status::Success,None)), "retry" => Ok((Status::Retry,None)), "failure" => Ok((Status::Failure,None)), _ => Err("invalid_result") }
+        match result.as_str() { "busy" => return Err("yielded"), "success" => Ok((Status::Success,None)), "retry" => Ok((Status::Retry,None)), "failure" => Ok((Status::Failure,None)), _ => Err("invalid_result") }
     });
     if let Some(code) = stop_code(&cancel,deadline) { return finish(Status::Failure,code); }
-    match evaluated { Ok((status,progress)) => {let mut result=finish(status,"completed");result.progress=progress;result}, Err(code) => finish(Status::Failure,code) }
+    match evaluated { Ok((status,progress)) => {let mut result=finish(status,"completed");result.progress=progress;result}, Err("yielded") => finish(Status::Success,"yielded"), Err(code) => finish(Status::Failure,code) }
 }
 
 #[cfg(test)]
@@ -319,6 +319,17 @@ mod tests {
         assert_eq!(run("",options("exclusive"),Cancellation::default()).code,"already_running");
         cancellation.cancel(); assert_eq!(worker.join().unwrap().code,"cancelled");
         assert_eq!(run("globalThis.backgroundHandler=()=> 'success'",options("exclusive"),Cancellation::default()).status,Status::Success);
+    }
+    #[test] fn periodic_collision_never_dispatches_services_and_manual_progress_survives() {
+        let (entered,wait)=std::sync::mpsc::channel();let (release,released)=std::sync::mpsc::channel();
+        let receiver=std::sync::Arc::new(std::sync::Mutex::new(Some(released)));
+        let services=Services{allowed_methods:HashSet::from(["kv.get".into()]),dispatch:Arc::new(move |_|{entered.send(()).unwrap();receiver.lock().unwrap().take().unwrap()})};
+        let worker=std::thread::spawn(move||run_with_services("globalThis.backgroundHandler=async c=>{await c.request('kv.get',{});return {status:'retry',progress:true}}",Options{app_id:"concurrent-window",task_id:"manual",budget_ms:2000,memory_bytes:8*1024*1024,payload_json:"null"},Cancellation::default(),Some(services)));
+        wait.recv_timeout(Duration::from_secs(1)).unwrap();
+        let collision=run("globalThis.backgroundHandler=()=>{throw Error('must never evaluate')}",Options{app_id:"concurrent-window",task_id:"periodic",..options("unused")},Cancellation::default());
+        assert_eq!(collision.code,"already_running");assert_eq!(collision.status,Status::Retry);
+        release.send(Ok("null".into())).unwrap();let manual=worker.join().unwrap();assert_eq!(manual.code,"completed");assert_eq!(manual.progress,Some(true));
+        let yielded=run("globalThis.backgroundHandler=()=> 'busy'",options("writer-yield"),Cancellation::default());assert_eq!(yielded.status,Status::Success);assert_eq!(yielded.code,"yielded");
     }
     #[test] fn allocation_budget_rejects_large_guest_heap() {
         let result = run("globalThis.backgroundHandler=()=>new ArrayBuffer(64*1024*1024)",options("heap"),Cancellation::default());

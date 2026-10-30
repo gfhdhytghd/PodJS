@@ -58,6 +58,8 @@ final class WindowedWorkQueue {
         int failures=progress?0:Math.min(31,job.failures+1);
         publish(fresh(token,failures,progress?PROGRESS_DELAY_MS:retryDelay(failures),false,false,periodic?null:id),periodic?Policy.REPLACE:Policy.APPEND);return true;
     }
+    boolean active()throws Exception{return p.running()!=null;}
+    boolean yielded(String token,String id)throws Exception{Job job=p.read();if(job==null||!job.token.equals(token)||!id.equals(job.id)||job.held)return false;publish(fresh(token,job.failures,BASE_RETRY_MS,false,false,id),Policy.APPEND);return true;}
     boolean progress(String token,boolean held)throws Exception{
         Job job=p.read();if(job==null){enqueue(token,false,held);return true;}if(!job.token.equals(token))return false;
         if(held||job.held){p.write(new Job(job.token,job.id,job.parent,0,job.due,false,true));return false;}
