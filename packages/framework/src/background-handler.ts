@@ -9,7 +9,10 @@ export interface BackgroundContext {
   /** Present only when the host granted asynchronous methods for this run. */
   readonly request?: (method: string, args: unknown) => Promise<unknown>;
 }
-export type BackgroundOutcome = "success" | "retry" | "failure";
+/** A completed bounded window with a new durable checkpoint. Supporting hosts
+ * enqueue a fresh request after success, resetting OS retry attempts. This is
+ * not a network/suspension retry, and does not bypass authorization/constraints. */
+export type BackgroundOutcome = "success" | "retry" | "failure" | {status:"retry";progress:true};
 export type BackgroundHandler = (context: BackgroundContext) => BackgroundOutcome | Promise<BackgroundOutcome>;
 /** One invocation per native guest. Pure async codecs can share a caller-owned
  * scheduler without importing services, creating timers, or granting methods. */

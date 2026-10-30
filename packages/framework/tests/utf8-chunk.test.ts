@@ -47,3 +47,11 @@ test('production default is strict, uses optional host, respects subarrays NUL a
   expect(()=>decodeUtf8Chunk(new Uint8Array(),0,{maxBytes:0})).toThrow();
  }finally{root.pod=previous;}
 });
+
+test('headless optional decoder uses the pure codec surface, preserves strict boundaries and legacy invalid-byte fallback without pod',()=>{
+ const root=globalThis as any,previous=root.pod,codecs=root.__podByteCodecs;let calls=0;
+ try{delete root.pod;root.__podByteCodecs={decodeUtf8:(b:Uint8Array)=>{calls++;try{return new TextDecoder('utf8',{fatal:true,ignoreBOM:true}).decode(b);}catch{return null;}}};
+  const value='A'.repeat(16383)+'🙂中文\0'.repeat(10000),b=utf8Encode(value);expect(decodeUtf8(b,'douyin')).toBe(value);expect(calls).toBeGreaterThan(1);expect(root.pod).toBeUndefined();
+  for(const dialect of ['douyin','bili'] as const)for(const bytes of [new Uint8Array([255,128]),new Uint8Array([240,159,153]),new Uint8Array([192,128])])expect(decodeUtf8(bytes,dialect)).toBe(legacy(bytes,dialect));
+ }finally{root.pod=previous;root.__podByteCodecs=codecs;}
+});

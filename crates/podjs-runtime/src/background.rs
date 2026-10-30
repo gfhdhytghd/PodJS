@@ -59,7 +59,7 @@ impl Cancellation {
 pub enum Status { Success, Retry, Failure }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RunResult { pub status: Status, pub code: &'static str, pub elapsed_ms: u64 }
+pub struct RunResult { pub status: Status, pub code: &'static str, pub elapsed_ms: u64, #[serde(skip_serializing_if = "Option::is_none")] pub progress: Option<bool> }
 pub struct Options<'a> { pub app_id: &'a str, pub task_id: &'a str, pub budget_ms: u64, pub memory_bytes: usize, pub payload_json: &'a str }
 static ACTIVE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 struct ActiveRun(String);
@@ -80,7 +80,7 @@ pub fn run(source: &str, options: Options<'_>, cancel: Cancellation) -> RunResul
 
 pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellation, services: Option<Services>) -> RunResult {
     let started = Instant::now();
-    let finish = |status, code| RunResult { status, code, elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64 };
+    let finish = |status, code| RunResult { status, code, progress: None, elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64 };
     let cloud=services.as_ref().is_some_and(|s| s.allowed_methods.contains("cloud.host") || s.allowed_methods.contains("debug.cloudHost"));
     if !valid_id(options.app_id) || !valid_id(options.task_id) || !(1..=if cloud {300_000} else {30_000}).contains(&options.budget_ms)
         || !(4*1024*1024..=if cloud {256*1024*1024} else {32*1024*1024}).contains(&options.memory_bytes) || source.len() > 1024*1024 || options.payload_json.len() > 64*1024 {
@@ -100,7 +100,7 @@ pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellatio
     let Ok(context) = Context::full(&runtime) else { return finish(Status::Failure,"context_unavailable"); };
     let service_cancel = Cancellation::default();
     let _cancel_services = CancelServices(service_cancel.clone());
-    let evaluated: Result<Status, &'static str> = context.with(|ctx| {
+    let evaluated: Result<(Status,Option<bool>), &'static str> = context.with(|ctx| {
         let pending: Rc<RefCell<Vec<Pending<'_>>>> = Rc::new(RefCell::new(Vec::new()));
         let _clear_pending=ClearPending(pending.clone());
         // Remove all dynamic-code constructors before untrusted bundle evaluation.
@@ -173,11 +173,18 @@ pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellatio
                 }
             }
         }
+        if let Some(object)=value.as_object() {
+            let status:String=object.get("status").map_err(|_| "invalid_result")?;
+            let progress:bool=object.get("progress").map_err(|_| "invalid_result")?;
+            let keys=object.keys::<String>().collect::<Result<Vec<_>,_>>().map_err(|_| "invalid_result")?;
+            if status!="retry" || !progress || keys.len()!=2 || keys.iter().any(|k|k!="status"&&k!="progress") { return Err("invalid_result"); }
+            return Ok((Status::Retry,Some(true)));
+        }
         let result = value.as_string().ok_or("invalid_result")?.to_string().map_err(|_| "invalid_result")?;
-        match result.as_str() { "success" => Ok(Status::Success), "retry" => Ok(Status::Retry), "failure" => Ok(Status::Failure), _ => Err("invalid_result") }
+        match result.as_str() { "success" => Ok((Status::Success,None)), "retry" => Ok((Status::Retry,None)), "failure" => Ok((Status::Failure,None)), _ => Err("invalid_result") }
     });
     if let Some(code) = stop_code(&cancel,deadline) { return finish(Status::Failure,code); }
-    match evaluated { Ok(status) => finish(status,"completed"), Err(code) => finish(Status::Failure,code) }
+    match evaluated { Ok((status,progress)) => {let mut result=finish(status,"completed");result.progress=progress;result}, Err(code) => finish(Status::Failure,code) }
 }
 
 #[cfg(test)]
@@ -252,6 +259,17 @@ mod tests {
         assert_eq!(run_with_services(source,options("async-quota"),Cancellation::default(),Some(services)).status,Status::Success);
         assert_eq!(signals.lock().unwrap().len(),16);
         assert!(signals.lock().unwrap().iter().all(Cancellation::is_cancelled));
+    }
+    #[test] fn durable_window_retry_is_data_and_preserves_the_restricted_realm() {
+        let source=r#"globalThis.backgroundHandler=async job=>{if(typeof pod!=='undefined'||typeof ui!=='undefined')throw Error('UI');await Promise.resolve();return {status:'retry',progress:true};}"#;
+        let result=run(source,options("window-progress"),Cancellation::default());
+        assert_eq!(result.code,"completed");assert_eq!(result.status,Status::Retry);assert_eq!(result.progress,Some(true));
+        let wire=serde_json::to_value(result).unwrap();assert_eq!(wire["progress"],true);
+        let old=run("globalThis.backgroundHandler=()=> 'retry'",options("window-old"),Cancellation::default());
+        assert_eq!(old.progress,None);assert!(serde_json::to_value(old).unwrap().get("progress").is_none());
+        for invalid in ["{status:'success',progress:true}","{status:'retry',progress:false}","{status:'retry',progress:1}","{status:'retry',progress:true,payload:'secret'}"] {
+            assert_eq!(run(&format!("globalThis.backgroundHandler=()=>({invalid})"),options("window-invalid"),Cancellation::default()).code,"invalid_result");
+        }
     }
     #[test] fn payload_is_data_not_executable_source() {
         let mut config = options("payload"); config.payload_json = r#"{"text":"'; throw Error('injection'); //","items":[1,true,null]}"#;

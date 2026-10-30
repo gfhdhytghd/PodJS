@@ -29,18 +29,17 @@ public final class PodCloudWorker extends Worker {
         if("retry".equals(outcome.optString("status"))&&attempts<3)return Result.retry();
         return Result.failure();
     }
-    /** A still-authorized manual restore may span many checkpoint windows.
-     * Only the guest's completed/retry outcome continues it; every next guest
-     * revalidates token/account/epoch. Hard failures keep the bounded policy. */
-    static Result resultFor(JSONObject outcome,int attempts,boolean manual){
-        if(manual&&"completed".equals(outcome.optString("code"))&&"retry".equals(outcome.optString("status")))return Result.retry();
-        return resultFor(outcome,attempts);
-    }
     @Override public Result doWork(){
         Context context=getApplicationContext();String manualToken=getInputData().getString("manualToken");
         if(manualToken!=null&&!manualToken.matches("[a-zA-Z0-9_-]{1,96}"))return Result.failure();
-        if(PodCloudWork.held(context)){PodCloudWork.deferHeld(context,manualToken);return Result.success();}
-        if(!PodTakeover.ready(context))return Result.retry();
+        // Capture only the opaque queue token for a periodic window. A later
+        // outcome cannot continue or clear a different/newer grant.
+        String queuedToken=manualToken!=null?manualToken:PodCloudWork.pendingToken(context),requestId=getId().toString();
+        try{
+            if(PodCloudWork.held(context)){PodCloudWork.deferHeld(context,queuedToken);return Result.success();}
+            if(manualToken!=null&&!PodCloudWork.start(context,manualToken,requestId))return Result.success();
+            if(!PodTakeover.ready(context)){if(queuedToken!=null){PodCloudWork.next(context,queuedToken,requestId,false,manualToken==null);return Result.success();}return getRunAttemptCount()<3?Result.retry():Result.failure();}
+        }catch(Exception unavailable){return getRunAttemptCount()<3?Result.retry():Result.failure();}
         ExecutorService executor=Executors.newSingleThreadExecutor();
         // Only trusted method names and aggregate counts: never host arguments,
         // credentials, guest source, request bodies or exception messages.
@@ -62,7 +61,7 @@ public final class PodCloudWorker extends Worker {
                     services=host;if(isStopped())run.cancel();
                     Future<JSONObject> result=executor.submit(run::run);
                     while(!result.isDone()){
-                        if(PodCloudWork.held(context)){PodCloudWork.deferHeld(context,manualToken);run.cancel();result.get(10,TimeUnit.SECONDS);status="local_transfer_held";return Result.success();}
+                        if(PodCloudWork.held(context)){PodCloudWork.deferHeld(context,queuedToken);run.cancel();result.get(10,TimeUnit.SECONDS);status="local_transfer_held";return Result.success();}
                         if(isStopped()){run.cancel();break;}
                         JSONObject request=run.pollRequest();
                         if(request==null){Thread.sleep(2);continue;}
@@ -77,15 +76,25 @@ public final class PodCloudWorker extends Worker {
                         host.dispatch(new JSONObject().put("t","service.request").put("version",1).put("id",request.getInt("id")).put("method",method).put("args",args.getJSONObject("args")));
                     }
                     JSONObject outcome=result.get(10,TimeUnit.SECONDS);
-                    if(isStopped()){status="stopped";return Result.retry();}
+                    if(isStopped()){status="stopped";if(queuedToken!=null){PodCloudWork.next(context,queuedToken,requestId,false,manualToken==null);return Result.success();}return getRunAttemptCount()<3?Result.retry():Result.failure();}
                     String code=outcome.optString("code"),guestStatus=outcome.optString("status");
                     status="deadline_exceeded".equals(code)?"deadline_exceeded":"completed".equals(code)&&"success".equals(guestStatus)?"success":"completed".equals(code)&&"retry".equals(guestStatus)?"retry":"guest_failed";
-                    Result mapped=resultFor(outcome,getRunAttemptCount(),manualToken!=null);
-                    if(!(mapped instanceof Result.Retry))PodCloudWork.finished(context,manualToken);
+                    if("completed".equals(code)&&"retry".equals(guestStatus)&&queuedToken!=null){
+                        boolean progress=outcome.optBoolean("progress",false);
+                        // APPEND_OR_REPLACE attaches the fresh request to this
+                        // one. Success releases it; REPLACE here would cancel us.
+                        PodCloudWork.next(context,queuedToken,requestId,progress,manualToken==null);
+                        status=progress?"continued":"backoff";return Result.success();
+                    }
+                    Result mapped=resultFor(outcome,getRunAttemptCount());
+                    if(!(mapped instanceof Result.Retry))PodCloudWork.finished(context,manualToken,requestId);
                     return mapped;
                 }finally{services=null;active=null;}
             }
-        }catch(Exception error){if(getRunAttemptCount()>=3)PodCloudWork.finished(context,manualToken);return getRunAttemptCount()<3?Result.retry():Result.failure();}
+        }catch(Exception error){
+            try{if(queuedToken!=null){if(!PodCloudWork.next(context,queuedToken,requestId,false,manualToken==null))PodCloudWork.resumeHeld(context);status="backoff";return Result.success();}}catch(Exception schedulingFailed){status="queue_failed";return getRunAttemptCount()<3?Result.retry():Result.failure();}
+            return getRunAttemptCount()<3?Result.retry():Result.failure();
+        }
         finally{executor.shutdownNow();android.util.Log.i("PodJSCloudWorker","finished status="+status+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-began)+" calls="+calls);}
     }
     @Override public void onStopped(){PodBackgroundRun run=active;if(run!=null)run.cancel();PodServices host=services;if(host!=null)host.close();}

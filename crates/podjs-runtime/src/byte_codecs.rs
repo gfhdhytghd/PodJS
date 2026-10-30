@@ -129,7 +129,16 @@ pub fn android_json_quoted_byte_length(input: JsString<'_>) -> rquickjs::Result<
     Ok(Some(size))
 }
 
+/// Strict bounded UTF-8 for headless guests. Invalid byte sequences retain
+/// the caller's legacy fallback; no service, filesystem or UI access.
+pub fn decode_utf8_bytes(input: TypedArray<'_, u8>) -> Option<String> {
+    let bytes=input.as_bytes()?;
+    if bytes.len()>256*1024 { return None; }
+    std::str::from_utf8(bytes).ok().map(str::to_owned)
+}
+
 pub fn mount<'js>(ctx: Ctx<'js>, pod: &Object<'js>) -> rquickjs::Result<()> {
+    pod.set("decodeUtf8", Function::new(ctx.clone(), decode_utf8_bytes)?)?;
     pod.set("crc32Bytes", Function::new(ctx.clone(), crc32_bytes)?)?;
     pod.set("gunzipBytes", Function::new(ctx.clone(), gunzip_bytes)?)?;
     pod.set("androidJsonQuotedByteLength", Function::new(ctx.clone(), android_json_quoted_byte_length)?)?;
@@ -147,6 +156,13 @@ pub fn mount<'js>(ctx: Ctx<'js>, pod: &Object<'js>) -> rquickjs::Result<()> {
 mod tests {
     use super::*;
     use rquickjs::{CatchResultExt, Context, Runtime};
+    #[test]
+    fn headless_utf8_is_strict_bounded_and_preserves_views_bom_nul() {
+        let rt=Runtime::new().unwrap();let context=Context::full(&rt).unwrap();context.with(|ctx| {
+            let pod=Object::new(ctx.clone()).unwrap();mount(ctx.clone(),&pod).unwrap();ctx.globals().set("__podByteCodecs",pod).unwrap();
+            let ok:bool=ctx.eval(r#"typeof pod==='undefined' && __podByteCodecs.decodeUtf8(new Uint8Array([9,239,187,191,65,0,66,9]).subarray(1,7))==='\ufeffA\0B' && __podByteCodecs.decodeUtf8(new Uint8Array([255]))==null && __podByteCodecs.decodeUtf8(new Uint8Array([240,159,153]))==null && __podByteCodecs.decodeUtf8(new Uint8Array(256*1024)).length===256*1024 && __podByteCodecs.decodeUtf8(new Uint8Array(256*1024+1))==null"#).unwrap();assert!(ok);
+        });
+    }
     #[test]
     fn crc32_bridge_preserves_views_incremental_seed_and_bounds() {
         let rt=Runtime::new().unwrap();let context=Context::full(&rt).unwrap();

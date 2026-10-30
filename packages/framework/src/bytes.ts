@@ -12,7 +12,8 @@ export interface Utf8ChunkOptions {
   fallback?:(bytes:Uint8Array,start:number)=>Utf8Chunk;
 }
 export function nativeUtf8Decoder():((bytes:Uint8Array)=>string|null|undefined)|undefined {
-  return (globalThis as {pod?:{decodeUtf8?:(bytes:Uint8Array)=>string|null|undefined}}).pod?.decodeUtf8;
+  const codecs=globalThis as {pod?:{decodeUtf8?:(bytes:Uint8Array)=>string|null|undefined};__podByteCodecs?:{decodeUtf8?:(bytes:Uint8Array)=>string|null|undefined}};
+  return codecs.pod?.decodeUtf8??codecs.__podByteCodecs?.decodeUtf8;
 }
 /** One bounded piece; callers can yield between pieces. Default decoding is strict. */
 export function decodeUtf8Chunk(bytes:Uint8Array,start=0,options:Utf8ChunkOptions={}):Utf8Chunk {
