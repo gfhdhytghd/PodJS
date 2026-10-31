@@ -150,6 +150,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/sync-framing` | Bounded wire frame encoding/decoding for companion transports. |
 | `@podjs/framework/sync-messages` | Companion message wire protocol and acknowledgement helpers. |
 | `@podjs/framework/platform-services` | Background scheduling, notification and companion/file-transfer service interfaces. |
+| `@podjs/framework/work-window` | Cooperative host-unit admission before a deadline, input-size estimates, measured margins and closed phase diagnostics; never races writes against timers. |
 | `@podjs/framework/background-handler` | Typed headless background-handler entry and delivery contracts. |
 | `@podjs/framework/debug-memory` | Scoped diagnostic resource ownership/accounting; counts are not native heap measurements. |
 | `@podjs/framework/text` | Text components and watch font/layout integration. |
@@ -356,3 +357,15 @@ immutable: replace an entry when editing it. Complete checksummed frames are
 local persistence receipts and never authenticate application data.
 
 Headless native guests run one handler invocation and do not install browser timers or the UI service bridge. `defineBackgroundHandler(handler, {yieldTurn: context => ...})` optionally scopes the pure byte codecs' default scheduler to a caller-owned asynchronous yield port, then restores the previous scheduler on success or failure. The caller checks cancellation/deadlines and uses only its manifest-authorized request route; this option grants no services. Android cloud workers admit the bounded `runtime.delay` timer (1..120000ms) through their closed method set. Keep application host-port literals within that set; the CLI's `host-method-contract` source inspector supports executable-source/Java-set contract tests without importing host services.
+
+`WorkWindow` checks remaining time before each asynchronous unit and closes the
+window after any deferral. `windowedHost` applies it to Pod host requests, including
+checkpoint ports that otherwise finish after foreground cancellation. Large AEAD
+and transform calls use tracked file sizes for admission; subsequent calls also
+reserve twice the largest observed stage duration. Estimates are conservative
+software policy, not real-time operating-system guarantees. Lease release and
+bounded logging can unwind after admission closes. Callers must keep atomic
+publication and resumable receipts at the application level. Android hard guest
+deadlines retain authorized continuation queues with exponential backoff; only a
+completed handler with durable progress earns the one-second continuation. Worker
+logcat records only closed stage codes, elapsed time and method counts.

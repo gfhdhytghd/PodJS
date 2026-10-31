@@ -86,8 +86,25 @@ public final class WindowedWorkQueueTest {
         check(q.yielded("grant",id),"manual collision lost continuation");check(p.read().failures==before.failures&&p.read().due-p.now()==30000,"yield changed retry counter");p.success(id);
         check(!q.yielded("old",id),"old collision replaced successor");check(CloudWorkerOutcome.code("private arbitrary error").equals("unknown_outcome"),"raw code leaked");
         for(String code:CloudWorkerOutcome.CODES)check(!code.contains(" "),"invalid closed code");
-        check(CloudWorkerOutcome.decide("deadline_exceeded","failure",0)==CloudWorkerOutcome.Decision.FAILURE,"hard failure hidden");
+        check(CloudWorkerOutcome.decide("deadline_exceeded","failure",0)==CloudWorkerOutcome.Decision.RETRY,"hard deadline lost retry");
         System.out.println("CONCURRENT_PERIODIC_MANUAL_PASS active_writer/already_running/yielded success; queue counters retained; genuine failures retained");
     }
-    public static void main(String[] args)throws Exception{progress59();backoff();crashes();fences();foregroundProgress();migration();benignConcurrency();System.out.println("WindowedWorkQueueTest PASS: durable progress/retry bounds, dependency success, crash publication/uncertain enqueue, grant fencing, network/hold/KEEP/REPLACE, periodic handoff and legacy delay migration");}
+    static void deadlineWindows()throws Exception{
+        Disk p=new Disk(fixture());WindowedWorkQueue q=new WindowedWorkQueue(p);q.enqueue("grant",false,false);
+        for(int n=1;n<=6;n++){
+            var old=p.read();p.advance(old.due);String id=p.take();check(q.start("grant",id),"deadline start rejected");
+            check(CloudWorkerOutcome.decide("deadline_exceeded","failure",100)==CloudWorkerOutcome.Decision.RETRY,"deadline became terminal");
+            check(q.next("grant",id,false,false),"deadline successor missing");var next=p.read();
+            check(next.token.equals(old.token)&&!next.id.equals(id)&&next.failures==n,"deadline grant/counter lost");
+            check(next.due-p.now()==WindowedWorkQueue.retryDelay(n),"deadline incorrectly claimed progress");
+            p.success(id);p=new Disk(p.dir);q=new WindowedWorkQueue(p);
+        }
+        check(CloudWorkerOutcome.stage("crypto.largeAesGcmDecrypt").equals("decrypt"),"decrypt stage missing");
+        check(CloudWorkerOutcome.stage("file.commit").equals("file-commit"),"commit stage missing");
+        check(CloudWorkerOutcome.stage("private content / account id").equals("host"),"untrusted stage leaked");
+        check(CloudWorkerOutcome.guestStage("private content / account id")==null,"untrusted guest phase leaked");
+        check(CloudWorkerOutcome.guestStage("checkpoint-write").equals("checkpoint-write"),"guest checkpoint phase missing");
+        System.out.println("HARD_DEADLINE_RETRY_PASS windows=6 grant preserved; exponential capped backoff; no false progress");
+    }
+    public static void main(String[] args)throws Exception{deadlineWindows();progress59();backoff();crashes();fences();foregroundProgress();migration();benignConcurrency();System.out.println("WindowedWorkQueueTest PASS: durable progress/retry bounds, dependency success, crash publication/uncertain enqueue, grant fencing, network/hold/KEEP/REPLACE, periodic handoff and legacy delay migration");}
 }

@@ -83,7 +83,8 @@
     "./json-delta-journal": "./src/json-delta-journal.ts",
     "./work-receipts": "./src/work-receipts.ts",
     "./acked-state-vector": "./src/acked-state-vector.ts",
-    "./directory-witness": "./src/directory-witness.ts"
+    "./directory-witness": "./src/directory-witness.ts",
+    "./work-window": "./src/work-window.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",
