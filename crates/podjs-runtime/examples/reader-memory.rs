@@ -187,7 +187,7 @@ fn main()->Result<()> {
     ok(pod_runtime_eval_bundle(runtime,bundle.as_ptr(),bundle.len(),std::ptr::null()))?;
     let pak_bytes=mapping.len();
     let mut probe=Probe{owner,mapping:mapped,clock:0.0,meta:Value::Null,delays:BTreeMap::new(),services:BTreeMap::new(),output:File::create(arg("out","/tmp/reader-memory.jsonl"))?,touch:None};
-    probe.drain()?;probe.warm(80)?;
+    probe.drain()?;probe.warm(arg("warmup","80").parse()?)?;
     ensure!(probe.meta["layoutHeight"].as_f64().is_some(),"reader fixture did not publish metadata");
     let height=probe.meta["layoutHeight"].as_f64().unwrap();
     writeln!(probe.output,"{}",json!({"host":"Linux production PodRuntime/QuickJS/Rust surface; synthetic service layout/raster/image pixels; compiled styles; no Java/Vulkan",
@@ -195,6 +195,7 @@ fn main()->Result<()> {
     probe.sample("reader-before",0)?;
     let rounds:usize=arg("rounds","20").parse()?;ensure!((1..=100).contains(&rounds),"rounds must be 1..100");
     let ticks=(timeline["elapsedSeconds"].as_f64().context("timeline duration")?*60.0).ceil() as usize;
+    ensure!(ticks>0,"timeline duration must be positive");
     let gestures=timeline["gestures"].as_array().context("timeline gestures")?;
     let touch_input=arg("input","touch")=="touch";
     let visits=arg("visits","0")=="1";
@@ -202,7 +203,8 @@ fn main()->Result<()> {
     let mut baseline:Option<Value>=None;
     for round in 1..=rounds {
         if visits&&round>1 {probe.step("restart",Value::Null)?;probe.warm(80)?;}
-        probe.step("scroll",json!({"offset":height*0.5}))?;probe.warm(60)?;
+        probe.step("scroll",json!({"offset":arg("start", &(height*0.5).to_string()).parse::<f64>()?}))?;probe.warm(60)?;
+        let mut frame_ms=Vec::with_capacity(ticks);
         let mut current:Option<usize>=None;
         for tick in 0..ticks {
             let elapsed=tick as f64/60.0;
@@ -219,9 +221,15 @@ fn main()->Result<()> {
                     PodTouch{id:0,x:116.5,y:(if g["direction"]=="up"{190.0-130.0*fraction}else{60.0+130.0*fraction}) as f32}});
             }
             if !touch_input {if let Some(i)=current {probe.step("drag",json!({"delta":if gestures[i]["direction"]=="up"{500.0/60.0}else{-500.0/60.0}}))?;}}
-            probe.frame()?;
+            let began=std::time::Instant::now();probe.frame()?;frame_ms.push(began.elapsed().as_secs_f64()*1000.0);
             if tick%60==59 {probe.sample("scroll",round)?;}
         }
+        frame_ms.sort_by(f64::total_cmp);
+        let cpu=json!({"t":"bench.frame-times","round":round,"frames":frame_ms.len(),
+            "scope":"Linux PodRuntime frame plus synthetic service drain; includes QuickJS, Rust layout and CPU upload; excludes GPU/Android/presentation",
+            "p50Ms":frame_ms[frame_ms.len()/2],"p95Ms":frame_ms[(frame_ms.len()*95).div_ceil(100)-1],
+            "maxMs":frame_ms.last(),"sumMs":frame_ms.iter().sum::<f64>()});
+        writeln!(probe.output,"{cpu}")?;println!("{cpu}");
         if let Some(i)=current {probe.step("end",json!({"velocity":if gestures[i]["direction"]=="up"{500}else{-500}}))?;}
         probe.touch=None;
         probe.warm(10)?;let end=probe.sample("round-end",round)?;

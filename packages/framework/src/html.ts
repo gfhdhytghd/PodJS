@@ -87,3 +87,5 @@ export function* textWorkChunks(source:string,maxUnits=1024):Generator<string> {
   yield source.slice(start,end);start=end;
  }
 }
+
+export {htmlImageAttributes} from './html-image.ts';
