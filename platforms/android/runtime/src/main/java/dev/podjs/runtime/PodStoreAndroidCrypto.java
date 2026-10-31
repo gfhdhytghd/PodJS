@@ -92,9 +92,11 @@ final class PodStoreAndroidCrypto implements PodStoreConverter.Crypto {
         byte[] a=left.generateSecret(),b=right.generateSecret();boolean valid=java.security.MessageDigest.isEqual(a,b);Arrays.fill(a,(byte)0);Arrays.fill(b,(byte)0);return valid;
     }
     public byte[] seal(JSONObject values)throws Exception{
-        unlocked();byte[] plain=values.toString().getBytes(StandardCharsets.UTF_8);if(plain.length>256*1024)throw new IOException("secure_quota");
+        unlocked();byte[] plain=SecureStoreLimits.encode(values);
+        try {
         KeyStore ks=store();if(!ks.containsAlias(targetAlias)){KeyGenerator generator=KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES,"AndroidKeyStore");generator.init(new KeyGenParameterSpec.Builder(targetAlias,KeyProperties.PURPOSE_ENCRYPT|KeyProperties.PURPOSE_DECRYPT).setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build());generator.generateKey();}
-        Cipher c=Cipher.getInstance("AES/GCM/NoPadding");c.init(Cipher.ENCRYPT_MODE,existing(targetAlias));c.updateAAD(AAD);byte[] body=c.doFinal(plain),nonce=c.getIV();Arrays.fill(plain,(byte)0);if(nonce.length!=12)throw new IOException("iv_invalid");return ByteBuffer.allocate(nonce.length+body.length).put(nonce).put(body).array();
+        Cipher c=Cipher.getInstance("AES/GCM/NoPadding");c.init(Cipher.ENCRYPT_MODE,existing(targetAlias));c.updateAAD(AAD);byte[] body=c.doFinal(plain),nonce=c.getIV();if(nonce.length!=12)throw new IOException("iv_invalid");return ByteBuffer.allocate(nonce.length+body.length).put(nonce).put(body).array();
+        } finally { Arrays.fill(plain,(byte)0); }
     }
     public JSONObject open(byte[] cipher)throws Exception{unlocked();return PodDeviceServices.decodeSecureBytes(cipher,existing(targetAlias));}
 }

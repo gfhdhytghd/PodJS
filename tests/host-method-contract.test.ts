@@ -11,10 +11,10 @@ test('headless codec scheduler is scoped to a handler and restored after success
  const global=globalThis as {__podYieldCodecTurn?:()=>Promise<void>};const previous=global.__podYieldCodecTurn,owned=Object.prototype.hasOwnProperty.call(global,'__podYieldCodecTurn');
  let calls=0;const context={appId:'fixture',taskId:'fixture',deadlineMs:Date.now()+1000,payload:null,isCancelled:()=>false};
  try{delete global.__podYieldCodecTurn;
-  const handler=defineBackgroundHandler(async()=>{await global.__podYieldCodecTurn!();return 'success';},{yieldTurn:async c=>{expect(c).toBe(context);calls++;}});
+  const handler=defineBackgroundHandler(async()=>{await global.__podYieldCodecTurn!();return 'success' as const;},{yieldTurn:async c=>{expect(c).toBe(context);calls++;}});
   expect(await handler(context)).toBe('success');expect(calls).toBe(1);expect(global.__podYieldCodecTurn).toBeUndefined();
   global.__podYieldCodecTurn=async()=>{};const outer=global.__podYieldCodecTurn;
-  await expect(defineBackgroundHandler(async()=>{await global.__podYieldCodecTurn!();return 'success';},{yieldTurn:async()=>{throw Error('cancelled');}})(context)).rejects.toThrow('cancelled');
+  await expect(defineBackgroundHandler(async()=>{await global.__podYieldCodecTurn!();return 'success' as const;},{yieldTurn:async()=>{throw Error('cancelled');}})(context)).rejects.toThrow('cancelled');
   expect(global.__podYieldCodecTurn).toBe(outer);
  }finally{if(owned)global.__podYieldCodecTurn=previous;else delete global.__podYieldCodecTurn;}
 });

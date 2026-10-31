@@ -125,12 +125,9 @@ public final class PodStoreConverter implements PodTakeoverCoordinator.Converter
             if(encrypted(store)){secret.put("__takeover_inventory__",report.getJSONArray("unknownKeys").toString());if(values!=null)secret.put("__takeover_retained__",new JSONObject(values).toString());report.put("unknownKeyCount",report.getJSONArray("unknownKeys").length()).remove("unknownKeys");}
             validateKv(kv);json(new File(dir,"kv.json"),kv);report.put("kvDigest",hash(new File(dir,"kv.json")));
             JSONObject envelope=new JSONObject().put("values",secret).put("receipt",report).put("snapshot",hash(new File(g,"stores-snapshot.json")));
-            if(envelope.toString().getBytes(StandardCharsets.UTF_8).length>256*1024){
-                // Keep the original ciphertext snapshot; never truncate a secret or its metadata.
-                secret=new JSONObject();kv=new JSONObject();json(new File(dir,"kv.json"),kv);
-                report.put("status","failed").put("reason","secure_quota_exceeded").put("kvDigest",hash(new File(dir,"kv.json")));if(encrypted(store))report.put("semanticValid",false);
-                envelope=new JSONObject().put("values",secret).put("receipt",report).put("snapshot",hash(new File(g,"stores-snapshot.json")));
-            }
+            // Stop before publication. Never replace an oversized envelope with
+            // an empty secret map; retain the source snapshot and old ciphertext.
+            SecureStoreLimits.validate(envelope);
             write(new File(dir,"secure.store"),crypto.seal(envelope));hook.checkpoint(store,"files");
             if(!sameJson(crypto.open(PodPreferenceReader.bytes(new File(dir,"secure.store"))),envelope))throw new IOException("secure_readback_invalid");
             json(receipt,report);hook.checkpoint(store,"receipt");
@@ -181,7 +178,7 @@ public final class PodStoreConverter implements PodTakeoverCoordinator.Converter
         for(Iterator<String> it=kv.keys();it.hasNext();){String k=it.next();if(k.isEmpty()||k.length()>128)throw new IOException("kv_key_invalid");}
     }
     static void validateSecure(JSONObject secure)throws Exception {
-        if(secure.toString().getBytes(StandardCharsets.UTF_8).length>256*1024)throw new IOException("secure_quota");
+        SecureStoreLimits.validate(secure);
         for(Iterator<String> it=secure.keys();it.hasNext();)if(!(secure.get(it.next()) instanceof String))throw new IOException("secure_schema_invalid");
     }
     public String verify(File g)throws Exception {

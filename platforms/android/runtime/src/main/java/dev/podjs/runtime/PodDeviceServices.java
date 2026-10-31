@@ -54,6 +54,8 @@ public final class PodDeviceServices implements AutoCloseable {
 
     private final File root;
     private final File secureFile;
+    @FunctionalInterface interface SecureKeySource { SecretKey get() throws Exception; }
+    private final SecureKeySource secureKey;
     private final PodSecureLease secureLeases;
     private final SecureReadCache secureReadCache = new SecureReadCache();
     private final SecureRandom random = new SecureRandom();
@@ -65,12 +67,20 @@ public final class PodDeviceServices implements AutoCloseable {
     private final java.util.Set<File> temporaryFiles = new java.util.HashSet<>();
 
     public PodDeviceServices(Context context) {
+        this(serviceFiles(context), null);
+    }
+    private static File serviceFiles(Context context) {
         if (context == null) throw new IllegalArgumentException("context_required");
-        File files = PodTakeover.filesRoot(context);
+        return PodTakeover.filesRoot(context);
+    }
+    // Synthetic-key JVM tests use the same operations, locks and atomic writer.
+    // Production always uses the public Context constructor and AndroidKeyStore.
+    PodDeviceServices(File files, SecureKeySource key) {
         if (!files.exists() && !files.mkdirs()) throw new IllegalStateException("service_root_unavailable");
         try { root = files.getCanonicalFile(); secureFile = new File(root.getParentFile(), SECURE_FILE); }
         catch (IOException e) { throw new IllegalStateException("service_root_unavailable", e); }
         secureLeases = new PodSecureLease(secureFile.getParentFile());
+        secureKey = key == null ? () -> getKey(SECURE_ALIAS) : key;
     }
 
     public synchronized JSONObject execute(String method, JSONObject args) throws Exception {
@@ -200,7 +210,7 @@ public final class PodDeviceServices implements AutoCloseable {
             else if(value instanceof String)next.put(key,value);
             else throw new IllegalArgumentException("secure_value_invalid");
         }
-        if(next.toString().getBytes(StandardCharsets.UTF_8).length>MAX_CHUNK_BYTES)throw new IllegalArgumentException("secure_quota");
+        SecureStoreLimits.validate(next);
         return next;
     }
     /** Prefix removal and explicit values publish together under the secure-store lock. */
@@ -238,13 +248,17 @@ public final class PodDeviceServices implements AutoCloseable {
         if (removed) writeSecure(values); return new JSONObject().put("deleted", removed);
     }
     private JSONObject readSecure(int id) throws Exception {
-        if (!secureFile.isFile()) { secureReadCache.clear(); return new JSONObject(); }
+        try {
+            if (!Files.readAttributes(secureFile.toPath(),java.nio.file.attribute.BasicFileAttributes.class).isRegularFile())
+                throw SecureStoreLimits.readFailed();
+        } catch (java.nio.file.NoSuchFileException absent) { secureReadCache.clear(); return new JSONObject(); }
+        catch (IOException failure) { throw SecureStoreLimits.readFailed(); }
         // Read and compare ciphertext under SECURE_LOCK + the OS file lease.
         // Separate foreground/background instances and processes remain coherent.
-        byte[] bytes = readAll(secureFile, MAX_CHUNK_BYTES + 64);
+        byte[] bytes = readSecureBytes(secureFile);
         String json = secureReadCache.read(bytes, encoded -> {
             long began=secureTrace.begin();SecretKey key;
-            try{key=getKey(SECURE_ALIAS);}finally{secureTrace.end("secure.key",began,id);}
+            try{key=secureKey.get();}finally{secureTrace.end("secure.key",began,id);}
             return decodeSecureBytes(encoded,key,secureTrace,id).toString();
         });
         // Writers receive a fresh map. Failed writes cannot mutate the cache.
@@ -256,14 +270,15 @@ public final class PodDeviceServices implements AutoCloseable {
     }
     static JSONObject readSecureFile(File file,SecretKey key,DeviceServiceTrace trace,int id) throws Exception {
         long began=trace.begin();byte[] bytes;
-        try{bytes=readAll(file,MAX_CHUNK_BYTES+64);}finally{trace.end("secure.read",began,id);}
+        try{bytes=readSecureBytes(file);}finally{trace.end("secure.read",began,id);}
         return decodeSecureBytes(bytes,key,trace,id);
     }
     static JSONObject decodeSecureBytes(byte[] all, SecretKey key) throws Exception {
         return decodeSecureBytes(all,key,new DeviceServiceTrace(false,line->{}),-1);
     }
     static JSONObject decodeSecureBytes(byte[] all,SecretKey key,DeviceServiceTrace trace,int id) throws Exception {
-        if (all.length < 28 || all.length > MAX_CHUNK_BYTES + 64) throw new IOException("secure_store_corrupt");
+        if (all.length > SecureStoreLimits.MAX_FILE_BYTES) throw SecureStoreLimits.tooLarge();
+        if (all.length < 28) throw new IOException("secure_store_corrupt");
         long began=trace.begin();byte[] plain;
         try{plain=decryptWithKey(key,all);}finally{trace.end("secure.decrypt",began,id);}
         began=trace.begin();
@@ -271,10 +286,17 @@ public final class PodDeviceServices implements AutoCloseable {
         finally{Arrays.fill(plain,(byte)0);trace.end("secure.json",began,id);}
     }
     private void writeSecure(JSONObject values) throws Exception {
-        secureReadCache.clear();
-        byte[] plain=values.toString().getBytes(StandardCharsets.UTF_8);
-        try { atomicWrite(secureFile,encryptWithKey(getKey(SECURE_ALIAS),plain)); }
+        byte[] plain=SecureStoreLimits.encode(values);
+        try { atomicWrite(secureFile,encryptWithKey(secureKey.get(),plain)); secureReadCache.clear(); }
         finally { Arrays.fill(plain,(byte)0); }
+    }
+    private static byte[] readSecureBytes(File file) throws IOException {
+        if (file.length() > SecureStoreLimits.MAX_FILE_BYTES) throw SecureStoreLimits.tooLarge();
+        try { return readAll(file, SecureStoreLimits.MAX_FILE_BYTES); }
+        catch (IOException failure) {
+            if ("secure_store_too_large".equals(failure.getMessage())) throw SecureStoreLimits.tooLarge();
+            throw SecureStoreLimits.readFailed();
+        }
     }
 
     // Only the SPKI public key and authenticated plaintext cross the bridge. There is
@@ -319,6 +341,8 @@ public final class PodDeviceServices implements AutoCloseable {
         }
         java.security.KeyPair pair=PodSoftwareEcdh.generate();
         values.put(softwareKey,PodSoftwareEcdh.encode(pair));
+        // A quota rejection must not create a sentinel for an unpublished key.
+        SecureStoreLimits.validate(values);
         getKey(alias+".software");
         // AES-GCM using the existing Android Keystore AES key; atomic encrypted publication only.
         writeSecure(values);

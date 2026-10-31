@@ -9,6 +9,17 @@ import static org.junit.Assert.*;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk=33)
 public class PodSecureBatchTest {
+ @Test public void aggregateBudgetMatchesAndroidJsonEscapingAndAcceptsTheExactBoundary()throws Exception {
+  for(String sample:new String[]{"汉😀\\\"\n\u0000</", "x".repeat(4095)+"</", "x".repeat(4095)+"😀", "x".repeat(4095)+"\ud800</"}) {
+   JSONObject value=new JSONObject().put("key\n",sample.repeat(3)).put("nested",new org.json.JSONArray().put(true).put(1.5).put(JSONObject.NULL));
+   assertArrayEquals(value.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8),SecureStoreLimits.encode(value));
+  }
+  JSONObject boundary=new JSONObject().put("padding","");
+  boundary.put("padding","x".repeat(SecureStoreLimits.MAX_PLAIN_BYTES-boundary.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8).length));
+  assertEquals(SecureStoreLimits.MAX_PLAIN_BYTES,SecureStoreLimits.encode(boundary).length);
+  boundary.put("extra","x");
+  try{SecureStoreLimits.encode(boundary);fail("over-limit accepted");}catch(SecureStoreLimits.Failure expected){assertEquals("secure_quota",expected.code);}
+ }
  @Test public void batchMergesWithoutMutatingOldMapAndDeletesOnlyNamedKeys()throws Exception {
   JSONObject old=new JSONObject().put("bili","old").put("douyin","old").put("unrelated","retained");
   JSONObject next=PodDeviceServices.mergeSecure(old,new JSONObject().put("bili","new").put("douyin",JSONObject.NULL));
@@ -17,8 +28,9 @@ public class PodSecureBatchTest {
  }
  @Test public void invalidEntryOrQuotaLeavesOriginalUnchanged()throws Exception {
   JSONObject old=new JSONObject().put("bili","old");
-  JSONObject[] invalid={new JSONObject().put("bili","new").put("invalid",7),new JSONObject().put("","secret"),new JSONObject().put("bili","x".repeat(262144))};
+  JSONObject[] invalid={new JSONObject().put("bili","new").put("invalid",7),new JSONObject().put("","secret")};
   for(JSONObject batch:invalid){try{PodDeviceServices.mergeSecure(old,batch);fail("invalid batch accepted");}catch(IllegalArgumentException expected){assertFalse(expected.getMessage().contains("secret"));}assertEquals("old",old.getString("bili"));assertEquals(1,old.length());}
+  try{PodDeviceServices.mergeSecure(old,new JSONObject().put("bili","x".repeat(SecureStoreLimits.MAX_PLAIN_BYTES)));fail("quota accepted");}catch(SecureStoreLimits.Failure expected){assertEquals("secure_quota",expected.code);}assertEquals("old",old.getString("bili"));
  }
  @Test public void prefixesAreAtomicAndRetainOtherAccounts()throws Exception {
   JSONObject old=new JSONObject().put("scopeA.key.1","one").put("scopeA.state","state").put("scopeB.key.1","two");

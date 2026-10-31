@@ -659,7 +659,7 @@ final class PodServices implements Closeable {
                 else if ("http.download".equals(method) && value instanceof JSONObject) http.discard((JSONObject)value);
             } catch (Exception error) {
                 if (requests.remove(id, request)) failure(id,
-                    error instanceof SecurityException ? "permission_denied" : error instanceof ProvisioningSession.Failure ? "provision_"+((ProvisioningSession.Failure)error).reason : error instanceof UnsupportedOperationException ? "unsupported" : error instanceof IllegalArgumentException ? "invalid_argument" : "host_error",
+                    error instanceof SecureStoreLimits.Failure ? ((SecureStoreLimits.Failure)error).code : error instanceof SecurityException ? "permission_denied" : error instanceof ProvisioningSession.Failure ? "provision_"+((ProvisioningSession.Failure)error).reason : error instanceof UnsupportedOperationException ? "unsupported" : error instanceof IllegalArgumentException ? "invalid_argument" : "host_error",
                     error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage());
             }
         });
