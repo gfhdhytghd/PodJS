@@ -34,6 +34,12 @@ public final class PodCloudWorker extends Worker {
         for(String line:text.split("\\n")){int at=line.indexOf('{');if(at<0)continue;
             try{JSONObject row=new JSONObject(line.substring(at));String event=row.optString("event"),phase=CloudWorkerOutcome.guestStage(row.optString("stage")),outcome=row.optString("outcome");
                 String code=CloudWorkerOutcome.guestCode(row.optString("code"));
+                if("cpu-work".equals(event)){
+                    Object bucket=row.opt("sizeClass"),elapsed=row.opt("elapsedMillis");
+                    if(bucket instanceof Number&&elapsed instanceof Number){Object id=row.opt("cpuStageId");String cpuStage=id instanceof Number?CloudWorkerOutcome.cpuStageId(((Number)id).doubleValue()):row.optString("stage");String cpu=CloudWorkerOutcome.cpuDiagnostic(cpuStage,row.optString("scale"),((Number)bucket).doubleValue(),((Number)elapsed).doubleValue(),outcome);if(cpu!=null)android.util.Log.i("PodJSCloudWorker",cpu);}
+                    continue;
+                }
+
                 if(("window-unit".equals(event)||"snapshot-work".equals(event))&&phase!=null&&Arrays.asList("started","complete","failed","deferred").contains(outcome))android.util.Log.i("PodJSCloudWorker","guestStage="+phase+" outcome="+outcome+(code==null?"":" code="+code)+guestIndex(row,"objectIndex")+guestIndex(row,"chunkIndex"));
                 if(("format-sync".equals(event)||"records-failed".equals(event))&&code!=null)android.util.Log.i("PodJSCloudWorker","guestEvent="+event+" code="+code);
             }catch(Exception ignored){}

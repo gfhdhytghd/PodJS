@@ -22,6 +22,7 @@ pub mod kv;
 pub mod accessibility_ffi;
 pub mod render_snapshot;
 pub mod byte_codecs;
+mod cpu_trace;
 pub mod html;
 pub mod html_preview;
 pub mod xml;

@@ -1,8 +1,8 @@
 import {afterEach,expect,test} from 'bun:test';
 import {crc32,crc32Async} from '../src/checksum';
 
-const root=globalThis as any,original=root.pod;
-afterEach(()=>{if(original===undefined)delete root.pod;else root.pod=original;});
+const root=globalThis as any,original=root.pod,originalCodecs=root.__podByteCodecs;
+afterEach(()=>{if(original===undefined)delete root.pod;else root.pod=original;if(originalCodecs===undefined)delete root.__podByteCodecs;else root.__podByteCodecs=originalCodecs;});
 const reference=(bytes:Uint8Array,initial=0)=>{let c=initial^0xffffffff;for(const b of bytes){c^=b;for(let i=0;i<8;i++)c=(c>>>1)^((c&1)?0xedb88320:0);}return(c^0xffffffff)>>>0;};
 test('CRC32 portable bytes, subviews and incremental seeds match independent bitwise vectors',async()=>{
  delete root.pod;const b=new Uint8Array([0,49,50,51,52,53,54,55,56,57,0]).subarray(1,10);
@@ -27,4 +27,11 @@ test('CRC32 rejected native capability falls back, yields within a large single 
 test('CRC32 validates seed and native result instead of accepting a malformed checksum',async()=>{
  for(const seed of [-1,1.5,NaN,Infinity,2**32]){expect(()=>crc32(new Uint8Array([1]),seed)).toThrow('invalid CRC32 input');await expect(crc32Async(new Uint8Array([1]),{},seed)).rejects.toThrow('invalid CRC32 input');}
  for(const value of [-1,2**32,NaN,1.1,true,new Uint8Array(4)]){root.pod={crc32Bytes:()=>value};expect(()=>crc32(new Uint8Array([1]))).toThrow('Invalid native CRC32 result');}
+});
+
+test('headless CRC uses the pure namespace without granting UI pod, including a partial foreground namespace',async()=>{
+ delete root.pod;let calls=0;root.__podByteCodecs={crc32Bytes:(b:Uint8Array,seed:number)=>{calls++;return reference(b,seed);}};
+ const bytes=Uint8Array.from({length:1024*1024+19},(_,i)=>i^31);expect(await crc32Async(bytes,{yield:async()=>{}})).toBe(reference(bytes));expect(calls).toBe(5);expect(root.pod).toBeUndefined();
+ root.pod={};expect(crc32(new Uint8Array([49,50,51]))).toBe(reference(new Uint8Array([49,50,51])));expect(calls).toBe(6);
+ for(const value of [null,undefined,{},3]){expect(()=>crc32(value as any)).toThrow('invalid CRC32 input');await expect(crc32Async(value as any)).rejects.toThrow('invalid CRC32 input');}
 });

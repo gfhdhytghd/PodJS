@@ -1,9 +1,10 @@
+import {cpuJsonStringify} from './cpu-work';
 import {encodeUtf8} from './byte-codecs.ts';
 /** JSONObject.quote-compatible escaping, including literal lone UTF-16 surrogates. */
 export function quoteAndroidJsonString(value:string):string {
  // The engine handles large well-formed bodies in native code. JSON.stringify
  // escapes lone surrogates, unlike JSONObject; preserve the old dialect there.
- if(!/[\ud800-\udbff](?![\udc00-\udfff])|(^|[^\ud800-\udbff])[\udc00-\udfff]/.test(value))return JSON.stringify(value).replace(/\//g,'\\/');
+ if(!/[\ud800-\udbff](?![\udc00-\udfff])|(^|[^\ud800-\udbff])[\udc00-\udfff]/.test(value))return cpuJsonStringify(value).replace(/\//g,'\\/');
  const pieces:string[]=['"'];let start=0;
  const escapes:Record<string,string>={'"':'\\"','\\':'\\\\','/':'\\/','\b':'\\b','\f':'\\f','\n':'\\n','\r':'\\r','\t':'\\t'};
  for(let i=0;i<value.length;i++){

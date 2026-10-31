@@ -1,3 +1,4 @@
+import {cpuWork} from './cpu-work';
 import {encodeUtf8,base64ToBytes,bytesToBase64,sha256Bytes} from './bytes';
 /** Length-prefixed binary framing. Integers use exact decimal UTF-8. */
 export function lengthPrefix(...fields:(string|number|Uint8Array)[]):Uint8Array {return lengthPrefixFields(fields);}
@@ -19,7 +20,8 @@ export function createCrypto(request:CryptoRequest){return {
 };}
 
 /** Portable byte SHA-256 with an optional bounded native fast path. */
-export function sha256Hex(input:Uint8Array):string {
+export function sha256Hex(input:Uint8Array):string {return cpuWork('sha256','bytes',input.length,()=>hashBytes(input));}
+function hashBytes(input:Uint8Array):string {
   const native=sha256Bytes(input);if(native)return hex(native);
   const bytes=[...input], bitLength=bytes.length*8;
   bytes.push(0x80); while(bytes.length%64!==56) bytes.push(0);

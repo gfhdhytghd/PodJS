@@ -95,11 +95,12 @@ pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellatio
     let Ok(runtime) = Runtime::new() else { return finish(Status::Failure,"runtime_unavailable"); };
     runtime.set_memory_limit(options.memory_bytes);
     runtime.set_max_stack_size(256*1024);
-    let interrupt_cancel = cancel.clone();
-    runtime.set_interrupt_handler(Some(Box::new(move || stop_code(&interrupt_cancel,deadline).is_some())));
-    let Ok(context) = Context::full(&runtime) else { return finish(Status::Failure,"context_unavailable"); };
     let service_cancel = Cancellation::default();
     let _cancel_services = CancelServices(service_cancel.clone());
+    let trace=services.as_ref().and_then(|s|{let route=if s.allowed_methods.contains("cloud.host"){Some("cloud.host")}else if s.allowed_methods.contains("debug.cloudHost"){Some("debug.cloudHost")}else{None};route.map(|route|crate::cpu_trace::Trace::new(s.dispatch.clone(),route.to_owned(),options.app_id.to_owned(),options.task_id.to_owned(),deadline,service_cancel.clone()))});
+    let interrupt_cancel = cancel.clone();let interrupt_trace=trace.clone();
+    runtime.set_interrupt_handler(Some(Box::new(move || {if let Some(trace)=&interrupt_trace{trace.sample();}stop_code(&interrupt_cancel,deadline).is_some()})));
+    let Ok(context) = Context::full(&runtime) else { return finish(Status::Failure,"context_unavailable"); };
     let evaluated: Result<(Status,Option<bool>), &'static str> = context.with(|ctx| {
         let pending: Rc<RefCell<Vec<Pending<'_>>>> = Rc::new(RefCell::new(Vec::new()));
         let _clear_pending=ClearPending(pending.clone());
@@ -129,6 +130,7 @@ pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellatio
         let signal = cancel.clone();
         job.set("isCancelled",Function::new(ctx.clone(),move || signal.is_cancelled()).map_err(|_| "context_unavailable")?).map_err(|_| "context_unavailable")?;
         if let Some(services)=services {
+            if let Some(trace)=&trace{trace.mount(ctx.clone()).map_err(|_|"context_unavailable")?;}
             attach_services(ctx.clone(),&job,pending.clone(),services,options.app_id.to_owned(),options.task_id.to_owned(),deadline,service_cancel)
                 .map_err(|_| "context_unavailable")?;
         }

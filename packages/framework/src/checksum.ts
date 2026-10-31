@@ -1,3 +1,4 @@
+import {cpuWork,cpuWorkAsync} from './cpu-work';
 import type {CodecWorkOptions} from './async-bytes';
 
 const NATIVE_BYTES=256*1024,FALLBACK_BYTES=4096;
@@ -7,7 +8,8 @@ function validate(bytes:Uint8Array,initial:number){
  if(!(bytes instanceof Uint8Array)||!Number.isInteger(initial)||initial<0||initial>0xffffffff)throw RangeError('invalid CRC32 input');
 }
 function native(bytes:Uint8Array,initial:number):number|null {
- const run=(globalThis as {pod?:{crc32Bytes?:(bytes:Uint8Array,initial:number)=>unknown}}).pod?.crc32Bytes;
+ const codecs=globalThis as {pod?:{crc32Bytes?:(bytes:Uint8Array,initial:number)=>unknown};__podByteCodecs?:{crc32Bytes?:(bytes:Uint8Array,initial:number)=>unknown}};
+ const run=codecs.pod?.crc32Bytes??codecs.__podByteCodecs?.crc32Bytes;
  if(typeof run!=='function')return null;
  const value=run(bytes,initial);
  if(value==null)return null;
@@ -20,14 +22,16 @@ function fallback(bytes:Uint8Array,start:number,end:number,initial:number){
  return (crc^0xffffffff)>>>0;
 }
 /** IEEE CRC32. The initial value is the finalized checksum of a preceding chunk. */
-export function crc32(bytes:Uint8Array,initial=0):number {
+export function crc32(bytes:Uint8Array,initial=0):number {return cpuWork('crc32','bytes',bytes instanceof Uint8Array?bytes.length:0,()=>crc32Sync(bytes,initial));}
+function crc32Sync(bytes:Uint8Array,initial=0):number {
  validate(bytes,initial);let value=initial;
  for(let start=0;start<bytes.length;start+=NATIVE_BYTES){const end=Math.min(start+NATIVE_BYTES,bytes.length);value=native(bytes.subarray(start,end),value)??fallback(bytes,start,end,value);}
  return value;
 }
 /** No native call exceeds 256 KiB. Portable fallback pieces are at most 4 KiB;
  * both paths yield after 8 ms or 16 pieces and observe cancellation at boundaries. */
-export async function crc32Async(bytes:Uint8Array,options:CodecWorkOptions={},initial=0):Promise<number>{
+export function crc32Async(bytes:Uint8Array,options:CodecWorkOptions={},initial=0):Promise<number>{return cpuWorkAsync('crc32','bytes',bytes instanceof Uint8Array?bytes.length:0,()=>checksumAsync(bytes,options,initial));}
+async function checksumAsync(bytes:Uint8Array,options:CodecWorkOptions={},initial=0):Promise<number>{
  validate(bytes,initial);const check=()=>{if(options.cancelled?.())throw Error('checksum cancelled');};
  const now=()=>globalThis.performance?.now?.()??Date.now();let value=initial,start=0,pieces=0,began=now(),declined=false;check();
  while(start<bytes.length){

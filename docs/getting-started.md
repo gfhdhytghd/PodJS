@@ -152,6 +152,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/platform-services` | Background scheduling, notification and companion/file-transfer service interfaces. |
 | `@podjs/framework/read-batch` | Memoize immutable reads within a caller-owned, serialized read transaction; no cache survives the transaction. |
 | `@podjs/framework/work-window` | Cooperative host-unit admission before a deadline, input-size estimates, measured margins and closed phase diagnostics; never races writes against timers. |
+| `@podjs/framework/cpu-work` | Optional scoped CPU phase observation with coarse input bands, bounded elapsed time and closed outcomes. No input, identity or exception text; no IO without an observer. |
 | `@podjs/framework/background-handler` | Typed headless background-handler entry and delivery contracts. |
 | `@podjs/framework/debug-memory` | Scoped diagnostic resource ownership/accounting; counts are not native heap measurements. |
 | `@podjs/framework/text` | Text components and watch font/layout integration. |
@@ -384,3 +385,32 @@ checks cancellation and optional absolute `deadlineMs` between parts, removes
 the output on failure, and reports only a numeric invalid-part index. This is
 a local materialization helper, not an application checkpoint or cloud ACK.
 Callers must delete the returned temporary file and protect durable receipts.
+
+CPU work observation is optional. `observeCpuWork(sink)` returns a disposer;
+`cpuWork` and `cpuWorkAsync` bracket work, and `pulseCpuWork` reports active
+cooperative phases at five-second intervals. `cpuWorkAsyncIterable` observes a
+lazy traversal and preserves iterator cleanup without buffering it. Times include nested calls and
+awaits; they are elapsed wall time, not thread CPU accounting. Input bands use
+bytes/chars or item counts. Small inputs are quiet; at most 32 scopes are active.
+JSON and sort wrappers preserve the built-in operation; object stringify does
+not inspect extra properties to estimate size. Applications must use a closed
+phase allowlist and discard content, paths and identities in their observer.
+
+A headless guest with an existing `cloud.host` or `debug.cloudHost` grant also
+gets the optional numeric `__podCpuTrace` hook. The hook carries a phase number,
+scale, size band, elapsed time, outcome and a private in-memory correlation
+number. The correlation number is never serialized. It records at most 4096
+frames per invocation, rate-limits each phase, and samples the innermost active
+phase at QuickJS interrupt boundaries. Closed log frames use the existing
+bounded `log.append` route without guest promises. Release Android workers
+mirror only their enumerated phase IDs and numeric/coarse fields to logcat.
+The hook grants no service access. Source with no grant has no hook.
+
+Headless pure byte codecs live in `__podByteCodecs`, without the UI `pod`
+object. CRC, asynchronous UTF-8 decoding and bounded gzip decoding now select
+individual methods from that namespace when the UI method is absent. CRC
+chains finalized checksums over at most 256 KiB per Rust call. Portable CRC
+remains available. The raw JSON scanner checks cancellation on every original
+fragment, grouping at most 16 fragments or eight elapsed milliseconds before a
+cooperative yield. No JSON token, duplicate-key rule or raw span is changed.
+These schedulers do not create durable application checkpoints.

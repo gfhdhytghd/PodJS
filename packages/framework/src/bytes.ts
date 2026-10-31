@@ -1,3 +1,4 @@
+import {cpuWork} from './cpu-work';
 /** Portable byte codecs plus an optional host-accelerated chunk decoder. */
 export {encodeUtf8,utf8EncodeChunks,encodeBase64,base64EncodeChunks,decodeBase64,base64DecodeChunks} from './byte-codecs.ts';
 export type {SurrogatePolicy} from './byte-codecs.ts';
@@ -36,7 +37,7 @@ export {crc32,crc32Async} from './checksum.ts';
 export function sha256Bytes(bytes:Uint8Array):Uint8Array|null {
  const hash=((globalThis as {pod?:{sha256Bytes?:(bytes:Uint8Array)=>Uint8Array|null|undefined};__podByteCodecs?:{sha256Bytes?:(bytes:Uint8Array)=>Uint8Array|null|undefined}}).pod??(globalThis as any).__podByteCodecs)?.sha256Bytes;
  if(bytes.length>256*1024||typeof hash!=='function')return null;
- const digest=hash(bytes);
+ const digest=cpuWork('sha256','bytes',bytes.length,()=>hash(bytes));
  if(digest==null)return null;
  if(!(digest instanceof Uint8Array)||digest.length!==32)throw Error('Invalid native SHA-256 digest');
  return digest;
@@ -44,8 +45,9 @@ export function sha256Bytes(bytes:Uint8Array):Uint8Array|null {
 
 /** Optional pure gzip fast path: at most 256 KiB input and decompressed output. */
 export function gunzipBytes(bytes:Uint8Array):Uint8Array|null {
- const decode=(globalThis as {pod?:{gunzipBytes?:(bytes:Uint8Array)=>Uint8Array|null|undefined}}).pod?.gunzipBytes;
- if(bytes.length>256*1024||!decode)return null;const result=decode(bytes);
+ const codecs=globalThis as {pod?:{gunzipBytes?:(bytes:Uint8Array)=>Uint8Array|null|undefined};__podByteCodecs?:{gunzipBytes?:(bytes:Uint8Array)=>Uint8Array|null|undefined}};
+ const decode=codecs.pod?.gunzipBytes??codecs.__podByteCodecs?.gunzipBytes;
+ if(bytes.length>256*1024||!decode)return null;const result=cpuWork('gunzip','bytes',bytes.length,()=>decode(bytes));
  if(result==null)return null;if(!(result instanceof Uint8Array)||result.length>256*1024)throw Error('Invalid native gzip result');return result;
 }
 

@@ -17,6 +17,16 @@ final class CloudWorkerOutcome {
         "cloud_snapshot_object_missing","cloud_snapshot_object_unauthorized","cloud_snapshot_object_timeout","cloud_snapshot_object_rate_limited",
         "cloud_snapshot_object_redirect","cloud_snapshot_object_integrity","cloud_snapshot_download_failed","cloud_snapshot_work_timeout"
     )));
+    static final List<String> CPU_STAGE_IDS=Collections.unmodifiableList(Arrays.asList(
+        "crc32","byte-compare","utf8-encode","utf8-decode","base64-encode","base64-decode","sha256","gunzip","json-scan","json-parse","json-stringify","canonical-json","journal-rebuild","journal-diff","sort","archive-index","manifest-validate","manifest-plan","records-validate","records-parse","projection-rebuild","record-diff","record-merge","book-validate","book-match","alias-match","overlay-index"
+    ));
+    static final Set<String> CPU_STAGES=Collections.unmodifiableSet(new HashSet<>(CPU_STAGE_IDS));
+    static String cpuStageId(double id){return Double.isFinite(id)&&id==Math.floor(id)&&id>=0&&id<CPU_STAGE_IDS.size()?CPU_STAGE_IDS.get((int)id):null;}
+    /** Only code-phase names and coarse/numeric values reach the release log. */
+    static String cpuDiagnostic(String stage,String scale,double sizeClass,double elapsed,String outcome){
+        if(!CPU_STAGES.contains(stage)||!Arrays.asList("bytes","chars","items").contains(scale)||!Double.isFinite(sizeClass)||sizeClass!=Math.floor(sizeClass)||sizeClass<0||sizeClass>5||!Double.isFinite(elapsed)||elapsed!=Math.floor(elapsed)||elapsed<0||elapsed>300000||!Arrays.asList("started","progress","complete","failed").contains(outcome))return null;
+        return "cpuStage="+stage+" scale="+scale+" sizeClass="+(int)sizeClass+" elapsedMs="+(long)elapsed+" outcome="+outcome;
+    }
     static String guestCode(String value){return GUEST_CODES.contains(value)?value:null;}
     static String guestStage(String value){return GUEST_STAGES.contains(value)?value:null;}
     static String stage(String method){

@@ -1,3 +1,4 @@
+import {cpuWork,cpuJsonParse,cpuJsonStringify,cpuSort,cpuWorkAsync} from './cpu-work';
 /** Bounded JSON syntax tree over immutable source text. Unknown values never
  * need to pass through JS Number or JSON.stringify when patching known fields. */
 export interface RawJsonProperty {key:string;start:number;value:RawJsonNode}
@@ -15,7 +16,7 @@ function* parseRawJsonSteps(source:string,options:RawJsonOptions={}):Generator<v
  let at=0;const fail=():never=>{throw new RawJsonError('syntax');};
  const ws=function*():Generator<void,void>{let scanned=0;while(at<source.length&&' \t\r\n'.includes(source[at])){at++;if(++scanned%16384===0)yield;}};
  const string=function*():Generator<void,string>{const start=at;if(source[at++]!=='"')return fail();let escaped=false,scanned=0;
-  while(at<source.length){if(++scanned%2048===0)yield;const c=source.charCodeAt(at++);if(c<32)return fail();if(escaped){if(c===117){if(!/^[0-9a-fA-F]{4}$/.test(source.slice(at,at+4)))return fail();at+=4;}else if(!'"\\/bfnrt'.includes(String.fromCharCode(c)))return fail();escaped=false;}else if(c===92)escaped=true;else if(c===34){const value=JSON.parse(source.slice(start,at)) as string;jsonUtf8Bytes(value);return value;}}
+  while(at<source.length){if(++scanned%2048===0)yield;const c=source.charCodeAt(at++);if(c<32)return fail();if(escaped){if(c===117){if(!/^[0-9a-fA-F]{4}$/.test(source.slice(at,at+4)))return fail();at+=4;}else if(!'"\\/bfnrt'.includes(String.fromCharCode(c)))return fail();escaped=false;}else if(c===92)escaped=true;else if(c===34){const value=cpuJsonParse(source.slice(start,at)) as string;jsonUtf8Bytes(value);return value;}}
   return fail();};
  let work=0;const value=function*(depth:number):Generator<void,RawJsonNode>{if(++work%256===0)yield;yield* ws();const start=at,c=source[at];
   if(c==='{'||c==='['){if(depth>maxDepth)throw new RawJsonError('depth');at++;yield* ws();
@@ -29,16 +30,25 @@ function* parseRawJsonSteps(source:string,options:RawJsonOptions={}):Generator<v
  };
  const root=yield* value(1);yield* ws();if(at!==source.length)fail();return root;
 }
-export function parseRawJson(source:string,options:RawJsonOptions={}):RawJsonNode {const steps=parseRawJsonSteps(source,options);for(;;){const next=steps.next();if(next.done)return next.value;}}
+export function parseRawJson(source:string,options:RawJsonOptions={}):RawJsonNode {return cpuWork('json-scan','chars',source.length,()=>parseRawJsonSync(source,options));}
+function parseRawJsonSync(source:string,options:RawJsonOptions={}):RawJsonNode {const steps=parseRawJsonSteps(source,options);for(;;){const next=steps.next();if(next.done)return next.value;}}
 /** Yields after bounded scanning/projection work. The immutable source and byte
  * cap remain owned by the caller; cancellation is checked at every boundary. */
-export async function parseRawJsonAsync(source:string,options:RawJsonOptions&{yield?:()=>Promise<void>;check?:()=>void}={}):Promise<RawJsonNode> {const steps=parseRawJsonSteps(source,options);const pause=options.yield??(()=>new Promise<void>(resolve=>setTimeout(resolve,0)));for(;;){options.check?.();const next=steps.next();if(next.done)return next.value;await pause();}}
+export function parseRawJsonAsync(source:string,options:RawJsonOptions&{yield?:()=>Promise<void>;check?:()=>void}={}):Promise<RawJsonNode> {return cpuWorkAsync('json-scan','chars',source.length,()=>parseRawJsonAsyncSteps(source,options));}
+async function parseRawJsonAsyncSteps(source:string,options:RawJsonOptions&{yield?:()=>Promise<void>;check?:()=>void}={}):Promise<RawJsonNode> {
+ const steps=parseRawJsonSteps(source,options),pause=options.yield??(()=>new Promise<void>(resolve=>setTimeout(resolve,0))),now=()=>globalThis.performance?.now?.()??Date.now();let count=0,started=now();
+ try{for(;;){options.check?.();const next=steps.next();if(next.done)return next.value;
+  // Keep bounded scanner fragments; share an IPC turn exactly as byte codecs
+  // do. A headless timer roundtrip per 2 KiB token is not a CPU work budget.
+  if(++count>=16||now()-started>=8){await pause();options.check?.();count=0;started=now();}
+ }}finally{steps.return?.(undefined as never);}
+}
 export const rawJsonText=(node:RawJsonNode)=>node.source.slice(node.start,node.end);
 /** RFC 8785 canonical JSON for protocols restricted to nonnegative safe
  * integers. Parse the original tokens first: JSON.parse alone rounds fractions
  * and underflow before Number.isSafeInteger can reject them. Unknown extension
  * data must use raw spans instead; this function deliberately canonicalizes. */
-export function canonicalIntegerJson(source:string,options:RawJsonOptions={}):string {
+export function canonicalIntegerJson(source:string,options:RawJsonOptions={}):string {return cpuWork('canonical-json','chars',source.length,()=>{
  const root=parseRawJson(source,options);
  const integer=(token:string)=>{
   const m=/^(-?)([0-9]+)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?$/.exec(token);
@@ -54,13 +64,13 @@ export function canonicalIntegerJson(source:string,options:RawJsonOptions={}):st
  };
  const emit=(node:RawJsonNode):string=>{
   if(node.kind==='array')return '['+(node.items??[]).map(emit).join(',')+']';
-  if(node.kind==='object')return '{'+[...(node.properties??[])].sort((a,b)=>a.key<b.key?-1:a.key>b.key?1:0).map(p=>JSON.stringify(p.key)+':'+emit(p.value)).join(',')+'}';
-  const token=rawJsonText(node);return token[0]==='"'?JSON.stringify(rawJsonValue(node)):['true','false','null'].includes(token)?token:integer(token);
+  if(node.kind==='object')return '{'+cpuSort([...(node.properties??[])],(a,b)=>a.key<b.key?-1:a.key>b.key?1:0).map(p=>cpuJsonStringify(p.key)+':'+emit(p.value)).join(',')+'}';
+  const token=rawJsonText(node);return token[0]==='"'?cpuJsonStringify(rawJsonValue(node)):['true','false','null'].includes(token)?token:integer(token);
  };
  return emit(root);
-}
+});}
 export function rawJsonProperty(node:RawJsonNode,key:string){return node.properties?.find(p=>p.key===key)?.value;}
-export function rawJsonValue<T=unknown>(node:RawJsonNode):T{return JSON.parse(rawJsonText(node)) as T;}
+export function rawJsonValue<T=unknown>(node:RawJsonNode):T{return cpuJsonParse(rawJsonText(node)) as T;}
 /** Values in edits are already complete JSON tokens. Only named properties are
  * changed; every untouched key-through-value span is copied byte for byte.
  * undefined explicitly removes a property. No mutation or whole-document parse. */
@@ -68,7 +78,7 @@ export function patchRawJsonObject(node:RawJsonNode,edits:ReadonlyMap<string,str
  if(node.kind!=='object')throw new RawJsonError('syntax');const changes=edits instanceof Map?edits:new Map(Object.entries(edits));
  const fields:string[]=[],seen=new Set<string>();
  for(const p of node.properties??[]){seen.add(p.key);if(changes.has(p.key)){const next=changes.get(p.key);if(next!==undefined){parseRawJson(next);fields.push(node.source.slice(p.start,p.value.start)+next);}}else fields.push(node.source.slice(p.start,p.value.end));}
- for(const [key,next]of changes)if(!seen.has(key)&&next!==undefined){jsonUtf8Bytes(key);parseRawJson(next);fields.push(JSON.stringify(key)+':'+next);}
+ for(const [key,next]of changes)if(!seen.has(key)&&next!==undefined){jsonUtf8Bytes(key);parseRawJson(next);fields.push(cpuJsonStringify(key)+':'+next);}
  return '{'+fields.join(',')+'}';
 }
 export type RawJsonSchema=true|{[key:string]:RawJsonSchema};

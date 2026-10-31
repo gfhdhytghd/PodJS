@@ -14,7 +14,7 @@ describe('raw JSON token boundary',()=>{
 test('async raw JSON yields bounded work, agrees with sync and checks cancellation',async()=>{
  const {parseRawJsonAsync}=await import('../src/json-raw');let turns=0;
  const text='{"known":['+'1,'.repeat(2500)+'2],"future":"'+'x'.repeat(50000)+'"}';
- const node=await parseRawJsonAsync(text,{yield:async()=>{turns++;}});expect(rawJsonText(node)).toBe(rawJsonText(parseRawJson(text)));expect(turns).toBeGreaterThan(5);
+ const node=await parseRawJsonAsync(text,{yield:async()=>{turns++;}});expect(rawJsonText(node)).toBe(rawJsonText(parseRawJson(text)));expect(turns).toBeGreaterThan(0);expect(turns).toBeLessThan(10);
  let cancelled=false;await expect(parseRawJsonAsync(text,{yield:async()=>{cancelled=true;},check:()=>{if(cancelled)throw Error('cancelled');}})).rejects.toThrow('cancelled');
 });
 
@@ -24,4 +24,10 @@ test('integer JCS sorts UTF16 keys, canonicalizes strings and exact integral tok
  expect(canonicalIntegerJson('[9007199254740991,90071992547409910e-1,0.001e3,null]')).toBe('[9007199254740991,9007199254740991,1,null]');
  for(const token of ['9007199254740992','9007199254740991.1','1e-324','-1','1.1','1e99999'])expect(()=>canonicalIntegerJson(token)).toThrow('json_integer_required');
  for(const source of ['{"a":1,"\\u0061":2}','"\\ud800"'])expect(()=>canonicalIntegerJson(source)).toThrow();
+});
+
+test('coalesced JSON slices retain lexemes, duplicate rejection and per-fragment checks at large scale',async()=>{
+ const {parseRawJsonAsync}=await import('../src/json-raw');const text='{"wide":9007199254740993,"rows":['+Array.from({length:8192},(_,i)=>'{"x":'+i+',"s":"\\u4e2d"}').join(',')+']}';let turns=0,checks=0;
+ const value=await parseRawJsonAsync(text,{yield:async()=>{turns++;},check:()=>{checks++;}});expect(rawJsonText(value)).toBe(text);expect(rawJsonText(value)).toBe(rawJsonText(parseRawJson(text)));expect(checks).toBeGreaterThan(turns*8);expect(turns).toBeLessThan(100);
+ await expect(parseRawJsonAsync('{"x":"'+'a'.repeat(100000)+'","x":1}',{yield:async()=>{}})).rejects.toThrow('duplicate-key');
 });

@@ -133,3 +133,11 @@ test('headless escaped HTML recovery bundles without UI bootstrap and denies uns
  expect(context.backgroundHandler()).toBe('<p>restored</p>');expect(context.pod).toBeUndefined();expect(context.frame).toBeUndefined();
  const denied=fixture("import * as api from '@podjs/framework/html/unsafe';export default()=>api;");await expect(buildBackground({denied:denied.entry},denied.root)).rejects.toThrow('Background');
 });
+
+test('headless CPU work telemetry is pure and does not grant host or unsafe subpaths',async()=>{
+ const {root,entry}=fixture("import {cpuWork,observeCpuWork} from '@podjs/framework/cpu-work'; export default ()=>{const rows=[];const stop=observeCpuWork(row=>{rows.push(row);});const result=cpuWork('crc32','bytes',1048576,()=>7);stop();return {result,rows};};");
+ mkdirSync(join(root,'node_modules/@podjs'),{recursive:true});symlinkSync(new URL('../packages/framework',import.meta.url).pathname,join(root,'node_modules/@podjs/framework'),'dir');
+ const artifacts=await buildBackground({cpu:entry},root),context:Record<string,any>={};runInNewContext(readFileSync(join(root,artifacts.cpu!.file),'utf8'),context);
+ const result=JSON.parse(JSON.stringify(context.backgroundHandler()));expect(result.result).toBe(7);expect(result.rows.map((r:any)=>r.outcome)).toEqual(['started','complete']);expect(context.pod).toBeUndefined();expect(context.frame).toBeUndefined();
+ for(const denied of ['@podjs/framework/cpu-work/unsafe','@podjs/framework/services','@podjs/framework/startup']){const f=fixture(`import * as api from '${denied}';export default ()=>api;`);await expect(buildBackground({denied:f.entry},f.root)).rejects.toThrow('Background');}
+});

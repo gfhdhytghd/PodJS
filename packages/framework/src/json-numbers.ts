@@ -1,3 +1,4 @@
+import {cpuJsonParse} from './cpu-work';
 import {runWorkSteps} from './async';
 import type {CodecWorkOptions} from './async-bytes';
 type JsonObject=Record<string,unknown>;
@@ -10,7 +11,7 @@ const numericTokens=new WeakMap<object,Map<string,string>>();
 /** Retains lexical number tokens beside JSON.parse results (1 and 1.0 differ).
  * Objects created outside this parser have no token metadata. */
 function* parseJsonObjectNumberSteps(text:string,options:JsonNumberOptions={}):Generator<void,JsonObject> {
- const root:unknown=JSON.parse(text);
+ const root:unknown=cpuJsonParse(text);
  if(!root||typeof root!=="object"||Array.isArray(root))throw (options.objectError?.()??new Error("JSON value must be an object"));
  let at=0;
  const space=function*():Generator<void,void>{let scanned=0;while(at<text.length&&' \t\r\n'.includes(text[at]!)){at++;if(++scanned%4096===0)yield;}};
@@ -27,7 +28,7 @@ function* parseJsonObjectNumberSteps(text:string,options:JsonNumberOptions={}):G
   mark(parent,key,null);
   if(c==='{'){
    at++;yield* space();if(text[at]==='}'){at++;return;}
-   while(at<text.length){yield* space();const k=JSON.parse(yield* string()) as string;yield* space();at++;yield* visit(value&&typeof value==="object"?(value as JsonObject)[k]:undefined,value,k,depth+1);yield* space();if(text[at++]==='}')break;}
+   while(at<text.length){yield* space();const k=cpuJsonParse(yield* string()) as string;yield* space();at++;yield* visit(value&&typeof value==="object"?(value as JsonObject)[k]:undefined,value,k,depth+1);yield* space();if(text[at++]==='}')break;}
   }else if(c==='['){
    at++;yield* space();if(text[at]===']'){at++;return;}let index=0;
    while(at<text.length){yield* visit(Array.isArray(value)?value[index]:undefined,value,String(index++),depth+1);yield* space();if(text[at++]===']')break;}

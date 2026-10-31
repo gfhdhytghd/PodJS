@@ -1,3 +1,4 @@
+import {cpuWorkAsync} from './cpu-work';
 import {utf8ToString} from '../../../vendor/pocketjs/framework/src/bytes.ts';
 import {encodeUtf8,utf8EncodeChunks,encodeBase64,base64EncodeChunks,decodeBase64,base64DecodeChunks,type SurrogatePolicy} from './byte-codecs.ts';
 
@@ -7,7 +8,7 @@ export interface CodecWorkOptions {
   yield?:()=>Promise<void>;
 }
 const UTF16_BUDGET=4096,BASE64_CHARS=4096,BASE64_BYTES=3072;
-const host=()=>(globalThis as {pod?:{decodeUtf8?:(bytes:Uint8Array)=>string|null|undefined}}).pod;
+const host=()=>{const codecs=globalThis as {pod?:{decodeUtf8?:(bytes:Uint8Array)=>string|null|undefined};__podByteCodecs?:{decodeUtf8?:(bytes:Uint8Array)=>string|null|undefined}};return {decodeUtf8:codecs.pod?.decodeUtf8??codecs.__podByteCodecs?.decodeUtf8};};
 function join(chunks:Uint8Array[]):Uint8Array {const out=new Uint8Array(chunks.reduce((n,b)=>n+b.length,0));let offset=0;for(const bytes of chunks){out.set(bytes,offset);offset+=bytes.length;}return out;}
 function check(options:CodecWorkOptions){if(options.cancelled?.())throw Error('byte codec cancelled');}
 async function yieldTurn(options:CodecWorkOptions):Promise<void>{
@@ -33,9 +34,12 @@ async function collect<T>(pieces:Iterable<T>,options:CodecWorkOptions):Promise<T
  finally{iterator.return?.();}
 }
 /** Bounded 4 KiB pieces share a slice of at most 16 pieces / 8 ms before yielding. */
-export async function encodeUtf8Async(value:string,policy:SurrogatePolicy='strict',options:CodecWorkOptions={}):Promise<Uint8Array>{check(options);if(value.length<=UTF16_BUDGET)return encodeUtf8(value,policy);return join(await collect(utf8EncodeChunks(value,policy),options));}
-export async function encodeBase64Async(bytes:Uint8Array,options:CodecWorkOptions={}):Promise<string>{check(options);if(bytes.length<=BASE64_BYTES)return encodeBase64(bytes);return (await collect(base64EncodeChunks(bytes),options)).join('');}
-export async function decodeBase64Async(value:string,options:CodecWorkOptions={}):Promise<Uint8Array>{check(options);if(value.length<=BASE64_CHARS)return decodeBase64(value);return join(await collect(base64DecodeChunks(value),options));}
+export function encodeUtf8Async(value:string,policy:SurrogatePolicy='strict',options:CodecWorkOptions={}):Promise<Uint8Array>{return cpuWorkAsync('utf8-encode','chars',value.length,()=>_encodeUtf8Async(value,policy,options));}
+async function _encodeUtf8Async(value:string,policy:SurrogatePolicy='strict',options:CodecWorkOptions={}):Promise<Uint8Array>{check(options);if(value.length<=UTF16_BUDGET)return encodeUtf8(value,policy);return join(await collect(utf8EncodeChunks(value,policy),options));}
+export function encodeBase64Async(bytes:Uint8Array,options:CodecWorkOptions={}):Promise<string>{return cpuWorkAsync('base64-encode','bytes',bytes.length,()=>_encodeBase64Async(bytes,options));}
+async function _encodeBase64Async(bytes:Uint8Array,options:CodecWorkOptions={}):Promise<string>{check(options);if(bytes.length<=BASE64_BYTES)return encodeBase64(bytes);return (await collect(base64EncodeChunks(bytes),options)).join('');}
+export function decodeBase64Async(value:string,options:CodecWorkOptions={}):Promise<Uint8Array>{return cpuWorkAsync('base64-decode','chars',value.length,()=>_decodeBase64Async(value,options));}
+async function _decodeBase64Async(value:string,options:CodecWorkOptions={}):Promise<Uint8Array>{check(options);if(value.length<=BASE64_CHARS)return decodeBase64(value);return join(await collect(base64DecodeChunks(value),options));}
 function* utf8DecodeChunks(bytes:Uint8Array):Generator<string> {
  for(let start=0;start<bytes.length;){let end=Math.min(start+4096,bytes.length);
   if(end<bytes.length)for(let back=0;back<3&&end>start&&(bytes[end]&0xc0)===0x80;back++)end--;
@@ -44,12 +48,14 @@ function* utf8DecodeChunks(bytes:Uint8Array):Generator<string> {
  }
 }
 /** Strict decoding reuses the existing native UTF-8 bridge with frame yields. */
-export async function decodeUtf8Async(bytes:Uint8Array,options:CodecWorkOptions={}):Promise<string>{check(options);if(bytes.length<=4096)return [...utf8DecodeChunks(bytes)].join('');return (await collect(utf8DecodeChunks(bytes),options)).join('');}
+export function decodeUtf8Async(bytes:Uint8Array,options:CodecWorkOptions={}):Promise<string>{return cpuWorkAsync('utf8-decode','bytes',bytes.length,()=>_decodeUtf8Async(bytes,options));}
+async function _decodeUtf8Async(bytes:Uint8Array,options:CodecWorkOptions={}):Promise<string>{check(options);if(bytes.length<=4096)return [...utf8DecodeChunks(bytes)].join('');return (await collect(utf8DecodeChunks(bytes),options)).join('');}
 
 /** Exact comparison of stable byte views. Callers retain immutable input until
  * completion, as with asynchronous hashing. At most 16 x 4 KiB / 8 ms per turn;
  * no per-byte callbacks, copies, digest shortcuts or probabilistic equality. */
-export async function equalBytesAsync(a:Uint8Array,b:Uint8Array,options:CodecWorkOptions={}):Promise<boolean>{
+export function equalBytesAsync(a:Uint8Array,b:Uint8Array,options:CodecWorkOptions={}):Promise<boolean>{return cpuWorkAsync('byte-compare','bytes',a.length,()=>_equalBytesAsync(a,b,options));}
+async function _equalBytesAsync(a:Uint8Array,b:Uint8Array,options:CodecWorkOptions={}):Promise<boolean>{
  check(options);if(a.length!==b.length)return false;if(a===b)return true;
  const now=()=>globalThis.performance?.now?.()??Date.now();let start=now(),pieces=0;
  for(let at=0;at<a.length;){

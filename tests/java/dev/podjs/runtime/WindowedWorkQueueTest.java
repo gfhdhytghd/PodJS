@@ -90,6 +90,13 @@ public final class WindowedWorkQueueTest {
         System.out.println("CONCURRENT_PERIODIC_MANUAL_PASS active_writer/already_running/yielded success; queue counters retained; genuine failures retained");
     }
     static void deadlineWindows()throws Exception{
+        check("cpuStage=crc32 scale=bytes sizeClass=3 elapsedMs=5000 outcome=progress".equals(CloudWorkerOutcome.cpuDiagnostic("crc32","bytes",3,5000,"progress")),"release CPU phase missing");
+        for(String stage:CloudWorkerOutcome.CPU_STAGES)check(CloudWorkerOutcome.cpuDiagnostic(stage,"items",0,0,"started")!=null,"closed CPU phase rejected");
+        check(CloudWorkerOutcome.cpuDiagnostic("private id","bytes",1,0,"started")==null,"private CPU phase leaked");
+        check(CloudWorkerOutcome.cpuDiagnostic("crc32","private",1,0,"started")==null,"private CPU scale leaked");
+        for(double n:new double[]{-1,6,Double.NaN,Double.POSITIVE_INFINITY,1.5})check(CloudWorkerOutcome.cpuDiagnostic("crc32","bytes",n,0,"started")==null,"invalid CPU bucket admitted");
+        check(CloudWorkerOutcome.cpuDiagnostic("crc32","bytes",1,300001,"started")==null,"unbounded CPU time admitted");
+
         check(CloudWorkerOutcome.decide("completed","retry",100)==CloudWorkerOutcome.Decision.RETRY,"cooperative stalled retry became terminal");
         check(CloudWorkerOutcome.guestCode("cloud_snapshot_progress_stalled").equals("cloud_snapshot_progress_stalled"),"closed stalled code missing");
         for(String code:new String[]{"cloud_snapshot_object_missing","cloud_snapshot_object_unauthorized","cloud_snapshot_object_timeout","cloud_snapshot_object_rate_limited","cloud_snapshot_object_redirect","cloud_snapshot_object_integrity","cloud_snapshot_download_failed","cloud_snapshot_work_timeout"}){
