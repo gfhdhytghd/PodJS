@@ -90,6 +90,9 @@ public final class WindowedWorkQueueTest {
         System.out.println("CONCURRENT_PERIODIC_MANUAL_PASS active_writer/already_running/yielded success; queue counters retained; genuine failures retained");
     }
     static void deadlineWindows()throws Exception{
+        check(CloudWorkerOutcome.decide("completed","retry",100)==CloudWorkerOutcome.Decision.RETRY,"cooperative stalled retry became terminal");
+        check(CloudWorkerOutcome.guestCode("cloud_snapshot_progress_stalled").equals("cloud_snapshot_progress_stalled"),"closed stalled code missing");
+        check(CloudWorkerOutcome.guestCode("private account / error")==null,"private code leaked");
         Disk p=new Disk(fixture());WindowedWorkQueue q=new WindowedWorkQueue(p);q.enqueue("grant",false,false);
         for(int n=1;n<=6;n++){
             var old=p.read();p.advance(old.due);String id=p.take();check(q.start("grant",id),"deadline start rejected");

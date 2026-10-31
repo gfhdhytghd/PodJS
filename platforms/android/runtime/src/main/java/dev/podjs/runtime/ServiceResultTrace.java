@@ -88,7 +88,7 @@ final class ServiceResultTrace {
         "cloud.enqueue", "cloud.localTransfer", "cloud.workState", "cloud.acquire", "cloud.cancel", "cloud.release", "cloud.schedule", "crypto.aesGcmDecrypt",
         "crypto.aesGcmEncrypt", "crypto.decrypt", "crypto.ecdhPublicKey", "crypto.ecdhUnwrap", "crypto.encrypt",
         "crypto.gunzip", "crypto.gzip", "crypto.hash", "crypto.hkdfSha256", "crypto.hmacSha256",
-        "crypto.largeAesGcmDecrypt", "crypto.largeAesGcmEncrypt", "crypto.random", "crypto.rsaOaepSha256", "debug.memoryStats",
+        "crypto.openSealedParts","crypto.largeAesGcmDecrypt", "crypto.largeAesGcmEncrypt", "crypto.random", "crypto.rsaOaepSha256", "debug.memoryStats",
         "debug.performance.read", "debug.performance.start", "debug.performance.stop", "discovery.bleReadCharacteristic", "discovery.mdns",
         "discovery.networkSnapshot", "discovery.networkSubscribe", "discovery.networkUnsubscribe", "discovery.requestPermission", "discovery.status",
         "display.keepAwake", "display.state", "file.closeText", "file.commit", "file.createTemp",

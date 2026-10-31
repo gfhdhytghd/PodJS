@@ -150,6 +150,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/sync-framing` | Bounded wire frame encoding/decoding for companion transports. |
 | `@podjs/framework/sync-messages` | Companion message wire protocol and acknowledgement helpers. |
 | `@podjs/framework/platform-services` | Background scheduling, notification and companion/file-transfer service interfaces. |
+| `@podjs/framework/read-batch` | Memoize immutable reads within a caller-owned, serialized read transaction; no cache survives the transaction. |
 | `@podjs/framework/work-window` | Cooperative host-unit admission before a deadline, input-size estimates, measured margins and closed phase diagnostics; never races writes against timers. |
 | `@podjs/framework/background-handler` | Typed headless background-handler entry and delivery contracts. |
 | `@podjs/framework/debug-memory` | Scoped diagnostic resource ownership/accounting; counts are not native heap measurements. |
@@ -369,3 +370,17 @@ publication and resumable receipts at the application level. Android hard guest
 deadlines retain authorized continuation queues with exponential backoff; only a
 completed handler with durable progress earns the one-second continuation. Worker
 logcat records only closed stage codes, elapsed time and method counts.
+
+`ReadBatch` memoizes reads only inside `run(action)`. The caller must hold its
+cross-process read fence and serialize transactions. Nested reads share that
+batch; values and rejected promises are discarded on exit. This helper does not
+acquire a lock or authorize cached identity reuse on its own.
+
+`cryptoFiles.openSealedParts` uses Android `crypto.openSealedParts` and accepts one AES-256 key, at most 2048 ordered
+`{path, aadBase64, bytes}` parts (nonce + AES-GCM ciphertext/tag, each plaintext
+<=256 KiB), and a total `length` <=64 MiB. It returns an owned temporary file
+descriptor only after every part authenticates and lengths match. The host
+checks cancellation and optional absolute `deadlineMs` between parts, removes
+the output on failure, and reports only a numeric invalid-part index. This is
+a local materialization helper, not an application checkpoint or cloud ACK.
+Callers must delete the returned temporary file and protect durable receipts.

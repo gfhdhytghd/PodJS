@@ -97,6 +97,7 @@ public final class PodDeviceServices implements AutoCloseable {
             case "crypto.hkdfSha256": return new JSONObject().put("keyBase64", enc(PodCloudCrypto.hkdf(decode(args,"inputBase64"),decode(args,"saltBase64"),decode(args,"infoBase64"))));
             case "crypto.largeAesGcmEncrypt": return largeAes(args,true);
             case "crypto.largeAesGcmDecrypt": return largeAes(args,false);
+            case "crypto.openSealedParts": return openSealedParts(args);
             case "crypto.gzip": return cryptoOutput(PodCloudCrypto.gzip(cryptoInput(args)));
             case "crypto.gunzip": return cryptoOutput(PodCloudCrypto.gunzip(cryptoInput(args),args.getInt("maxBytes")));
             case "crypto.random": return cryptoRandom(args);
@@ -402,6 +403,31 @@ public final class PodDeviceServices implements AutoCloseable {
         else nonce=decode(args,"nonceBase64");
         byte[] output=PodCloudCrypto.aes(encrypt,decode(args,"keyBase64"),nonce,cryptoInput(args),decode(args,"aadBase64"));
         JSONObject result=cryptoOutput(output); if(encrypt) result.put("nonceBase64",enc(nonce)); return result;
+    }
+    /** A bounded native materialization of immutable AEAD parts. Plaintext is
+     * temporary and never published until every part authenticates. No bridge
+     * round trip, key lookup or plaintext input transfer per encrypted part. */
+    private JSONObject openSealedParts(JSONObject args) throws Exception {
+        org.json.JSONArray parts=args.getJSONArray("parts");int length=args.getInt("length");
+        if(parts.length()<1||parts.length()>2048||length<0||length>64*1024*1024)throw new IllegalArgumentException("invalid_sealed_parts");
+        byte[] key=decode(args,"keyBase64");if(key.length!=32)throw new IllegalArgumentException("invalid_aes_key");
+        JSONObject temporary=fileCreateTemp(new JSONObject().put("directory","cloud-crypto"));
+        try{
+            File target=safeFile(temporary.getString("path"));int total=0;
+            try(FileOutputStream output=new FileOutputStream(target)){
+                for(int i=0;i<parts.length();i++){
+                    if(Thread.currentThread().isInterrupted()||args.has("deadlineMs")&&System.currentTimeMillis()>=args.getLong("deadlineMs"))throw new IOException("cloud_sync_deadline_exceeded");
+                    JSONObject part=parts.getJSONObject(i);int size=part.getInt("bytes");if(size<0||size>256*1024||total>length-size)throw new IllegalArgumentException("invalid_sealed_parts");
+                    byte[] plain;
+                    try{File source=safeFile(required(part,"path"));if(!source.isFile()||source.length()!=size+28)throw new IOException("invalid_part");
+                        plain=PodCloudCrypto.openSealedPart(key,decode(part,"aadBase64"),readAll(source,256*1024+28),size);
+                    }catch(Exception invalid){throw new IOException("sealed_part_invalid_"+i);}
+                    try{output.write(plain);total+=plain.length;}finally{Arrays.fill(plain,(byte)0);}
+                }
+                if(total!=length)throw new IOException("invalid_sealed_parts");
+            }
+            return hashFile(target).put("path",temporary.getString("path"));
+        }catch(Exception error){discardTemporary(temporary);throw error;}finally{Arrays.fill(key,(byte)0);}
     }
     private JSONObject cryptoRandom(JSONObject a) throws Exception {
         int n = a.optInt("bytes", 32); if (n < 0 || n > MAX_CHUNK_BYTES) throw new IllegalArgumentException("invalid_bytes");

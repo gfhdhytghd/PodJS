@@ -23,6 +23,13 @@ public class PodCloudCryptoTest {
   byte[] aad=text("test"),sealed=PodCloudCrypto.aes(true,key,nonce,large,aad);
   require(Arrays.equals(large,PodCloudCrypto.aes(false,key,nonce,sealed,aad)));
   try{PodCloudCrypto.aes(false,key,nonce,sealed,text("wrong"));throw new AssertionError();}catch(javax.crypto.AEADBadTagException expected){}
+  for(int size:new int[]{0,1,131073,262144}){
+   byte[] part=new byte[size];new Random(size).nextBytes(part);byte[] packed=concat(nonce,PodCloudCrypto.aes(true,key,nonce,part,aad));
+   require(Arrays.equals(part,PodCloudCrypto.openSealedPart(key,aad,packed,size)));
+   try{PodCloudCrypto.openSealedPart(key,text("wrong-position"),packed,size);throw new AssertionError();}catch(javax.crypto.AEADBadTagException expected){}
+   packed[packed.length-1]^=1;try{PodCloudCrypto.openSealedPart(key,aad,packed,size);throw new AssertionError();}catch(javax.crypto.AEADBadTagException expected){}
+  }
+  System.out.println("SEALED_PARTS_PASS empty/partial/max parts; changed AAD and ciphertext rejected");
   KeyPairGenerator generator=KeyPairGenerator.getInstance("EC");generator.initialize(new ECGenParameterSpec("secp256r1"));
   KeyPair recipient=generator.generateKeyPair(),sender=generator.generateKeyPair();
   KeyAgreement agreement=KeyAgreement.getInstance("ECDH");agreement.init(sender.getPrivate());agreement.doPhase(recipient.getPublic(),true);

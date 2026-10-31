@@ -84,7 +84,8 @@
     "./work-receipts": "./src/work-receipts.ts",
     "./acked-state-vector": "./src/acked-state-vector.ts",
     "./directory-witness": "./src/directory-witness.ts",
-    "./work-window": "./src/work-window.ts"
+    "./work-window": "./src/work-window.ts",
+    "./read-batch": "./src/read-batch.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",

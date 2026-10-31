@@ -12,12 +12,16 @@ final class CloudWorkerOutcome {
         "secure-read","secure-write","decrypt","encrypt","file-read","file-write","file-commit","transform","network","host",
         "checkpoint-read","checkpoint-write","checkpoint-range-piece","checkpoint-invalid","download","chunk","object","overlay","inventory","manifest","source-hash","inflate","plan","export","apply"
     )));
+    static final Set<String> GUEST_CODES=Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
+        "cloud_sync_deadline_exceeded","cloud_sync_suspended","cloud_operation_superseded","cloud_snapshot_progress_stalled","cloud_host_capability_unavailable"
+    )));
+    static String guestCode(String value){return GUEST_CODES.contains(value)?value:null;}
     static String guestStage(String value){return GUEST_STAGES.contains(value)?value:null;}
     static String stage(String method){
         if("http.download".equals(method))return "network";
         if("secure.get".equals(method))return "secure-read";
         if(method.startsWith("secure."))return "secure-write";
-        if(method.endsWith("AesGcmDecrypt"))return "decrypt";
+        if(method.endsWith("AesGcmDecrypt")||method.equals("crypto.openSealedParts"))return "decrypt";
         if(method.endsWith("AesGcmEncrypt"))return "encrypt";
         if("file.commit".equals(method))return "file-commit";
         if("file.write".equals(method))return "file-write";
@@ -32,7 +36,7 @@ final class CloudWorkerOutcome {
         if("deadline_exceeded".equals(code))return Decision.RETRY;
         if(!"completed".equals(code))return Decision.FAILURE;
         if("success".equals(status))return Decision.SUCCESS;
-        if("retry".equals(status)&&attempts<3)return Decision.RETRY;
+        if("retry".equals(status))return Decision.RETRY;
         return Decision.FAILURE;
     }
 }

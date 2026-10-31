@@ -296,7 +296,7 @@ test('cloud crypto bridge keeps private keys behind the host boundary and gates 
   const publicKey=deviceAgreement.publicKey('account/device');expect(commands.at(-1)).toMatchObject({method:'crypto.ecdhPublicKey',args:{keyId:'account/device'}});reply({publicKeySpki:'public-only'});expect(await publicKey).toEqual({publicKeySpki:'public-only'});
   const args={keyId:'account/device',publicKeySpki:'ephemeral',saltBase64:'salt',infoBase64:'info',nonceBase64:'nonce',ciphertextBase64:'wrapped',aadBase64:'aad'};
   const unwrap=deviceAgreement.unwrap(args);expect(commands.at(-1)).toMatchObject({method:'crypto.ecdhUnwrap',args});reply({dataBase64:'account-symmetric-key'});expect(await unwrap).toEqual({dataBase64:'account-symmetric-key'});
-  for(const method of ['crypto.hkdfSha256','crypto.largeAesGcmEncrypt','crypto.largeAesGcmDecrypt','crypto.gzip','crypto.gunzip']){const op=hostOperation(method,{});expect(commands.at(-1).method).toBe(method);reply({});await op.result;}
+  for(const method of ['crypto.openSealedParts','crypto.hkdfSha256','crypto.largeAesGcmEncrypt','crypto.largeAesGcmDecrypt','crypto.gzip','crypto.gunzip']){const op=hostOperation(method,{});expect(commands.at(-1).method).toBe(method);reply({});await op.result;}
   await expect(hostOperation('crypto.exportPrivateKey',{}).result).rejects.toMatchObject({code:'unsupported'});
   (globalThis as any).pod.capabilities=()=> '[]';await expect(deviceAgreement.publicKey('blocked')).rejects.toMatchObject({code:'unsupported'});
  }finally{(globalThis as {pod?:unknown}).pod=previous;}

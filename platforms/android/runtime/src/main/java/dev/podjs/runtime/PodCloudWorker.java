@@ -15,7 +15,7 @@ public final class PodCloudWorker extends Worker {
         "app.buildInfo","cloud.acquire","cloud.release","discovery.networkSnapshot","runtime.delay",
         "sql.query","sql.execute","sql.transaction","secure.get","secure.set","secure.delete","secure.update","secure.compareAndSet","secure.acquire","secure.release",
         "crypto.random","crypto.hash","crypto.hmacSha256","crypto.verifyP256","crypto.ecdhPublicKey","crypto.ecdhUnwrap","crypto.hkdfSha256",
-        "crypto.aesGcmEncrypt","crypto.aesGcmDecrypt","crypto.largeAesGcmEncrypt","crypto.largeAesGcmDecrypt","crypto.gzip","crypto.gunzip",
+        "crypto.aesGcmEncrypt","crypto.aesGcmDecrypt","crypto.largeAesGcmEncrypt","crypto.openSealedParts","crypto.largeAesGcmDecrypt","crypto.gzip","crypto.gunzip",
         "log.append","http.download","uri.parse","file.list","file.createTemp","file.read","file.write","file.stat","file.hash","file.commit","file.delete",
         "file.gzip","file.gunzip","file.htmlText","file.openText","file.readTextChunk","file.closeText"
     )));
@@ -33,10 +33,13 @@ public final class PodCloudWorker extends Worker {
         String text=args.optString("text");if(text.length()>8192)return;
         for(String line:text.split("\\n")){int at=line.indexOf('{');if(at<0)continue;
             try{JSONObject row=new JSONObject(line.substring(at));String event=row.optString("event"),phase=CloudWorkerOutcome.guestStage(row.optString("stage")),outcome=row.optString("outcome");
-                if(("window-unit".equals(event)||"snapshot-work".equals(event))&&phase!=null&&Arrays.asList("started","complete","failed","deferred").contains(outcome))android.util.Log.i("PodJSCloudWorker","guestStage="+phase+" outcome="+outcome);
+                String code=CloudWorkerOutcome.guestCode(row.optString("code"));
+                if(("window-unit".equals(event)||"snapshot-work".equals(event))&&phase!=null&&Arrays.asList("started","complete","failed","deferred").contains(outcome))android.util.Log.i("PodJSCloudWorker","guestStage="+phase+" outcome="+outcome+(code==null?"":" code="+code)+guestIndex(row,"objectIndex")+guestIndex(row,"chunkIndex"));
+                if(("format-sync".equals(event)||"records-failed".equals(event))&&code!=null)android.util.Log.i("PodJSCloudWorker","guestEvent="+event+" code="+code);
             }catch(Exception ignored){}
         }
     }
+    private static String guestIndex(JSONObject row,String field){Object value=row.opt(field);if(!(value instanceof Number))return "";double n=((Number)value).doubleValue();return n>=0&&n<=1023&&n==Math.floor(n)?" "+field+"="+(int)n:"";}
     @Override public Result doWork(){
         Context context=getApplicationContext();String manualToken=getInputData().getString("manualToken"),queuedToken=null,requestId=getId().toString();
         long began=android.os.SystemClock.elapsedRealtime(),lastReport=began,lastStageReport=began;

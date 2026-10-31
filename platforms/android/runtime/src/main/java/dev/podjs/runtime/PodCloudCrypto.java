@@ -29,6 +29,10 @@ public final class PodCloudCrypto {
         cipher.init(encrypt ? Cipher.ENCRYPT_MODE : Cipher.DECRYPT_MODE, new SecretKeySpec(key,"AES"), new GCMParameterSpec(128,nonce));
         cipher.updateAAD(aad); return cipher.doFinal(input);
     }
+    public static byte[] openSealedPart(byte[] key,byte[] aad,byte[] sealed,int length)throws Exception{
+        if(length<0||length>256*1024||sealed.length!=length+28)throw new IllegalArgumentException("invalid_sealed_part");
+        return aes(false,key,Arrays.copyOfRange(sealed,0,12),Arrays.copyOfRange(sealed,12,sealed.length),aad);
+    }
     public static byte[] unwrap(PrivateKey privateKey, byte[] publicSpki, byte[] salt, byte[] info, byte[] nonce, byte[] ciphertext, byte[] aad) throws Exception {
         ECPublicKey peer = (ECPublicKey)KeyFactory.getInstance("EC").generatePublic(new X509EncodedKeySpec(publicSpki));
         AlgorithmParameters parameters = AlgorithmParameters.getInstance("EC");
