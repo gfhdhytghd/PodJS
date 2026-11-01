@@ -41,7 +41,7 @@ import java.util.Map;
  * surface, so no decoder or SurfaceTexture is replaced at the page boundary.
  */
 final class PodVideoSessionServices implements AutoCloseable {
-    interface Callback { void complete(JSONObject value); void fail(String code, String message); }
+    interface Callback extends VideoFrameObserver { void complete(JSONObject value); void fail(String code, String message); }
 
     static final int MAX_SESSIONS = 2;
     static final int TARGET_BUFFER_BYTES = 6 * 1024 * 1024;
@@ -99,7 +99,7 @@ final class PodVideoSessionServices implements AutoCloseable {
     }
 
     void dispatch(String method, JSONObject args, Callback callback) {
-        main.post(() -> {
+        ForegroundMediaCommand.dispatch(main, method, () -> {
             if (closed) { callback.fail("service_closed", "Video session service is closed"); return; }
             try {
                 switch (method) {
@@ -107,6 +107,7 @@ final class PodVideoSessionServices implements AutoCloseable {
                     case "video.session.capabilities": callback.complete(capabilities(args)); break;
                     case "video.session.prepare": prepare(args, callback); break;
                     case "video.session.play": play(args, callback); break;
+                    case "video.session.retire": retire(args, callback); break;
                     case "video.session.pause": pause(args, callback); break;
                     case "video.session.seek": seek(args, callback); break;
                     case "video.session.stop": stop(args, callback); break;
@@ -216,19 +217,23 @@ final class PodVideoSessionServices implements AutoCloseable {
                 .setBufferDurationsMs(1_000, 4_000, 100, 250)
                 .build();
         ExoPlayer player;
-        try { player = new ExoPlayer.Builder(context).setLoadControl(loadControl).build(); }
+        try {
+            player = new ExoPlayer.Builder(context).setLoadControl(loadControl).build();
+            session.player = player;
+            session.audioPolicy = new PodMediaAudioPolicy(context, player::setVolume);
+            session.audioPolicy.observeMuteChanges(player::isPlaying, player::getVolume, new PodVideoMuteTelemetry());
+        }
         catch (RuntimeException error) {
             session.takePrepareCallback(); session.resetPlayer(); session.state = "error"; session.hideOffscreen();
             if (created) { sessions.remove(id); session.close(); }
             throw error;
         }
-        session.player = player;
         Session own = session;
         player.addAnalyticsListener(session.analytics);player.addAnalyticsListener(session.analytics.playbackStats);
         player.setAudioAttributes(mediaAudioAttributes(), !session.prewarming);
         session.completedLoops = 0;
         player.setRepeatMode(args.optBoolean("loop", false) ? Player.REPEAT_MODE_ONE : Player.REPEAT_MODE_OFF);
-        player.setVolume(session.prewarming ? 0f : session.volume);
+        session.audioPolicy.setVolume(session.volume, session.prewarming);
         player.addListener(new Player.Listener() {
             @Override public void onVideoSizeChanged(androidx.media3.common.VideoSize size) {
                 if (own.matches(player, generation)) own.fitVideo();
@@ -274,6 +279,7 @@ final class PodVideoSessionServices implements AutoCloseable {
             @Override public void onRenderedFirstFrame() {
                 if (!own.matches(player, generation)) return;
                 own.hasRenderedFirstFrame = true;
+                try { callback.firstFrame(own.snapshot()); } catch (Exception ignored) { }
                 if (own.prewarming) {
                     player.pause();
                     player.setPlayWhenReady(false);
@@ -345,12 +351,17 @@ final class PodVideoSessionServices implements AutoCloseable {
         Session session = require(args); session.requirePlayer();
         session.prewarming = false;
         session.player.setAudioAttributes(mediaAudioAttributes(), true);
-        session.player.setVolume(session.volume);
+        session.audioPolicy.setVolume(session.volume, false);
         if (!lifecyclePaused) session.player.play();
         session.state = lifecyclePaused ? "paused" : "playing";
         callback.complete(session.snapshot());
     }
 
+    private void retire(JSONObject args, Callback callback) throws Exception {
+        Session session = require(args);
+        session.retire();
+        callback.complete(session.snapshot());
+    }
     private void pause(JSONObject args, Callback callback) throws Exception {
         Session session = require(args); session.requirePlayer();
         session.player.pause(); session.state = session.prewarming ? "prewarmed" : "paused";
@@ -411,7 +422,7 @@ final class PodVideoSessionServices implements AutoCloseable {
         if (!args.has("volume")) throw new IllegalArgumentException("invalid_volume");
         float volume = finite(args, "volume", -1, 0, 1);
         session.volume = volume; session.muted = volume == 0f;
-        if (session.player != null) session.player.setVolume(session.prewarming ? 0f : volume);
+        if (session.audioPolicy != null) session.audioPolicy.setVolume(volume, session.prewarming);
         callback.complete(session.snapshot());
     }
 
@@ -426,25 +437,20 @@ final class PodVideoSessionServices implements AutoCloseable {
         Session replaced = replacedId.isEmpty() ? null : sessions.get(replacedId);
         if (!replacedId.isEmpty() && replaced == null) throw new IllegalArgumentException("unknown_replace_session");
 
+        if (replaced != null) replaced.retire();
         target.bounds = requested;
         target.prewarming = false;
         target.presented = requested.visible;
         target.applyBounds(requested);
         // Reveal the retained first-frame surface before hiding the old one.
         target.showPresented();
-        if (replaced != null) {
-            if (replaced.player != null) replaced.player.pause();
-            replaced.prewarming = true;
-            replaced.presented = false;
-            if (replaced.player != null) replaced.player.setVolume(0f);
-            replaced.state = replaced.player == null ? replaced.state : "prewarmed";
-            replaced.hideOffscreen();
-        }
         boolean autoplay = args.optBoolean("autoplay", true);
         target.player.setAudioAttributes(mediaAudioAttributes(), true);
-        target.player.setVolume(target.volume);
+        target.audioPolicy.setVolume(target.volume, false);
         if (autoplay && !lifecyclePaused) { target.player.play(); target.state = "playing"; }
         else { target.player.pause(); target.state = "paused"; }
+        PodBenchmark.VideoAction action=PodBenchmark.videoAction(args);
+        if(action!=null){long own=target.generation;PodBenchmark.watchVideo(target.videoView,action,()->target.generation==own&&!target.prewarming&&target.presented&&target.hasRenderedFirstFrame&&target.videoView.getTranslationY()==requested.translateYPx);}
         callback.complete(target.snapshot());
     }
 
@@ -468,6 +474,8 @@ final class PodVideoSessionServices implements AutoCloseable {
         float[] offsets = transitionOffsets(bounds.heightPx, progress, direction);
         from.setTranslation(bounds.translateXPx, offsets[0] + bounds.translateYPx);
         to.setTranslation(bounds.translateXPx, offsets[1] + bounds.translateYPx);
+        PodBenchmark.VideoAction action=PodBenchmark.videoAction(args);
+        if(progress==0&&action!=null){long own=from.generation;PodBenchmark.present(from.videoView,action.event("snap_back"),()->from.generation==own&&from.hasRenderedFirstFrame&&from.videoView.getTranslationY()==bounds.translateYPx);}
         callback.complete(new JSONObject()
                 .put("fromSessionId", fromId).put("toSessionId", toId)
                 .put("progress", progress).put("direction", direction)
@@ -620,6 +628,7 @@ final class PodVideoSessionServices implements AutoCloseable {
         TextureView videoView;
         View background;
         ExoPlayer player;
+        PodMediaAudioPolicy audioPolicy;
         Bounds bounds;
         Callback prepareCallback;
         Runnable prewarmTimeout;
@@ -672,6 +681,7 @@ final class PodVideoSessionServices implements AutoCloseable {
         void resetPlayer() {
             cancelPrewarmTimeout();
             generation += 1;
+            if (audioPolicy != null) { audioPolicy.close(); audioPolicy = null; }
             ExoPlayer previous = player; player = null;
             if (previous != null) {
                 try { previous.clearVideoTextureView(videoView); } catch (RuntimeException ignored) { }
@@ -700,36 +710,43 @@ final class PodVideoSessionServices implements AutoCloseable {
 
         void applyBounds(Bounds value) {
             attachViews(parent);
-            FrameLayout.LayoutParams videoParams = new FrameLayout.LayoutParams(value.widthPx, value.heightPx);
-            videoParams.leftMargin = value.xPx; videoParams.topMargin = value.yPx;
-            videoView.setLayoutParams(videoParams);
-            FrameLayout.LayoutParams backgroundParams = new FrameLayout.LayoutParams(value.widthPx, value.heightPx);
-            backgroundParams.leftMargin = value.xPx; backgroundParams.topMargin = value.yPx;
-            background.setLayoutParams(backgroundParams);
-            if (value.clipRadiusPx > 0) {
-                final Bounds outline = value;
-                ViewOutlineProvider provider = new ViewOutlineProvider() {
-                    @Override public void getOutline(View view, Outline result) {
-                        result.setRoundRect(
-                                Math.round(outline.clipCxPx - outline.clipRadiusPx),
-                                Math.round(outline.clipCyPx - outline.clipRadiusPx),
-                                Math.round(outline.clipCxPx + outline.clipRadiusPx),
-                                Math.round(outline.clipCyPx + outline.clipRadiusPx),
-                                outline.clipRadiusPx);
-                    }
-                };
-                videoView.setOutlineProvider(provider); background.setOutlineProvider(provider);
-                videoView.setClipToOutline(true); background.setClipToOutline(true);
-            } else {
-                videoView.setClipToOutline(false); background.setClipToOutline(false);
+            FrameLayout.LayoutParams current=(FrameLayout.LayoutParams)videoView.getLayoutParams();
+            boolean layout=current==null||current.width!=value.widthPx||current.height!=value.heightPx
+                    ||current.leftMargin!=value.xPx||current.topMargin!=value.yPx;
+            if(layout) {
+                FrameLayout.LayoutParams params=new FrameLayout.LayoutParams(value.widthPx,value.heightPx);
+                params.leftMargin=value.xPx;params.topMargin=value.yPx;
+                videoView.setLayoutParams(params);
+                background.setLayoutParams(new FrameLayout.LayoutParams(params));
             }
             setTranslation(value.translateXPx, value.translateYPx);
-            fitVideo();
+            if(layout)fitVideo();
         }
 
         void setTranslation(float x, float y) {
             videoView.setTranslationX(x); videoView.setTranslationY(y);
             background.setTranslationX(x); background.setTranslationY(y);
+            if(bounds != null && bounds.clipRadiusPx>0) {
+                ViewOutlineProvider provider=new ViewOutlineProvider(){
+                    @Override public void getOutline(View view,Outline outline){
+                        float cx=bounds.clipCxPx-(x-bounds.translateXPx),cy=bounds.clipCyPx-(y-bounds.translateYPx),r=bounds.clipRadiusPx;
+                        outline.setRoundRect(Math.round(cx-r),Math.round(cy-r),Math.round(cx+r),Math.round(cy+r),r);
+                    }
+                };
+                videoView.setOutlineProvider(provider);background.setOutlineProvider(provider);
+                videoView.setClipToOutline(true);background.setClipToOutline(true);
+                videoView.invalidateOutline();background.invalidateOutline();
+            } else { videoView.setClipToOutline(false);background.setClipToOutline(false); }
+
+        }
+
+        void retire() {
+            Callback pending=takePrepareCallback();
+            if(pending!=null) { resetPlayer();pending.fail("cancelled","Video session retired"); }
+            if(player != null) { if(audioPolicy!=null)audioPolicy.setHeldMuted(true);else player.setVolume(0f); player.pause(); }
+            prewarming=true; presented=false;
+            if(player != null) state="prewarmed";
+            hideOffscreen();
         }
 
         void showPresented() {

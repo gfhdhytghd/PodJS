@@ -35,6 +35,8 @@ struct MappedAsset {
 struct Host {
   JavaVM* vm{};
   jclass fontFallback{};
+  jclass benchmarkClass{};
+  jmethodID benchmarkDispatch{};
   jmethodID fontRaster{};
   podjs_perf::FramePerfWindow framePerf;
   podjs_gpu::RendererTimingRecorder hostDiagnostics;
@@ -61,13 +63,22 @@ struct Host {
   int renderCheckpointFrames=0;
   uint64_t lastResourceGeneration = 0;
   ~Host() {
-    if(fontFallback&&vm) {
+    if((fontFallback||benchmarkClass)&&vm) {
       JNIEnv* env=nullptr;bool attached=vm->GetEnv(reinterpret_cast<void**>(&env),JNI_VERSION_1_6)!=JNI_OK;
       if(attached&&vm->AttachCurrentThread(&env,nullptr)!=JNI_OK)return;
-      env->DeleteGlobalRef(fontFallback);if(attached)vm->DetachCurrentThread();
+      if(fontFallback)env->DeleteGlobalRef(fontFallback);if(benchmarkClass)env->DeleteGlobalRef(benchmarkClass);if(attached)vm->DetachCurrentThread();
     }
   }
 };
+static uint64_t benchmarkDispatch(uintptr_t data,const uint8_t* line,size_t length) {
+  auto* host=reinterpret_cast<Host*>(data);if(!host||!host->benchmarkClass||length>1024)return 0;
+  JNIEnv* env=nullptr;if(host->vm->GetEnv(reinterpret_cast<void**>(&env),JNI_VERSION_1_6)!=JNI_OK)return 0;
+  // The Rust hook passes bounded UTF-8 JSON, never a retained service argument.
+  std::string text(reinterpret_cast<const char*>(line),length);jstring value=env->NewStringUTF(text.c_str());
+  jlong result=value?env->CallStaticLongMethod(host->benchmarkClass,host->benchmarkDispatch,value):0;
+  if(value)env->DeleteLocalRef(value);if(env->ExceptionCheck()){env->ExceptionClear();return 0;}
+  return result>0?uint64_t(result):0;
+}
 static int32_t systemGlyph(uintptr_t userdata,const uint16_t* text,size_t units,float px,uint32_t bold,
     uint32_t w,uint32_t h,uint32_t baseline,uint32_t density,float* advance,float* xoff,float* yoff,uint8_t* rgba,size_t length) {
   auto* host=reinterpret_cast<Host*>(userdata);JNIEnv* env=nullptr;
@@ -276,6 +287,10 @@ const char* capabilities = "[\"input.touch\",\"input.rotary\",\"data.kv\",\"devi
   // Both limits apply between FIFO reactions; a single JS job remains atomic.
   pod_runtime_set_job_budget(host->runtime,64,2000);
   env->GetJavaVM(&host->vm);
+  auto benchmarkClass=env->FindClass("dev/podjs/runtime/PodBenchmark");
+  if(benchmarkClass){host->benchmarkClass=static_cast<jclass>(env->NewGlobalRef(benchmarkClass));host->benchmarkDispatch=env->GetStaticMethodID(benchmarkClass,"dispatch","(Ljava/lang/String;)J");env->DeleteLocalRef(benchmarkClass);}
+  if(env->ExceptionCheck()||!host->benchmarkDispatch){if(env->ExceptionCheck())env->ExceptionClear();}
+  else pod_runtime_set_benchmark(host->runtime,benchmarkDispatch,reinterpret_cast<uintptr_t>(host.get()));
   auto fontClass=env->FindClass("dev/podjs/runtime/PodSystemFontFallback");
   if(fontClass) {
     host->fontFallback=static_cast<jclass>(env->NewGlobalRef(fontClass));

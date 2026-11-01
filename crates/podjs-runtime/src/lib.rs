@@ -226,6 +226,7 @@ struct PodBridge {
     events: VecDeque<String>,
     service_results_only: bool,
     effects: VecDeque<String>,
+    benchmark: Option<(PodBenchmarkCallback,usize)>,
     metrics: String,
     capabilities: String,
 }
@@ -521,6 +522,13 @@ fn mount_pod(
         )?;
 
         let b = bridge.clone();
+        ns.set("benchmark", Function::new(ctx.clone(),move |line:String| -> f64 {
+            if line.len()>1024 {return 0.0;}
+            let hook=b.borrow().benchmark;
+            hook.map_or(0.0,|(callback,data)| unsafe {callback(data,line.as_ptr(),line.len()) as f64})
+        })?)?;
+
+        let b = bridge.clone();
         ns.set(
             "displayMetrics",
             Function::new(ctx.clone(), move || b.borrow().metrics.clone())?,
@@ -730,6 +738,7 @@ pub extern "C" fn pod_runtime_create(config: *const PodRuntimeConfig) -> *mut Po
         events: VecDeque::new(),
         service_results_only: false,
         effects: VecDeque::new(),
+        benchmark: None,
         metrics: json!({
             "logicalWidth": logical_width,
             "logicalHeight": logical_height,
@@ -1227,6 +1236,15 @@ pub extern "C" fn pod_runtime_set_scroll_configuration(
     });
     bridge.metrics = metrics.to_string();
     OK
+}
+
+/// Optional synchronous closed telemetry. Host validates the schema and owns
+/// event-time uptime/sequence allocation. Callback must not re-enter the guest.
+pub type PodBenchmarkCallback=unsafe extern "C" fn(usize,*const u8,usize)->u64;
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_set_benchmark(runtime:*mut PodRuntime,callback:Option<PodBenchmarkCallback>,userdata:usize)->i32 {
+    let Ok(runtime)=runtime_mut(runtime) else {return ERR_ARGUMENT;};
+    runtime.bridge.borrow_mut().benchmark=callback.map(|callback|(callback,userdata));OK
 }
 
 /// Host callback writes straight RGBA plus logical metrics. Install before pak
@@ -2177,6 +2195,23 @@ mod tests {
             data_dir: std::ptr::null(),
             capabilities_json: std::ptr::null(),
         }
+    }
+
+    #[test]
+    fn benchmark_is_synchronous_optional_and_does_not_use_effect_queue() {
+        unsafe extern "C" fn observe(data:usize,line:*const u8,length:usize)->u64 {
+            let seen=unsafe {&mut *(data as *mut Vec<String>)};
+            seen.push(String::from_utf8(unsafe {std::slice::from_raw_parts(line,length)}.to_vec()).unwrap());42
+        }
+        let target=CString::new("android-watch").unwrap();let caps=CString::new("[]").unwrap();
+        let runtime=pod_runtime_create(&valid_config(&target,&caps));assert!(!runtime.is_null());
+        let guest=unsafe {&*runtime};
+        mount_pod(&guest.guest,guest.bridge.clone(),guest.kv.clone(),guest.surface.clone(),guest.guest_files_root.clone()).unwrap();
+        guest.guest.eval("unsupported benchmark","if(pod.benchmark('{}')!==0)throw Error('optional');").unwrap();
+        let mut seen=Vec::<String>::new();assert_eq!(pod_runtime_set_benchmark(runtime,Some(observe),&mut seen as *mut _ as usize),OK);
+        guest.guest.eval("synchronous benchmark","if(pod.benchmark('{\"code\":\"gesture_release\"}')!==42)throw Error('sync');pod.benchmark('x'.repeat(1025));").unwrap();
+        assert_eq!(seen,vec!["{\"code\":\"gesture_release\"}".to_string()]);assert!(guest.bridge.borrow().effects.is_empty());
+        assert_eq!(pod_runtime_set_benchmark(runtime,None,0),OK);pod_runtime_destroy(runtime);
     }
 
     #[test]

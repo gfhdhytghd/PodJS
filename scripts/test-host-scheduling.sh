@@ -8,3 +8,6 @@ java -cp "$work" dev.podjs.runtime.HostSchedulingTest
 
 javac -d "$work" platforms/android/runtime/src/main/java/dev/podjs/runtime/HostCallsiteSummary.java tests/java/dev/podjs/runtime/HostCallsiteSummaryTest.java
 java -ea -cp "$work" dev.podjs.runtime.HostCallsiteSummaryTest
+
+javac -d "$work" platforms/android/runtime/src/main/java/dev/podjs/runtime/HostWorkPriority.java tests/java/dev/podjs/runtime/HostWorkPriorityTest.java
+java -ea -cp "$work" dev.podjs.runtime.HostWorkPriorityTest

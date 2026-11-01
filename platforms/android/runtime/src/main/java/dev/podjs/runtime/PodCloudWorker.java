@@ -81,7 +81,7 @@ public final class PodCloudWorker extends Worker {
                         run.reply(reply);
                     }catch(Exception error){run.cancel();}
                 })){
-                    services=host;if(isStopped())run.cancel();
+                    host.headlessWork();services=host;if(isStopped())run.cancel();
                     Future<JSONObject> result=executor.submit(run::run);
                     while(!result.isDone()){
                         if(PodCloudWork.held(context)){PodCloudWork.deferHeld(context,queuedToken);run.cancel();result.get(10,TimeUnit.SECONDS);status="yielded";outcomeCode="local_transfer_held";return Result.success();}

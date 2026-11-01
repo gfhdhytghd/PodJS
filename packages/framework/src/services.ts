@@ -1,3 +1,4 @@
+import type {VideoBenchmarkAction} from './benchmark.ts';
 import { bytesToBase64 as portableBytesToBase64 } from "../../../vendor/pocketjs/framework/src/bytes.ts";
 import { __onHostEvent, hasCapability } from "./watch.ts";
 import type { PodCapabilityId } from "./targets.ts";
@@ -82,9 +83,9 @@ const methods: Record<string, PodCapabilityId> = {
   "tts.spectrum": "media.tts.spectrum",
   "tts.init": "media.tts", "tts.speak": "media.tts", "tts.stop": "media.tts", "tts.state": "media.tts",
   "video.cache.register":"media.video", "video.cache.window":"media.video", "video.cache.stats":"media.video", "video.cache.clear":"media.video",
-  "video.prepare": "media.video", "video.play": "media.video", "video.pause": "media.video", "video.seek": "media.video", "video.stop": "media.video", "video.setBounds": "media.video", "video.state": "media.video",
+  "video.prepare": "media.video", "video.play": "media.video", "video.retire": "media.video", "video.pause": "media.video", "video.seek": "media.video", "video.stop": "media.video", "video.setBounds": "media.video", "video.state": "media.video",
   "video.frame.clear":"media.video", "video.frame.capture":"media.video", "video.frame.restore":"media.video", "video.captureBackdrop": "media.video", "video.setTransform": "media.video", "video.setVolume": "media.video", "video.setLoop": "media.video",
-  "video.session.captureFrame":"media.video.sessions", "video.session.capabilities": "media.video.sessions", "video.session.prepare": "media.video.sessions", "video.session.play": "media.video.sessions", "video.session.pause": "media.video.sessions", "video.session.seek": "media.video.sessions", "video.session.stop": "media.video.sessions", "video.session.release": "media.video.sessions", "video.session.setBounds": "media.video.sessions", "video.session.setTransform": "media.video.sessions", "video.session.setVolume": "media.video.sessions", "video.session.setLoop": "media.video.sessions", "video.session.state": "media.video.sessions", "video.session.promote": "media.video.sessions", "video.session.transition": "media.video.sessions",
+  "video.session.captureFrame":"media.video.sessions", "video.session.capabilities": "media.video.sessions", "video.session.prepare": "media.video.sessions", "video.session.play": "media.video.sessions", "video.session.retire": "media.video.sessions", "video.session.pause": "media.video.sessions", "video.session.seek": "media.video.sessions", "video.session.stop": "media.video.sessions", "video.session.release": "media.video.sessions", "video.session.setBounds": "media.video.sessions", "video.session.setTransform": "media.video.sessions", "video.session.setVolume": "media.video.sessions", "video.session.setLoop": "media.video.sessions", "video.session.state": "media.video.sessions", "video.session.promote": "media.video.sessions", "video.session.transition": "media.video.sessions",
   "image.surface.open":"data.images", "image.surface.update":"data.images", "image.surface.state":"data.images", "image.surface.close":"data.images",
   "video.surface.open":"media.video", "video.surface.update":"media.video", "video.surface.state":"media.video", "video.surface.close":"media.video",
   "share.environment": "system.share", "share.text": "system.share",
@@ -140,7 +141,7 @@ function serviceOperation<T>(method: string, args: Record<string, unknown>, stat
   const result = new Promise<T>((resolve, reject) => {
     const capability = methods[method];
     if (!capability || !hasCapability(capability)) { reject(new HostServiceError("unsupported", `Unsupported host service: ${method}`)); return; }
-    if (pending.size >= 64) { reject(new HostServiceError("busy", "Too many pending host operations")); return; }
+    if (pending.size >= (/^video\.(?!(?:cache|frame|surface)\.)/.test(method) ? 72 : 64)) { reject(new HostServiceError("busy", "Too many pending host operations")); return; }
     pending.set(id, { method:Object.prototype.hasOwnProperty.call(methods,method)?method:'other',resolve: value => resolve(value as T), reject, status });
     try { emit({ t: "service.request", version: 1, id, method, args }); }
     catch (error) { pending.delete(id); reject(error); }
@@ -266,7 +267,7 @@ export const secureStorage = {
   },
   async get(key: string): Promise<string | undefined> { const value = await hostOperation<{exists:boolean;value?:string}>("secure.get",{key}).result; return value.exists ? value.value : undefined; },
   async set(key: string,value: string): Promise<void> { await hostOperation("secure.set",{key,value}).result; },
-  async delete(key: string): Promise<void> { await hostOperation("secure.delete",{key}).result; },
+  async delete(key: string, benchmark?:{seq:number;attempt?:number}): Promise<void> { await hostOperation("secure.delete",{key,...(benchmark?{benchmark}:{})}).result; },
 };
 /** Android STREAM_MUSIC indices, shared by audio, video and speech playback. */
 export interface MediaVolumeState { ok:boolean; min:number; max:number; current:number; fixed:boolean }
@@ -327,8 +328,12 @@ export const speech = {
   speak(text: string,language="zh-CN",rate=1,utteranceId?:string): HostOperation<SpeechState> { return hostOperation("tts.speak",{text,language,rate,...(utteranceId?{utteranceId}:{})}); },
   stop(): Promise<unknown> { return hostOperation("tts.stop",{}).result; },
 };
-export interface VideoBounds { x:number; y:number; width:number; height:number; translateX?:number; translateY?:number; visible?:boolean; roundClip?:{cx:number;cy:number;radius:number} }
-export interface VideoPrepare { url?:string; videoUrl?:string; audioUrl?:string; type?:string; videoMime?:string; videoWidth?:number; videoHeight?:number; headers?:Record<string,string>; bounds:VideoBounds; autoplay?:boolean; muted?:boolean; loop?:boolean; backgroundPlayback?:boolean }
+/** Source-generation-scoped native frame observation; never infer a decoded frame from READY. */
+export function onVideoFirstFrame(listener:(state:VideoState & {sessionId?:string})=>void):()=>void {
+  return __onHostEvent(event=>{if(event.t==='video.firstFrame'&&event.value&&typeof event.value==='object')listener(event.value as VideoState & {sessionId?:string});});
+}
+export interface VideoBounds { benchmark?:VideoBenchmarkAction; x:number; y:number; width:number; height:number; translateX?:number; translateY?:number; visible?:boolean; roundClip?:{cx:number;cy:number;radius:number} }
+export interface VideoPrepare { benchmark?:VideoBenchmarkAction; url?:string; videoUrl?:string; audioUrl?:string; type?:string; videoMime?:string; videoWidth?:number; videoHeight?:number; headers?:Record<string,string>; bounds:VideoBounds; autoplay?:boolean; muted?:boolean; loop?:boolean; backgroundPlayback?:boolean }
 export interface VideoFrameSource {url?:string;videoUrl?:string;audioUrl?:string;headers?:Record<string,string>}
 export interface VideoFrame {available:true;kind:"actual_frame";path:string;width:number;height:number;positionMs:number;capturedAt:number;capturedGeneration:number}
 export interface VideoFrameCapture {key:string;source:VideoFrameSource;sourceGeneration:number}
@@ -342,6 +347,7 @@ export const video = {
   restoreFrame(key:string,source:VideoFrameSource):Promise<VideoFrame|{available:false}> {return hostOperation<VideoFrame|{available:false}>("video.frame.restore",{key,source}).result;},
   prepare(options: VideoPrepare): HostOperation<VideoState> { return hostOperation<VideoState>("video.prepare", options as unknown as Record<string,unknown>); },
   play(): Promise<VideoState> { return hostOperation<VideoState>("video.play", {}).result; },
+  retire(): Promise<VideoState> { return hostOperation<VideoState>("video.retire", {}).result; },
   pause(): Promise<VideoState> { return hostOperation<VideoState>("video.pause", {}).result; },
   seek(positionMs:number): Promise<VideoState> { return hostOperation<VideoState>("video.seek", {positionMs}).result; },
   stop(): Promise<VideoState> { return hostOperation<VideoState>("video.stop", {}).result; },
@@ -377,7 +383,7 @@ export interface VideoSessionState {
   presented:boolean; hasRenderedFirstFrame:boolean; targetBufferBytes:number;
 }
 export interface VideoSessionTransition {
-  fromSessionId:string; toSessionId:string; progress:number; direction:"up"|"down"; bounds?:VideoBounds;
+  fromSessionId:string; toSessionId:string; progress:number; direction:"up"|"down"; bounds?:VideoBounds; benchmark?:VideoBenchmarkAction;
 }
 export interface VideoSessionTransitionState {
   fromSessionId:string; toSessionId:string; progress:number; direction:"up"|"down";
@@ -392,6 +398,7 @@ export const videoSessions = {
   capabilities(profile:Pick<VideoPrepare,"videoMime"|"videoWidth"|"videoHeight">={}):Promise<VideoSessionCapabilities> { return hostOperation<VideoSessionCapabilities>("video.session.capabilities",profile as Record<string,unknown>).result; },
   prepare(options:VideoSessionPrepare):HostOperation<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.prepare",options as unknown as Record<string,unknown>); },
   play(sessionId:string):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.play",{sessionId}).result; },
+  retire(sessionId:string):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.retire",{sessionId}).result; },
   pause(sessionId:string):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.pause",{sessionId}).result; },
   seek(sessionId:string,positionMs:number):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.seek",{sessionId,positionMs}).result; },
   stop(sessionId:string):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.stop",{sessionId}).result; },
@@ -402,7 +409,7 @@ export const videoSessions = {
   setLoop(sessionId:string,loop:boolean):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setLoop",{sessionId,loop}).result; },
   setVolume(sessionId:string,volume:number):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setVolume",{sessionId,volume}).result; },
   /** Reveals the retained target first frame before hiding the replaced session. */
-  promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean}={}):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.promote",{sessionId,...options}).result; },
+  promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean;benchmark?:VideoBenchmarkAction}={}):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.promote",{sessionId,...options}).result; },
   /** Atomically translates both native surfaces. Call promote after progress reaches one. */
   transition(options:VideoSessionTransition):Promise<VideoSessionTransitionState> { return hostOperation<VideoSessionTransitionState>("video.session.transition",options as unknown as Record<string,unknown>).result; },
 };
@@ -509,6 +516,11 @@ export interface BrowserAuthOptions {
   /** Opt in to completion after an observed login panel disappears, verification ends,
    * and required cookies exist. Older hosts retain their manual Done action. */
   completeOnLoginPanelHidden?:boolean;
+  /** Host CookieManager completion, independent of the page script/renderer. */
+  benchmark?:{seq:number;attempt:number};
+  completeOnRequiredCookies?:boolean;
+  /** Compact auth viewport; block automatic media and image loading until verification. */
+  lowMemory?:boolean;
 }
 function isBrowserAuthStatus(value:unknown):value is BrowserAuthStatus {
   if (!value || typeof value!=="object") return false;
@@ -543,8 +555,9 @@ export const browserAuth = {
     return {result:operation.result.then(value=>{finish();return value;},error=>{finish();throw error;}),cancel:()=>{operation.cancel();finish();}};
   },
 };
-/** Read-only snapshot of the native Douyin selectors. No cookie-based auto-completion. */
+/** Read-only DOM snapshot. Cookie completion belongs to the native CookieManager. */
 export const DOUYIN_AUTH_STATUS_SCRIPT = `(function(){
+ try {
   var verify=document.getElementById('uc-second-verify');
   var verifying=!!verify&&verify.tagName.toLowerCase()==='div';
   var panel=!!document.querySelector('article#douyin_login_comp_flat_panel,#douyin-login-new-id,div.douyin_login_new_class,#login-panel-new');
@@ -561,6 +574,7 @@ export const DOUYIN_AUTH_STATUS_SCRIPT = `(function(){
     });
   }
   return {qr:qr,verifying:verifying,loading:document.readyState!=='complete',loginPanelVisible:panel};
+ } catch (_) { return {scriptError:true}; }
 })()`;
 export interface ImageDecodeResult {path:string;width:number;height:number;sourceWidth?:number;sourceHeight?:number;contentWidth?:number;contentHeight?:number;trace?:{decoderOpenMs:number;decodeAndCropMs:number;padMs:number;writeRgbaMs:number}}
 export interface ImageDecodeOptions {maxDimension?:number;applyExif?:boolean;rgb565?:boolean}

@@ -203,6 +203,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         queuedJobTurn=null;jobContinuation=null;effectsPending=false;
         if(hangWatchdog!=null){hangWatchdog.close();hangWatchdog=null;}
         host = handle;
+        if(handle!=0)PodBenchmark.attach(this);
         renderCheckpoint.reset();
         serviceTraceGuestEnabled=false;
         slowServiceCallbacks.clear();guestCallbackLogs=0;

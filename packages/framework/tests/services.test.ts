@@ -764,3 +764,38 @@ test('manual cloud enqueue and local transfer leases require lifecycle grant and
   const session=await pending;expect(order).toEqual(['change:599','submit']);
   const closing=session.close(),close=emitted.at(-1)!;events.push({t:'input.inline.submit',session:open.id,value:'stale'},{t:'service.result',id:close.id,ok:true,value:null});api.__pumpPodEvents();await closing;expect(order).toEqual(['change:599','submit']);
  });
+
+
+test('foreground playback keeps eight reserved requests when restore fills the IO window',async()=>{
+ const {video,videoSessions}=await import('../src/services');host.capabilities=()=>JSON.stringify(['data.secure','media.video','media.video.sessions']);
+ const io=Array.from({length:64},()=>hostOperation('secure.get',{key:'fixture'}));
+ await expect(hostOperation('secure.get',{key:'extra'}).result).rejects.toMatchObject({code:'busy'});
+ const controls=[hostOperation('video.retire',{}),hostOperation('video.session.promote',{sessionId:'next'})];
+ expect(emitted.slice(-2).map(x=>x.method)).toEqual(['video.retire','video.session.promote']);
+ for(const request of emitted.filter(x=>x.t==='service.request'))events.push({t:'service.result',id:request.id,ok:true,value:{ok:true}});
+ api.__pumpPodEvents();await Promise.all([...io,...controls].map(x=>x.result));
+});
+test('decoded frame events carry session and generation independently of READY and unsubscribe',async()=>{
+ const {onVideoFirstFrame}=await import('../src/services');const frames:unknown[]=[];const remove=onVideoFirstFrame(value=>frames.push(value));
+ const value={hasRenderedFirstFrame:true,sessionId:'next',sourceGeneration:7};events.push({t:'video.firstFrame',value});api.__pumpPodEvents();expect(frames).toEqual([value]);
+ remove();events.push({t:'video.firstFrame',value});api.__pumpPodEvents();expect(frames).toHaveLength(1);
+});
+
+test('native cookie completion and compact rendering options cross legacy/status auth without callback serialization',async()=>{
+ host.capabilities=()=>JSON.stringify(['system.browser.auth','system.browser.auth.status']);
+ for(const status of [false,true]){
+  const operation=browserAuth.authorize({url:'https://example.com/login',cookieOrigin:'https://example.com',requiredCookieNames:['sid'],completeOnRequiredCookies:true,lowMemory:true,...(status?{onStatus:()=>{}}:{})});
+  const request=emitted.at(-1)!;expect(request).toMatchObject({method:status?'browser.authorizeWithStatus':'browser.authorize',args:{completeOnRequiredCookies:true,lowMemory:true,requiredCookieNames:['sid']}});
+  expect((request.args as any).onStatus).toBeUndefined();
+  events.push({t:'service.result',id:request.id,ok:true,value:{cookie:'SYNTHETIC',origin:'https://example.com'}});api.__pumpPodEvents();
+  expect(await operation.result).toMatchObject({cookie:'SYNTHETIC'});
+ }
+});
+
+test('auth action metadata crosses browser and native credential-delete boundaries without caller timestamps',async()=>{
+ host.capabilities=()=>JSON.stringify(['system.browser.auth.status','data.secure']);
+ const auth=browserAuth.authorize({url:'https://example.com',cookieOrigin:'https://example.com',requiredCookieNames:['sid'],benchmark:{seq:101,attempt:4},onStatus:()=>{}}),request=emitted.at(-1)!;
+ expect(request.args).toMatchObject({benchmark:{seq:101,attempt:4}});events.push({t:'service.result',id:request.id,ok:true,value:{cookie:'SYNTHETIC',origin:'https://example.com'}});api.__pumpPodEvents();await auth.result;
+ const deleted=secureStorage.delete('fixture',{seq:102});const clear=emitted.at(-1)!;expect(clear).toMatchObject({method:'secure.delete',args:{key:'fixture',benchmark:{seq:102}}});
+ expect(JSON.stringify(clear.args)).not.toContain('mono_ms');events.push({t:'service.result',id:clear.id,ok:true,value:{deleted:true}});api.__pumpPodEvents();await deleted;
+});

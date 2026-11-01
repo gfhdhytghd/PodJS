@@ -163,6 +163,9 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/text-layout` | Cancellable sliced layout preparation and native paragraph measurement. |
 | `@podjs/framework/text-wrap` | Pure compatibility wrapping/line-breaking helpers. |
 | `@podjs/framework/media-surface` | Host-backed image/video surface components and lifecycle. |
+| `@podjs/framework/video-session-pool` | Generic two-slot retained-surface preparation, transitions and atomic promotion. |
+| `@podjs/framework/benchmark` | Synchronous closed release observations with native uptime, sequence and presentation receipts. |
+| `@podjs/framework/video-paging` | Paging-strip geometry and delayed first-frame spinner policy. |
 | `@podjs/framework/media-policy` | Session-local playback recovery budgets, prepare deadlines and source-expiry policy. |
 | `@podjs/framework/crypto` | Length-prefixed binary framing, hex, bounded decimal SAS, host HMAC-SHA256 (32-byte keys) and P-256/P1363 signature verification. |
 | `@podjs/framework/bytes` | Portable UTF-8, byte and Base64 codecs. |
@@ -425,3 +428,5 @@ pieces remain 256 KiB; only validated EOF/CRC provides the final SHA-256. This
 mode accepts concatenated gzip members. Keep provisional parts unreadable until
 that final reply and a durable caller receipt publish the actual length. Hosts
 without this optional mode must not be used for bounded-length streaming.
+
+Video paging keeps an incoming decoded frame attached through promotion. `video.retire()` and `videoSessions.retire(id)` atomically pause, mute and hide the outgoing player without changing system volume. Android playback controls run in the current foreground main turn, independently of file/crypto/secure IO workers. Eight reserved promise slots keep playback controls admissible under a full 64-request IO window. `onVideoFirstFrame` reports native decoded frames with source generation and optional session ID; READY alone does not prove a rendered frame. `VideoFirstFrameWait` delays a spinner until 400 ms without a decoded frame. Native host rebuild is required for retirement and frame events.

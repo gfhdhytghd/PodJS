@@ -88,6 +88,10 @@ final class PodServices implements Closeable {
     void attachPaintAwaiter(PaintAwaiter awaiter){paintAwaiter=awaiter;}
     private final PodParagraphLayout.Cache paragraphLayouts=new PodParagraphLayout.Cache();
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    // Secure UI actions bypass this guest's file/cache queue as well as headless work.
+    private final ExecutorService secureWorker = Executors.newSingleThreadExecutor();
+    private boolean headlessWork;
+    void headlessWork() { headlessWork = true; }
     /** SQLite owns one connection and must stay serial, but must not queue behind file IO,
      * log writes or cache scans on `worker`; text layout/raster likewise gets its own lane so
      * reader pagination never blocks (or is blocked by) storage. Per-lane order is preserved. */
@@ -242,6 +246,7 @@ final class PodServices implements Closeable {
     private static final class Request {
         final CancellationSignal cancellation = new CancellationSignal();
         volatile Future<?> future;
+        HostWorkPriority.Ticket priority;
         AlertDialog dialog;
         Runnable timer;
         Runnable paintCancel;
@@ -402,6 +407,7 @@ final class PodServices implements Closeable {
         if (method.startsWith("video.session.")) {
             request.videoSessionId=args.optString("sessionId",null);
             videoSessions.dispatch(method,args,new PodVideoSessionServices.Callback(){
+                public void firstFrame(JSONObject value) { try { if(!closed)sink.complete(new JSONObject().put("t","video.firstFrame").put("value",value).toString()); } catch(Exception error) { android.util.Log.w("PodJS","Video first frame event unavailable"); } }
                 public void complete(JSONObject value){if(requests.remove(id,request))reply(id,true,value,null,null);}
                 public void fail(String code,String message){if(requests.remove(id,request))failure(id,code,message);}
             });
@@ -412,6 +418,7 @@ final class PodServices implements Closeable {
         }
         if (method.startsWith("video.")) {
             video.dispatch(method, args, new PodVideoServices.Callback() {
+                public void firstFrame(JSONObject value) { try { if(!closed)sink.complete(new JSONObject().put("t","video.firstFrame").put("value",value).toString()); } catch(Exception error) { android.util.Log.w("PodJS","Video first frame event unavailable"); } }
                 public void complete(JSONObject value) { if (requests.remove(id,request)) reply(id,true,value,null,null); }
                 public void fail(String code,String message) { if (requests.remove(id,request)) failure(id,code,message); }
             });
@@ -611,8 +618,13 @@ final class PodServices implements Closeable {
             return;
         }
         args.put("requestId", id);
-        request.future = (method.startsWith("provision.") || method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.") || method.startsWith("discovery.") ? streamWorkers : method.startsWith("http.") ? transfers : method.startsWith("sql.") ? sqlWorker : method.startsWith("text.") ? textWorker : worker).submit(() -> {
+        // Only shared device/secure work uses this gate. Network transfers and
+        // main-thread dialogs never hold an admission ticket while awaiting IO.
+        if (method.startsWith("secure.") || method.startsWith("crypto.") || method.startsWith("file.") || "log.append".equals(method) || "uri.parse".equals(method))
+            request.priority = HostWorkPriority.DEVICE.reserve(headlessWork);
+        try { request.future = (method.startsWith("provision.") || method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.") || method.startsWith("discovery.") ? streamWorkers : method.startsWith("http.") ? transfers : method.startsWith("sql.") ? sqlWorker : method.startsWith("text.") ? textWorker : method.startsWith("secure.") ? secureWorker : worker).submit(() -> {
             try {
+                if (request.priority != null) request.priority.enter();
                 request.cancellation.throwIfCanceled();
                 Object value;
                 if (method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.")) {
@@ -662,8 +674,11 @@ final class PodServices implements Closeable {
                 if (requests.remove(id, request)) failure(id,
                     error instanceof SecureStoreLimits.Failure ? ((SecureStoreLimits.Failure)error).code : error instanceof SecurityException ? "permission_denied" : error instanceof ProvisioningSession.Failure ? "provision_"+((ProvisioningSession.Failure)error).reason : error instanceof UnsupportedOperationException ? "unsupported" : error instanceof IllegalArgumentException ? "invalid_argument" : "host_error",
                     error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage());
-            }
-        });
+            } finally { if (request.priority != null) request.priority.close(); }
+        }); } catch (java.util.concurrent.RejectedExecutionException closedWorker) {
+            if (request.priority != null) request.priority.cancel();
+            if (requests.remove(id,request)) failure(id,"service_closed","Host service worker is closed");
+        }
     }
     private void openBrowser(int id, Request request, JSONObject args) {
         main.post(() -> {
@@ -870,6 +885,7 @@ final class PodServices implements Closeable {
         Request request = requests.remove(id);
         if(request == null) return;
         request.cancellation.cancel();
+        if (request.priority != null) request.priority.cancel();
         if(request.timer != null) main.removeCallbacks(request.timer);
         if(request.paintCancel!=null)request.paintCancel.run();
         if(request.method!=null&&request.method.startsWith("acoustic.")){
@@ -924,6 +940,7 @@ final class PodServices implements Closeable {
             if(installedSync!=null) try { installedSync.close(); } catch(Exception error) {android.util.Log.e("PodJS","Sync owner close failed",error);}
             if(cloudWork!=null)cloudWork.close(); if(background!=null) background.close(); if(notifications!=null)notifications.close(); device.close();
         });
+        secureWorker.shutdown();
         worker.shutdown();
     }
 }

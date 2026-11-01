@@ -90,7 +90,10 @@
     "./checkpointed-file": "./src/checkpointed-file.ts",
     "./read-batch": "./src/read-batch.ts",
     "./host-callsite": "./src/host-callsite.ts",
-    "./cpu-work": "./src/cpu-work.ts"
+    "./cpu-work": "./src/cpu-work.ts",
+    "./video-session-pool": "./src/video-session-pool.ts",
+    "./video-paging": "./src/video-paging.ts",
+    "./benchmark": "./src/benchmark.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",

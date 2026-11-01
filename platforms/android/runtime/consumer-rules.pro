@@ -6,3 +6,8 @@
 -keep class dev.podjs.runtime.PodSystemFontFallback {
     static byte[] raster(java.lang.String, float, int, int, int, int, int);
 }
+
+# Synchronous closed event bridge used by QuickJS and JNI.
+-keep class dev.podjs.runtime.PodBenchmark {
+    public static long dispatch(java.lang.String);
+}

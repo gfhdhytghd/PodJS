@@ -24,6 +24,11 @@ void pod_sync_cancellation_free(PodSyncCancellation *value);
 #define PODJS_MAX_TOUCHES 8
 
 typedef struct PodRuntime PodRuntime;
+/* Optional synchronous closed telemetry. Host timestamps the actual observation.
+ * Callback must not re-enter the runtime. Existing ABI structs are unchanged. */
+typedef uint64_t (*PodBenchmarkCallback)(uintptr_t userdata,const uint8_t *line,size_t length);
+int32_t pod_runtime_set_benchmark(PodRuntime *runtime,PodBenchmarkCallback callback,uintptr_t userdata);
+
 typedef struct PodRenderSnapshot PodRenderSnapshot;
 typedef struct PodSyncFiles PodSyncFiles;
 typedef struct PodSyncSession PodSyncSession;

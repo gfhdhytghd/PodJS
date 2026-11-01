@@ -18,6 +18,8 @@ public final class PodVideoPlaybackService extends MediaSessionService {
     public static final String ACTION_STOP = "dev.podjs.runtime.STOP_VIDEO";
     private MediaSession session;
     private ExoPlayer player;
+    private PodMediaAudioPolicy audioPolicy;
+    PodMediaAudioPolicy audioPolicy() { return audioPolicy; }
     private final android.os.Binder localBinder = new LocalBinder();
     public final class LocalBinder extends android.os.Binder { public PodVideoPlaybackService service() { return PodVideoPlaybackService.this; } }
     public ExoPlayer player() { return player; }
@@ -33,6 +35,8 @@ public final class PodVideoPlaybackService extends MediaSessionService {
         long createStarted=android.os.SystemClock.elapsedRealtime();
         player=new ExoPlayer.Builder(this).setLoadControl(loadControl).build();
         android.util.Log.i("PodVideoTiming","playerCreated durationMs="+(android.os.SystemClock.elapsedRealtime()-createStarted));
+        audioPolicy=new PodMediaAudioPolicy(this, player::setVolume);
+        audioPolicy.observeMuteChanges(player::isPlaying, player::getVolume, new PodVideoMuteTelemetry());
         session=new MediaSession.Builder(this,player).build();
         addSession(session);
     }
@@ -44,6 +48,6 @@ public final class PodVideoPlaybackService extends MediaSessionService {
         super.onStartCommand(intent,flags,id);
         return Service.START_NOT_STICKY; }
     @Override public void onTaskRemoved(Intent rootIntent) { if(player==null||!player.getPlayWhenReady()) stopSelf(); }
-    @Override public void onDestroy() { stopForeground(true);if(session!=null)session.release(); if(player!=null)player.release(); session=null;player=null;super.onDestroy(); }
+    @Override public void onDestroy() { stopForeground(true);if(audioPolicy!=null)audioPolicy.close();audioPolicy=null;if(session!=null)session.release(); if(player!=null)player.release(); session=null;player=null;super.onDestroy(); }
     @Override public IBinder onBind(Intent intent) { if (!PodTakeover.ready(this)) return null; if ("dev.podjs.runtime.BIND_VIDEO".equals(intent.getAction())) return localBinder; return super.onBind(intent); }
 }

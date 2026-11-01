@@ -252,7 +252,9 @@ public final class PodDeviceServices implements AutoCloseable {
     }
     private JSONObject secureDelete(JSONObject a) throws Exception {
         JSONObject values = readSecure(a.optInt("requestId",-1)); boolean removed = values.remove(required(a, "key")) != null;
-        if (removed) writeSecure(values); return new JSONObject().put("deleted", removed);
+        if (removed) writeSecure(values);
+        PodBrowserAuthBenchmark.cleared(a);
+        return new JSONObject().put("deleted", removed);
     }
     private JSONObject readSecure(int id) throws Exception {
         try {
