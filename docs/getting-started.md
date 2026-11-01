@@ -154,6 +154,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/sealed-gzip` | Bounded native gzip streaming over sealed local parts; per-part durable receipts and final EOF/CRC validation. |
 | `@podjs/framework/read-batch` | Memoize immutable reads within a caller-owned, serialized read transaction; no cache survives the transaction. |
 | `@podjs/framework/work-window` | Cooperative host-unit admission before a deadline, input-size estimates, measured margins and closed phase diagnostics; never races writes against timers. Includes `RepeatedWorkGuard` for completed identity replay between durable receipts, without first-unit time caps. |
+| `@podjs/framework/host-callsite` | Bounded numeric callsite counts, coarse byte bands and caller-certified receipt classes for release diagnostics. No argument contents or data identifiers. |
 | `@podjs/framework/cpu-work` | Optional scoped CPU phase observation with coarse input bands, bounded elapsed time and closed outcomes. No input, identity or exception text; no IO without an observer. |
 | `@podjs/framework/background-handler` | Typed headless background-handler entry and delivery contracts. |
 | `@podjs/framework/debug-memory` | Scoped diagnostic resource ownership/accounting; counts are not native heap measurements. |
@@ -416,3 +417,10 @@ remains available. The raw JSON scanner checks cancellation on every original
 fragment, grouping at most 16 fragments or eight elapsed milliseconds before a
 cooperative yield. No JSON token, duplicate-key rule or raw span is changed.
 These schedulers do not create durable application checkpoints.
+
+`sealedGzip` keeps exact decoded lengths by default. Opt in to `allowShortOutput`
+only when `maxOutputBytes` is a bound (such as legacy gzip bodies). All nonfinal
+pieces remain 256 KiB; only validated EOF/CRC provides the final SHA-256. This
+mode accepts concatenated gzip members. Keep provisional parts unreadable until
+that final reply and a durable caller receipt publish the actual length. Hosts
+without this optional mode must not be used for bounded-length streaming.

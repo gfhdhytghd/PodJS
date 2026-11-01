@@ -20,3 +20,8 @@ test('bounded digest supports headless property fallback, byte views and cancell
  g.pod={};g.__podByteCodecs={sha256Create:()=>{const h=createHash('sha256');return {update:(b:Uint8Array)=>{sizes.push(b.length);h.update(b);return true;},finish:()=>{finish++;return new Uint8Array(h.digest());}};}};
  try{const bytes=new Uint8Array(1024*1024+17).fill(37).subarray(1);let yields=0;expect(Buffer.from((await sha256Stream(bytes,async()=>{yields++;}))!).toString('hex')).toBe(createHash('sha256').update(bytes).digest('hex'));expect(Math.max(...sizes)).toBe(262144);expect(yields).toBe(4);sizes=[];await expect(sha256Stream(bytes,async()=>{throw Error('cancel');})).rejects.toThrow('cancel');expect(sizes).toEqual([262144]);expect(finish).toBe(2);}finally{g.pod=pod;g.__podByteCodecs=before;}
 });
+test('bounded-length gzip explicitly accepts early EOF while preserving limits, digest and full nonfinal pieces',async()=>{
+ const bounded={...input,allowShortOutput:true};let receipts=0;
+ expect(await sealedGzip(async<T>(method:string)=>method==='crypto.closeSealedGzip'?{} as T:{offset:0,bytes:17,done:true,sha256:'a'.repeat(64)} as T,bounded,0,async()=>{receipts++;})).toBe('a'.repeat(64));expect(receipts).toBe(1);
+ for(const step of [{offset:0,bytes:262146,done:true,sha256:'a'.repeat(64)},{offset:0,bytes:17,done:false},{offset:0,bytes:17,done:true}])await expect(sealedGzip(async<T>(method:string)=>method==='crypto.closeSealedGzip'?{} as T:step as T,bounded,0,async()=>{})).rejects.toThrow('invalid_sealed_gzip_step');
+});

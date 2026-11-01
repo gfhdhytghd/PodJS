@@ -88,6 +88,7 @@
     "./sha256-stream": "./src/sha256-stream.ts",
     "./sealed-gzip": "./src/sealed-gzip.ts",
     "./read-batch": "./src/read-batch.ts",
+    "./host-callsite": "./src/host-callsite.ts",
     "./cpu-work": "./src/cpu-work.ts"
   },
   "dependencies": {

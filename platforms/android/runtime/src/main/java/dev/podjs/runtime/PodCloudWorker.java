@@ -34,6 +34,16 @@ public final class PodCloudWorker extends Worker {
         for(String line:text.split("\\n")){int at=line.indexOf('{');if(at<0)continue;
             try{JSONObject row=new JSONObject(line.substring(at));String event=row.optString("event"),phase=CloudWorkerOutcome.guestStage(row.optString("stage")),outcome=row.optString("outcome");
                 String code=CloudWorkerOutcome.guestCode(row.optString("code"));
+                if("host-callsite-summary".equals(event)){
+                    org.json.JSONArray counts=row.getJSONArray("counts"),bands=row.getJSONArray("bands");
+                    if(counts.length()>128||bands.length()!=6)continue;
+                    double[][] c=new double[counts.length()][2];double[] b=new double[6];
+                    for(int i=0;i<c.length;i++){org.json.JSONArray r=counts.getJSONArray(i);if(r.length()!=2)throw new IllegalArgumentException();for(int j=0;j<2;j++){Object n=r.get(j);if(!(n instanceof Number))throw new IllegalArgumentException();c[i][j]=((Number)n).doubleValue();}}
+                    for(int i=0;i<6;i++){Object n=bands.get(i);if(!(n instanceof Number))throw new IllegalArgumentException();b[i]=((Number)n).doubleValue();}
+                    Object last=row.get("lastReceiptClass"),receipts=row.get("receipts");
+                    if(last instanceof Number&&receipts instanceof Number){String summary=HostCallsiteSummary.format(c,b,((Number)last).doubleValue(),((Number)receipts).doubleValue());if(summary!=null)android.util.Log.i("PodJSCloudWorker",summary);}
+                    continue;
+                }
                 if("cpu-work".equals(event)){
                     Object bucket=row.opt("sizeClass"),elapsed=row.opt("elapsedMillis");
                     if(bucket instanceof Number&&elapsed instanceof Number){Object id=row.opt("cpuStageId");String cpuStage=id instanceof Number?CloudWorkerOutcome.cpuStageId(((Number)id).doubleValue()):row.optString("stage");String cpu=CloudWorkerOutcome.cpuDiagnostic(cpuStage,row.optString("scale"),((Number)bucket).doubleValue(),((Number)elapsed).doubleValue(),outcome);if(cpu!=null)android.util.Log.i("PodJSCloudWorker",cpu);}

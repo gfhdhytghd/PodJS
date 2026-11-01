@@ -1,3 +1,4 @@
+export {HostCallsiteTrace,hostSizeBand} from './host-callsite';
 export {RepeatedWorkGuard,REPEATED_WORK_VERSION} from './repeated-work';
 /** Cooperative admission for non-preemptible host units. The caller keeps its
  * lease until a started unit settles; no write is raced against a timer.

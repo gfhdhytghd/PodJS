@@ -439,12 +439,13 @@ public final class PodDeviceServices implements AutoCloseable {
     }
     private JSONObject gunzipSealedParts(JSONObject args) throws Exception {
         String prefix=required(args,"outputPrefix"),aadPrefix=required(args,"aadPrefix");
+        boolean allowShortOutput=args.optBoolean("allowShortOutput",false);
         int maximum=args.getInt("maxOutputBytes");long offset=exactFileSize(args,"offset"),length=exactFileSize(args,"length");
         if(maximum<0||maximum>256*1024*1024||offset>maximum||offset!=maximum&&offset%MAX_CHUNK_BYTES!=0||length>256L*1024*1024)throw new IllegalArgumentException("invalid_sealed_gzip");
         org.json.JSONArray parts=args.getJSONArray("parts");if(parts.length()<1||parts.length()>2048)throw new IllegalArgumentException("invalid_sealed_gzip");
         byte[] key=decode(args,"keyBase64");if(key.length!=32)throw new IllegalArgumentException("invalid_aes_key");
         long deadline=args.optLong("deadlineMs",System.currentTimeMillis()+120000);
-        String binding=enc(MessageDigest.getInstance("SHA-256").digest((parts.toString()+":"+enc(key)+":"+aadPrefix+":"+maximum+":"+length).getBytes(StandardCharsets.UTF_8)));
+        String binding=enc(MessageDigest.getInstance("SHA-256").digest((parts.toString()+":"+enc(key)+":"+aadPrefix+":"+maximum+":"+length+":"+allowShortOutput).getBytes(StandardCharsets.UTF_8)));
         try{
             SealedGzipSession stream=sealedGzip.get(prefix);
             if(stream==null||!stream.binding.equals(binding)){
@@ -458,7 +459,7 @@ public final class PodDeviceServices implements AutoCloseable {
                     inputs.add(new SealedGzipSession.Part(file,decode(part,"aadBase64"),n));total+=n;
                 }
                 if(total!=length)throw new IllegalArgumentException("invalid_sealed_gzip");
-                stream=new SealedGzipSession(binding,inputs,key,aadPrefix,maximum,deadline);sealedGzip.put(prefix,stream);
+                stream=new SealedGzipSession(binding,inputs,key,aadPrefix,maximum,deadline,allowShortOutput);sealedGzip.put(prefix,stream);
             }
             SealedGzipSession.Step step=stream.next(offset,deadline,(at,bytes)->{
                 File target=safeFile(prefix+at+".bin");File parent=target.getParentFile();if(!parent.isDirectory()&&!parent.mkdirs())throw new IOException("parent_unavailable");

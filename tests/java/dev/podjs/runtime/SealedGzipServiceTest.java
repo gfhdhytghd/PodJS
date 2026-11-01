@@ -46,6 +46,19 @@ public final class SealedGzipServiceTest {
    JSONObject large=args(key,largeParts,largePlain.length,65*1024*1024+17).put("outputPrefix","large/p").put("offset",65*1024*1024);JSONObject last=host.execute("crypto.gunzipSealedParts",large);check(last.getInt("bytes")==17&&last.getBoolean("done"));check(last.getString("sha256").equals(java.util.HexFormat.of().formatHex(largeHash.digest())));
    Thread.currentThread().interrupt();try{host.execute("crypto.gunzipSealedParts",large.put("offset",0));throw new AssertionError();}catch(java.io.IOException expected){check(expected.getMessage().equals("cloud_sync_deadline_exceeded"));}finally{Thread.interrupted();}
   }
+  // Unknown decoded length: keep the historical gzip bound and support
+  // concatenated members. Exact-length callers must still reject short output.
+  var multi=new java.io.ByteArrayOutputStream();for(int i=0;i<2;i++){try(var zip=new GZIPOutputStream(multi)){zip.write(new byte[131073]);}catch(java.io.IOException e){throw e;}}
+  byte[] multiPlain=multi.toByteArray(),multiNonce=new byte[12],multiAad="multi-source".getBytes(StandardCharsets.UTF_8),multiCipher=PodCloudCrypto.aes(true,key,multiNonce,multiPlain,multiAad),multiSealed=new byte[12+multiCipher.length];System.arraycopy(multiCipher,0,multiSealed,12,multiCipher.length);Files.write(root.resolve("multi-input"),multiSealed);
+  JSONArray multiParts=new JSONArray().put(new JSONObject().put("path","multi-input").put("aadBase64",b64(multiAad)).put("bytes",multiPlain.length));
+  try(PodDeviceServices host=new PodDeviceServices(root.toFile(),()->new SecretKeySpec(key,"AES"))){
+   JSONObject bounded=args(key,multiParts,multiPlain.length,1048576).put("outputPrefix","multi/p").put("allowShortOutput",true);
+   JSONObject first=host.execute("crypto.gunzipSealedParts",bounded);check(first.getInt("bytes")==262144&&!first.getBoolean("done"));
+   JSONObject last=host.execute("crypto.gunzipSealedParts",bounded.put("offset",262144));check(last.getInt("bytes")==2&&last.getBoolean("done"));
+   String hash=java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(new byte[262146]));check(last.getString("sha256").equals(hash));
+   try{host.execute("crypto.gunzipSealedParts",bounded.put("offset",0).put("allowShortOutput",false));host.execute("crypto.gunzipSealedParts",bounded.put("offset",262144));throw new AssertionError();}catch(java.io.IOException expected){check(expected.getMessage().equals("invalid_gzip_length"));}
+   bounded.put("offset",0).put("maxOutputBytes",262145).put("allowShortOutput",true);host.execute("crypto.gunzipSealedParts",bounded);try{host.execute("crypto.gunzipSealedParts",bounded.put("offset",262144));throw new AssertionError();}catch(java.io.IOException expected){check(expected.getMessage().equals("invalid_gzip_length"));}
+  }
   System.out.println("SEALED_GZIP_SERVICE_PASS "+receipts+" restart boundaries; exact AEAD output/hash, lost EOF reply, deadline, traversal, input tamper and gzip CRC failure, 65MiB streamed replay and thread cancellation");
   try(var paths=Files.walk(directory)){for(Path p:paths.sorted(Comparator.reverseOrder()).toList())Files.deleteIfExists(p);}
  }

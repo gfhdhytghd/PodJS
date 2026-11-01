@@ -23,11 +23,14 @@ final class SealedGzipSession implements AutoCloseable {
     }
     final String binding;
     private final byte[] key; private final String aadPrefix;
-    private final int expected; private final GZIPInputStream gzip; private final InputStream source;
+    private final boolean allowShortOutput; private final int expected; private final GZIPInputStream gzip; private final InputStream source;
     private final MessageDigest digest; private final java.security.SecureRandom random=new java.security.SecureRandom();
     private long position,deadline; private boolean closed;
     SealedGzipSession(String binding,List<Part> parts,byte[] key,String aadPrefix,int expected,long deadline) throws Exception {
-        this.binding=binding;this.key=key.clone();this.aadPrefix=aadPrefix;this.expected=expected;this.deadline=deadline;
+        this(binding,parts,key,aadPrefix,expected,deadline,false);
+    }
+    SealedGzipSession(String binding,List<Part> parts,byte[] key,String aadPrefix,int expected,long deadline,boolean allowShortOutput) throws Exception {
+        this.allowShortOutput=allowShortOutput;this.binding=binding;this.key=key.clone();this.aadPrefix=aadPrefix;this.expected=expected;this.deadline=deadline;
         digest=MessageDigest.getInstance("SHA-256");
         source=new InputStream(){
             int index,at;byte[] plain=new byte[0];
@@ -61,8 +64,9 @@ final class SealedGzipSession implements AutoCloseable {
             // the inflater and dictionary. Replay also rebuilds the final hash.
             while(position<offset){check();int n=gzip.read(buffer,0,(int)Math.min(buffer.length,offset-position));if(n<1)throw new IOException("invalid_gzip_length");consume(buffer,n);}
             int count=0,wanted=(int)Math.min(PIECE,expected-position);
-            while(count<wanted){check();int n=gzip.read(buffer,count,wanted-count);if(n<1)throw new IOException("invalid_gzip_length");digest.update(buffer,count,n);count+=n;position+=n;}
-            boolean done=position==expected;String hash=null;
+            boolean eof=false;
+            while(count<wanted){check();int n=gzip.read(buffer,count,wanted-count);if(n<1){if(!allowShortOutput)throw new IOException("invalid_gzip_length");eof=true;break;}digest.update(buffer,count,n);count+=n;position+=n;}
+            boolean done=eof||position==expected;String hash=null;
             if(done){check();if(gzip.read()!=-1)throw new IOException("invalid_gzip_length");
                 StringBuilder h=new StringBuilder();for(byte b:digest.digest())h.append(String.format(Locale.ROOT,"%02x",b&255));hash=h.toString();}
             if(count>0||expected==0){check();byte[] nonce=new byte[12];random.nextBytes(nonce);byte[] plain=Arrays.copyOf(buffer,count),sealed=null;
