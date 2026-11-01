@@ -85,6 +85,8 @@
     "./acked-state-vector": "./src/acked-state-vector.ts",
     "./directory-witness": "./src/directory-witness.ts",
     "./work-window": "./src/work-window.ts",
+    "./sha256-stream": "./src/sha256-stream.ts",
+    "./sealed-gzip": "./src/sealed-gzip.ts",
     "./read-batch": "./src/read-batch.ts",
     "./cpu-work": "./src/cpu-work.ts"
   },

@@ -60,6 +60,7 @@ public final class PodDeviceServices implements AutoCloseable {
     private final SecureReadCache secureReadCache = new SecureReadCache();
     private final SecureRandom random = new SecureRandom();
     private boolean closed;
+    private final java.util.Map<String,SealedGzipSession> sealedGzip = new java.util.HashMap<>();
     private DeviceServiceTrace secureTrace=new DeviceServiceTrace(false,line->{});
     synchronized void enableServiceTrace(boolean enabled){secureTrace=new DeviceServiceTrace(enabled,line->android.util.Log.i("PodJSService",line));}
     private long nextTextReader;
@@ -97,6 +98,8 @@ public final class PodDeviceServices implements AutoCloseable {
             case "crypto.hkdfSha256": return new JSONObject().put("keyBase64", enc(PodCloudCrypto.hkdf(decode(args,"inputBase64"),decode(args,"saltBase64"),decode(args,"infoBase64"))));
             case "crypto.largeAesGcmEncrypt": return largeAes(args,true);
             case "crypto.largeAesGcmDecrypt": return largeAes(args,false);
+            case "crypto.gunzipSealedParts": return gunzipSealedParts(args);
+            case "crypto.closeSealedGzip": closeSealedGzip(required(args,"outputPrefix")); return new JSONObject();
             case "crypto.openSealedParts": return openSealedParts(args);
             case "crypto.gzip": return cryptoOutput(PodCloudCrypto.gzip(cryptoInput(args)));
             case "crypto.gunzip": return cryptoOutput(PodCloudCrypto.gunzip(cryptoInput(args),args.getInt("maxBytes")));
@@ -131,6 +134,8 @@ public final class PodDeviceServices implements AutoCloseable {
     }
 
     @Override public synchronized void close() {
+        for(SealedGzipSession stream:sealedGzip.values())try{stream.close();}catch(IOException ignored){}
+        sealedGzip.clear();
         secureReadCache.clear();
         closed = true;
         secureLeases.close();
@@ -428,6 +433,44 @@ public final class PodDeviceServices implements AutoCloseable {
             }
             return hashFile(target).put("path",temporary.getString("path"));
         }catch(Exception error){discardTemporary(temporary);throw error;}finally{Arrays.fill(key,(byte)0);}
+    }
+    private void closeSealedGzip(String id) throws IOException {
+        SealedGzipSession stream=sealedGzip.remove(id);if(stream!=null)stream.close();
+    }
+    private JSONObject gunzipSealedParts(JSONObject args) throws Exception {
+        String prefix=required(args,"outputPrefix"),aadPrefix=required(args,"aadPrefix");
+        int maximum=args.getInt("maxOutputBytes");long offset=exactFileSize(args,"offset"),length=exactFileSize(args,"length");
+        if(maximum<0||maximum>256*1024*1024||offset>maximum||offset!=maximum&&offset%MAX_CHUNK_BYTES!=0||length>256L*1024*1024)throw new IllegalArgumentException("invalid_sealed_gzip");
+        org.json.JSONArray parts=args.getJSONArray("parts");if(parts.length()<1||parts.length()>2048)throw new IllegalArgumentException("invalid_sealed_gzip");
+        byte[] key=decode(args,"keyBase64");if(key.length!=32)throw new IllegalArgumentException("invalid_aes_key");
+        long deadline=args.optLong("deadlineMs",System.currentTimeMillis()+120000);
+        String binding=enc(MessageDigest.getInstance("SHA-256").digest((parts.toString()+":"+enc(key)+":"+aadPrefix+":"+maximum+":"+length).getBytes(StandardCharsets.UTF_8)));
+        try{
+            SealedGzipSession stream=sealedGzip.get(prefix);
+            if(stream==null||!stream.binding.equals(binding)){
+                closeSealedGzip(prefix);for(String id:new java.util.ArrayList<>(sealedGzip.keySet()))closeSealedGzip(id);
+                java.util.List<SealedGzipSession.Part> inputs=new java.util.ArrayList<>();long total=0;
+                File first=safeFile(prefix+"0.bin");
+                for(int i=0;i<parts.length();i++){
+                    JSONObject part=parts.getJSONObject(i);int n=part.getInt("bytes");if(n<=0||n>MAX_CHUNK_BYTES)throw new IllegalArgumentException("invalid_sealed_gzip");
+                    File file=safeFile(required(part,"path"));
+                    if(file.getParentFile().equals(first.getParentFile())&&file.getName().startsWith(first.getName().substring(0,first.getName().length()-5)))throw new IllegalArgumentException("overlapping_sealed_gzip");
+                    inputs.add(new SealedGzipSession.Part(file,decode(part,"aadBase64"),n));total+=n;
+                }
+                if(total!=length)throw new IllegalArgumentException("invalid_sealed_gzip");
+                stream=new SealedGzipSession(binding,inputs,key,aadPrefix,maximum,deadline);sealedGzip.put(prefix,stream);
+            }
+            SealedGzipSession.Step step=stream.next(offset,deadline,(at,bytes)->{
+                File target=safeFile(prefix+at+".bin");File parent=target.getParentFile();if(!parent.isDirectory()&&!parent.mkdirs())throw new IOException("parent_unavailable");
+                // Every piece has its own fsynced temporary and atomic publish.
+                JSONObject temp=fileCreateTemp(new JSONObject().put("directory",root.toPath().relativize(parent.toPath()).toString()));
+                try{File staged=safeFile(temp.getString("path"));atomicWrite(staged,bytes);JSONObject hash=hashFile(staged);
+                    fileCommit(new JSONObject().put("path",temp.getString("path")).put("target",prefix+at+".bin").put("expectedSize",bytes.length).put("expectedSha256",hash.getString("sha256")));
+                }finally{discardTemporary(temp);}
+            });
+            JSONObject result=new JSONObject().put("offset",step.offset).put("bytes",step.bytes).put("done",step.done);
+            if(step.done){result.put("sha256",step.sha256);closeSealedGzip(prefix);}return result;
+        }catch(Exception error){try{closeSealedGzip(prefix);}catch(IOException ignored){}throw error;}finally{Arrays.fill(key,(byte)0);}
     }
     private JSONObject cryptoRandom(JSONObject a) throws Exception {
         int n = a.optInt("bytes", 32); if (n < 0 || n > MAX_CHUNK_BYTES) throw new IllegalArgumentException("invalid_bytes");

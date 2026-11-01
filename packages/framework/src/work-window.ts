@@ -32,14 +32,14 @@ export function windowedHost<T extends <R>(method:string,args:Record<string,unkn
   // Releasing a held lease and one bounded diagnostic flush must unwind even
   // after admission closes. They cannot start application work.
   if(['cloud.release','secure.release','log.append'].includes(method))return host<R>(method,args);
-  if(method==='file.delete'){try{return await window.cleanup(()=>host<R>(method,args));}finally{sizes.delete(String(args.path));}}
+  if(method==='file.delete'||method==='crypto.closeSealedGzip'){try{return await window.cleanup(()=>host<R>(method,args));}finally{sizes.delete(String(args.path));}}
   const stage:WorkStage=method==='http.download'?'network':method==='secure.get'?'secure-read':method.startsWith('secure.')?'secure-write':(/aesgcmdecrypt/i.test(method)||method==='crypto.openSealedParts')?'decrypt':/aesgcmencrypt/i.test(method)?'encrypt':method==='file.read'?'file-read':method==='file.write'?'file-write':method==='file.commit'?'file-commit':/gzip|gunzip/.test(method)?'transform':'host';
   const input=typeof args.inputPath==='string'?args.inputPath:typeof args.path==='string'?args.path:'';
   const bytes=method==='crypto.openSealedParts'&&typeof args.length==='number'?args.length:sizes.get(input)??0;
-  const estimate=method==='crypto.openSealedParts'?2000+Math.ceil(bytes/1048576)*1000:['decrypt','encrypt','transform'].includes(stage)?2000+Math.ceil(bytes/131072)*1000:1000;
+  const estimate=method==='crypto.gunzipSealedParts'?2000+Math.ceil(Number(args.replayBytes??0)/1048576)*1000:method==='crypto.openSealedParts'?2000+Math.ceil(bytes/1048576)*1000:['decrypt','encrypt','transform'].includes(stage)?2000+Math.ceil(bytes/131072)*1000:1000;
   // A transport unit already has a native total-call timeout. Shorten it to
   // the current window rather than starting a 120s request at the boundary.
-  let callArgs=method==='crypto.openSealedParts'?{...args,deadlineMs:Date.now()+window.remainingMillis()}:args;
+  let callArgs=method==='crypto.openSealedParts'||method==='crypto.gunzipSealedParts'?{...args,deadlineMs:Date.now()+window.remainingMillis()}:args;
   if(method==='http.download'){
    const limit=Math.max(1,Math.floor(window.remainingMillis()-1000));
    const bound=(value:unknown,fallback:number)=>Math.max(1,Math.min(typeof value==='number'&&Number.isFinite(value)?value:fallback,limit));

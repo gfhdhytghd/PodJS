@@ -88,6 +88,24 @@ pub fn sha256_bytes<'js>(ctx: Ctx<'js>, input: TypedArray<'js, u8>) -> rquickjs:
     TypedArray::new(ctx, Sha256::digest(bytes).to_vec()).map(Some)
 }
 
+/// A guest-owned digest state. Each update consumes at most 256 KiB; only the
+/// fixed-size SHA state survives, never a guest buffer or a service/file handle.
+pub fn sha256_create<'js>(ctx: Ctx<'js>) -> rquickjs::Result<Object<'js>> {
+    let state=std::rc::Rc::new(std::cell::RefCell::new(Some(Sha256::new())));
+    let object=Object::new(ctx.clone())?;
+    let update=state.clone();
+    object.set("update",Function::new(ctx.clone(),move |input:TypedArray<'_,u8>| -> bool {
+        let Some(bytes)=input.as_bytes() else{return false;};
+        if bytes.len()>256*1024{return false;}
+        let mut slot=update.borrow_mut();let Some(hash)=slot.as_mut() else{return false;};
+        hash.update(bytes);true
+    })?)?;
+    object.set("finish",Function::new(ctx.clone(),move |ctx:Ctx<'js>| -> rquickjs::Result<Option<TypedArray<'js,u8>>> {
+        match state.borrow_mut().take(){Some(hash)=>TypedArray::new(ctx,hash.finalize().to_vec()).map(Some),None=>Ok(None)}
+    })?)?;
+    Ok(object)
+}
+
 /// Incremental IEEE CRC32, bounded to one guest view and no retained buffers.
 pub fn crc32_bytes(input: TypedArray<'_, u8>, initial: f64) -> Option<f64> {
     let bytes = input.as_bytes()?;
@@ -142,6 +160,7 @@ pub fn mount<'js>(ctx: Ctx<'js>, pod: &Object<'js>) -> rquickjs::Result<()> {
     pod.set("crc32Bytes", Function::new(ctx.clone(), crc32_bytes)?)?;
     pod.set("gunzipBytes", Function::new(ctx.clone(), gunzip_bytes)?)?;
     pod.set("androidJsonQuotedByteLength", Function::new(ctx.clone(), android_json_quoted_byte_length)?)?;
+    pod.set("sha256Create", Function::new(ctx.clone(), sha256_create)?)?;
     pod.set("sha256Bytes", Function::new(ctx.clone(), sha256_bytes)?)?;
     pod.set("encodeUtf8Chunk", Function::new(ctx.clone(), encode_utf8)?)?;
     pod.set(
@@ -156,6 +175,16 @@ pub fn mount<'js>(ctx: Ctx<'js>, pod: &Object<'js>) -> rquickjs::Result<()> {
 mod tests {
     use super::*;
     use rquickjs::{CatchResultExt, Context, Runtime};
+    #[test]
+    fn incremental_sha256_state_is_bounded_exact_and_guest_owned() {
+        let rt=rquickjs::Runtime::new().unwrap();let context=rquickjs::Context::full(&rt).unwrap();
+        context.with(|ctx|{
+            let pod=Object::new(ctx.clone()).unwrap();mount(ctx.clone(),&pod).unwrap();ctx.globals().set("__podByteCodecs",pod).unwrap();
+            let actual:String=ctx.eval(r#"(()=>{const h=__podByteCodecs.sha256Create();const bytes=new Uint8Array(256*1024+2).fill(37);for(let i=0;i<33;i++)if(!h.update(bytes.subarray(1,262145)))throw Error('update');if(h.update(bytes))throw Error('bound');const out=Array.from(h.finish()).map(x=>x.toString(16).padStart(2,'0')).join('');if(h.finish()!=null||h.update(new Uint8Array()))throw Error('closed');return out;})()"#).unwrap();
+            let expected=format!("{:x}",Sha256::digest(vec![37u8;33*256*1024]));assert_eq!(actual,expected);
+        });
+    }
+
     #[test]
     fn headless_utf8_is_strict_bounded_and_preserves_views_bom_nul() {
         let rt=Runtime::new().unwrap();let context=Context::full(&rt).unwrap();context.with(|ctx| {

@@ -17,7 +17,7 @@ test('small work is quiet; closed scopes and nested ownership do not leak heartb
  for(const scale of ['bytes','chars','items']as const){expect(cpuSizeClass(scale,0)).toBe(0);expect(cpuSizeClass(scale,Infinity)).toBe(5);}
 });
 test('JSON and sort wrappers preserve builtin result/errors and stringify getter behavior',()=>{
- const stop=observeCpuWork(()=>{});try{const value={n:0,get x(){this.n++;return 'x';}};expect(cpuJsonStringify(value)).toBe('{"n":0,"x":"x"}');expect(value.n).toBe(1);expect(cpuJsonParse('{"x":1}')).toEqual({x:1});expect(()=>cpuJsonParse('bad')).toThrow(SyntaxError);const values=[3,1,2];expect(cpuSort(values,(a,b)=>a-b)).toBe(values);expect(values).toEqual([1,2,3]);}finally{stop();}
+ const stop=observeCpuWork(()=>{});try{const value={n:0,get x(){this.n++;return 'x';}};expect(cpuJsonStringify(value)).toBe('{"n":0,"x":"x"}');expect(value.n).toBe(1);expect(cpuJsonParse<{x:number}>('{"x":1}')).toEqual({x:1});expect(()=>cpuJsonParse('bad')).toThrow(SyntaxError);const values=[3,1,2];expect(cpuSort(values,(a,b)=>a-b)).toBe(values);expect(values).toEqual([1,2,3]);}finally{stop();}
 });
 
 test('lazy CPU traversal keeps its input band and closes the source on early return or completion',async()=>{

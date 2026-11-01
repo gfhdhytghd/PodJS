@@ -17,3 +17,5 @@ java -Xmx64m -ea -cp "$secure_cp" dev.podjs.runtime.SecureStoreCapacityTest
 # JVM Base64 shim only; execute the actual compiled native-service dispatcher.
 javac -cp "$secure_cp" -d "$secure_work" tests/java/stubs/android/util/Base64.java tests/java/dev/podjs/runtime/SealedPartsServiceTest.java
 java -Xmx128m -ea -cp "$secure_cp" dev.podjs.runtime.SealedPartsServiceTest
+javac -cp "$secure_cp" -d "$secure_work" tests/java/dev/podjs/runtime/SealedGzipServiceTest.java
+java -Xmx128m -ea -cp "$secure_cp" dev.podjs.runtime.SealedGzipServiceTest

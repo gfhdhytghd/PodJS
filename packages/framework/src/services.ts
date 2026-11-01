@@ -97,7 +97,7 @@ const methods: Record<string, PodCapabilityId> = {
   "location.current": "device.location",
   "battery.percent": "device.battery",
   "crypto.verifyP256": "crypto.basic", "crypto.ecdhPublicKey": "crypto.basic", "crypto.ecdhUnwrap": "crypto.basic", "crypto.ecdhPossessionProof": "crypto.basic", "crypto.hkdfSha256": "crypto.basic",
-  "crypto.openSealedParts": "crypto.basic", "crypto.largeAesGcmEncrypt": "crypto.basic", "crypto.largeAesGcmDecrypt": "crypto.basic", "crypto.gzip": "crypto.basic", "crypto.gunzip": "crypto.basic",
+  "crypto.gunzipSealedParts": "crypto.basic", "crypto.closeSealedGzip": "crypto.basic", "crypto.openSealedParts": "crypto.basic", "crypto.largeAesGcmEncrypt": "crypto.basic", "crypto.largeAesGcmDecrypt": "crypto.basic", "crypto.gzip": "crypto.basic", "crypto.gunzip": "crypto.basic",
   "crypto.rsaOaepSha256": "crypto.basic", "crypto.random": "crypto.basic", "crypto.hash": "crypto.basic", "crypto.hmacSha256": "crypto.basic", "crypto.aesGcmEncrypt": "crypto.basic", "crypto.aesGcmDecrypt": "crypto.basic", "crypto.encrypt": "crypto.basic", "crypto.decrypt": "crypto.basic",
   "uri.parse": "data.uri", "file.htmlText": "data.files.chunks", "file.gzip": "data.files.chunks", "file.gzipBytes": "data.files.chunks", "file.gunzip": "data.files.chunks", "file.openText": "data.files.chunks", "file.readTextChunk": "data.files.chunks", "file.closeText": "data.files.chunks", "file.createTemp": "data.files.chunks", "file.hash": "data.files.chunks", "file.commit": "data.files.chunks", "file.read": "data.files.chunks", "log.append": "data.files.chunks", "file.write": "data.files.chunks", "file.list": "data.files.chunks", "file.touch": "data.files.chunks", "file.stat": "data.files.chunks", "file.delete": "data.files.chunks",
 };
