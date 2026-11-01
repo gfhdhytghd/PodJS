@@ -151,6 +151,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/sync-messages` | Companion message wire protocol and acknowledgement helpers. |
 | `@podjs/framework/platform-services` | Background scheduling, notification and companion/file-transfer service interfaces. |
 | `@podjs/framework/sha256-stream` | Guest-owned native digest state; bounded updates and cooperative cancellation without temporary plaintext files. |
+| `@podjs/framework/checkpointed-file` | Publish immutable bytes with secure per-piece receipts and native atomic composition; restart without rewriting committed pieces. |
 | `@podjs/framework/sealed-gzip` | Bounded native gzip streaming over sealed local parts; per-part durable receipts and final EOF/CRC validation. |
 | `@podjs/framework/read-batch` | Memoize immutable reads within a caller-owned, serialized read transaction; no cache survives the transaction. |
 | `@podjs/framework/work-window` | Cooperative host-unit admission before a deadline, input-size estimates, measured margins and closed phase diagnostics; never races writes against timers. Includes `RepeatedWorkGuard` for completed identity replay between durable receipts, without first-unit time caps. |

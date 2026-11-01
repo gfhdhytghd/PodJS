@@ -35,7 +35,7 @@ final class CloudWorkerOutcome {
         if(method.startsWith("secure."))return "secure-write";
         if(method.endsWith("AesGcmDecrypt")||method.equals("crypto.openSealedParts"))return "decrypt";
         if(method.endsWith("AesGcmEncrypt"))return "encrypt";
-        if("file.commit".equals(method))return "file-commit";
+        if("file.commit".equals(method)||"file.compose".equals(method))return "file-commit";
         if("file.write".equals(method))return "file-write";
         if("file.read".equals(method))return "file-read";
         if("file.gzip".equals(method)||"file.gunzip".equals(method))return "transform";

@@ -91,7 +91,7 @@ final class ServiceResultTrace {
         "crypto.gunzipSealedParts","crypto.closeSealedGzip","crypto.openSealedParts","crypto.largeAesGcmDecrypt", "crypto.largeAesGcmEncrypt", "crypto.random", "crypto.rsaOaepSha256", "debug.memoryStats",
         "debug.performance.read", "debug.performance.start", "debug.performance.stop", "discovery.bleReadCharacteristic", "discovery.mdns",
         "discovery.networkSnapshot", "discovery.networkSubscribe", "discovery.networkUnsubscribe", "discovery.requestPermission", "discovery.status",
-        "display.keepAwake", "display.state", "file.closeText", "file.commit", "file.createTemp",
+        "display.keepAwake", "display.state", "file.closeText", "file.commit", "file.compose", "file.createTemp",
         "file.delete", "file.gunzip", "file.gzip", "file.gzipBytes", "file.hash",
         "file.htmlText", "file.list", "file.openText", "file.read", "file.readTextChunk",
         "file.stat", "file.touch", "file.write", "http.download", "image.decode",

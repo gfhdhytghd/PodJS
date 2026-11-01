@@ -19,3 +19,6 @@ javac -cp "$secure_cp" -d "$secure_work" tests/java/stubs/android/util/Base64.ja
 java -Xmx128m -ea -cp "$secure_cp" dev.podjs.runtime.SealedPartsServiceTest
 javac -cp "$secure_cp" -d "$secure_work" tests/java/dev/podjs/runtime/SealedGzipServiceTest.java
 java -Xmx128m -ea -cp "$secure_cp" dev.podjs.runtime.SealedGzipServiceTest
+
+javac -cp "$secure_cp" -d "$secure_work" tests/java/dev/podjs/runtime/FileComposeServiceTest.java
+java -Xmx128m -ea -cp "$secure_cp" dev.podjs.runtime.FileComposeServiceTest

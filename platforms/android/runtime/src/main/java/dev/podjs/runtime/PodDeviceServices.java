@@ -125,6 +125,7 @@ public final class PodDeviceServices implements AutoCloseable {
             case "file.closeText": return fileCloseText(args);
             case "file.createTemp": return fileCreateTemp(args);
             case "file.commit": return fileCommit(args);
+            case "file.compose": return fileCompose(args);
             case "file.list": return fileList(args);
             case "file.touch": return fileTouch(args);
             case "file.stat": return fileStat(args);
@@ -693,6 +694,33 @@ public final class PodDeviceServices implements AutoCloseable {
         StringBuilder hash = new StringBuilder(64);
         for (byte value : digest.digest()) hash.append(String.format(java.util.Locale.ROOT, "%02x", value & 255));
         return new JSONObject().put("size", size).put("sha256", hash.toString());
+    }
+    /** Assemble immutable pieces without guest plaintext transfer. Verify every
+     * piece while copying, then use the normal fsync + atomic publication path.
+     * No incomplete output or partial checksum is exposed to the guest. */
+    private JSONObject fileCompose(JSONObject a) throws Exception {
+        org.json.JSONArray parts=a.getJSONArray("parts");long expected=exactFileSize(a,"expectedSize");
+        if(parts.length()>2048||expected>256L*1024*1024)throw new IllegalArgumentException("invalid_file_parts");
+        File target=safeFile(required(a,"target"));String expectedHash=required(a,"expectedSha256");
+        if(!expectedHash.matches("[a-f0-9]{64}"))throw new IllegalArgumentException("invalid_expected_hash");
+        String directory=root.toPath().relativize(target.getParentFile().toPath()).toString();
+        JSONObject temp=fileCreateTemp(new JSONObject().put("directory",directory.isEmpty()?"compose":directory));
+        try{
+            long total=0;byte[] buffer=new byte[65536];
+            try(FileOutputStream out=new FileOutputStream(safeFile(temp.getString("path")))){
+                for(int i=0;i<parts.length();i++){
+                    if(Thread.currentThread().isInterrupted()||a.has("deadlineMs")&&System.currentTimeMillis()>=a.getLong("deadlineMs"))throw new IOException("cloud_sync_deadline_exceeded");
+                    JSONObject part=parts.getJSONObject(i);File source=safeFile(required(part,"path"));long size=exactFileSize(part,"size");
+                    if(source.equals(target)||size<1||size>MAX_CHUNK_BYTES||size>expected-total||!source.isFile()||source.length()!=size)throw new IOException("invalid_file_part");
+                    MessageDigest digest=MessageDigest.getInstance("SHA-256");long copied=0;
+                    try(FileInputStream in=new FileInputStream(source)){int n;while((n=in.read(buffer))!=-1){if(n>size-copied)throw new IOException("invalid_file_part");out.write(buffer,0,n);digest.update(buffer,0,n);copied+=n;}}
+                    StringBuilder hex=new StringBuilder(64);for(byte value:digest.digest())hex.append(String.format(java.util.Locale.ROOT,"%02x",value&255));
+                    if(copied!=size||!hex.toString().equals(required(part,"sha256")))throw new IOException("file_part_checksum_mismatch");total+=copied;
+                }
+            }finally{Arrays.fill(buffer,(byte)0);}
+            if(total!=expected)throw new IOException("file_compose_size_mismatch");
+            return fileCommit(new JSONObject().put("path",temp.getString("path")).put("target",a.getString("target")).put("expectedSize",expected).put("expectedSha256",expectedHash));
+        }finally{discardTemporary(temp);}
     }
     /** Verify the complete staged file before atomically publishing its final path. */
     private JSONObject fileCommit(JSONObject a) throws Exception {
