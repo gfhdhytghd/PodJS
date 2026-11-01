@@ -24,6 +24,12 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceError;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.WebChromeClient;
+import android.webkit.ConsoleMessage;
+import android.webkit.WebResourceResponse;
+import android.webkit.RenderProcessGoneDetail;
+import android.os.SystemClock;
+import android.util.Log;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -69,6 +75,9 @@ public final class PodBrowserAuthServices implements AutoCloseable {
     private ViewGroup qrMask;
     private PodBrowserWaitView qrWaitView;
     private Runnable qrPoll;
+    private Runnable deadlinePoll;
+    private PodBrowserAuthDeadline deadline;
+    private boolean verifying;
     private String displayedQrData;
     private Callback pending;
     private PodBrowserAuthStatus.Stream statusStream;
@@ -92,13 +101,19 @@ public final class PodBrowserAuthServices implements AutoCloseable {
 
     public void authorize(JSONObject args, Callback callback, boolean withStatus) {
         if (args == null || callback == null) throw new IllegalArgumentException("args_callback_required");
+        Log.i("PodBrowserAuth", "code=requested");
         main.post(() -> { if (callback.isActive()) open(args, callback, withStatus); });
     }
 
+    private static void reject(Callback callback, String code, String message) {
+        Log.w("PodBrowserAuth", "code=" + code);
+        callback.fail(code, message);
+    }
+
     private void open(JSONObject args, Callback callback, boolean withStatus) {
-        if (closed) { callback.fail("service_closed", "Browser authorization service is closed"); return; }
-        if (!(context instanceof Activity)) { callback.fail("unavailable", "Browser authorization requires an Activity"); return; }
-        if (pending != null) { callback.fail("busy", "A browser authorization dialog is already open"); return; }
+        if (closed) { reject(callback, "service_closed", "Browser authorization service is closed"); return; }
+        if (!(context instanceof Activity)) { reject(callback, "unavailable", "Browser authorization requires an Activity"); return; }
+        if (pending != null) { reject(callback, "busy", "A browser authorization dialog is already open"); return; }
 
         final Uri initial;
         final Uri cookieOrigin;
@@ -114,7 +129,7 @@ public final class PodBrowserAuthServices implements AutoCloseable {
                 throw new IllegalArgumentException("login_panel_completion_requires_status_script");
             if (qrExtractionScript.length() > 16 * 1024) throw new IllegalArgumentException("qr_extraction_script_too_large");
         } catch (IllegalArgumentException error) {
-            callback.fail("invalid_argument", message(error));
+            reject(callback, "invalid_argument", message(error));
             return;
         }
 
@@ -130,22 +145,46 @@ public final class PodBrowserAuthServices implements AutoCloseable {
             CookieManager cookies = CookieManager.getInstance();
             cookies.setAcceptCookie(true);
             cookies.setAcceptThirdPartyCookies(view, false);
+            view.setWebChromeClient(new WebChromeClient() {
+                @Override public boolean onConsoleMessage(ConsoleMessage message) {
+                    if (pending == callback && message.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
+                        // Page messages/URLs can include credentials. Log one closed code per session.
+                        if (deadline != null && deadline.scriptError()) Log.w("PodBrowserAuth", "code=browser_script_error");
+                    }
+                    return true;
+                }
+            });
             view.setWebViewClient(new WebViewClient() {
                 private void page(boolean loading) {
-                    if (webView != view || pending != callback || statusStream == null) return;
+                    if (webView != view || pending != callback) return;
+                    if (statusLabel != null) statusLabel.setText(loading ? "正在加载登录页…" : "正在等待登录二维码…");
+                    if (statusStream == null) return;
                     try { statusStream.emit(PodBrowserAuthStatus.event("pageState").put("loading", loading)); }
                     catch (org.json.JSONException error) { throw new IllegalStateException(error); }
                 }
                 @Override public void onPageStarted(WebView v, String url, Bitmap icon) {
                     if (webView != view || pending != callback) return;
+                    Log.i("PodBrowserAuth", "code=page_started");
                     pageGeneration++;
                     if (qrOverlay != null) hideQrOverlay(qrOverlay);
                     if (statusStream != null) statusStream.accept(PodBrowserAuthStatus.parse("null"));
                     page(true);
                 }
-                @Override public void onPageFinished(WebView v, String url) { page(false); }
+                @Override public void onPageFinished(WebView v, String url) {
+                    if (webView == view && pending == callback) Log.i("PodBrowserAuth", "code=page_finished");
+                    page(false);
+                }
+                @Override public void onReceivedHttpError(WebView v, WebResourceRequest request, WebResourceResponse response) {
+                    if (webView == view && pending == callback && request != null && request.isForMainFrame())
+                        finishFailure("webview_http_" + response.getStatusCode(), "WebView main frame HTTP failure");
+                }
+                @Override public boolean onRenderProcessGone(WebView v, RenderProcessGoneDetail detail) {
+                    if (webView == view && pending == callback)
+                        finishFailure("webview_renderer_gone", "WebView renderer stopped");
+                    return true;
+                }
                 @Override public void onReceivedError(WebView v, WebResourceRequest request, WebResourceError error) {
-                    if (webView != view || pending != callback || loginCompletion == null || request == null || !request.isForMainFrame()) return;
+                    if (webView != view || pending != callback || request == null || !request.isForMainFrame()) return;
                     // Numeric WebView code only: never forward URLs, page text or vendor descriptions.
                     int code = error == null ? WebViewClient.ERROR_UNKNOWN : error.getErrorCode();
                     finishFailure("webview_load_" + code, "WebView main frame failed");
@@ -167,7 +206,7 @@ public final class PodBrowserAuthServices implements AutoCloseable {
                     round);
 
             TextView status = new TextView(context);
-            status.setText("登录后点完成");
+            status.setText("正在加载登录页…");
             status.setTextColor(Color.WHITE);
             status.setTextSize(TypedValue.COMPLEX_UNIT_PX, layout.chromeTextPx);
             status.setGravity(Gravity.CENTER);
@@ -268,14 +307,31 @@ public final class PodBrowserAuthServices implements AutoCloseable {
             dialog = created;
             webView = view;
             created.show();
+            deadline = new PodBrowserAuthDeadline(SystemClock.elapsedRealtime(), !qrExtractionScript.isEmpty());
+            verifying = false;
+            startDeadlinePolling(callback);
+            Log.i("PodBrowserAuth", "code=opened");
             view.loadUrl(initial.toString());
             if (qrOverlay != null) startQrPolling(view, qrOverlay, qrExtractionScript);
         } catch (Throwable error) {
             endStatus(false);
             pending = null;
             dismissAndRelease();
+            Log.w("PodBrowserAuth", "code=webview_unavailable");
             callback.fail("webview_unavailable", "WebView is unavailable");
         }
+    }
+
+    private void startDeadlinePolling(Callback owner) {
+        deadlinePoll = new Runnable() {
+            @Override public void run() {
+                if (pending != owner || deadline == null) return;
+                String code = deadline.failure(SystemClock.elapsedRealtime());
+                if (code != null) { finishFailure(code, "Browser authorization deadline exceeded"); return; }
+                main.postDelayed(this, 250);
+            }
+        };
+        main.post(deadlinePoll);
     }
 
     public void cancel() {
@@ -292,6 +348,7 @@ public final class PodBrowserAuthServices implements AutoCloseable {
     }
 
     private void finishSuccess(JSONObject result) {
+        Log.i("PodBrowserAuth", "code=completed");
         endStatus(false);
         Callback callback = pending;
         pending = null;
@@ -300,6 +357,7 @@ public final class PodBrowserAuthServices implements AutoCloseable {
     }
 
     private void finishFailure(String code, String message) {
+        Log.w("PodBrowserAuth", "code=" + code);
         endStatus("cancelled".equals(code));
         Callback callback = pending;
         pending = null;
@@ -315,6 +373,9 @@ public final class PodBrowserAuthServices implements AutoCloseable {
     }
 
     private void releaseWebView() {
+        if (deadlinePoll != null) main.removeCallbacks(deadlinePoll);
+        deadlinePoll = null;
+        deadline = null;
         if (qrPoll != null) main.removeCallbacks(qrPoll);
         qrPoll = null;
         loginCompletion = null;
@@ -357,6 +418,8 @@ public final class PodBrowserAuthServices implements AutoCloseable {
                 if (statusStream == null) showQrOverlay(overlay, javascriptString(result));
                 else {
                     PodBrowserAuthStatus snapshot = PodBrowserAuthStatus.parse(result);
+                    verifying = snapshot.verifying;
+                    if (deadline != null) deadline.state(SystemClock.elapsedRealtime(), qrMask != null && qrMask.getVisibility() == ViewGroup.VISIBLE, verifying);
                     statusStream.accept(snapshot);
                     if (!isCurrentQrSession(view, overlay)) return;
                     if (loginCompletion != null) {
@@ -368,7 +431,7 @@ public final class PodBrowserAuthServices implements AutoCloseable {
                         }
                     }
                     if (statusLabel != null) statusLabel.setText(snapshot.verifying ? "请完成网页验证"
-                            : snapshot.qr == null ? "登录后点完成"
+                            : snapshot.qr == null ? "正在等待登录二维码…"
                             : "secondVerify".equals(snapshot.qr.optString("kind")) ? "请扫码完成二步验证" : "请扫码登录");
                     showQrOverlay(overlay, snapshot.dataImage());
                 }
@@ -407,6 +470,8 @@ public final class PodBrowserAuthServices implements AutoCloseable {
                 overlay.setImageBitmap(normalized);
                 overlay.setVisibility(ImageView.VISIBLE);
                 if (qrMask != null) qrMask.setVisibility(ViewGroup.VISIBLE);
+                if (deadline != null) deadline.state(SystemClock.elapsedRealtime(), true, verifying);
+                Log.i("PodBrowserAuth", "code=qr_ready");
             });
         });
     }
@@ -417,6 +482,7 @@ public final class PodBrowserAuthServices implements AutoCloseable {
         recycleOverlayBitmap(overlay);
         overlay.setVisibility(ImageView.GONE);
         if (qrMask != null) qrMask.setVisibility(ViewGroup.GONE);
+        if (deadline != null) deadline.state(SystemClock.elapsedRealtime(), false, verifying);
     }
 
     private static void recycleOverlayBitmap(ImageView overlay) {
