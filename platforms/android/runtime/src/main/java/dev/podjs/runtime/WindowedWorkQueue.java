@@ -4,6 +4,7 @@ package dev.podjs.runtime;
  * are stored here. The host serializes these operations with registration/cancel.
  * Persist the next identity before enqueue; a stale parent can only reconcile it. */
 final class WindowedWorkQueue {
+    static final long BOUNDED_RETRY_MS=60000;
     static final long PROGRESS_DELAY_MS=1000, BASE_RETRY_MS=30000, MAX_RETRY_MS=900000, STANDBY_MS=30000;
     enum State { MISSING, WAITING, RUNNING, FINISHED }
     enum Policy { KEEP, REPLACE, APPEND }
@@ -52,11 +53,13 @@ final class WindowedWorkQueue {
         if(!job.id.equals(id)){resume(false);return false;}
         if(job.standby)p.write(job.flags(false,false));return true;
     }
-    boolean next(String token,String id,boolean progress,boolean periodic)throws Exception{
+    boolean next(String token,String id,boolean progress,boolean periodic)throws Exception{return next(token,id,progress,periodic,false);}
+    boolean next(String token,String id,boolean progress,boolean periodic,boolean bounded)throws Exception{
         Job job=p.read();if(job==null||!job.token.equals(token)||job.held)return false;
         if(periodic){if(p.running()!=null)return false;}else if(!id.equals(job.id))return false;
-        int failures=progress?0:Math.min(31,job.failures+1);
-        publish(fresh(token,failures,progress?PROGRESS_DELAY_MS:retryDelay(failures),false,false,periodic?null:id),periodic?Policy.REPLACE:Policy.APPEND);return true;
+        // Local stalls must not inherit failures=31 / fifteen-minute transport gaps.
+        int failures=progress?0:bounded?Math.min(2,job.failures+1):Math.min(31,job.failures+1);
+        publish(fresh(token,failures,progress?PROGRESS_DELAY_MS:bounded?Math.min(BOUNDED_RETRY_MS,retryDelay(failures)):retryDelay(failures),false,false,periodic?null:id),periodic?Policy.REPLACE:Policy.APPEND);return true;
     }
     boolean active()throws Exception{return p.running()!=null;}
     boolean yielded(String token,String id)throws Exception{Job job=p.read();if(job==null||!job.token.equals(token)||!id.equals(job.id)||job.held)return false;publish(fresh(token,job.failures,BASE_RETRY_MS,false,false,id),Policy.APPEND);return true;}

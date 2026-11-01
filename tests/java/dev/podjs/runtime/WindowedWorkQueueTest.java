@@ -57,6 +57,23 @@ public final class WindowedWorkQueueTest {
         var job=p.read();p.advance(job.due);String id=p.take();q.start("grant",id);q.next("grant",id,true,false);check(p.read().failures==0&&p.read().due-p.now()==1000,"progress did not reset attempts");p.success(id);job=p.read();p.advance(job.due);id=p.take();q.start("grant",id);q.next("grant",id,false,false);check(p.read().due-p.now()==30000,"retry after progress retained old attempts");
         System.out.println("WINDOW_BACKOFF_FAILURE capMs="+previous+" persistedFailures=31 resetRetryMs=30000");
     }
+    static void boundedStalls()throws Exception{
+        Path dir=fixture();Disk p=new Disk(dir);WindowedWorkQueue q=new WindowedWorkQueue(p);q.enqueue("grant",false,false);
+        var job=p.read();p.write(new WindowedWorkQueue.Job(job.token,job.id,job.parent,31,job.due,job.standby,job.held));
+        for(int n=0;n<40;n++){
+            p=new Disk(dir);q=new WindowedWorkQueue(p);job=p.read();p.advance(job.due);String id=p.take();check(q.start("grant",id),"stall start");
+            check(!q.next("old",id,false,false,true),"old grant changed queue");
+            check(!q.next("grant","stale",false,false,true),"stale parent changed queue");
+            check(q.next("grant",id,false,false,true),"stall continuation lost");
+            check(p.read().failures<=2&&p.read().due-p.now()<=60000,"stall inherited unbounded backoff");
+            check(p.read().token.equals("grant")&&!p.read().id.equals(id),"stall lost fresh identity/grant");p.success(id);
+        }
+        job=p.read();p.advance(job.due);String id=p.take();q.start("grant",id);q.next("grant",id,true,false,true);
+        check(p.read().failures==0&&p.read().due-p.now()==1000,"durable receipt did not reset stall backoff");p.success(id);
+        job=p.read();p.advance(job.due);id=p.take();q.start("grant",id);q.next("grant",id,false,false);
+        check(p.read().failures==1&&p.read().due-p.now()==30000,"transport retry retained stall history");
+        System.out.println("BOUNDED_STALL_RETRY_PASS windows=40 persistedFailures31->2 capMs60000 progressReset1000");
+    }
     static void crashes()throws Exception{
         for(boolean after:new boolean[]{false,true}){Path dir=fixture();Disk p=new Disk(dir);WindowedWorkQueue q=new WindowedWorkQueue(p);q.enqueue("grant",false,false);String parent=p.take();q.start("grant",parent);if(after)p.uncertainEnqueue=true;else p.failEnqueue=true;try{q.next("grant",parent,true,false);throw new AssertionError("crash missing");}catch(java.io.IOException expected){}
             String next=p.read().id;p=new Disk(dir);q=new WindowedWorkQueue(p);check(!q.start("grant",parent),"stale parent reexecuted");check(p.read().id.equals(next),"recovery changed successor");q.finished("grant",parent);p.success(parent);p.advance(p.read().due);check(next.equals(p.take()),"recovered successor missing");check(p.jobs.size()==2,"duplicate successor after uncertain commit");}
@@ -120,5 +137,5 @@ public final class WindowedWorkQueueTest {
         check(CloudWorkerOutcome.guestStage("checkpoint-write").equals("checkpoint-write"),"guest checkpoint phase missing");
         System.out.println("HARD_DEADLINE_RETRY_PASS windows=6 grant preserved; exponential capped backoff; no false progress");
     }
-    public static void main(String[] args)throws Exception{deadlineWindows();progress59();backoff();crashes();fences();foregroundProgress();migration();benignConcurrency();System.out.println("WindowedWorkQueueTest PASS: durable progress/retry bounds, dependency success, crash publication/uncertain enqueue, grant fencing, network/hold/KEEP/REPLACE, periodic handoff and legacy delay migration");}
+    public static void main(String[] args)throws Exception{deadlineWindows();progress59();backoff();boundedStalls();crashes();fences();foregroundProgress();migration();benignConcurrency();System.out.println("WindowedWorkQueueTest PASS: durable progress/retry bounds, dependency success, crash publication/uncertain enqueue, grant fencing, network/hold/KEEP/REPLACE, periodic handoff and legacy delay migration");}
 }

@@ -59,7 +59,7 @@ impl Cancellation {
 pub enum Status { Success, Retry, Failure }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RunResult { pub status: Status, pub code: &'static str, pub elapsed_ms: u64, #[serde(skip_serializing_if = "Option::is_none")] pub progress: Option<bool> }
+pub struct RunResult { pub status: Status, pub code: &'static str, pub elapsed_ms: u64, #[serde(skip_serializing_if = "Option::is_none")] pub progress: Option<bool>, #[serde(skip_serializing_if = "Option::is_none")] pub retry_class: Option<&'static str> }
 pub struct Options<'a> { pub app_id: &'a str, pub task_id: &'a str, pub budget_ms: u64, pub memory_bytes: usize, pub payload_json: &'a str }
 static ACTIVE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 struct ActiveRun(String);
@@ -80,7 +80,7 @@ pub fn run(source: &str, options: Options<'_>, cancel: Cancellation) -> RunResul
 
 pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellation, services: Option<Services>) -> RunResult {
     let started = Instant::now();
-    let finish = |status, code| RunResult { status, code, progress: None, elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64 };
+    let finish = |status, code| RunResult { status, code, progress: None, retry_class: None, elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64 };
     let cloud=services.as_ref().is_some_and(|s| s.allowed_methods.contains("cloud.host") || s.allowed_methods.contains("debug.cloudHost"));
     if !valid_id(options.app_id) || !valid_id(options.task_id) || !(1..=if cloud {300_000} else {30_000}).contains(&options.budget_ms)
         || !(4*1024*1024..=if cloud {256*1024*1024} else {32*1024*1024}).contains(&options.memory_bytes) || source.len() > 1024*1024 || options.payload_json.len() > 64*1024 {
@@ -101,7 +101,7 @@ pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellatio
     let interrupt_cancel = cancel.clone();let interrupt_trace=trace.clone();
     runtime.set_interrupt_handler(Some(Box::new(move || {if let Some(trace)=&interrupt_trace{trace.sample();}stop_code(&interrupt_cancel,deadline).is_some()})));
     let Ok(context) = Context::full(&runtime) else { return finish(Status::Failure,"context_unavailable"); };
-    let evaluated: Result<(Status,Option<bool>), &'static str> = context.with(|ctx| {
+    let evaluated: Result<(Status,Option<bool>,Option<&'static str>), &'static str> = context.with(|ctx| {
         let pending: Rc<RefCell<Vec<Pending<'_>>>> = Rc::new(RefCell::new(Vec::new()));
         let _clear_pending=ClearPending(pending.clone());
         // Remove all dynamic-code constructors before untrusted bundle evaluation.
@@ -177,16 +177,25 @@ pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellatio
         }
         if let Some(object)=value.as_object() {
             let status:String=object.get("status").map_err(|_| "invalid_result")?;
-            let progress:bool=object.get("progress").map_err(|_| "invalid_result")?;
+
             let keys=object.keys::<String>().collect::<Result<Vec<_>,_>>().map_err(|_| "invalid_result")?;
-            if status!="retry" || !progress || keys.len()!=2 || keys.iter().any(|k|k!="status"&&k!="progress") { return Err("invalid_result"); }
-            return Ok((Status::Retry,Some(true)));
+            if status!="retry" || keys.len()!=2 { return Err("invalid_result"); }
+            if keys.iter().all(|k|k=="status"||k=="progress") {
+                let progress:bool=object.get("progress").map_err(|_| "invalid_result")?;
+                if !progress {return Err("invalid_result");}
+                return Ok((Status::Retry,Some(true),None));
+            }
+            if keys.iter().all(|k|k=="status"||k=="retryClass") {
+                let class:String=object.get("retryClass").map_err(|_| "invalid_result")?;
+                if class=="bounded" {return Ok((Status::Retry,None,Some("bounded")));}
+            }
+            return Err("invalid_result");
         }
         let result = value.as_string().ok_or("invalid_result")?.to_string().map_err(|_| "invalid_result")?;
-        match result.as_str() { "busy" => return Err("yielded"), "success" => Ok((Status::Success,None)), "retry" => Ok((Status::Retry,None)), "failure" => Ok((Status::Failure,None)), _ => Err("invalid_result") }
+        match result.as_str() { "busy" => return Err("yielded"), "success" => Ok((Status::Success,None,None)), "retry" => Ok((Status::Retry,None,None)), "failure" => Ok((Status::Failure,None,None)), _ => Err("invalid_result") }
     });
     if let Some(code) = stop_code(&cancel,deadline) { return finish(Status::Failure,code); }
-    match evaluated { Ok((status,progress)) => {let mut result=finish(status,"completed");result.progress=progress;result}, Err("yielded") => finish(Status::Success,"yielded"), Err(code) => finish(Status::Failure,code) }
+    match evaluated { Ok((status,progress,retry_class)) => {let mut result=finish(status,"completed");result.progress=progress;result.retry_class=retry_class;result}, Err("yielded") => finish(Status::Success,"yielded"), Err(code) => finish(Status::Failure,code) }
 }
 
 #[cfg(test)]
@@ -261,6 +270,16 @@ mod tests {
         assert_eq!(run_with_services(source,options("async-quota"),Cancellation::default(),Some(services)).status,Status::Success);
         assert_eq!(signals.lock().unwrap().len(),16);
         assert!(signals.lock().unwrap().iter().all(Cancellation::is_cancelled));
+    }
+    #[test] fn bounded_retry_never_claims_durable_progress() {
+        let result=run("globalThis.backgroundHandler=()=>({status:'retry',retryClass:'bounded'})",options("bounded-retry"),Cancellation::default());
+        assert_eq!(result.code,"completed");assert_eq!(result.status,Status::Retry);
+        assert_eq!(result.progress,None);assert_eq!(result.retry_class,Some("bounded"));
+        let wire=serde_json::to_value(result).unwrap();assert_eq!(wire["retryClass"],"bounded");assert!(wire.get("progress").is_none());
+        for invalid in ["{status:'success',retryClass:'bounded'}","{status:'retry',retryClass:'private'}","{status:'retry',retryClass:1}","{status:'retry',retryClass:'bounded',progress:true}"] {
+            let bad=run(&format!("globalThis.backgroundHandler=()=>({invalid})"),options("bounded-invalid"),Cancellation::default());
+            assert_eq!(bad.code,"invalid_result");assert_eq!(bad.progress,None);assert_eq!(bad.retry_class,None);
+        }
     }
     #[test] fn durable_window_retry_is_data_and_preserves_the_restricted_realm() {
         let source=r#"globalThis.backgroundHandler=async job=>{if(typeof pod!=='undefined'||typeof ui!=='undefined')throw Error('UI');await Promise.resolve();return {status:'retry',progress:true};}"#;

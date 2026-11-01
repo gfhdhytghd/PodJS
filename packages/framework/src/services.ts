@@ -105,7 +105,7 @@ export interface ActivityState { saved:Record<string,unknown>; retained:Record<s
 /** Android Activity lifecycle operations. Saved state follows the system Bundle;
  * retained state survives configuration recreation only. Neither is app KV. */
 export const application = Object.freeze({
-  buildInfo: ():Promise<{debugBuild:boolean}> => hostOperation<{debugBuild:boolean}>("app.buildInfo",{}).result,
+  buildInfo: ():Promise<{debugBuild:boolean;buildIdentity?:string}> => hostOperation<{debugBuild:boolean;buildIdentity?:string}>("app.buildInfo",{}).result,
   finishTask: (): Promise<void> => hostOperation<void>("app.finishTask", {}).result,
   activityState: Object.freeze({
     read: ():Promise<ActivityState> => hostOperation<ActivityState>("app.activityState.read",{}).result,

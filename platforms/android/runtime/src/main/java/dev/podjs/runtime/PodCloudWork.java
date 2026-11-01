@@ -50,6 +50,7 @@ final class PodCloudWork implements Closeable {
     static boolean yielded(Context c,String token,String id)throws Exception{synchronized(QUEUE){return queue(c).yielded(token,id);}}
     static boolean start(Context c,String token,String id)throws Exception{synchronized(QUEUE){return queue(c).start(token,id);}}
     static boolean next(Context c,String token,String id,boolean progress,boolean periodic)throws Exception{synchronized(QUEUE){return queue(c).next(token,id,progress,periodic);}}
+    static boolean next(Context c,String token,String id,boolean progress,boolean periodic,boolean bounded)throws Exception{synchronized(QUEUE){return queue(c).next(token,id,progress,periodic,bounded);}}
     static void progressed(Context c,String token)throws Exception{boolean paused=held(c);synchronized(QUEUE){queue(c).progress(token,paused);}}
     static void finished(Context c,String token,String id)throws Exception{synchronized(QUEUE){queue(c).finished(token,id);}}
     synchronized Object execute(String method,JSONObject args)throws Exception{

@@ -13,7 +13,9 @@ export interface BackgroundContext {
  * enqueue a fresh request after success, resetting OS retry attempts. This is
  * "busy" yields to an active owner without changing its retry/queue state.
  * This is not a network/suspension retry, and does not bypass authorization/constraints. */
-export type BackgroundOutcome = "success" | "retry" | "failure" | "busy" | {status:"retry";progress:true};
+/** Bounded retry is a recoverable local work stall, with no progress claim.
+ * Hosts cap its backoff separately from transport/OS failures. */
+export type BackgroundOutcome = "success" | "retry" | "failure" | "busy" | {status:"retry";progress:true} | {status:"retry";retryClass:"bounded"};
 export type BackgroundHandler = (context: BackgroundContext) => BackgroundOutcome | Promise<BackgroundOutcome>;
 /** One invocation per native guest. Pure async codecs can share a caller-owned
  * scheduler without importing services, creating timers, or granting methods. */

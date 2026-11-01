@@ -98,9 +98,10 @@ public final class PodCloudWorker extends Worker {
                     status="deadline_exceeded".equals(code)?"deadline_exceeded":"completed".equals(code)&&"success".equals(guestStatus)?"success":"completed".equals(code)&&"retry".equals(guestStatus)?"retry":"guest_failed";
                     if(("deadline_exceeded".equals(code)||"completed".equals(code)&&"retry".equals(guestStatus))&&queuedToken!=null){
                         boolean progress="completed".equals(code)&&outcome.optBoolean("progress",false);
+                        boolean bounded="completed".equals(code)&&"bounded".equals(outcome.optString("retryClass"));
                         // APPEND_OR_REPLACE attaches the fresh request to this
                         // one. Success releases it; REPLACE here would cancel us.
-                        PodCloudWork.next(context,queuedToken,requestId,progress,manualToken==null);
+                        PodCloudWork.next(context,queuedToken,requestId,progress,manualToken==null,bounded);
                         status=progress?"continued":"backoff";return Result.success();
                     }
                     Result mapped=resultFor(outcome,getRunAttemptCount());

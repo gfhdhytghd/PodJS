@@ -153,7 +153,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/sha256-stream` | Guest-owned native digest state; bounded updates and cooperative cancellation without temporary plaintext files. |
 | `@podjs/framework/sealed-gzip` | Bounded native gzip streaming over sealed local parts; per-part durable receipts and final EOF/CRC validation. |
 | `@podjs/framework/read-batch` | Memoize immutable reads within a caller-owned, serialized read transaction; no cache survives the transaction. |
-| `@podjs/framework/work-window` | Cooperative host-unit admission before a deadline, input-size estimates, measured margins and closed phase diagnostics; never races writes against timers. |
+| `@podjs/framework/work-window` | Cooperative host-unit admission before a deadline, input-size estimates, measured margins and closed phase diagnostics; never races writes against timers. Includes `RepeatedWorkGuard` for completed identity replay between durable receipts, without first-unit time caps. |
 | `@podjs/framework/cpu-work` | Optional scoped CPU phase observation with coarse input bands, bounded elapsed time and closed outcomes. No input, identity or exception text; no IO without an observer. |
 | `@podjs/framework/background-handler` | Typed headless background-handler entry and delivery contracts. |
 | `@podjs/framework/debug-memory` | Scoped diagnostic resource ownership/accounting; counts are not native heap measurements. |

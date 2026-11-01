@@ -506,7 +506,8 @@ final class PodServices implements Closeable {
             try {
                 request.cancellation.throwIfCanceled();
                 boolean debug = (context.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0;
-                reply(id, true, new JSONObject().put("debugBuild", debug), null, null);
+                android.content.pm.PackageInfo info=context.getPackageManager().getPackageInfo(context.getPackageName(),0);
+                reply(id, true, new JSONObject().put("debugBuild", debug).put("buildIdentity", info.lastUpdateTime+":"+info.versionCode), null, null);
             } catch (Exception error) { failure(id, "lifecycle_error", error.getMessage()); }
             return;
         }
