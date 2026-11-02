@@ -126,3 +126,30 @@ test('an initial prepare failure retains its code and does not start a second de
  const pool=new VideoSessionPool(m.port),prime=pool.prime(source(1),options(1));const first=prime.result.catch(e=>e),opened=pool.prepare(source(1),options(1)).result.catch(e=>e);
  expect(await first).toBe(error);expect(await opened).toBe(error);expect(m.prepareCount).toBe(1);await pool.releaseAll();
 });
+
+test('DYSWIPE3 following decode overlaps settle and survives promotion in both directions',async()=>{
+ for(const direction of ['up','down'] as const){
+  const m=new Model(),pool=new VideoSessionPool(m.port),step=direction==='up'?1:-1;await pool.supportsPrewarm();
+  const active=pool.prepare(source(10),options(10)).result;await m.advance(400);await active;
+  const neighbours=[pool.prewarm(source(9),options(9),'prev'),pool.prewarm(source(11),options(11),'next')];await m.advance(400);await Promise.all(neighbours);
+  pool.selectStandby(String(10+step));
+  const following=pool.prewarm(source(10+2*step),options(10+2*step),step===1?'next':'prev');
+  await m.advance(96);const promoted=pool.promote(direction,options(10+step).bounds,true,undefined,[String(10+2*step)]);await m.advance(16);await promoted;
+  expect(pool.hasStandby('10')).toBe(true);expect(pool.hasStandby(String(10+2*step))).toBe(false);
+  const duplicate=pool.prewarm(source(10+2*step),options(10+2*step));await m.advance(252);await Promise.all([following,duplicate]);
+  expect(pool.hasStandby(String(10+2*step))).toBe(true);expect(m.prepareCount).toBe(4);expect(m.states.size).toBe(3);
+  await pool.releaseAll();expect(m.states.size).toBe(0);
+ }
+});
+
+test('DYSWIPE3 late drag transitions cannot race a pending native promotion',async()=>{
+ const m=new Model(),pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();
+ const active=pool.prepare(source(1),options(1)).result;await m.advance(400);await active;
+ const warm=pool.prewarm(source(2),options(2));await m.advance(400);await warm;pool.selectStandby('2');
+ let transitions=0;const transition=m.port.transition;m.port.transition=async value=>{transitions++;return transition(value);};
+ const promoted=pool.promote('up',options(2).bounds);
+ expect(pool.selectStandby('2')).toBe(false);
+ await expect(pool.transition(.2,'up',options(2).bounds)).rejects.toThrow(/stale/);expect(transitions).toBe(0);
+ await m.advance(16);await promoted;expect(pool.selectStandby('1')).toBe(true);
+ await pool.transition(.2,'down',options(1).bounds);expect(transitions).toBe(1);
+});

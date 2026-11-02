@@ -9,7 +9,7 @@ export interface VideoSessionPort {
   prepare(options:Parameters<typeof videoSessions.prepare>[0]):HostOperation<VideoSessionState>;
   play(sessionId:string):Promise<VideoSessionState>;
   retire(sessionId:string):Promise<VideoSessionState>;
-  pause(sessionId:string):Promise<VideoSessionState>;
+  pause(sessionId:string,benchmark?:VideoBenchmarkAction):Promise<VideoSessionState>;
   seek(sessionId:string,positionMs:number):Promise<VideoSessionState>;
   stop(sessionId:string):Promise<VideoSessionState>;
   release(sessionId:string):Promise<{sessionId:string;released:boolean}>;
@@ -57,8 +57,9 @@ export class VideoSessionPool<Source extends {key:string}> {
   private capacity=2;
   private selected:WarmSlot<Source>|undefined;
   private generation=0;
+  private promoting=false;
   private transitionRunning:Promise<void>|undefined;
-  private latestTransition:{slot:WarmSlot<Source>;progress:number;direction:VideoPagerDirection;bounds:VideoBounds;benchmark?:VideoBenchmarkAction}|undefined;
+  private latestTransition:{slot:WarmSlot<Source>;epoch:number;revision:number;fromId:string;toId:string;progress:number;direction:VideoPagerDirection;bounds:VideoBounds;benchmark?:VideoBenchmarkAction}|undefined;
   constructor(private readonly port:VideoSessionPort=defaultSessionPort){
     const id=nextPoolId++;
     this.activeId=`vp${id}a`;this.slots=[{id:`vp${id}b`,ready:false,revision:0},{id:`vp${id}c`,ready:false,revision:0}];
@@ -121,13 +122,15 @@ export class VideoSessionPool<Source extends {key:string}> {
     if(slot?.pending)return slot.pending;
     slot??=this.slots.slice(0,this.capacity-1).find(s=>!s.source);
     if(!slot){slot=this.slots.find(s=>s!==this.selected)??this.slots[0];this.evict(slot,'capacity');}
-    const target=slot,own=++target.revision,epoch=this.generation;
+    const target=slot,own=++target.revision;
     target.source=source;target.ready=false;target.direction=direction;
     const seq=benchmark.begin('prewarm_requested',{generation:own,direction});
     const {backgroundPlayback,...foreground}=options;
     const operation=this.port.prepare({...foreground,loop:this.loop,sessionId:target.id,prewarm:true,autoplay:false,muted:false});
     target.operation=operation;
-    const valid=()=>epoch===this.generation&&own===target.revision&&target.source?.key===source.key;
+    // Slot revisions fence evictions. A promotion can explicitly retain an
+    // in-flight following neighbour while the pool generation advances.
+    const valid=()=>own===target.revision&&target.source?.key===source.key;
     const pending=(async()=>{try{
       const value=await operation.result;
       if(!valid())throw new Error('stale video session prewarm');
@@ -140,17 +143,21 @@ export class VideoSessionPool<Source extends {key:string}> {
   captureFrame(options:VideoFrameCapture){if(!this.port.captureFrame)return Promise.reject(Error('frame_capture_unavailable'));return this.port.captureFrame(this.activeId,options);}
   invalidateStandby(key:string){const slot=this.slots.find(s=>s.source?.key===key);if(slot)this.evict(slot,'stale');}
   hasStandby(key?:string):boolean{return !!key&&this.slots.some(s=>s.ready&&s.source?.key===key);}
-  selectStandby(key:string):boolean{const slot=this.slots.find(s=>s.ready&&s.source?.key===key);if(!slot)return false;this.selected=slot;return true;}
+  selectStandby(key:string):boolean{if(this.promoting)return false;const slot=this.slots.find(s=>s.ready&&s.source?.key===key);if(!slot)return false;this.selected=slot;return true;}
   standbySource():Source|undefined{return (this.selected??this.slots.find(s=>s.ready))?.source;}
   async transition(progress:number,direction:VideoPagerDirection,bounds:VideoBounds,benchmark?:VideoBenchmarkAction):Promise<void>{
+    if(this.promoting)throw Error('stale video session transition during promotion');
     const slot=this.selected??this.slots.find(s=>s.ready);if(!slot?.ready||!slot.source)throw new Error('video session target is not prewarmed');
-    this.selected=slot;this.latestTransition={slot,progress:Math.max(0,Math.min(1,progress)),direction,bounds,...(benchmark?{benchmark}:{})};
+    this.selected=slot;this.latestTransition={slot,epoch:this.generation,revision:slot.revision,fromId:this.activeId,toId:slot.id,progress:Math.max(0,Math.min(1,progress)),direction,bounds,...(benchmark?{benchmark}:{})};
     if(this.transitionRunning)return this.transitionRunning;
-    this.transitionRunning=(async()=>{while(this.latestTransition){const {slot,...next}=this.latestTransition;this.latestTransition=undefined;await this.port.transition({fromSessionId:this.activeId,toSessionId:slot.id,...next});}})();
+    this.transitionRunning=(async()=>{while(this.latestTransition){const {slot,epoch,revision,fromId,toId,...next}=this.latestTransition;this.latestTransition=undefined;if(epoch!==this.generation||revision!==slot.revision||fromId===toId)continue;await this.port.transition({fromSessionId:fromId,toSessionId:toId,...next});}})();
     try{await this.transitionRunning;}finally{this.transitionRunning=undefined;}
   }
-  async promote(direction:VideoPagerDirection,bounds:VideoBounds,autoplay=true,benchmark?:VideoBenchmarkAction):Promise<{source:Source;state:VideoState}>{
+  async promote(direction:VideoPagerDirection,bounds:VideoBounds,autoplay=true,benchmark?:VideoBenchmarkAction,retainKeys:readonly string[]=[]):Promise<{source:Source;state:VideoState}>{
     const slot=this.selected??this.slots.find(s=>s.ready),target=slot?.source;if(!slot||!target||!slot.ready)throw new Error('video session target is not prewarmed');
+    if(this.promoting)throw Error('stale video session promotion');
+    this.promoting=true;
+    try{
     if(this.transitionRunning)await this.transitionRunning;
     const own=this.generation,id=slot.id;
     const promoted=await this.port.promote(id,{replaceSessionId:this.activeId,bounds,autoplay,...(benchmark?{benchmark}:{})});
@@ -161,14 +168,15 @@ export class VideoSessionPool<Source extends {key:string}> {
     this.generation++;
     slot.id=this.activeId;slot.direction=direction==='up'?'prev':'next';slot.source=this.activeSource;slot.ready=!!this.activeSource&&retired?.hasRenderedFirstFrame===true&&retired.state!=='error';slot.revision++;
     this.activeId=id;this.activeKey=target.key;this.activeSource=target;this.selected=undefined;
-    for(const other of this.slots)if(other!==slot)this.evict(other,'stale');
+    for(const other of this.slots)if(other!==slot&&!retainKeys.includes(other.source?.key??''))this.evict(other,'stale');
     return {source:target,state:state(promoted)};
+    }finally{this.promoting=false;}
   }
   private async syncLoop(id:string):Promise<VideoSessionState>{while(true){const loop=this.loop,value=await this.port.setLoop(id,loop);if(loop===this.loop)return value;}}
   async setLoop(loop:boolean):Promise<void>{this.loop=loop;await Promise.all([...(this.activeKey?[this.syncLoop(this.activeId)]:[]),...this.slots.filter(s=>s.ready).map(s=>this.syncLoop(s.id))]);}
   play():Promise<VideoState>{return this.port.play(this.activeId).then(state);}
   retire():Promise<VideoState>{return this.port.retire(this.activeId).then(state);}
-  pause():Promise<VideoState>{return this.port.pause(this.activeId).then(state);}
+  pause(benchmark?:VideoBenchmarkAction):Promise<VideoState>{return this.port.pause(this.activeId,benchmark).then(state);}
   seek(positionMs:number):Promise<VideoState>{return this.port.seek(this.activeId,positionMs).then(state);}
   stop():Promise<VideoState>{return this.port.stop(this.activeId).then(state);}
   setBounds(bounds:VideoBounds):Promise<VideoState>{return this.port.setBounds(this.activeId,bounds).then(state);}

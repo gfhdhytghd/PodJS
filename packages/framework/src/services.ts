@@ -403,7 +403,7 @@ export const videoSessions = {
   prepare(options:VideoSessionPrepare):HostOperation<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.prepare",options as unknown as Record<string,unknown>); },
   play(sessionId:string):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.play",{sessionId}).result; },
   retire(sessionId:string):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.retire",{sessionId}).result; },
-  pause(sessionId:string):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.pause",{sessionId}).result; },
+  pause(sessionId:string,benchmark?:import("./benchmark.ts").VideoBenchmarkAction):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.pause",{sessionId,...(benchmark?{benchmark}:{})}).result; },
   seek(sessionId:string,positionMs:number):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.seek",{sessionId,positionMs}).result; },
   stop(sessionId:string):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.stop",{sessionId}).result; },
   release(sessionId:string):Promise<{sessionId:string;released:boolean}> { return hostOperation<{sessionId:string;released:boolean}>("video.session.release",{sessionId}).result; },

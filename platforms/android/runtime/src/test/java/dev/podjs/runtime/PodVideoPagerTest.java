@@ -38,6 +38,23 @@ public class PodVideoPagerTest {
    assertTrue(view.getTranslationY()>233);assertTrue(view.getAlpha()>0);assertTrue(view.getAlpha()<1);
   } finally {service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();fixture.delete();}
  }
+ @Test public void replacingSourceUsesAFreshTextureButRetainsOnlyOneSlot()throws Exception {
+  Context c=ApplicationProvider.getApplicationContext();PodVideoDecoderBudget budget=new PodVideoDecoderBudget(3);PodVideoSessionServices service=new PodVideoSessionServices(c,budget);FrameLayout host=new FrameLayout(c);
+  service.attachToParent(host);Shadows.shadowOf(Looper.getMainLooper()).idle();
+  java.io.File fixture=new java.io.File(PodTakeover.filesRoot(c),"replace-surface-fixture.mp4");fixture.getParentFile().mkdirs();try(java.io.FileOutputStream out=new java.io.FileOutputStream(fixture)){out.write(0);}
+  Class<?> type=Class.forName("dev.podjs.runtime.PodVideoSessionServices$Session");
+  @SuppressWarnings("unchecked") Map<String,Object> slots=(Map<String,Object>)f(PodVideoSessionServices.class,"sessions").get(service);
+  TextureView previous=null;
+  try{
+   for(int i=0;i<8;i++){
+    Result result=new Result();service.dispatch("video.session.prepare",new JSONObject().put("sessionId","replace").put("url","replace-surface-fixture.mp4").put("prewarm",true).put("videoMime","video/avc").put("videoWidth",240).put("videoHeight",240).put("bounds",new JSONObject().put("x",0).put("y",0).put("width",233).put("height",233)),result);
+    assertNull(result.error);TextureView next=(TextureView)f(type,"videoView").get(slots.get("replace"));assertNotNull(next);assertSame(host,next.getParent());
+    if(previous!=null){assertNotSame(previous,next);assertNull(previous.getParent());}
+    assertEquals(2,host.getChildCount());assertEquals(1,budget.inUse());previous=next;
+   }
+  }finally{service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();fixture.delete();}
+  assertEquals(0,host.getChildCount());assertEquals(0,budget.inUse());
+ }
  @Test public void releasePauseKeepsDecodedSurfaceAndCancelDoesNotRestart()throws Exception {
   Context c=ApplicationProvider.getApplicationContext();PodVideoSessionServices service=new PodVideoSessionServices(c,new PodVideoDecoderBudget(3));
   service.attachToParent(new FrameLayout(c));Shadows.shadowOf(Looper.getMainLooper()).idle();
@@ -59,8 +76,10 @@ public class PodVideoPagerTest {
    }
    assertTrue(active.getPlayWhenReady());assertSame(active,f(type,"player").get(owner));assertEquals(generation,f(type,"generation").getLong(owner));
    // A committed release pauses immediately but leaves the strip frame intact.
-   long released=SystemClock.uptimeMillis();Result paused=new Result();service.dispatch("video.session.pause",new JSONObject().put("sessionId","active"),paused);
+   long released=SystemClock.uptimeMillis(),seq=PodBenchmark.begin("gesture_down",new JSONObject());Result paused=new Result();service.dispatch("video.session.pause",new JSONObject().put("sessionId","active").put("benchmark",new JSONObject().put("seq",seq).put("generation",1).put("source_generation",generation)),paused);
    assertNull(paused.error);assertFalse(active.getPlayWhenReady());assertTrue(paused.completed-released<=100);assertTrue(paused.value.getBoolean("hasRenderedFirstFrame"));
+   assertTrue(org.robolectric.shadows.ShadowLog.getLogsForTag("DYBENCH").stream().anyMatch(row->row.msg.contains("code=player_paused seq="+seq+" ")&&row.msg.contains("backend=player")));
+   assertEquals(0,PodBenchmark.dispatch(new JSONObject().put("code","player_paused").put("seq",seq).put("generation",1).put("source_generation",generation).put("backend","player").toString()));
    assertSame(view,f(type,"videoView").get(owner));assertSame(layout,view.getLayoutParams());assertEquals(generation,f(type,"generation").getLong(owner));
   } finally {service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();}
  }

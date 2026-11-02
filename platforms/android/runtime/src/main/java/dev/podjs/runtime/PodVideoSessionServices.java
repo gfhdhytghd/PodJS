@@ -243,7 +243,16 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             created = true;
         }
         if (session.prepareCallback != null) session.takePrepareCallback().fail("cancelled", "Video session preparation replaced");
+        boolean replacingSource = session.generation > 0;
         session.resetPlayer();
+        if (replacingSource) {
+            // A released codec can still own its old BufferQueue. A new source
+            // must not connect a second codec to that retained TextureView.
+            if (session.videoView != null && session.videoView.getParent() instanceof ViewGroup)
+                ((ViewGroup) session.videoView.getParent()).removeView(session.videoView);
+            session.videoView = null;
+            session.attachViews(parent);
+        }
         if (!decoderBudget.acquire()) {
             if (created) { sessions.remove(id); session.close(); }
             throw new IllegalStateException("video_decoder_limit");
@@ -444,6 +453,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         Session session = require(args);
         if(!session.prewarming)mediaGate(false); session.requirePlayer();
         session.player.pause(); session.state = session.prewarming ? "prewarmed" : "paused";
+        PodBenchmark.playerPaused(args,session.player.getPlayWhenReady(),session.generation);
         callback.complete(session.snapshot());
     }
 
@@ -746,7 +756,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                 };
                 videoView.setClickable(false); videoView.setFocusable(false); videoView.setVisibility(View.GONE);
             }
-            if (background.getParent() != host) {
+            if (background.getParent() != host || videoView.getParent() != host) {
                 if (background.getParent() instanceof ViewGroup) ((ViewGroup) background.getParent()).removeView(background);
                 if (videoView.getParent() instanceof ViewGroup) ((ViewGroup) videoView.getParent()).removeView(videoView);
                 int index = podIndex(host);

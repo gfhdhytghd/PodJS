@@ -639,12 +639,16 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
             pumpServicesWhileSuspended();
     }
 
-    private int tracedInputs;
+    private int tracedInputs, tracedMoves;
     @Override public boolean onTouchEvent(MotionEvent event) {
+        if(serviceResultTrace.enabled){
+            if(event.getActionMasked()==MotionEvent.ACTION_DOWN)tracedMoves=0;
+            else if(event.getActionMasked()==MotionEvent.ACTION_MOVE)tracedMoves=Math.min(1000000,tracedMoves+1);
+        }
         if (serviceResultTrace.enabled && event.getActionMasked() != MotionEvent.ACTION_MOVE && tracedInputs++ < 128) {
             android.util.Log.i("PodJSService", "input action=" + event.getActionMasked()
                 + " eventMs=" + event.getEventTime() + " receivedMs=" + android.os.SystemClock.uptimeMillis()
-                + " epochMs=" + System.currentTimeMillis());
+                + " epochMs=" + System.currentTimeMillis() + " moves=" + tracedMoves);
         }
         if (host == 0) return false;
         if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {

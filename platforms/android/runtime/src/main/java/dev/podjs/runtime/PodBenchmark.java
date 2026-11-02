@@ -16,11 +16,11 @@ final class PodBenchmark {
     private static final long MAX=9_007_199_254_740_991L;
     private static long sequence;
     private static WeakReference<View> surface=new WeakReference<>(null);
-    private static final Set<String> CODES=new HashSet<>(Arrays.asList(("startup_stage home_first_frame douyin_request entry_start home_entry first_card refresh_start refresh_done player_visible gesture_down gesture_release previous_audio_stopped incoming_first_frame spinner_shown snap_back fling_done mute_changed player_audio_applied mixer_match login_entry login_tap qr_ready scan_accepted auth_persisted logout_start logout_feedback auth_cleared auth_state needs_login refreshing restore_state renderer_process prewarm_requested prewarm_ready prewarm_evicted prewarm_policy background_gate error_page error").split(" ")));
+    private static final Set<String> CODES=new HashSet<>(Arrays.asList(("startup_stage home_first_frame douyin_request entry_start home_entry first_card refresh_start refresh_done player_visible gesture_down gesture_release player_paused previous_audio_stopped incoming_first_frame spinner_shown snap_back fling_done mute_changed player_audio_applied mixer_match login_entry login_tap qr_ready scan_accepted auth_persisted logout_start logout_feedback auth_cleared auth_state needs_login refreshing restore_state renderer_process prewarm_requested prewarm_ready prewarm_evicted prewarm_policy background_gate error_page error").split(" ")));
     private static final Set<String> NUMBERS=new HashSet<>(Arrays.asList("seq","attempt","delta","generation","source_generation","pid","active_tracks","buffered_ms","slots","http_status","retry_after_ms"));
     private static final Set<String> AUTH=new HashSet<>(Arrays.asList("login_entry","login_tap","qr_ready","scan_accepted","auth_persisted","renderer_process"));
     private static final Set<String> PRESENTED=new HashSet<>(Arrays.asList("home_first_frame","first_card","refresh_done","qr_ready","logout_feedback","needs_login","refreshing","spinner_shown"));
-    private static final Set<String> PROOF=new HashSet<>(Arrays.asList("incoming_first_frame","snap_back","previous_audio_stopped","player_audio_applied","mixer_match","fling_done"));
+    private static final Set<String> PROOF=new HashSet<>(Arrays.asList("incoming_first_frame","snap_back","previous_audio_stopped","player_paused","player_audio_applied","mixer_match","fling_done"));
     private static final LinkedHashMap<Long,Set<String>> actions=new LinkedHashMap<>();
     private static java.util.function.LongConsumer firstCardStats=seq->{};
     private static long startupSequence;
@@ -141,6 +141,12 @@ final class PodBenchmark {
         tryVideo(action.seq);
     }
     private static void tryVideo(long seq){Runnable ready=videos.get(seq);if(ready!=null&&confirmedVideo.containsKey(seq)){videos.remove(seq);ready.run();}}
+    /** Player-state diagnostic only; never mixer/PCM silence proof. */
+    static void playerPaused(JSONObject args,boolean playWhenReady,long sourceGeneration){
+        VideoAction action=videoAction(args);
+        if(action==null||playWhenReady||action.sourceGeneration!=sourceGeneration)return;
+        try{emit(action.event("player_paused").put("backend","player"),SystemClock.uptimeMillis());}catch(Exception ignored){}
+    }
     static final class VideoAction {
         final long seq,generation,sourceGeneration;
         final int delta;
