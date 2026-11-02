@@ -1,4 +1,5 @@
 export {rangedLines,type RangedLine} from './ranged-lines';
+export {receiptedParts} from './receipted-parts';
 export {checkpointedFile,type FileCheckpoint,type PublishedFile} from './checkpointed-file';
 export {HostCallsiteTrace,hostSizeBand} from './host-callsite';
 export {RepeatedWorkGuard,REPEATED_WORK_VERSION} from './repeated-work';

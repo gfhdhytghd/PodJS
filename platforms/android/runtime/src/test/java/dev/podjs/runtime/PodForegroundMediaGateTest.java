@@ -38,4 +38,35 @@ public class PodForegroundMediaGateTest {
             background.dispatch(new JSONObject().put("t","service.cancel").put("id",3));HostWorkPriority.DEVICE.foregroundMedia(owner,false);drain(100);assertTrue(replies.isEmpty());
         }finally{HostWorkPriority.DEVICE.foregroundMedia(owner,false);shadowOf(Looper.getMainLooper()).idle();}
     }
+    @Test(timeout=15000) public void secureReceiptAfterReadPrefixSurvivesMediaPauseAndServiceRestart()throws Exception {
+        // Real dispatcher, encrypted atomic secure.update and admission lane.
+        // Only the key source/files are synthetic; no AndroidKeyStore/user data.
+        Object owner=new Object();List<String> replies=Collections.synchronizedList(new ArrayList<>());
+        java.io.File directory=java.nio.file.Files.createTempDirectory("restore-receipt-").toFile();
+        java.io.File files=new java.io.File(directory,"files");
+        javax.crypto.SecretKey key=new javax.crypto.spec.SecretKeySpec(new byte[32],"AES");
+        try(PodServices background=new PodServices(ApplicationProvider.getApplicationContext(),replies::add)){
+            java.lang.reflect.Field field=PodServices.class.getDeclaredField("device");field.setAccessible(true);
+            ((PodDeviceServices)field.get(background)).close();field.set(background,new PodDeviceServices(files,()->key));
+            background.headlessWork();
+            for(int id=1;id<=488;id++){
+                background.dispatch(new JSONObject().put("t","service.request").put("version",1).put("id",id).put("method","secure.get").put("args",new JSONObject().put("key","fixture")));
+                long until=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+                while(replies.size()<id&&System.nanoTime()<until)drain(1);
+                assertEquals(id,replies.size());assertTrue(new JSONObject(replies.get(id-1)).getBoolean("ok"));
+            }
+            HostWorkPriority.DEVICE.foregroundMedia(owner,true);
+            background.dispatch(new JSONObject().put("t","service.request").put("version",1).put("id",489).put("method","secure.update").put("args",new JSONObject().put("values",new JSONObject().put("fixture","receipt")).put("removePrefixes",new org.json.JSONArray())));
+            drain(30);assertEquals(488,replies.size());
+            HostWorkPriority.DEVICE.foregroundMedia(owner,false);
+            long until=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(3);
+            while(replies.size()<489&&System.nanoTime()<until)drain(1);
+            assertEquals(489,replies.size());assertTrue(new JSONObject(replies.get(488)).getBoolean("ok"));
+        }finally{HostWorkPriority.DEVICE.foregroundMedia(owner,false);shadowOf(Looper.getMainLooper()).idle();}
+        try(PodDeviceServices reopened=new PodDeviceServices(files,()->key)){
+            assertEquals("receipt",reopened.execute("secure.get",new JSONObject().put("key","fixture")).getString("value"));
+        }finally{
+            try(java.util.stream.Stream<java.nio.file.Path> paths=java.nio.file.Files.walk(directory.toPath())){paths.sorted(java.util.Comparator.reverseOrder()).forEach(path->{try{java.nio.file.Files.delete(path);}catch(java.io.IOException error){throw new RuntimeException(error);}});}
+        }
+    }
 }
