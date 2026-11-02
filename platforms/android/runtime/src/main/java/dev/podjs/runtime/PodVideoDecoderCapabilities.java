@@ -57,7 +57,7 @@ final class PodVideoDecoderCapabilities {
         }
     }
 
-    private static final String PREFS = "podjs-video-decoder-capacity-v1";
+    private static final String PREFS = "podjs-video-decoder-capacity-v2";
     private static final String FINGERPRINT = "device-fingerprint";
     private static final String LIMIT_PREFIX = "mime-limit:";
     private final SharedPreferences preferences;

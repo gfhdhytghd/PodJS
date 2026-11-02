@@ -16,8 +16,8 @@ final class PodBenchmark {
     private static final long MAX=9_007_199_254_740_991L;
     private static long sequence;
     private static WeakReference<View> surface=new WeakReference<>(null);
-    private static final Set<String> CODES=new HashSet<>(Arrays.asList(("entry_start home_entry first_card refresh_start refresh_done player_visible gesture_down gesture_release previous_audio_stopped incoming_first_frame spinner_shown snap_back fling_done mute_changed player_audio_applied mixer_match login_entry login_tap qr_ready scan_accepted auth_persisted logout_start logout_feedback auth_cleared auth_state needs_login refreshing restore_state renderer_process error").split(" ")));
-    private static final Set<String> NUMBERS=new HashSet<>(Arrays.asList("seq","attempt","delta","generation","source_generation","pid","active_tracks"));
+    private static final Set<String> CODES=new HashSet<>(Arrays.asList(("entry_start home_entry first_card refresh_start refresh_done player_visible gesture_down gesture_release previous_audio_stopped incoming_first_frame spinner_shown snap_back fling_done mute_changed player_audio_applied mixer_match login_entry login_tap qr_ready scan_accepted auth_persisted logout_start logout_feedback auth_cleared auth_state needs_login refreshing restore_state renderer_process prewarm_requested prewarm_ready prewarm_evicted prewarm_policy background_gate error_page error").split(" ")));
+    private static final Set<String> NUMBERS=new HashSet<>(Arrays.asList("seq","attempt","delta","generation","source_generation","pid","active_tracks","buffered_ms","slots"));
     private static final Set<String> AUTH=new HashSet<>(Arrays.asList("login_entry","login_tap","qr_ready","scan_accepted","auth_persisted","renderer_process"));
     private static final Set<String> PRESENTED=new HashSet<>(Arrays.asList("first_card","refresh_done","qr_ready","logout_feedback","needs_login","refreshing","spinner_shown"));
     private static final Set<String> PROOF=new HashSet<>(Arrays.asList("incoming_first_frame","snap_back","previous_audio_stopped","player_audio_applied","mixer_match","fling_done"));
@@ -69,8 +69,9 @@ final class PodBenchmark {
                 if(NUMBERS.contains(key)){long n=integer(args,key);if((key.equals("delta")&&n>2)||(key.equals("pid")&&n>4_194_304)||(key.equals("active_tracks")&&n>4096))return false;}
                 else if(key.equals("muted")||key.equals("prewarmed")){if(!(value instanceof Boolean))return false;}
                 else if(key.equals("direction")){if(!Arrays.asList("next","prev","cancel","fling").contains(value))return false;}
-                else if(key.equals("state")){if(!Arrays.asList("present","absent","running","idle","unknown").contains(value))return false;}
+                else if(key.equals("state")){if(!Arrays.asList("present","absent","running","idle","unknown","paused").contains(value))return false;}
                 else if(key.equals("kind")){if(!Arrays.asList("on","off").contains(value))return false;}
+                else if(key.equals("reason")){if(!Arrays.asList("stale","capacity","release","failure","bidirectional","single_neighbour","foreground_media","media_stopped","timeout","candidate_retry","exhausted","hidden").contains(value))return false;}
                 else if(key.equals("backend")){if(!Arrays.asList("mixer","player").contains(value))return false;}
                 else return false;
                 if(code.equals("player_visible")&&key.equals("state")&&value.equals("present")){
@@ -94,13 +95,14 @@ final class PodBenchmark {
     }
     private static final Map<Long,Long> confirmedVideo=new HashMap<>();
     private static final Map<Long,Runnable> videos=new HashMap<>();
-    static void watchVideo(View view,VideoAction action,BooleanSupplier guard){
+    static void watchVideo(View view,VideoAction action,BooleanSupplier guard){ watchVideo(view,action,guard,false); }
+    static void watchVideo(View view,VideoAction action,BooleanSupplier guard,boolean promoted){
         videos.put(action.seq,()->{
             if(!Objects.equals(confirmedVideo.get(action.seq),action.generation))return;
             // JS confirms its cover is gone; native proves the bound decoded
             // target survives two window commits. A timeout is never success.
             PodAfterPaint.await(surface.get()==null?view:surface.get(),new Handler(Looper.getMainLooper()),committed->{
-                if(committed&&view.isAttachedToWindow()&&view.isShown()&&view.hasWindowFocus()&&view.getAlpha()>0&&guard.getAsBoolean())emit(action.event("incoming_first_frame"),SystemClock.uptimeMillis());
+                if(committed&&view.isAttachedToWindow()&&view.isShown()&&view.hasWindowFocus()&&view.getAlpha()>0&&guard.getAsBoolean()){emit(action.event("incoming_first_frame"),SystemClock.uptimeMillis());if(promoted)try{emit(action.event("fling_done").put("delta",1),SystemClock.uptimeMillis());}catch(Exception ignored){}}
                 else emit(action.event("error"),SystemClock.uptimeMillis());
             });
         });

@@ -1,0 +1,91 @@
+import {expect,test} from 'bun:test';
+import {VideoSessionPool,type VideoSessionPort} from '../src/video-session-pool';
+import type {VideoSessionState} from '../src/services';
+
+// Production pool with a deterministic transport/CPU model. This does not
+// execute Android decoders or prove device timing, temperature or PSS.
+class Model {
+ now=0;prepareCount=0;cancelCount=0;readyBefore=0;targetBytes=4*1024*1024;
+ states=new Map<string,VideoSessionState>();jobs:Array<{due:number;run():void}>=[];
+ restoreBacklog=800;foregroundMedia=false;restoreReceipts=0;
+ later(ms:number,run:()=>void){this.jobs.push({due:this.now+ms,run});}
+ value(id:string,prewarm=false):VideoSessionState{return {ok:true,sessionId:id,state:prewarm?'prewarmed':'playing',positionMs:0,durationMs:10000,width:360,height:640,muted:prewarm,volume:1,prewarming:prewarm,presented:!prewarm,hasRenderedFirstFrame:true,targetBufferBytes:this.targetBytes,bufferedMs:1500,networkStalled:false};}
+ port={
+  capabilities:async()=>({capability:'media.video.sessions',maxSessions:3,decoderLimit:3,decoderInUse:this.states.size,targetBufferBytesPerSession:this.targetBytes,targetBufferBytesTotal:this.targetBytes*3,prewarmTimeoutMs:2500,prewarmMode:'hidden_first_frame',surfacePromotion:true,verticalTransition:true,surfaceComposition:'android_texture_view',backgroundPlayback:false}),
+  prepare:(options:any)=>{this.prepareCount++;let cancelled=false;
+   const result=new Promise<VideoSessionState>((resolve,reject)=>{
+    // 3x CPU cost plus a bounded already-running 4ms restore unit.
+    const cost=options.prewarm?120*3+4:100*3+4;
+    this.later(cost,()=>{if(cancelled){reject(Error('cancelled'));return;}const value=this.value(options.sessionId,options.prewarm);this.states.set(options.sessionId,value);resolve(value);});
+   });return {result,cancel:()=>{cancelled=true;this.cancelCount++;}};
+  },
+  release:async(id:string)=>{this.states.delete(id);return {sessionId:id,released:true};},
+  state:async(id:string)=>this.states.get(id)!,
+  setLoop:async(id:string)=>this.states.get(id)!,
+  promote:(id:string,options:any)=>new Promise<VideoSessionState>(resolve=>this.later(16,()=>{const value={...this.states.get(id)!,prewarming:false,presented:true,state:'playing'};this.states.set(id,value);resolve(value);})),
+  transition:async(options:any)=>({...options,composited:true}),
+ } as unknown as VideoSessionPort;
+ async advance(ms:number){
+  const target=this.now+ms;
+  for(let steps=0;steps<1000;steps++){
+   for(let i=0;i<16;i++)await Promise.resolve();
+   this.jobs.sort((a,b)=>a.due-b.due);const next=this.jobs[0];
+   if(!next||next.due>target){this.now=target;break;}
+   this.now=next.due;this.jobs.shift();next.run();
+   if(!this.foregroundMedia&&this.restoreBacklog){this.restoreBacklog--;this.restoreReceipts++;}
+  }
+  for(let i=0;i<16;i++)await Promise.resolve();
+ }
+}
+const source=(n:number)=>({key:String(n)}),options=(n:number)=>({url:'https://fixture.invalid/'+n,bounds:{x:0,y:0,width:233,height:233}});
+
+test('production pool: both neighbours under 3x CPU cost and queued restore load; model thresholds only',async()=>{
+ const m=new Model(),pool=new VideoSessionPool(m.port);expect(await pool.supportsPrewarm()).toBe(true);
+ const start=pool.prepare(source(10),options(10)).result;await m.advance(400);await start;m.foregroundMedia=true;
+ let current=10,ready=0;const latency:number[]=[];
+ const warm=async()=>{const a=pool.prewarm(source(current+1),options(current+1)),b=pool.prewarm(source(current-1),options(current-1));await m.advance(500);await Promise.all([a,b]);};
+ await warm();
+ for(let i=0;i<120;i++){
+  // Consecutive 3-5 swipes followed by reversals; 500ms between settles.
+  const direction=i%10<5?1:-1,target=current+direction;
+  expect(pool.hasStandby(String(current+1))).toBe(true);expect(pool.hasStandby(String(current-1))).toBe(true);
+  if(pool.hasStandby(String(target)))ready++;
+  expect(pool.selectStandby(String(target))).toBe(true);
+  const before=m.prepareCount;await pool.transition(1,direction>0?'up':'down',options(target).bounds);
+  const began=m.now,promote=pool.promote(direction>0?'up':'down',options(target).bounds);await m.advance(16);await promote;latency.push(m.now-began);
+  expect(m.prepareCount).toBe(before);expect(pool.hasStandby(String(current))).toBe(true);
+  current=target;await warm();expect(m.states.size).toBeLessThanOrEqual(3);
+ }
+ expect(ready/120).toBeGreaterThanOrEqual(.95);expect(Math.max(...latency)).toBeLessThanOrEqual(200);
+ expect(m.restoreReceipts).toBe(1); // Initial prepare before foreground media.
+ m.foregroundMedia=false;await pool.releaseAll();m.later(4,()=>{});await m.advance(4);expect(m.restoreReceipts).toBe(2);
+ console.log('PREWARM_MODEL '+JSON.stringify({swipes:120,readyBeforeSwipe:ready,readyRate:ready/120,maxAfterSettleMs:Math.max(...latency),cpuMultiplier:3,queuedRestoreUnits:800,intervalMs:500,bufferTargetBytes:3*m.targetBytes,deviceProof:false}));
+});
+
+test('deduplicates same-key preparation; concurrent neighbours do not cancel each other; stale completions cannot return',async()=>{
+ const m=new Model(),pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();
+ const active=pool.prepare(source(1),options(1)).result;await m.advance(400);await active;
+ const next=pool.prewarm(source(2),options(2)),same=pool.prewarm(source(2),options(2)),prev=pool.prewarm(source(0),options(0));
+ await m.advance(500);await Promise.all([next,same,prev]);expect(m.prepareCount).toBe(3);expect(m.cancelCount).toBe(0);
+ expect(pool.hasStandby('0')).toBe(true);expect(pool.hasStandby('2')).toBe(true);
+ pool.invalidateStandby('0');const stale=pool.prewarm(source(-1),options(-1));const rejection=stale.then(()=>{throw Error('stale prewarm resolved');},error=>expect(String(error)).toMatch(/stale|cancel/));
+ await pool.releaseAll();await m.advance(500);await rejection;expect(pool.hasStandby('-1')).toBe(false);expect(m.states.size).toBe(0);
+});
+
+test('explicit sessions strip legacy background preference and a two-decoder host never starts a third slot',async()=>{
+ const m=new Model();m.port.capabilities=async()=>({...await new Model().port.capabilities(),decoderLimit:2,maxSessions:2});
+ const original=m.port.prepare;m.port.prepare=(o:any)=>{expect(o.backgroundPlayback).toBeUndefined();return original(o);};
+ const pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();expect(pool.neighbourCapacity).toBe(1);
+ const active=pool.prepare(source(1),{...options(1),backgroundPlayback:true}).result;await m.advance(400);await active;
+ const a=pool.prewarm(source(2),{...options(2),backgroundPlayback:true});await m.advance(500);await a;
+ const b=pool.prewarm(source(0),options(0));await m.advance(500);await b;expect(m.states.size).toBe(2);expect(pool.hasStandby('2')).toBe(false);expect(pool.hasStandby('0')).toBe(true);
+});
+
+
+test('an outgoing active that never decoded a frame is not falsely retained as ready',async()=>{
+ const m=new Model(),pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();
+ const active=pool.prepare(source(1),options(1)).result;await m.advance(400);await active;
+ const id=(await pool.diagnostics())!.slots[0].sessionId;m.states.set(id,{...m.states.get(id)!,hasRenderedFirstFrame:false});
+ const next=pool.prewarm(source(2),options(2));await m.advance(500);await next;pool.selectStandby('2');
+ const promotion=pool.promote('up',options(2).bounds);await m.advance(16);await promotion;expect(pool.hasStandby('1')).toBe(false);
+});

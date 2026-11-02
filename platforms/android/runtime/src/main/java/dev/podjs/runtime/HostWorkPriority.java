@@ -6,13 +6,22 @@ import java.util.ArrayDeque;
  * Reserve on dispatch (never block main); enter on the service worker. A started
  * native unit runs to completion. Foreground bypasses the queued restore
  * backlog rather than waiting for an entire background window.
- * After eight foreground units admit one waiting background unit for progress.
+ * Outside foreground media, after eight foreground units admit one waiting
+ * background unit for progress. Media suspends new background admissions.
  * The encrypted store's OS lock still supplies cross-process atomicity. */
 final class HostWorkPriority {
     static final HostWorkPriority DEVICE = new HostWorkPriority();
     private final ArrayDeque<Ticket> foreground = new ArrayDeque<>(), background = new ArrayDeque<>();
     private Ticket active;
     private int foregroundBurst;
+    private final java.util.Set<Object> mediaOwners = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+    synchronized boolean mediaActive() { return !mediaOwners.isEmpty(); }
+    /** Foreground media holds admission across buffering and silent prewarms.
+     * Already-started units finish atomically; queued background units wait. */
+    synchronized void foregroundMedia(Object owner, boolean active) {
+        if(active) mediaOwners.add(owner); else mediaOwners.remove(owner);
+        notifyAll();
+    }
     synchronized Ticket reserve(boolean headless) {
         Ticket ticket = new Ticket(headless);
         (headless ? background : foreground).addLast(ticket);
@@ -20,8 +29,11 @@ final class HostWorkPriority {
         return ticket;
     }
     private Ticket next() {
-        if (!background.isEmpty() && (foreground.isEmpty() || foregroundBurst >= 8)) return background.peekFirst();
+        if (!mediaActive() && !background.isEmpty() && (foreground.isEmpty() || foregroundBurst >= 8)) return background.peekFirst();
         return foreground.peekFirst();
+    }
+    synchronized void awaitBackground() throws InterruptedException {
+        while(mediaActive())wait();
     }
     final class Ticket implements AutoCloseable {
         private final boolean headless;

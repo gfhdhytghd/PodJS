@@ -21,6 +21,15 @@ public class PodVideoAnalyticsTest {
   JSONObject result=a.snapshot();assertEquals(579,result.getLong("bytesLoaded"));assertEquals(46320,result.getLong("throughputBps"));assertEquals(2,result.getLong("droppedFrames"));assertTrue(result.getLong("firstByteMs")>=0);
   assertFalse(result.toString().contains("fixture"));assertFalse(result.toString().contains("signature"));
  }
+ @Test public void stallRequiresAnOutstandingNetworkTransferAndStopsOnProgressOrEnd() {
+  PodVideoAnalytics a=new PodVideoAnalytics();DataSpec source=new DataSpec(Uri.parse("https://fixture.invalid/video"));
+  assertFalse(a.networkStalled());a.onTransferStart(null,source,true);
+  org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(799));assertFalse(a.networkStalled());
+  org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(1));assertTrue(a.networkStalled());
+  a.onBytesTransferred(null,source,true,64);assertFalse(a.networkStalled());
+  org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(900));assertTrue(a.networkStalled());
+  a.onTransferEnd(null,source,true);assertFalse(a.networkStalled());
+ }
  @Test public void generationsHaveIndependentFirstFrameBytesAndDropCounters() throws Exception {
   PodVideoAnalytics old=new PodVideoAnalytics(),next=new PodVideoAnalytics();
   old.onRenderedFirstFrame(null,new Object(),SystemClock.elapsedRealtime());old.onDroppedVideoFrames(null,3,100);

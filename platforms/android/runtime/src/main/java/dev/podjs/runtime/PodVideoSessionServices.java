@@ -36,19 +36,25 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Two-slot foreground video pool for pager-style feeds. A prewarm slot decodes
+ * Three-slot foreground video pool for pager-style feeds. A prewarm slot decodes
  * silently into a retained, off-screen TextureView. Promotion reveals that same
  * surface, so no decoder or SurfaceTexture is replaced at the page boundary.
  */
 final class PodVideoSessionServices implements AutoCloseable {
     interface Callback extends VideoFrameObserver { void complete(JSONObject value); void fail(String code, String message); }
 
-    static final int MAX_SESSIONS = 2;
-    static final int TARGET_BUFFER_BYTES = 6 * 1024 * 1024;
+    static final int MAX_SESSIONS = 3;
+    static final int TARGET_BUFFER_BYTES = 4 * 1024 * 1024;
     static final long PREWARM_TIMEOUT_MS = 2_500L;
     private static final float PREWARM_ALPHA = 0.01f;
     private static final String CAPABILITY = "media.video.sessions";
 
+    private void mediaGate(boolean active) {
+        boolean before=HostWorkPriority.DEVICE.mediaActive();
+        HostWorkPriority.DEVICE.foregroundMedia(this,active);
+        boolean after=HostWorkPriority.DEVICE.mediaActive();
+        if(before!=after)try{PodBenchmark.begin("background_gate",new JSONObject().put("state",after?"paused":"running").put("reason",after?"foreground_media":"media_stopped"));}catch(Exception ignored){}
+    }
     private final Context context;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final File mediaRoot;
@@ -89,6 +95,7 @@ final class PodVideoSessionServices implements AutoCloseable {
     void lifecycle(boolean resumed) {
         main.post(() -> {
             lifecyclePaused = !resumed;
+            if(!resumed)mediaGate(false);
             if (!resumed) {
                 for (Session session : sessions.values()) {
                     if (session.player != null) session.player.pause();
@@ -133,6 +140,7 @@ final class PodVideoSessionServices implements AutoCloseable {
             Session session = sessions.get(sessionId);
             if (session == null || session.prepareCallback == null) return;
             Callback pending = session.takePrepareCallback();
+            if(!session.prewarming)mediaGate(false);
             session.resetPlayer();
             session.state = "stopped";
             session.hideOffscreen();
@@ -200,6 +208,7 @@ final class PodVideoSessionServices implements AutoCloseable {
         session.frameSource=new JSONObject(args.toString());
         session.bounds = bounds;
         session.prewarming = prewarming;
+        if(!prewarming)mediaGate(true);
         session.profile = profile;
         session.autoplay = args.optBoolean("autoplay", true);
         session.muted = args.optBoolean("muted", false);
@@ -224,7 +233,7 @@ final class PodVideoSessionServices implements AutoCloseable {
             session.audioPolicy.observeMuteChanges(player::isPlaying, player::getVolume, new PodVideoMuteTelemetry());
         }
         catch (RuntimeException error) {
-            session.takePrepareCallback(); session.resetPlayer(); session.state = "error"; session.hideOffscreen();
+            session.takePrepareCallback(); if(!session.prewarming)mediaGate(false); session.resetPlayer(); session.state = "error"; session.hideOffscreen();
             if (created) { sessions.remove(id); session.close(); }
             throw error;
         }
@@ -264,7 +273,7 @@ final class PodVideoSessionServices implements AutoCloseable {
             @Override public void onPlaybackStateChanged(int playbackState) {
                 if (!own.matches(player, generation)) return;
                 if (playbackState == Player.STATE_BUFFERING) own.state = "buffering";
-                else if (playbackState == Player.STATE_ENDED) own.state = "ended";
+                else if (playbackState == Player.STATE_ENDED) { own.state = "ended"; if(!own.prewarming)mediaGate(false); }
                 else if (playbackState == Player.STATE_READY && !own.prewarming) {
                     own.state = player.isPlaying() ? "playing" : "ready";
                     own.completePrepare();
@@ -291,6 +300,7 @@ final class PodVideoSessionServices implements AutoCloseable {
 
             @Override public void onPlayerError(PlaybackException error) {
                 if (!own.matches(player, generation)) return;
+                if(!own.prewarming)mediaGate(false);
                 boolean decoderFailure = error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED
                         || error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED
                         || error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED;
@@ -314,7 +324,7 @@ final class PodVideoSessionServices implements AutoCloseable {
             else player.pause();
             if (session.prewarming) session.armPrewarmTimeout(player, generation);
         } catch (RuntimeException error) {
-            session.takePrepareCallback(); session.resetPlayer(); session.state = "error"; session.hideOffscreen();
+            session.takePrepareCallback(); if(!session.prewarming)mediaGate(false); session.resetPlayer(); session.state = "error"; session.hideOffscreen();
             if (created) { sessions.remove(id); session.close(); }
             throw error;
         }
@@ -322,6 +332,7 @@ final class PodVideoSessionServices implements AutoCloseable {
 
     private void failPrepare(Session session, ExoPlayer player, long generation, String code, String message, boolean downgrade) {
         if (!session.matches(player, generation)) return;
+        if(!session.prewarming)mediaGate(false);
         Callback pending = session.takePrepareCallback();
         PodVideoDecoderCapabilities.Profile profile = session.profile;
         if (downgrade && profile != null && profile.known()) {
@@ -350,6 +361,7 @@ final class PodVideoSessionServices implements AutoCloseable {
     private void play(JSONObject args, Callback callback) throws Exception {
         Session session = require(args); session.requirePlayer();
         session.prewarming = false;
+        mediaGate(!lifecyclePaused);
         session.player.setAudioAttributes(mediaAudioAttributes(), true);
         session.audioPolicy.setVolume(session.volume, false);
         if (!lifecyclePaused) session.player.play();
@@ -359,11 +371,13 @@ final class PodVideoSessionServices implements AutoCloseable {
 
     private void retire(JSONObject args, Callback callback) throws Exception {
         Session session = require(args);
+        if(!session.prewarming)mediaGate(false);
         session.retire();
         callback.complete(session.snapshot());
     }
     private void pause(JSONObject args, Callback callback) throws Exception {
-        Session session = require(args); session.requirePlayer();
+        Session session = require(args);
+        if(!session.prewarming)mediaGate(false); session.requirePlayer();
         session.player.pause(); session.state = session.prewarming ? "prewarmed" : "paused";
         callback.complete(session.snapshot());
     }
@@ -377,6 +391,7 @@ final class PodVideoSessionServices implements AutoCloseable {
 
     private void stop(JSONObject args, Callback callback) throws Exception {
         Session session = require(args);
+        if(!session.prewarming)mediaGate(false);
         Callback pending = session.takePrepareCallback();
         session.resetPlayer(); session.state = "stopped"; session.presented = false; session.hideOffscreen();
         if (pending != null) pending.fail("cancelled", "Video session preparation stopped");
@@ -386,7 +401,7 @@ final class PodVideoSessionServices implements AutoCloseable {
     private void release(JSONObject args, Callback callback) throws Exception {
         String id = sessionId(args, "sessionId");
         Session session = sessions.remove(id);
-        if (session != null) session.close();
+        if (session != null) { if(!session.prewarming)mediaGate(false); session.close(); }
         callback.complete(new JSONObject().put("sessionId", id).put("released", session != null));
     }
 
@@ -440,6 +455,7 @@ final class PodVideoSessionServices implements AutoCloseable {
         if (replaced != null) replaced.retire();
         target.bounds = requested;
         target.prewarming = false;
+        mediaGate(!lifecyclePaused);
         target.presented = requested.visible;
         target.applyBounds(requested);
         // Reveal the retained first-frame surface before hiding the old one.
@@ -450,7 +466,7 @@ final class PodVideoSessionServices implements AutoCloseable {
         if (autoplay && !lifecyclePaused) { target.player.play(); target.state = "playing"; }
         else { target.player.pause(); target.state = "paused"; }
         PodBenchmark.VideoAction action=PodBenchmark.videoAction(args);
-        if(action!=null){long own=target.generation;PodBenchmark.watchVideo(target.videoView,action,()->target.generation==own&&!target.prewarming&&target.presented&&target.hasRenderedFirstFrame&&target.videoView.getTranslationY()==requested.translateYPx);}
+        if(action!=null){long own=target.generation;PodBenchmark.watchVideo(target.videoView,action,()->target.generation==own&&!target.prewarming&&target.presented&&target.hasRenderedFirstFrame&&target.videoView.getTranslationY()==requested.translateYPx,true);}
         callback.complete(target.snapshot());
     }
 
@@ -698,7 +714,7 @@ final class PodVideoSessionServices implements AutoCloseable {
             prewarmTimeout = () -> {
                 prewarmTimeout = null;
                 if (!matches(expected, expectedGeneration) || !prewarming || prepareCallback == null) return;
-                failPrepare(this, expected, expectedGeneration, "timeout", "video_prewarm_timeout", true);
+                failPrepare(this, expected, expectedGeneration, "timeout", "video_prewarm_timeout", false);
             };
             main.postDelayed(prewarmTimeout, PREWARM_TIMEOUT_MS);
         }
@@ -781,6 +797,8 @@ final class PodVideoSessionServices implements AutoCloseable {
             return new JSONObject()
                     .put("metrics",analytics==null?null:analytics.snapshot()).put("ok", true).put("sessionId", id).put("state", state).put("errorCode", "error".equals(state) ? errorCode : null)
                     .put("positionMs", player == null ? 0 : player.getCurrentPosition())
+                    .put("bufferedMs",player==null?0:Math.max(0,player.getBufferedPosition()-player.getCurrentPosition()))
+                    .put("networkStalled",analytics!=null&&analytics.networkStalled())
                     .put("durationMs", player == null ? 0 : Math.max(0, player.getDuration()))
                     .put("width", player == null ? 0 : player.getVideoSize().width)
                     .put("height", player == null ? 0 : player.getVideoSize().height)
@@ -795,6 +813,7 @@ final class PodVideoSessionServices implements AutoCloseable {
 
         @Override public void close() {
             if (disposed) return;
+            if(!prewarming&&presented)mediaGate(false);
             disposed = true;
             Callback pending = takePrepareCallback();
             resetPlayer();
@@ -846,6 +865,7 @@ final class PodVideoSessionServices implements AutoCloseable {
 
     @Override public void close() {
         closed = true;
+            mediaGate(false);
         main.post(() -> {
             for (Session session : sessions.values()) session.close();
             sessions.clear(); parent = null;

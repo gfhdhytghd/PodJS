@@ -44,6 +44,12 @@ import java.util.Map;
 /** One bounded Media3 video session. All player and view operations run on main. */
 public final class PodVideoServices implements AutoCloseable {
     public interface Callback extends VideoFrameObserver { void complete(JSONObject value); void fail(String code, String message); }
+    private void mediaGate(boolean active) {
+        boolean before=HostWorkPriority.DEVICE.mediaActive();
+        HostWorkPriority.DEVICE.foregroundMedia(this,active);
+        boolean after=HostWorkPriority.DEVICE.mediaActive();
+        if(before!=after)try{PodBenchmark.begin("background_gate",new JSONObject().put("state",after?"paused":"running").put("reason",after?"foreground_media":"media_stopped"));}catch(Exception ignored){}
+    }
     private final Context context;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final File mediaRoot;
@@ -166,7 +172,7 @@ public final class PodVideoServices implements AutoCloseable {
         if (!"video.prepare".equals(method)) return;
         main.post(() -> { if (prepareCallback != null) { Callback c=prepareCallback; prepareCallback=null; c.fail("cancelled", "Video preparation cancelled"); releasePlayer(); state="stopped"; } });
     }
-    public void pauseForLifecycle() { main.post(() -> { if (!backgroundPlayback) { lifecyclePaused=true; if(player!=null)player.pause(); state="paused"; } }); }
+    public void pauseForLifecycle() { mediaGate(false); main.post(() -> { if (!backgroundPlayback) { lifecyclePaused=true; if(player!=null)player.pause(); state="paused"; } }); }
 
     private void prepare(JSONObject a, Callback cb) throws Exception {
         benchmarkAction=PodBenchmark.videoAction(a);benchmarkFramePending=benchmarkAction!=null;
@@ -180,7 +186,7 @@ public final class PodVideoServices implements AutoCloseable {
         releasePlayer();
         if(!decoderBudget.acquire())throw new IllegalStateException("video_decoder_limit");
         decoderLease=true;
-        applyBounds(a.optJSONObject("bounds")); autoplay=a.optBoolean("autoplay", true); backgroundPlayback=a.optBoolean("backgroundPlayback",false); lifecyclePaused=false; density=context.getResources().getDisplayMetrics().density;
+        applyBounds(a.optJSONObject("bounds")); autoplay=a.optBoolean("autoplay", true); mediaGate(true); backgroundPlayback=a.optBoolean("backgroundPlayback",false); lifecyclePaused=false; density=context.getResources().getDisplayMetrics().density;
         Map<String,String> headers = headers(a.optJSONObject("headers"));
         analytics=new PodVideoAnalytics();
         DefaultHttpDataSource.Factory http = PodVideoHttpDataSources.create(headers,analytics);
@@ -225,7 +231,7 @@ public final class PodVideoServices implements AutoCloseable {
             @Override public void onMediaItemTransition(MediaItem item, int reason) { if(player==session && reason==Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT)completedLoops++; }
             @Override public void onRenderedFirstFrame() { if(player==session){hasRenderedFirstFrame=true;try{if(frameCallback!=null)frameCallback.firstFrame(state());}catch(Exception ignored){}frameStats.playing(player.isPlaying(),android.os.SystemClock.elapsedRealtimeNanos());final int observedSequence=statsSequence;main.postDelayed(()->{if(player==session&&statsSequence==observedSequence){logFrameStats("window");statsWindowLogged=true;}},8000);androidx.media3.common.Format decoded=player.getVideoFormat();if(decoded!=null)android.util.Log.i("PodVideoTiming","decoded mime="+("video/avc".equals(decoded.sampleMimeType)?"avc":"video/hevc".equals(decoded.sampleMimeType)?"hevc":"other")+" width="+decoded.width+" height="+decoded.height);if(boundsVisible&&!firstRevealLogged){firstRevealLogged=true;android.util.Log.i("PodVideoTiming","surfaceReveal seq="+prepareSequence+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-prepareStartedMs));} if(videoView!=null)videoView.setAlpha(boundsVisible?1f:0f); if(videoBackground!=null)videoBackground.setAlpha(boundsVisible?1f:0f); android.util.Log.i("PodVideoTiming","firstFrame prepareMs="+(android.os.SystemClock.elapsedRealtime()-prepareStartedMs));} }
             @Override public void onVideoSizeChanged(androidx.media3.common.VideoSize size){if(player==session)fitVideo();}
-            @Override public void onPlaybackStateChanged(int s) { if(player!=session)return; if(frameStats!=null&&hasRenderedFirstFrame)frameStats.buffering(s==Player.STATE_BUFFERING,android.os.SystemClock.elapsedRealtimeNanos()); if (s==Player.STATE_BUFFERING) { if (player.getPlayWhenReady()) state="buffering"; } else if(s==Player.STATE_READY && player!=null && player.isPlaying()) state="playing"; else if(s==Player.STATE_ENDED) { state="ended"; if(videoView!=null)videoView.setKeepScreenOn(false); } else if(s==Player.STATE_READY && !"paused".equals(state)) state="ready"; if (s==Player.STATE_READY && prepareCallback != null) { Callback c=prepareCallback; prepareCallback=null; try { c.complete(state()); } catch (Exception e) { c.fail("video_error", e.getMessage()); } } }
+            @Override public void onPlaybackStateChanged(int s) { if(player!=session)return; if(frameStats!=null&&hasRenderedFirstFrame)frameStats.buffering(s==Player.STATE_BUFFERING,android.os.SystemClock.elapsedRealtimeNanos()); if (s==Player.STATE_BUFFERING) { if (player.getPlayWhenReady()) state="buffering"; } else if(s==Player.STATE_READY && player!=null && player.isPlaying()) state="playing"; else if(s==Player.STATE_ENDED) { state="ended"; mediaGate(false); if(videoView!=null)videoView.setKeepScreenOn(false); } else if(s==Player.STATE_READY && !"paused".equals(state)) state="ready"; if (s==Player.STATE_READY && prepareCallback != null) { Callback c=prepareCallback; prepareCallback=null; try { c.complete(state()); } catch (Exception e) { c.fail("video_error", e.getMessage()); } } }
             @Override public void onIsPlayingChanged(boolean playing) { if(player!=session)return; if(frameStats!=null)frameStats.playing(playing&&hasRenderedFirstFrame,android.os.SystemClock.elapsedRealtimeNanos()); if (playing) state="playing"; else if (state.equals("playing")) state="paused"; }
             @Override public void onPlayerError(PlaybackException error) { if(player!=session)return; state="error"; playbackErrorCode=PodVideoAnalytics.errorCode(error); Callback c=prepareCallback; prepareCallback=null; releasePlayer(); if(c!=null)c.fail(playbackErrorCode,"Video playback failed"); if(videoView!=null)videoView.setVisibility(View.GONE); }
         };
@@ -235,8 +241,9 @@ public final class PodVideoServices implements AutoCloseable {
         if (autoplay && !lifecyclePaused) player.play(); else player.pause();
     }
     private MediaItem item(String url, String type) { MediaItem.Builder b=new MediaItem.Builder().setUri(Uri.parse(url)); if(!type.isEmpty()) b.setMimeType(type); return b.build(); }
-    private void play(Callback c) throws Exception { require();android.util.Log.i("PodVideoTiming","playCall seq="+prepareSequence+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-prepareStartedMs)); lifecyclePaused=false;audioPolicy.setHeldMuted(false);if(videoView!=null)videoView.setKeepScreenOn(true);player.play(); c.complete(state()); }
+    private void play(Callback c) throws Exception { require(); mediaGate(true);android.util.Log.i("PodVideoTiming","playCall seq="+prepareSequence+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-prepareStartedMs)); lifecyclePaused=false;audioPolicy.setHeldMuted(false);if(videoView!=null)videoView.setKeepScreenOn(true);player.play(); c.complete(state()); }
     private void retire(Callback callback) throws Exception {
+        mediaGate(false);
         if(prepareCallback != null) { Callback pending=prepareCallback;prepareCallback=null;releasePlayer();pending.fail("cancelled","Video retired"); }
         if(player != null) { if(audioPolicy!=null)audioPolicy.setHeldMuted(true);else player.setVolume(0f); player.pause(); }
         state="paused"; boundsVisible=false;
@@ -244,7 +251,7 @@ public final class PodVideoServices implements AutoCloseable {
         if(videoBackground != null) videoBackground.setAlpha(0f);
         callback.complete(state());
     }
-    private void pause(Callback c) throws Exception { require(); player.pause(); if(videoView!=null)videoView.setKeepScreenOn(false); state="paused"; c.complete(state()); }
+    private void pause(Callback c) throws Exception { require(); mediaGate(false); player.pause(); if(videoView!=null)videoView.setKeepScreenOn(false); state="paused"; c.complete(state()); }
     private void seek(JSONObject a, Callback c) throws Exception { require(); long p=a.optLong("positionMs", -1); if(p<0) throw new IllegalArgumentException("invalid_position"); player.seekTo(p); c.complete(state()); }
     private void stop(Callback c) throws Exception { releasePlayer(); clearBackdrop(); state="stopped"; if(videoView!=null){videoView.setVisibility(View.GONE);videoView.setKeepScreenOn(false);} c.complete(state()); }
     private void bounds(JSONObject b, Callback c) throws Exception { applyBounds(b);PodBenchmark.VideoAction action=PodBenchmark.videoAction(b);if(action!=null&&hasRenderedFirstFrame&&videoView!=null&&videoView.getTranslationY()==0){final int own=prepareSequence;PodBenchmark.present(videoView,action.event("snap_back"),()->prepareSequence==own&&boundsVisible&&hasRenderedFirstFrame&&videoView.getTranslationY()==0);}c.complete(state()); }
@@ -292,7 +299,7 @@ public final class PodVideoServices implements AutoCloseable {
     }
     private int dp(double v) { if(!Double.isFinite(v)) throw new IllegalArgumentException("invalid_bounds"); return Math.max(-100000,Math.min(100000,(int)Math.round(v*density))); }
     private void require(){if(player==null)throw new IllegalStateException("video_not_ready");}
-    private JSONObject state() throws Exception { AudioManager am=(AudioManager)context.getSystemService(Context.AUDIO_SERVICE);return new JSONObject().put("metrics",analytics==null?null:analytics.snapshot()).put("ok",true).put("state",state).put("hasRenderedFirstFrame",hasRenderedFirstFrame).put("sourceGeneration",prepareSequence).put("completedLoops",completedLoops).put("loop",player!=null&&player.getRepeatMode()==Player.REPEAT_MODE_ONE).put("errorCode", "error".equals(state)?playbackErrorCode:null).put("positionMs",player==null?0:player.getCurrentPosition()).put("durationMs",player==null?0:Math.max(0,player.getDuration())).put("width",player==null?0:player.getVideoSize().width).put("height",player==null?0:player.getVideoSize().height).put("volume",am.getStreamVolume(AudioManager.STREAM_MUSIC)/(double)Math.max(1,am.getStreamMaxVolume(AudioManager.STREAM_MUSIC))).put("volumeMax",am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)); }
+    private JSONObject state() throws Exception { AudioManager am=(AudioManager)context.getSystemService(Context.AUDIO_SERVICE);return new JSONObject().put("metrics",analytics==null?null:analytics.snapshot()).put("ok",true).put("state",state).put("hasRenderedFirstFrame",hasRenderedFirstFrame).put("sourceGeneration",prepareSequence).put("completedLoops",completedLoops).put("loop",player!=null&&player.getRepeatMode()==Player.REPEAT_MODE_ONE).put("errorCode", "error".equals(state)?playbackErrorCode:null).put("bufferedMs",player==null?0:Math.max(0,player.getBufferedPosition()-player.getCurrentPosition())).put("networkStalled",analytics!=null&&analytics.networkStalled()).put("positionMs",player==null?0:player.getCurrentPosition()).put("durationMs",player==null?0:Math.max(0,player.getDuration())).put("width",player==null?0:player.getVideoSize().width).put("height",player==null?0:player.getVideoSize().height).put("volume",am.getStreamVolume(AudioManager.STREAM_MUSIC)/(double)Math.max(1,am.getStreamMaxVolume(AudioManager.STREAM_MUSIC))).put("volumeMax",am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)); }
     private String source(JSONObject a,String key)throws Exception{String s=a.optString(key,"");if(s.isEmpty())throw new IllegalArgumentException("missing_url");return sourceValue(s);}
     private String sourceValue(String s)throws Exception{if(mediaPrefixCache!=null&&mediaPrefixCache.owns(s))return s;if(s.startsWith("http://")||s.startsWith("https://")){Uri u=Uri.parse(s);if(u.getHost()==null)throw new IllegalArgumentException("invalid_url");return s;}File f=new File(mediaRoot,s).getCanonicalFile();if(s.startsWith("/")||!f.getPath().startsWith(mediaRoot.getPath()+File.separator)||!f.isFile())throw new SecurityException("invalid_media_path");return f.toURI().toString();}
     private Map<String,String> headers(JSONObject o)throws Exception{Map<String,String> m=new HashMap<>();if(o==null)return m; if(o.length()>32)throw new IllegalArgumentException("too_many_headers");int total=0;java.util.Iterator<String> i=o.keys();while(i.hasNext()){String k=i.next();String v=o.optString(k,null);if(v==null||k.length()>128||v.length()>65536||k.indexOf('\r')>=0||k.indexOf('\n')>=0||v.indexOf('\r')>=0||v.indexOf('\n')>=0)throw new IllegalArgumentException("invalid_headers");total+=k.length()+v.length();if(total>65536)throw new IllegalArgumentException("headers_too_large");m.put(k,v);}return m;}
@@ -315,7 +322,7 @@ public final class PodVideoServices implements AutoCloseable {
         if(videoBackground!=null)videoBackground.setVisibility(View.GONE);
         if(prepareCallback!=null){Callback pending=prepareCallback;prepareCallback=null;pending.fail("cancelled","Video preparation cancelled");}
     }
-    private void releasePlayer(){detachPlayer(false);if(videoView!=null)videoView.setKeepScreenOn(false);}
-    @Override public void close(){closed=true;main.post(()->{detachPlayer(backgroundPlayback&&player!=null&&prepareCallback==null&&player.getPlayWhenReady());if(videoView!=null&&videoView.getParent() instanceof ViewGroup)((ViewGroup)videoView.getParent()).removeView(videoView);if(videoView!=null)videoView.setKeepScreenOn(false);videoView=null;if(videoBackground!=null&&videoBackground.getParent() instanceof ViewGroup)((ViewGroup)videoBackground.getParent()).removeView(videoBackground);videoBackground=null;clearBackdrop();if(backdrop!=null&&backdrop.getParent() instanceof ViewGroup)((ViewGroup)backdrop.getParent()).removeView(backdrop);backdrop=null;parent=null;state="idle";});}
+    private void releasePlayer(){mediaGate(false);detachPlayer(false);if(videoView!=null)videoView.setKeepScreenOn(false);}
+    @Override public void close(){closed=true;mediaGate(false);main.post(()->{detachPlayer(backgroundPlayback&&player!=null&&prepareCallback==null&&player.getPlayWhenReady());if(videoView!=null&&videoView.getParent() instanceof ViewGroup)((ViewGroup)videoView.getParent()).removeView(videoView);if(videoView!=null)videoView.setKeepScreenOn(false);videoView=null;if(videoBackground!=null&&videoBackground.getParent() instanceof ViewGroup)((ViewGroup)videoBackground.getParent()).removeView(videoBackground);videoBackground=null;clearBackdrop();if(backdrop!=null&&backdrop.getParent() instanceof ViewGroup)((ViewGroup)backdrop.getParent()).removeView(backdrop);backdrop=null;parent=null;state="idle";});}
     private static String errorCode(Exception e){return e instanceof SecurityException?"permission_denied":e instanceof IllegalArgumentException?"invalid_argument":"video_decoder_limit".equals(e.getMessage())?"resource_exhausted":"video_error";}
 }

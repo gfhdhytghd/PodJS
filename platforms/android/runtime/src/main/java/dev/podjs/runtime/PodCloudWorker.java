@@ -61,7 +61,10 @@ public final class PodCloudWorker extends Worker {
         long began=android.os.SystemClock.elapsedRealtime(),lastReport=began,lastStageReport=began;
         Map<String,Integer> calls=new TreeMap<>();String status="failed",outcomeCode="worker_started",stage="host";
         ExecutorService executor=null;
+        ScheduledExecutorService heartbeat=Executors.newSingleThreadScheduledExecutor();
+        heartbeat.scheduleAtFixedRate(()->{try{PodBenchmark.begin("restore_state",new JSONObject().put("state",HostWorkPriority.DEVICE.mediaActive()?"paused":"running"));}catch(Exception ignored){}},0,1,TimeUnit.SECONDS);
         try{
+            while(HostWorkPriority.DEVICE.mediaActive()) { if(isStopped())return Result.retry(); Thread.sleep(250); }
             if(manualToken!=null&&!manualToken.matches("[a-zA-Z0-9_-]{1,96}")){outcomeCode="invalid_manual_token";return Result.failure();}
             queuedToken=manualToken!=null?manualToken:PodCloudWork.pendingToken(context);
             if(PodCloudWork.held(context)){PodCloudWork.deferHeld(context,queuedToken);status="yielded";outcomeCode="local_transfer_held";return Result.success();}
@@ -86,6 +89,7 @@ public final class PodCloudWorker extends Worker {
                     while(!result.isDone()){
                         if(PodCloudWork.held(context)){PodCloudWork.deferHeld(context,queuedToken);run.cancel();result.get(10,TimeUnit.SECONDS);status="yielded";outcomeCode="local_transfer_held";return Result.success();}
                         if(isStopped()){run.cancel();break;}
+                        if(HostWorkPriority.DEVICE.mediaActive()){Thread.sleep(250);continue;}
                         JSONObject request=run.pollRequest();
                         if(request==null){Thread.sleep(2);continue;}
                         JSONObject args=request.optJSONObject("args");String method=args==null?"":args.optString("method");
@@ -123,7 +127,7 @@ public final class PodCloudWorker extends Worker {
             outcomeCode="host_exception";try{if(queuedToken!=null){if(!PodCloudWork.next(context,queuedToken,requestId,false,manualToken==null))PodCloudWork.resumeHeld(context);status="backoff";return Result.success();}}catch(Exception schedulingFailed){status="queue_failed";outcomeCode="queue_failed";return getRunAttemptCount()<3?Result.retry():Result.failure();}
             return getRunAttemptCount()<3?Result.retry():Result.failure();
         }
-        finally{if(executor!=null)executor.shutdownNow();android.util.Log.i("PodJSCloudWorker","finished status="+status+" code="+outcomeCode+" stage="+stage+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-began)+" calls="+calls);}
+        finally{heartbeat.shutdownNow();try{PodBenchmark.begin("restore_state",new JSONObject().put("state","unknown"));}catch(Exception ignored){}if(executor!=null)executor.shutdownNow();android.util.Log.i("PodJSCloudWorker","finished status="+status+" code="+outcomeCode+" stage="+stage+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-began)+" calls="+calls);}
     }
     @Override public void onStopped(){PodBackgroundRun run=active;if(run!=null)run.cancel();PodServices host=services;if(host!=null)host.close();}
 }

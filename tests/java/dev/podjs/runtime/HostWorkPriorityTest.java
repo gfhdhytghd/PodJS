@@ -32,7 +32,29 @@ public final class HostWorkPriorityTest {
         // Thread interruption and request cancellation leave later work runnable.
         HostWorkPriority.Ticket after=lane.reserve(true);after.enter();after.close();
         System.out.println("HostWorkPriority: foreground priority, FIFO, background progress, cancellation PASS");
+        mediaGate();
         benchmark();
+    }
+    private static void mediaGate() throws Exception {
+        HostWorkPriority lane=new HostWorkPriority();Object a=new Object(),b=new Object();
+        HostWorkPriority.Ticket atomic=lane.reserve(true);atomic.enter();
+        lane.foregroundMedia(a,true);lane.foregroundMedia(a,true);lane.foregroundMedia(b,true);
+        // A started receipt is never preempted or rolled back.
+        atomic.close();
+        ExecutorService executor=Executors.newSingleThreadExecutor();
+        CountDownLatch entered=new CountDownLatch(1);
+        HostWorkPriority.Ticket background=lane.reserve(true);
+        Future<?> held=executor.submit(()->{try{background.enter();entered.countDown();}catch(InterruptedException e){throw new RuntimeException(e);}finally{background.close();}});
+        for(int i=0;i<24;i++){HostWorkPriority.Ticket ui=lane.reserve(false);ui.enter();ui.close();}
+        if(entered.await(30,TimeUnit.MILLISECONDS))throw new AssertionError("media gate admitted restore");
+        lane.foregroundMedia(a,false);
+        if(!lane.mediaActive()||entered.await(30,TimeUnit.MILLISECONDS))throw new AssertionError("one owner released another owner");
+        lane.foregroundMedia(b,false);held.get(2,TimeUnit.SECONDS);
+        if(entered.getCount()!=0)throw new AssertionError("restore did not resume");
+        lane.foregroundMedia(a,true);HostWorkPriority.Ticket cancelled=lane.reserve(true);cancelled.cancel();
+        try{cancelled.enter();throw new AssertionError("cancelled media waiter entered");}catch(InterruptedException expected){}
+        lane.foregroundMedia(a,false);executor.shutdownNow();
+        System.out.println("Foreground media: two owners, atomic receipt, 24 foreground units, paused restore, resume, cancelled waiter PASS");
     }
     private static void benchmark() throws Exception {
         final int count=800;

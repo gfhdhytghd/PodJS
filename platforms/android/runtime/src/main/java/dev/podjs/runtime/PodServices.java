@@ -620,11 +620,12 @@ final class PodServices implements Closeable {
         args.put("requestId", id);
         // Only shared device/secure work uses this gate. Network transfers and
         // main-thread dialogs never hold an admission ticket while awaiting IO.
-        if (method.startsWith("secure.") || method.startsWith("crypto.") || method.startsWith("file.") || "log.append".equals(method) || "uri.parse".equals(method))
+        if (!method.endsWith(".release") && (method.startsWith("secure.") || method.startsWith("crypto.") || method.startsWith("file.") || "log.append".equals(method) || "uri.parse".equals(method)))
             request.priority = HostWorkPriority.DEVICE.reserve(headlessWork);
         try { request.future = (method.startsWith("provision.") || method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.") || method.startsWith("discovery.") ? streamWorkers : method.startsWith("http.") ? transfers : method.startsWith("sql.") ? sqlWorker : method.startsWith("text.") ? textWorker : method.startsWith("secure.") ? secureWorker : worker).submit(() -> {
             try {
                 if (request.priority != null) request.priority.enter();
+                else if(headlessWork&&!method.endsWith(".release"))HostWorkPriority.DEVICE.awaitBackground();
                 request.cancellation.throwIfCanceled();
                 Object value;
                 if (method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.")) {
