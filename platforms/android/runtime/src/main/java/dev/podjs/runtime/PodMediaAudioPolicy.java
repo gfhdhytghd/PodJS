@@ -46,6 +46,21 @@ final class PodMediaAudioPolicy implements AutoCloseable {
         this.playing = playing;
         this.muteObserver = observer;
     }
+    // OEM volume broadcasts can arrive late. Only the active policy checks
+    // system truth; speculative/retired slots never run this fallback.
+    private final Runnable systemCheck = new Runnable() {
+        @Override public void run() {
+            if(closed||prewarming)return;
+            int index=audio.getStreamVolume(AudioManager.STREAM_MUSIC);
+            boolean muted=audio.isStreamMute(AudioManager.STREAM_MUSIC)||index==0;
+            if(lastIndex==null||lastIndex!=index||lastMute==null||lastMute!=muted)refresh();
+            if(!closed&&!prewarming)main.postDelayed(this,50);
+        }
+    };
+    private void scheduleSystemCheck() {
+        main.removeCallbacks(systemCheck);
+        if(!closed&&!prewarming)main.postDelayed(systemCheck,50);
+    }
     private final BroadcastReceiver receiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) { refresh(); }
     };
@@ -82,7 +97,7 @@ final class PodMediaAudioPolicy implements AutoCloseable {
                 .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_AUDIO,!enabled).build());
         player.setVolume(1f);
     }
-    void observeVolume(Runnable changed) { volumeChanged=changed;refresh(); }
+    void observeVolume(Runnable changed) { volumeChanged=changed;refresh();scheduleSystemCheck(); }
 
     void setVolume(float requestedVolume, boolean prewarming) {
         if (closed) return;
@@ -90,6 +105,7 @@ final class PodMediaAudioPolicy implements AutoCloseable {
         this.prewarming = prewarming;
         // Read synchronously at activation too: a system notification may still be queued.
         refresh();
+        scheduleSystemCheck();
     }
 
     /** Retirement/prewarm hold; never changes the system mute or index. */
@@ -97,6 +113,7 @@ final class PodMediaAudioPolicy implements AutoCloseable {
         if (closed) return;
         prewarming = held;
         refresh();
+        scheduleSystemCheck();
     }
 
     void refresh() {
@@ -117,6 +134,7 @@ final class PodMediaAudioPolicy implements AutoCloseable {
     @Override public void close() {
         if (closed) return;
         closed = true;
+        main.removeCallbacks(systemCheck);
         context.unregisterReceiver(receiver);
         context.getContentResolver().unregisterContentObserver(settings);
     }

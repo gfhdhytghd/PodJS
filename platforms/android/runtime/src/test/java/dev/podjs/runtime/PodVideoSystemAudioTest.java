@@ -27,10 +27,16 @@ public class PodVideoSystemAudioTest {
   }
   System.out.println("SYSTEM_VOLUME_FIXTURE="+cases);
  }
- @Test public void muteUpdateUsesSystemStreamAndNeverSetsAnIndex()throws Exception {
+ @Test public void muteUpdateUsesSystemStreamAndPreservesAudibleIndex()throws Exception {
   PodVideoSystemAudio.update(context,new JSONObject().put("muted",true));assertTrue(audio.isStreamMute(AudioManager.STREAM_MUSIC));
   PodVideoSystemAudio.update(context,new JSONObject().put("muted",false));assertFalse(audio.isStreamMute(AudioManager.STREAM_MUSIC));assertEquals(1,audio.getStreamVolume(AudioManager.STREAM_MUSIC));
   PodVideoSystemAudio.update(context,new JSONObject().put("volume",.5));assertEquals(8,audio.getStreamVolume(AudioManager.STREAM_MUSIC));
+ }
+ @Test public void explicitUnmuteFromZeroMakesMusicAudibleWithoutPrivateSavedVolume()throws Exception {
+  audio.setStreamVolume(AudioManager.STREAM_MUSIC,0,0);
+  PodVideoSystemAudio.update(context,new JSONObject().put("muted",false));
+  JSONObject state=PodVideoSystemAudio.snapshot(context,new JSONObject());
+  assertFalse(state.getBoolean("muted"));assertEquals(1,state.getInt("volumeIndex"));
  }
  @Test public void videoUnityGainCannotRetainPrivateMuteAndPrewarmDisablesOnlyItsAudioTrack()throws Exception {
   ExoPlayer player=new ExoPlayer.Builder(context).build();player.setVolume(0f);

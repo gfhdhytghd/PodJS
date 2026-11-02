@@ -51,6 +51,7 @@ public final class MainActivity extends Activity {
     }
     return super.dispatchTouchEvent(e);
   }
+  @Override public boolean dispatchKeyEvent(android.view.KeyEvent e){return dev.podjs.runtime.PodMediaVolumeKeys.dispatch(this,e)||super.dispatchKeyEvent(e);}
   @Override public boolean dispatchGenericMotionEvent(MotionEvent e){return pod!=null&&pod.handleScrollMotion(e)||super.dispatchGenericMotionEvent(e);}
   @Override public void onBackPressed(){if(pod==null||!pod.sendBack())super.onBackPressed();}
 }

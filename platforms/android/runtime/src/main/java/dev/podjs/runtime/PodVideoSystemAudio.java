@@ -17,7 +17,13 @@ final class PodVideoSystemAudio {
         AudioManager audio=audio(context);
         if(args.has("muted")) {
             if(!(args.get("muted") instanceof Boolean)||args.has("volume"))throw new IllegalArgumentException("invalid_volume");
-            audio.adjustStreamVolume(AudioManager.STREAM_MUSIC,args.getBoolean("muted")?AudioManager.ADJUST_MUTE:AudioManager.ADJUST_UNMUTE,0);
+            boolean muted=args.getBoolean("muted");
+            audio.adjustStreamVolume(AudioManager.STREAM_MUSIC,muted?AudioManager.ADJUST_MUTE:AudioManager.ADJUST_UNMUTE,0);
+            // Let Android restore its own audible index first. Clearing the
+            // flag at a true zero index remains silent: explicit unmute then
+            // requests the lowest audible system step, never a private gain.
+            if(!muted&&audio.getStreamVolume(AudioManager.STREAM_MUSIC)==0&&!audio.isVolumeFixed())
+                audio.setStreamVolume(AudioManager.STREAM_MUSIC,Math.min(audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC),Math.max(1,audio.getStreamMinVolume(AudioManager.STREAM_MUSIC))),0);
         } else {
             double value=args.optDouble("volume",-1);
             if(!Double.isFinite(value)||value<0||value>1)throw new IllegalArgumentException("invalid_volume");
