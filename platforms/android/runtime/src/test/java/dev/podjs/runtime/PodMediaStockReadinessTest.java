@@ -69,4 +69,31 @@ public class PodMediaStockReadinessTest {
         }
     }
 
+    @Test public void repeatedPreparationReusesCompleteRangesWithoutLosingReadiness()throws Exception {
+        PodMediaStockRangeTest.Ranges remote=new PodMediaStockRangeTest.Ranges();
+        File root=PodMediaPrefixCacheTest.root();
+        for(int restart=0;restart<2;restart++)try(PodMediaPrefixCache cache=new PodMediaPrefixCache(root,remote,6*1024*1024)){
+            String uri=cache.register("repeat","https://example.test/movie",Map.of(),true);
+            JSONObject args=new JSONObject().put("uri",uri).put("bytes",2*1024*1024).put("frameKey","repeat");
+            assertTrue(cache.execute("video.cache.prepare",args).getBoolean("ready"));
+            long before=cache.stats().getLong("networkReadBytes");
+            assertTrue("reusing the suffix must not subtract its budget twice",cache.execute("video.cache.prepare",args).getBoolean("ready"));
+            assertEquals(before,cache.stats().getLong("networkReadBytes"));
+            assertEquals(1536*1024,cache.target(uri).file.length());
+            assertEquals(512*1024,cache.target(uri).tail().length());
+            if(restart==1)assertEquals("persisted ranges need no upstream reads",0,before);
+        }
+    }
+
+    @Test public void minimumBudgetReservesTheSuffixBeforeTheFirstStageFinishes()throws Exception {
+        PodMediaStockRangeTest.Ranges remote=new PodMediaStockRangeTest.Ranges();
+        try(PodMediaPrefixCache cache=new PodMediaPrefixCache(PodMediaPrefixCacheTest.root(),remote,6*1024*1024)){
+            String uri=cache.register("minimum","https://example.test/movie",Map.of(),true);
+            JSONObject result=cache.execute("video.cache.prepare",new JSONObject().put("uri",uri).put("bytes",128*1024).put("frameKey","minimum"));
+            assertTrue(result.getBoolean("ready"));
+            assertEquals(64*1024,result.getLong("prefixBytes"));assertEquals(64*1024,result.getLong("tailBytes"));
+            assertEquals(128*1024,remote.readBytes);assertEquals(remote.readBytes,cache.stats().getLong("networkReadBytes"));
+        }
+    }
+
 }

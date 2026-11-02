@@ -43,15 +43,21 @@ final class PodMediaPrefixPreparation {
             }finally{frame.recycle();}
         }catch(Exception error){trace("failed",error.getMessage()!=null&&error.getMessage().contains("cancelled")?"cancelled":"prepare_failure",kind(error),job.entry);throw error;}finally{cache.endPreparation(job);}
     }
+    /** Reserve the unknown-container suffix before downloading bytes that it would displace. */
+    static int fallbackTailBytes(PodMediaPrefixCache.Job job)throws IOException {
+        PodMediaPrefixCache.Entry entry=job.entry;
+        if(!job.preparing||entry.length<=job.budget||entry.file.length()<8)return 0;
+        byte[] magic=new byte[8];try(RandomAccessFile input=new RandomAccessFile(entry.file,"r")){input.readFully(magic);}
+        return magic[4]=='f'&&magic[5]=='t'&&magic[6]=='y'&&magic[7]=='p'?0:Math.min(TAIL_BYTES,job.budget/2);
+    }
     /** Called by the fetch owner before releasing a preparation job. */
     static void cacheFallback(PodMediaPrefixCache cache,PodMediaPrefixCache.Job job)throws Exception {
-        PodMediaPrefixCache.Entry entry=job.entry;int budget=job.budget;
-        // Unknown containers retain the legacy bounded suffix fallback.
-        byte[] magic=new byte[8];try(RandomAccessFile input=new RandomAccessFile(entry.file,"r")){if(input.length()>=8)input.readFully(magic);}
-        if(!(magic[4]=='f'&&magic[5]=='t'&&magic[6]=='y'&&magic[7]=='p')&&entry.length>entry.file.length()){
-            int tail=(int)Math.min(Math.min(TAIL_BYTES,budget/2),entry.length);cache.fitPreparation(job,Math.max(0,budget-tail));
-            cache.saveTail(job,cache.loadRange(job,entry.length-tail,tail),budget);
-        }
+        PodMediaPrefixCache.Entry entry=job.entry;int tail=fallbackTailBytes(job);
+        if(tail==0)return;
+        // A complete persisted suffix already belongs to the same registered content.
+        // fitPreparation takes the joint budget and subtracts that suffix exactly once.
+        if(entry.tail().length()==tail)cache.fitPreparation(job,job.budget);
+        else cache.saveTail(job,cache.loadRange(job,entry.length-tail,tail),job.budget);
     }
     private static String kind(Throwable error){return error instanceof java.io.IOException?"io":error instanceof IllegalArgumentException?"illegal_argument":error instanceof IllegalStateException?"illegal_state":error instanceof SecurityException?"security":"runtime";}
     private static void trace(String phase,String reason,String kind,PodMediaPrefixCache.Entry entry){

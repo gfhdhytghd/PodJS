@@ -34,12 +34,19 @@ public class PodMediaStockRangeTest {
             public void close(){}
         };}
     }
-    @Test public void capped206DoesNotTruncateTotalAndCompletesPrefixAcrossRanges()throws Exception {
+    @Test public void capped206DoesNotTruncateTotalAndCompletesBothRanges()throws Exception {
         Ranges remote=new Ranges();remote.cap=128*1024;
         try(PodMediaPrefixCache cache=new PodMediaPrefixCache(PodMediaPrefixCacheTest.root(),remote,6*M)){
             String uri=cache.register("capped","https://example.test/movie",Map.of(),true);
             PodMediaPrefixCache.Job job=cache.beginPreparation(uri,M);
-            try{cache.prefetch(job);assertEquals("range EOF is not file EOF",5*M,job.entry.length);assertEquals(M,job.entry.file.length());assertEquals(8,remote.opened.size());}
+            try{
+                // Preparation owns both ranges now; the queue yields between prefix stages.
+                cache.prefetch(job);assertNull(job.failure);assertEquals("range EOF is not file EOF",5*M,job.entry.length);
+                assertArrayEquals(Arrays.copyOf(remote.body,M/2),java.nio.file.Files.readAllBytes(job.entry.file.toPath()));
+                assertArrayEquals(Arrays.copyOfRange(remote.body,5*M-M/2,5*M),java.nio.file.Files.readAllBytes(job.entry.tail().toPath()));
+                assertEquals(M,remote.readBytes);assertEquals(remote.readBytes,cache.stats().getLong("networkReadBytes"));
+                assertTrue("both ranges require continuation",remote.opened.size()>2);
+            }
             finally{cache.endPreparation(job);}
         }
     }
@@ -111,19 +118,25 @@ public class PodMediaStockRangeTest {
     }
     static void integer(byte[] bytes,int offset,int value){for(int i=3;i>=0;i--){bytes[offset+i]=(byte)value;value>>>=8;}}
     static Ranges largeMoov(){Ranges remote=new Ranges();integer(remote.body,0,24);integer(remote.body,4,0x66747970);integer(remote.body,24,3*M-24);integer(remote.body,28,0x6d646174);integer(remote.body,3*M,2*M);integer(remote.body,3*M+4,0x6d6f6f76);return remote;}
-    @Test public void moovLargerThanFixedSuffixIsCachedWithinTheTotalBudgetAndSurvivesRestart()throws Exception {
-        Ranges remote=largeMoov();File root=PodMediaPrefixCacheTest.root();String uri;
+    @Test public void tailMoovAtParserLimitKeepsItsReadAheadGuardAndSurvivesRestart()throws Exception {
+        Ranges remote=new Ranges();int moovStart=5*M-512*1024,tailStart=moovStart-64*1024;
+        integer(remote.body,0,24);integer(remote.body,4,0x66747970);integer(remote.body,24,moovStart-24);integer(remote.body,28,0x6d646174);
+        integer(remote.body,moovStart,512*1024);integer(remote.body,moovStart+4,0x6d6f6f76);
+        File root=PodMediaPrefixCacheTest.root();String uri;
         try(PodMediaPrefixCache cache=new PodMediaPrefixCache(root,remote,6*M)){
             uri=cache.register("large-moov","https://example.test/movie",Map.of(),true);
             cache.execute("video.cache.prepare",new JSONObject().put("uri",uri).put("bytes",4*M).put("frameKey","moov"));
-            assertTrue(cache.target(uri).tail().length()>=2*M);assertTrue(cache.stats().getLong("bytes")<=4*M);
+            assertEquals(576*1024,cache.target(uri).tail().length());assertTrue(cache.stats().getLong("bytes")<=4*M);
+            assertArrayEquals(Arrays.copyOfRange(remote.body,tailStart,5*M),java.nio.file.Files.readAllBytes(cache.target(uri).tail().toPath()));
+            long before=cache.stats().getLong("networkReadBytes");
             cache.execute("video.cache.prepare",new JSONObject().put("uri",uri).put("bytes",4*M).put("frameKey","moov"));
             assertTrue("repeated preparation keeps the joint range budget",cache.stats().getLong("bytes")<=4*M);
+            assertEquals("complete metadata needs no second download",before,cache.stats().getLong("networkReadBytes"));
         }
         remote.opened.clear();try(PodMediaPrefixCache cache=new PodMediaPrefixCache(root,remote,6*M)){
             String fresh=cache.register("large-moov","https://new.test/fresh",Map.of("Cookie","rotated"),true);assertEquals(uri,fresh);
-            DataSource source=cache.factory(remote).createDataSource();source.open(new DataSpec.Builder().setUri(fresh).setPosition(3*M).setLength(2*M).build());
-            assertArrayEquals(Arrays.copyOfRange(remote.body,3*M,5*M),PodMediaPrefixCacheTest.read(source,2*M));source.close();assertEquals(0,remote.opened.size());
+            DataSource source=cache.factory(remote).createDataSource();source.open(new DataSpec.Builder().setUri(fresh).setPosition(tailStart).setLength(5*M-tailStart).build());
+            assertArrayEquals(Arrays.copyOfRange(remote.body,tailStart,5*M),PodMediaPrefixCacheTest.read(source,5*M-tailStart));source.close();assertEquals(0,remote.opened.size());
         }
     }
     @Test public void frontMoovKeepsBoundedPrefixInsteadOfCachingTheWholeMovie()throws Exception {
@@ -131,14 +144,29 @@ public class PodMediaStockRangeTest {
         try(PodMediaPrefixCache cache=new PodMediaPrefixCache(PodMediaPrefixCacheTest.root(),remote,6*M)){
             String uri=cache.register("front-moov","https://example.test/movie",Map.of(),true);
             cache.execute("video.cache.prepare",new JSONObject().put("uri",uri).put("bytes",2*M).put("frameKey","front"));
-            assertEquals(1536*1024,cache.target(uri).file.length());assertEquals(512*1024,cache.target(uri).tail().length());assertEquals(2*M,remote.readBytes);
+            // MP4 bytes estimates the sample prefix; a front moov needs no fallback suffix.
+            assertEquals(2*M,cache.target(uri).file.length());assertEquals(0,cache.target(uri).tail().length());assertEquals(2*M,remote.readBytes);
         }
     }
     @Test public void metadataThatCannotFitNeverPublishesReadyOrExceedsBudget()throws Exception {
         Ranges remote=largeMoov();try(PodMediaPrefixCache cache=new PodMediaPrefixCache(PodMediaPrefixCacheTest.root(),remote,6*M)){
             String uri=cache.register("over-budget","https://example.test/movie",Map.of(),true);
-            JSONObject result=cache.execute("video.cache.prepare",new JSONObject().put("uri",uri).put("bytes",2*M).put("frameKey","moov"));
-            assertFalse(result.getBoolean("ready"));assertEquals(0,cache.target(uri).tail().length());assertTrue(cache.stats().getLong("bytes")<=2*M);
+            // The 2 MiB moov exceeds the documented 512 KiB parser limit.
+            try{cache.execute("video.cache.prepare",new JSONObject().put("uri",uri).put("bytes",2*M).put("frameKey","moov"));fail("oversized metadata must reject preparation");}
+            catch(IOException expected){assertEquals("metadata_over_budget",expected.getMessage());}
+            assertEquals(0,cache.target(uri).tail().length());assertTrue(cache.stats().getLong("bytes")<=2*M);
+            assertFalse(new PodVideoFrameCache(cache.frameRoot).restore("moov",PodVideoFrameCache.binding(new JSONObject().put("url",uri),cache)).getBoolean("available"));
+        }
+    }
+    @Test public void metadataSuffixBeyondTheEntryBudgetIsRejectedEvenWithASmallMoov()throws Exception {
+        Ranges remote=new Ranges();integer(remote.body,0,24);integer(remote.body,4,0x66747970);
+        integer(remote.body,24,M-24);integer(remote.body,28,0x6d646174);integer(remote.body,M,4096);integer(remote.body,M+4,0x6d6f6f76);
+        try(PodMediaPrefixCache cache=new PodMediaPrefixCache(PodMediaPrefixCacheTest.root(),remote,6*M)){
+            String uri=cache.register("oversized-suffix","https://example.test/movie",Map.of(),true);
+            try{cache.execute("video.cache.prepare",new JSONObject().put("uri",uri).put("bytes",2*M).put("frameKey","suffix"));fail("suffix plus prefix exceeds the entry budget");}
+            catch(IOException expected){assertEquals("metadata_over_budget",expected.getMessage());}
+            assertEquals(0,cache.target(uri).tail().length());assertTrue(cache.stats().getLong("bytes")<=4*M);
+            assertFalse(new PodVideoFrameCache(cache.frameRoot).restore("suffix",PodVideoFrameCache.binding(new JSONObject().put("url",uri),cache)).getBoolean("available"));
         }
     }
     @Test public void mismatchedContentRangeNeverAppendsMisplacedBytes()throws Exception {

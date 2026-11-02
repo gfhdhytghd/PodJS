@@ -146,6 +146,9 @@ final class PodMediaPrefixCache implements AutoCloseable {
         try{
             long position; synchronized(this){position=job.entry.file.length();}
             long goal=job.stage==0?Math.min(job.budget,192*1024):Math.max(job.budget,job.entry.sampleEnd);
+            int fallbackTail=PodMediaPrefixPreparation.fallbackTailBytes(job);
+            if(fallbackTail>0)goal=Math.min(goal,job.budget-fallbackTail);
+            boolean pendingFallback=job.preparing&&(position<8||job.entry.length<0);
             if(job.entry.sampleEnd>MAX_ENTRY-job.entry.tail().length())throw new IOException("samples_over_budget");
             goal=Math.min(goal,MAX_ENTRY-job.entry.tail().length());
             int requests=0;
@@ -173,6 +176,11 @@ final class PodMediaPrefixCache implements AutoCloseable {
                         if(!throttle(job,n))break;
                         synchronized(this){downloadedBytes+=n;}if(!job.current())break;
                         append(job.entry,position,buffer,0,n,job.epoch);position+=n;
+                        if(pendingFallback&&position>=8&&job.entry.length>=0){
+                            fallbackTail=PodMediaPrefixPreparation.fallbackTailBytes(job);
+                            if(fallbackTail>0)goal=Math.min(goal,job.budget-fallbackTail);
+                            pendingFallback=false;
+                        }
                     }
                 }finally{try{source.close();}finally{if(job.source==source)job.source=null;}}
                 if(position==start)throw new EOFException("empty_media_range");
