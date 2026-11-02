@@ -25,4 +25,17 @@ public class PodMediaPrefixSamplesTest {
   assertEquals(-1,PodMediaPrefixSamples.prefix(box("moov",box("trak",new byte[1])),10000,1500));
   assertEquals(-1,PodMediaPrefixSamples.prefix(box("moov",track(new int[]{100,100,100,100},new int[]{1000,2000})),2050,1500));
  }
+ @Test public void firstKeyframeUsesVideoSampleNotTheWholeTimedPrefix()throws Exception {
+  byte[] tables=box("stbl",box("stss",ints(0,1,1)),box("stsc",ints(0,1,1,2,1)),box("stsz",ints(0,0,2,123,456)),box("stco",ints(0,1,2000)));
+  byte[] moov=box("moov",box("trak",box("mdia",box("hdlr",ints(0,0,0x76696465)),box("minf",tables))));
+  assertEquals(2123,PodMediaPrefixSamples.firstKeyframe(moov,10000));
+  assertEquals(-1,PodMediaPrefixSamples.firstKeyframe(moov,2100));
+  for(int i=0;i<moov.length;i++)assertEquals(-1,PodMediaPrefixSamples.firstKeyframe(java.util.Arrays.copyOf(moov,i),10000));
+ }
+ @Test public void nonSyncFirstSampleCannotClaimAKeyframePlan()throws Exception {
+  byte[] tables=box("stbl",box("stss",ints(0,1,2)),box("stsc",ints(0,1,1,2,1)),box("stsz",ints(0,100,2)),box("co64",ints(0,1,0,2000)));
+  byte[] moov=box("moov",box("trak",box("mdia",box("hdlr",ints(0,0,0x76696465)),box("minf",tables))));
+  assertEquals(-1,PodMediaPrefixSamples.firstKeyframe(moov,10000));
+ }
+
 }

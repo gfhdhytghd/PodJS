@@ -8,7 +8,7 @@ export interface MediaPrefixTarget {itemToken?:string;generation?:number;uri:str
 let revision=0;
 export const mediaPrefixCache={
  onResult(listener:(value:MediaPrefetchResult)=>void){return __onHostEvent(event=>{if(!hasCapability('media.video')||event.t!=='video.cache.result')return;const value=event.value as MediaPrefetchResult|undefined;if(value&&typeof value.itemToken==='string'&&/^[A-Za-z0-9_-]{1,96}$/.test(value.itemToken)&&Number.isSafeInteger(value.generation)&&value.generation>=0&&['success','failure'].includes(value.result)&&Number.isInteger(value.httpStatus)&&value.httpStatus>=0&&value.httpStatus<=599&&['success','http_403','http_4xx','http_5xx','transport'].includes(value.category))listener({itemToken:value.itemToken,generation:value.generation,result:value.result,httpStatus:value.httpStatus,category:value.category});});},
- register(key:string,url:string,headers:Record<string,string>,persistent=false){return hostOperation<{uri:string}>('video.cache.register',{key,url,headers,persistent});},
+ register(key:string,url:string,headers:Record<string,string>,persistent=false,alternates:readonly string[]=[]){return hostOperation<{uri:string}>('video.cache.register',{key,url,headers,persistent,alternates});},
  inspect(uri:string){return hostOperation<{prefixBytes:number;tailBytes:number;length:number}>('video.cache.inspect',{uri});},
  prepare(uri:string,bytes:number,frameKey:string){return hostOperation<{ready:boolean;prefixBytes:number;tailBytes:number;frame?:import('./services.ts').VideoFrame}>('video.cache.prepare',{uri,bytes,frameKey});},
  remove(uri:string){return hostOperation<void>('video.cache.remove',{uri});},

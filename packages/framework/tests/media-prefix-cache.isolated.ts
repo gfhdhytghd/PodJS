@@ -24,3 +24,9 @@ test('persistent registration and preparation retain the media capability contra
  ] as const;
  for(const [start,method,value] of operations){const op=start();const call=emitted.at(-1);expect(call.method).toBe(method);if(method==='video.cache.register')expect(call.args.persistent).toBe(true);events.push({t:'service.result',id:call.id,ok:true,value});__pumpPodEvents();expect(await op.result).toEqual(value as any);}
 });
+
+ test('same-track alternates cross the host bridge without losing headers or identity',async()=>{
+  const op=mediaPrefixCache.register('track','https://a.test/track',{Cookie:'fixture'},false,['https://b.test/track']);const call=emitted.at(-1);
+  expect(call.args).toEqual({key:'track',url:'https://a.test/track',headers:{Cookie:'fixture'},persistent:false,alternates:['https://b.test/track']});
+  events.push({t:'service.result',id:call.id,ok:true,value:{uri:'podjs-media-cache://play/track'}});__pumpPodEvents();expect((await op.result).uri).toBe('podjs-media-cache://play/track');
+ });

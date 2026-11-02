@@ -51,10 +51,10 @@ public class PodMediaPrefixCacheTest {
  @Test public void prefixThenRangeAndTailAreByteIdenticalWithAllHeaders()throws Exception {
   Remote r=new Remote(5*M);try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
    String uri=register(c,"one");c.execute("video.cache.window",window(uri,M));idle(c);assertEquals(M,c.stats().getLong("bytes"));assertEquals(M,c.stats().getLong("downloadedBytes"));
-   DataSource d=c.factory(r).createDataSource();assertEquals(r.body.length,d.open(new DataSpec(Uri.parse(uri))));assertArrayEquals(r.body,read(d,r.body.length));d.close();assertEquals(M,r.opened.get(1).position);assertEquals("fixture",r.opened.get(1).httpRequestHeaders.get("Cookie"));assertEquals(4*M,c.stats().getLong("bytes"));assertEquals(M,c.stats().getLong("cacheReadBytes"));
-   d.open(new DataSpec.Builder().setUri(uri).setPosition(5*M-64).setLength(64).build());assertArrayEquals(Arrays.copyOfRange(r.body,5*M-64,5*M),read(d,64));d.close();assertEquals(5*M-64,r.opened.get(2).position);assertEquals(64,r.opened.get(2).length);
+   DataSource d=c.factory(r).createDataSource();assertEquals(r.body.length,d.open(new DataSpec(Uri.parse(uri))));assertArrayEquals(r.body,read(d,r.body.length));d.close();assertEquals(M,r.opened.get(2).position);assertEquals("fixture",r.opened.get(2).httpRequestHeaders.get("Cookie"));assertEquals(4*M,c.stats().getLong("bytes"));assertEquals(M,c.stats().getLong("cacheReadBytes"));
+   d.open(new DataSpec.Builder().setUri(uri).setPosition(5*M-64).setLength(64).build());assertArrayEquals(Arrays.copyOfRange(r.body,5*M-64,5*M),read(d,64));d.close();assertEquals(5*M-64,r.opened.get(3).position);assertEquals(64,r.opened.get(3).length);
    // Seek backwards into the prefix needs no new upstream.
-   d.open(new DataSpec.Builder().setUri(uri).setPosition(17).setLength(111).build());assertArrayEquals(Arrays.copyOfRange(r.body,17,128),read(d,111));d.close();assertEquals(3,r.opened.size());
+   d.open(new DataSpec.Builder().setUri(uri).setPosition(17).setLength(111).build());assertArrayEquals(Arrays.copyOfRange(r.body,17,128),read(d,111));d.close();assertEquals(4,r.opened.size());
   }
  }
  @Test public void emptyPrefixMissNeverWaitsForAnInFlightPrefetch()throws Exception {
@@ -212,6 +212,52 @@ public class PodMediaPrefixCacheTest {
     assertTrue(r.readEntered.await(2,TimeUnit.SECONDS));Thread.sleep(100);assertEquals(0,c.stats().getLong("bytes"));
    } finally {foreground.close();}
    idle(c);assertEquals(M,c.stats().getLong("bytes"));
+  }
+ }
+
+ @Test public void oneSchedulerReordersQueuedFirstFramesBeforePrefixRemainders()throws Exception {
+  Remote r=new Remote(2*M);r.block=true;
+  try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
+   String a=register(c,"priority-a"),b=register(c,"priority-b"),d=register(c,"priority-c");
+   JSONArray items=new JSONArray();for(String uri:List.of(a,b,d))items.put(new JSONObject().put("uri",uri).put("prefetchBytes",M));
+   c.execute("video.cache.window",new JSONObject().put("items",items));assertTrue(r.readEntered.await(2,TimeUnit.SECONDS));
+   assertEquals(1,r.opened.size());JSONArray reordered=new JSONArray();for(String uri:List.of(d,b,a))reordered.put(new JSONObject().put("uri",uri).put("prefetchBytes",M));
+   c.execute("video.cache.window",new JSONObject().put("items",reordered));r.block=false;idle(c);
+   assertEquals(List.of("/priority-a","/priority-c","/priority-b","/priority-c","/priority-b","/priority-a"),r.opened.stream().map(x->x.uri.getPath()).collect(java.util.stream.Collectors.toList()));
+   for(int i=0;i<3;i++){assertEquals(0,r.opened.get(i).position);assertEquals(192*1024,r.opened.get(i).length);}
+   for(int i=3;i<6;i++)assertEquals(192*1024,r.opened.get(i).position);
+  }
+ }
+ @Test public void mirrorsAreBoundedAndPartOfRegistrationIdentity()throws Exception {
+  try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),new Remote(M),6*M)){
+   String one=c.register("mirrors","https://a.test/video",Map.of(),false,List.of("https://b.test/video"));
+   assertNotEquals(one,c.register("mirrors","https://a.test/video",Map.of(),false,List.of("https://c.test/video")));
+   for(List<String> bad:List.of(List.of("http://b.test/video"),List.of("https://u:p@b.test/video"),List.of("https://b.test/1","https://c.test/1"))){
+    try{c.register("invalid","https://a.test/video",Map.of(),false,bad);fail("invalid mirror accepted");}catch(IllegalArgumentException expected){}
+   }
+  }
+ }
+
+ @Test public void maximumPrefixWithTailTerminatesAtTheCombinedEntryLimit()throws Exception {
+  Remote r=new Remote(5*M);java.nio.ByteBuffer b=java.nio.ByteBuffer.wrap(r.body);b.putInt(24).putInt(0x66747970);b.position(24);b.putInt(5*M-24-128).putInt(0x6d646174);b.position(5*M-128);b.putInt(128).putInt(0x6d6f6f76);
+  try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
+   String uri=register(c,"max-tail");c.execute("video.cache.window",window(uri,4*M));idle(c);
+   assertEquals(4*M,c.target(uri).file.length()+c.target(uri).tail().length());assertEquals(0,c.stats().getLong("failures"));
+  }
+ }
+
+ @Test public void cachedPlayerRetainsDyhitNonNetworkTransferAccounting()throws Exception {
+  Remote r=new Remote(M);try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
+   String uri=register(c,"dyhit-cache-listener");c.execute("video.cache.window",window(uri,128*1024));idle(c);
+   int[] counts=new int[4];DataSource source=c.factory(r).createDataSource();
+   source.addTransferListener(new TransferListener(){
+    public void onTransferInitializing(DataSource d,DataSpec s,boolean network){}
+    public void onTransferStart(DataSource d,DataSpec s,boolean network){if(!network)counts[0]++;}
+    public void onBytesTransferred(DataSource d,DataSpec s,boolean network,int bytes){counts[network?2:1]+=bytes;}
+    public void onTransferEnd(DataSource d,DataSpec s,boolean network){if(!network)counts[3]++;}
+   });
+   source.open(new DataSpec.Builder().setUri(uri).setLength(8192).build());assertEquals(8192,read(source,8192).length);source.close();
+   assertArrayEquals(new int[]{1,8192,0,1},counts);
   }
  }
 

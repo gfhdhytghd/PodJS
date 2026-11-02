@@ -2,6 +2,31 @@ package dev.podjs.runtime;
 
 /** Bounded ISO-BMFF sample-table planner. Unknown/fragmented layouts keep the caller's byte estimate. */
 final class PodMediaPrefixSamples {
+    /** End of the first independently decodable video sample. Unknown tables fail closed.
+     * This is a byte plan, never a decoded-frame readiness claim. */
+    static long firstKeyframe(byte[] moov,long length){
+        try{
+            if(moov.length<8||!type(moov,0,"moov")||next(moov,0,moov.length)!=moov.length)return -1;
+            for(int trak=8;trak+8<=moov.length;){int end=next(moov,trak,moov.length);
+                if(type(moov,trak,"trak")){
+                    int mdia=find(moov,trak,"mdia"),hdlr=find(moov,mdia,"hdlr");
+                    if(hdlr>=0&&next(moov,hdlr,moov.length)>=hdlr+20&&type(moov,hdlr+12,"vide")){
+                        int minf=find(moov,mdia,"minf"),stbl=find(moov,minf,"stbl");
+                        int stsz=find(moov,stbl,"stsz"),stsc=find(moov,stbl,"stsc"),stco=find(moov,stbl,"stco"),co64=find(moov,stbl,"co64"),stss=find(moov,stbl,"stss");
+                        if(stsz<0||stsc<0||(stco<0&&co64<0))return -1;
+                        if(stss>=0&&(next(moov,stss,moov.length)<stss+20||u32(moov,stss+12)<1||u32(moov,stss+16)!=1))return -1;
+                        if(next(moov,stsz,moov.length)<stsz+20||u32(moov,stsz+16)<1||next(moov,stsc,moov.length)<stsc+28||u32(moov,stsc+12)<1||u32(moov,stsc+16)!=1||u32(moov,stsc+20)<1)return -1;
+                        long size=u32(moov,stsz+12);if(size==0){if(next(moov,stsz,moov.length)<stsz+24)return -1;size=u32(moov,stsz+20);}
+                        int chunks=stco>=0?stco:co64;
+                        if(next(moov,chunks,moov.length)<chunks+(stco>=0?20:24)||u32(moov,chunks+12)<1)return -1;
+                        long offset=stco>=0?u32(moov,chunks+16):u64(moov,chunks+16);
+                        return size>0&&offset>=0&&offset<length&&size<=length-offset?offset+size:-1;
+                    }
+                }trak=end;
+            }
+        }catch(IndexOutOfBoundsException|IllegalArgumentException invalid){}
+        return -1;
+    }
     static long prefix(byte[] moov,long length,int millis){
         try{
             long end=0;boolean found=false;
