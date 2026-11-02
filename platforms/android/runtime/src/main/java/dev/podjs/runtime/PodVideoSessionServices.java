@@ -136,6 +136,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             lifecyclePaused = !resumed;
             if(!resumed)mediaGate(false);
             if (!resumed) {
+                endDrag();
                 for (Session session : sessions.values()) {
                     if (session.player != null) session.player.pause();
                     if (session.player != null && !session.prewarming) session.state = "paused";
@@ -491,7 +492,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     private void release(JSONObject args, Callback callback) throws Exception {
         String id = sessionId(args, "sessionId");
         Session session = sessions.remove(id);
-        if (session != null) { if(!session.prewarming)mediaGate(false); session.close(); }
+        if (session != null) { if(session == dragFrom || session == dragTo) endDrag(); if(!session.prewarming)mediaGate(false); session.close(); hideStandbys(); }
         if(sessions.isEmpty())mediaGate(false);
         callback.complete(new JSONObject().put("sessionId", id).put("released", session != null));
     }
@@ -499,9 +500,11 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     private void setBounds(JSONObject args, Callback callback) throws Exception {
         Session session = require(args);
         Bounds bounds = Bounds.read(args.optJSONObject("bounds"), density, true);
+        if(!session.prewarming || session == dragFrom || session == dragTo) endDrag();
+        if(!session.prewarming && bounds.visible && bounds.translateYPx!=0) showPagerBackground(bounds);
         session.bounds = bounds; session.applyBounds(bounds);
         if(!session.prewarming)session.presented=bounds.visible;
-        if (session.presented) session.showPresented(); else session.hideOffscreen();
+        if (session.presented) { session.showPresented(); hideStandbys(); } else session.hideOffscreen();
         if(session.presented&&!session.prewarming&&session.hasRenderedFirstFrame&&session.analytics!=null)PodBenchmark.startup(session.analytics.startupSeq,"initial_frame_adopted");
         PodBenchmark.VideoAction action=PodBenchmark.videoAction(args.optJSONObject("bounds"));
         if(action!=null&&session.presented&&session.hasRenderedFirstFrame&&bounds.translateYPx==0){
@@ -552,6 +555,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
 
         if(args.has("loop")&&!(args.opt("loop") instanceof Boolean))throw new IllegalArgumentException("loop_must_be_boolean");
         boolean replacedReady=replaced!=null&&replaced.hasRenderedFirstFrame&&!"error".equals(replaced.state);
+        endDrag();
         if (replaced != null) replaced.retire();
         if(args.has("loop"))target.player.setRepeatMode(args.optBoolean("loop")?Player.REPEAT_MODE_ONE:Player.REPEAT_MODE_OFF);
         target.bounds = requested;
@@ -564,6 +568,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         target.applyBounds(requested);
         // Reveal the retained first-frame surface before hiding the old one.
         target.showPresented();
+        hideStandbys();
         PodBenchmark.swapStage(PodBenchmark.videoAction(args),"surface_promoted",target.generation);
         boolean autoplay = args.optBoolean("autoplay", true);
         target.player.setAudioAttributes(mediaAudioAttributes(), true);
@@ -575,6 +580,55 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         target.swapTextureLogged=false;target.benchmarkAction=action;target.benchmarkFramePending=action!=null&&(!target.hasRenderedFirstFrame||!target.hasUpdatedFrame);
         if(action!=null&&target.hasRenderedFirstFrame&&target.hasUpdatedFrame){long own=target.generation;PodBenchmark.watchVideo(target.videoView,new PodBenchmark.VideoAction(action.seq,action.generation,target.generation,action.delta),()->target.generation==own&&!target.prewarming&&target.presented&&target.hasRenderedFirstFrame&&target.videoView.getTranslationY()==requested.translateYPx,true);}
         callback.complete(target.snapshot().put("replacedHasRenderedFirstFrame",replacedReady));
+    }
+
+    // Only the two pager pages may contribute pixels during a drag. Other
+    // decoded standbys stay retained, but must not fill the exposed half.
+    private Session dragFrom, dragTo;
+    private View pagerBackground;
+    private Bounds dragBounds;
+    private String dragDirection;
+    private final PodVideoDragInput dragInput = new PodVideoDragInput();
+
+    // Motion stays on the UI thread after JS has recognized the pager and
+    // selected a decoded neighbour. Delayed guest updates cannot rewind it.
+    void pagerInput(android.view.MotionEvent event) {
+        if (dragInput.accept(event) && dragFrom != null && dragTo != null && dragBounds != null)
+            drawDrag(dragInput.distanceY());
+    }
+
+    private void drawDrag(float distance) {
+        float y = Math.max(-dragBounds.heightPx, Math.min(dragBounds.heightPx, distance));
+        dragFrom.setTranslation(dragBounds.translateXPx, dragBounds.translateYPx + y);
+        boolean matching = "up".equals(dragDirection) ? y <= 0 : y >= 0;
+        dragTo.videoView.setAlpha(matching ? 1f : 0f);
+        dragTo.background.setVisibility(matching ? View.VISIBLE : View.GONE);
+        if (matching) dragTo.setTranslation(dragBounds.translateXPx,
+                dragBounds.translateYPx + y + ("up".equals(dragDirection) ? dragBounds.heightPx : -dragBounds.heightPx));
+    }
+
+    private void endDrag() {
+        dragInput.disarm(); dragFrom = null; dragTo = null; dragBounds = null; dragDirection = null;
+        if(pagerBackground!=null)pagerBackground.setVisibility(View.GONE);
+    }
+
+    private void showPagerBackground(Bounds bounds) {
+        if(parent==null)return;
+        if(pagerBackground==null){pagerBackground=new View(context);pagerBackground.setBackgroundColor(android.graphics.Color.BLACK);}
+        if(pagerBackground.getParent()!=parent){
+            if(pagerBackground.getParent() instanceof ViewGroup)((ViewGroup)pagerBackground.getParent()).removeView(pagerBackground);
+            parent.addView(pagerBackground, podIndex(parent), new FrameLayout.LayoutParams(1,1));
+        }
+        FrameLayout.LayoutParams old=(FrameLayout.LayoutParams)pagerBackground.getLayoutParams();
+        if(old.width!=bounds.widthPx||old.height!=bounds.heightPx||old.leftMargin!=bounds.xPx||old.topMargin!=bounds.yPx){
+            FrameLayout.LayoutParams params=new FrameLayout.LayoutParams(bounds.widthPx,bounds.heightPx);params.leftMargin=bounds.xPx;params.topMargin=bounds.yPx;pagerBackground.setLayoutParams(params);
+        }
+        pagerBackground.setTranslationX(bounds.translateXPx);pagerBackground.setVisibility(View.VISIBLE);
+        parent.bringChildToFront(pagerBackground);
+    }
+
+    private void hideStandbys() {
+        for (Session slot : sessions.values()) if (slot.prewarming && slot != dragTo) slot.hideOffscreen();
     }
 
     private void transition(JSONObject args, Callback callback) throws Exception {
@@ -590,20 +644,28 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         if (!direction.equals("up") && !direction.equals("down")) throw new IllegalArgumentException("invalid_transition_direction");
         Bounds bounds = args.has("bounds") ? Bounds.read(args.optJSONObject("bounds"), density, true) : from.bounds;
         if (bounds == null) throw new IllegalArgumentException("missing_bounds");
-        from.bounds = bounds; to.bounds = bounds; from.applyBounds(bounds); to.applyBounds(bounds);
+        boolean changedPair = dragFrom != from || dragTo != to;
+        dragFrom = from; dragTo = to; dragBounds = bounds; dragDirection = direction;
+        if(changedPair) { showPagerBackground(bounds); hideStandbys(); }
+        from.bounds = bounds; to.bounds = bounds; from.applyBounds(bounds, false); to.applyBounds(bounds, false);
+        if(changedPair) { to.raisePresented(); from.raisePresented(); }
         from.videoView.setVisibility(View.VISIBLE); to.videoView.setVisibility(View.VISIBLE);
         from.videoView.setAlpha(1f); to.videoView.setAlpha(1f);
         from.background.setVisibility(View.VISIBLE); to.background.setVisibility(View.VISIBLE);
         float[] offsets = transitionOffsets(bounds.heightPx, progress, direction);
-        from.setTranslation(bounds.translateXPx, offsets[0] + bounds.translateYPx);
-        to.setTranslation(bounds.translateXPx, offsets[1] + bounds.translateYPx);
+        if (args.optBoolean("trackPointer", false) && dragInput.arm()) drawDrag(dragInput.distanceY());
+        else {
+            dragInput.disarm();
+            from.setTranslation(bounds.translateXPx, offsets[0] + bounds.translateYPx);
+            to.setTranslation(bounds.translateXPx, offsets[1] + bounds.translateYPx);
+        }
         PodBenchmark.VideoAction action=PodBenchmark.videoAction(args);
         if(progress==0&&action!=null){long own=from.generation;PodBenchmark.present(from.videoView,action.event("snap_back"),()->from.generation==own&&from.hasRenderedFirstFrame&&from.videoView.getTranslationY()==bounds.translateYPx);}
         callback.complete(new JSONObject()
                 .put("fromSessionId", fromId).put("toSessionId", toId)
                 .put("progress", progress).put("direction", direction)
                 .put("fromOffsetYPx", offsets[0]).put("toOffsetYPx", offsets[1])
-                .put("composited", true));
+                .put("composited", true).put("nativeTracking", dragInput.tracking()));
     }
 
     static float[] transitionOffsets(float heightPx, float progress, String direction) {
@@ -814,6 +876,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         }
 
         void resetPlayer() {
+            if(this == dragFrom || this == dragTo || presented) endDrag();
             PodBenchmark.cancelVideo(videoView);
             if(analytics!=null)analytics.stage("release",player,videoView);
             benchmarkFramePending=false;benchmarkAction=null;
@@ -856,7 +919,9 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             main.removeCallbacks(prewarmTimeout); prewarmTimeout = null;
         }
 
-        void applyBounds(Bounds value) {
+        void applyBounds(Bounds value) { applyBounds(value, true); }
+
+        void applyBounds(Bounds value, boolean translate) {
             attachViews(parent);
             FrameLayout.LayoutParams current=(FrameLayout.LayoutParams)videoView.getLayoutParams();
             boolean layout=current==null||current.width!=value.widthPx||current.height!=value.heightPx
@@ -867,28 +932,34 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                 videoView.setLayoutParams(params);
                 background.setLayoutParams(new FrameLayout.LayoutParams(params));
             }
-            setTranslation(value.translateXPx, value.translateYPx);
+            if(translate) setTranslation(value.translateXPx, value.translateYPx);
             if(layout)fitVideo();
         }
+
+        private int clipLeft, clipTop, clipRight, clipBottom;
+        private final ViewOutlineProvider pagerOutline = new ViewOutlineProvider() {
+            @Override public void getOutline(View view, Outline outline) {
+                outline.setRoundRect(clipLeft, clipTop, clipRight, clipBottom, bounds.clipRadiusPx);
+            }
+        };
 
         void setTranslation(float x, float y) {
             videoView.setTranslationX(x); videoView.setTranslationY(y);
             background.setTranslationX(x); background.setTranslationY(y);
             if(bounds != null && bounds.clipRadiusPx>0) {
-                ViewOutlineProvider provider=new ViewOutlineProvider(){
-                    @Override public void getOutline(View view,Outline outline){
-                        float cx=bounds.clipCxPx-(x-bounds.translateXPx),cy=bounds.clipCyPx-(y-bounds.translateYPx),r=bounds.clipRadiusPx;
-                        outline.setRoundRect(Math.round(cx-r),Math.round(cy-r),Math.round(cx+r),Math.round(cy+r),r);
-                    }
-                };
-                videoView.setOutlineProvider(provider);background.setOutlineProvider(provider);
+                float cx=bounds.clipCxPx-(x-bounds.translateXPx),cy=bounds.clipCyPx-(y-bounds.translateYPx),r=bounds.clipRadiusPx;
+                int left=Math.round(cx-r),top=Math.round(cy-r),right=Math.round(cx+r),bottom=Math.round(cy+r);
+                boolean changed=left!=clipLeft||top!=clipTop||right!=clipRight||bottom!=clipBottom||!videoView.getClipToOutline();
+                clipLeft=left;clipTop=top;clipRight=right;clipBottom=bottom;
+                if(videoView.getOutlineProvider()!=pagerOutline){videoView.setOutlineProvider(pagerOutline);background.setOutlineProvider(pagerOutline);}
                 videoView.setClipToOutline(true);background.setClipToOutline(true);
-                videoView.invalidateOutline();background.invalidateOutline();
+                if(changed){videoView.invalidateOutline();background.invalidateOutline();}
             } else { videoView.setClipToOutline(false);background.setClipToOutline(false); }
 
         }
 
         void retire() {
+            if(this == dragFrom || this == dragTo || presented) endDrag();
             PodBenchmark.cancelVideo(videoView);
             if(analytics!=null)analytics.stage("retire",player,videoView);
             Callback pending=takePrepareCallback();
@@ -923,6 +994,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
 
         void hideOffscreen() {
             if (videoView == null || background == null) return;
+            if (dragFrom != null && this == dragTo) return;
             // A decoded buffer submitted offscreen is not yet latched by
             // TextureView. Draw standby underneath the opaque active page so
             // adoption reveals an already-updated texture, not a poster.
@@ -930,7 +1002,14 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             for(Session candidate:sessions.values())if(candidate!=this&&candidate.presented&&candidate.bounds!=null&&candidate.bounds.visible&&candidate.hasRenderedFirstFrame){foreground=candidate;break;}
             if(player!=null&&bounds!=null&&foreground!=null){
                 videoView.setAlpha(1f);videoView.setVisibility(View.VISIBLE);background.setVisibility(View.GONE);
-                setTranslation(bounds.translateXPx,bounds.translateYPx);foreground.raisePresented();videoView.setKeepScreenOn(false);return;
+                setTranslation(bounds.translateXPx,bounds.translateYPx);
+                // Keep decoding/latching underneath an opaque black pager base.
+                // Alpha zero would prevent a cold neighbour becoming ready mid-drag.
+                if(pagerBackground!=null&&pagerBackground.getVisibility()==View.VISIBLE){
+                    parent.bringChildToFront(pagerBackground);
+                    if(dragTo!=null)dragTo.raisePresented();
+                }
+                foreground.raisePresented();videoView.setKeepScreenOn(false);return;
             }
             int base = Math.max(parent == null ? 0 : parent.getHeight(), bounds == null ? 0 : bounds.heightPx);
             float offscreen = Math.max(base, Math.round(1024 * density)) * 2f;
@@ -1023,6 +1102,8 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         context.unregisterComponentCallbacks(this);
             mediaGate(false);
         main.post(() -> {
+            endDrag();
+            if(pagerBackground!=null&&pagerBackground.getParent() instanceof ViewGroup)((ViewGroup)pagerBackground.getParent()).removeView(pagerBackground);
             for (Session session : sessions.values()) session.close();
             sessions.clear(); parent = null;
         });

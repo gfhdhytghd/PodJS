@@ -257,6 +257,25 @@ test('DYSWAP an initially primed paused frame still starts when foreground reque
  expect(plays).toBe(1);expect(adopted.state).toBe('playing');expect(m.prepareCount).toBe(1);
 });
 
+test('DYDRAG native pointer tracking removes repeated move RPCs but releases cancellation back to JS',async()=>{
+ const m=new Model(),pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();const start=pool.prepare(source(1),options(1)).result;await m.advance(400);await start;
+ const warm=pool.prewarm(source(2),options(2));await m.advance(400);await warm;pool.selectStandby('2');let calls=0;
+ m.port.transition=async args=>{calls++;expect(args.trackPointer).toBe(calls===1);return {...args,composited:true,nativeTracking:args.trackPointer===true};};
+ (pool as any).beginDrag?.();await pool.setBounds(options(1).bounds);
+ await pool.transition(.1,'up',options(1).bounds);for(let i=2;i<10;i++)await pool.transition(i/10,'up',options(1).bounds);
+ expect(calls).toBe(1);
+ pool.endDrag();await pool.transition(.4,'up',options(1).bounds);expect(calls).toBe(2);
+ pool.endDrag();await pool.transition(0,'up',options(1).bounds);expect(calls).toBe(3);
+});
+
+test('DYDRAG a late native tracking receipt cannot capture the next gesture or rebound',async()=>{
+ const m=new Model(),pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();const start=pool.prepare(source(1),options(1)).result;await m.advance(400);await start;
+ const warm=pool.prewarm(source(2),options(2));await m.advance(400);await warm;pool.selectStandby('2');let release!:(value:any)=>void,calls=0;
+ m.port.transition=args=>{calls++;return calls===1?new Promise(resolve=>release=resolve):Promise.resolve({...args,composited:true,nativeTracking:false});};
+ pool.beginDrag();const first=pool.transition(.1,'up',options(1).bounds);pool.endDrag();release({nativeTracking:true});await first;
+ await pool.transition(.2,'up',options(1).bounds);await pool.transition(.3,'up',options(1).bounds);expect(calls).toBe(3);
+});
+
 
 test('consecutive prepared adoptions retain the immediate reverse neighbour, not an older active',async()=>{
  const m=new Model(),pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();

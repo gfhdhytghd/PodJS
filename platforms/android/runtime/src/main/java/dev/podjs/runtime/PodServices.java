@@ -272,6 +272,7 @@ final class PodServices implements Closeable {
         java.lang.ref.WeakReference<PodServices> owner=new java.lang.ref.WeakReference<>(this);
         PodBenchmark.attach(view,seq->{PodServices current=owner.get();if(current!=null&&!current.closed)current.mediaPrefixCache.logFirstCardStats(seq);});
     }
+    void videoPagerInput(android.view.MotionEvent event) { videoSessions.pagerInput(event); }
     void attachVideo(android.view.ViewGroup parent) { video.attachToParent(parent); videoSessions.attachToParent(parent); }
     void attachMediaSurfaces(android.view.ViewGroup parent,PodMediaSurfaceServices.TextureSink sink){mediaSurfaces.attach(parent,sink);}
     void attachInlineText(android.view.ViewGroup parent){inlineText.attach(parent);}

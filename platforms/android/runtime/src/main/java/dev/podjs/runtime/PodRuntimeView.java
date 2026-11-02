@@ -651,6 +651,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                 + " epochMs=" + System.currentTimeMillis() + " moves=" + tracedMoves);
         }
         if (host == 0) return false;
+        services.videoPagerInput(event);
         if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
             nativePostEvent(host, "{\"t\":\"touchCancel\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
         }

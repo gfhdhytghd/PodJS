@@ -389,11 +389,13 @@ export interface VideoSessionState {
   replacedHasRenderedFirstFrame?:boolean;
 }
 export interface VideoSessionTransition {
-  fromSessionId:string; toSessionId:string; progress:number; direction:"up"|"down"; bounds?:VideoBounds; benchmark?:VideoBenchmarkAction;
+  fromSessionId:string; toSessionId:string; progress:number; direction:"up"|"down"; bounds?:VideoBounds; benchmark?:VideoBenchmarkAction; trackPointer?:boolean;
 }
 export interface VideoSessionTransitionState {
   fromSessionId:string; toSessionId:string; progress:number; direction:"up"|"down";
   fromOffsetYPx:number; toOffsetYPx:number; composited:true;
+  /** Current touch is driven by native coordinates until the caller ends its drag. */
+  nativeTracking?:boolean;
 }
 /** Two retained Android TextureView sessions for immersive pager playback.
  * The capability is intentionally separate from legacy media.video so an old
