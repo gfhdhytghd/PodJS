@@ -39,7 +39,7 @@ public class PodVideoCachedAnalyticsTest {
     source.open(new DataSpec(Uri.parse(uri)));byte[] b=new byte[8192];assertEquals(8192,source.read(b,0,b.length));
     assertEquals("upstream cache bytes lost from session analytics",8192,analytics.snapshot().getLong("bytesLoaded"));
     assertEquals("mp4",analytics.contentKind());
-    org.robolectric.shadows.ShadowSystemClock.advanceBy(Duration.ofMillis(900));assertTrue("open cached network cannot hide a real stall",analytics.networkStalled());
+    org.robolectric.shadows.ShadowSystemClock.advanceBy(Duration.ofMillis(1001));assertTrue("open cached network cannot hide a real stall",analytics.networkStalled());
     source.close();assertFalse(analytics.networkStalled());
    }finally{host.close();Shadows.shadowOf(Looper.getMainLooper()).idle();}
   }

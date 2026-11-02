@@ -24,10 +24,10 @@ public class PodVideoAnalyticsTest {
  @Test public void stallRequiresAnOutstandingNetworkTransferAndStopsOnProgressOrEnd() {
   PodVideoAnalytics a=new PodVideoAnalytics();DataSpec source=new DataSpec(Uri.parse("https://fixture.invalid/video"));
   assertFalse(a.networkStalled());a.onTransferStart(null,source,true);
-  org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(799));assertFalse(a.networkStalled());
+  org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(1000));assertFalse(a.networkStalled());
   org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(1));assertTrue(a.networkStalled());
   a.onBytesTransferred(null,source,true,64);assertFalse(a.networkStalled());
-  org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(900));assertTrue(a.networkStalled());
+  org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(1001));assertTrue(a.networkStalled());
   a.onTransferEnd(null,source,true);assertFalse(a.networkStalled());
  }
  @Test public void generationsHaveIndependentFirstFrameBytesAndDropCounters() throws Exception {

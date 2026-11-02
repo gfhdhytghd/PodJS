@@ -131,10 +131,12 @@ final class PodBenchmark {
     }
     private static final Map<Long,Long> confirmedVideo=new HashMap<>();
     private static final Map<Long,VideoObservation> videos=new HashMap<>();
+    private static final Map<Long,VideoObservation> committingVideos=new HashMap<>();
     private static final class VideoObservation {
         final View view;
         final VideoAction action;
         final BooleanSupplier guard;
+        Runnable cancelCommit;
         VideoObservation(View view,VideoAction action,BooleanSupplier guard){this.view=view;this.action=action;this.guard=guard;}
     }
     /** A missing guest acknowledgement cannot outlive the surface generation. */
@@ -144,6 +146,11 @@ final class PodBenchmark {
         while(pending.hasNext()){
             Map.Entry<Long,VideoObservation> entry=pending.next();
             if(entry.getValue().view==view){confirmedVideo.remove(entry.getKey());pending.remove();}
+        }
+        Iterator<Map.Entry<Long,VideoObservation>> committing=committingVideos.entrySet().iterator();
+        while(committing.hasNext()){
+            VideoObservation observation=committing.next().getValue();
+            if(observation.view==view){committing.remove();if(observation.cancelCommit!=null)observation.cancelCommit.run();}
         }
     }
     static void watchVideo(View view,VideoAction action,BooleanSupplier guard){ watchVideo(view,action,guard,false); }
@@ -163,7 +170,9 @@ final class PodBenchmark {
             View view=ready.view;VideoAction action=ready.action;BooleanSupplier guard=ready.guard;
             // JS confirms its cover is gone; native proves the bound decoded
             // target survives two window commits. A timeout is never success.
-            PodAfterPaint.await(surface.get()==null?view:surface.get(),new Handler(Looper.getMainLooper()),committed->{
+            committingVideos.put(seq,ready);
+            ready.cancelCommit=PodAfterPaint.await(surface.get()==null?view:surface.get(),new Handler(Looper.getMainLooper()),committed->{
+                synchronized(PodBenchmark.class){if(committingVideos.get(seq)!=ready)return;committingVideos.remove(seq);}
                 if(committed&&view.isAttachedToWindow()&&view.isShown()&&view.hasWindowFocus()&&view.getAlpha()>0&&guard.getAsBoolean()){emit(action.event("incoming_first_frame"),SystemClock.uptimeMillis());if(action.delta==2)try{emit(action.event("fling_done").put("delta",2),SystemClock.uptimeMillis());}catch(Exception ignored){}}
                 else emit(action.event("error"),SystemClock.uptimeMillis());
             });

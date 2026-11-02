@@ -66,4 +66,21 @@ public class PodVideoObservationLifetimeTest {
         assertEquals(0,pending().size());
         assertFalse(((Map<?,?>)field(PodBenchmark.class,"confirmedVideo").get(null)).containsKey(seq));
     }
+    @Test public void retiringAfterAcknowledgementCancelsTheInFlightWindowWait()throws Exception {
+        org.robolectric.shadows.ShadowLog.clear();
+        View view=new View(ApplicationProvider.getApplicationContext()){
+            public boolean isAttachedToWindow(){return true;}
+            public boolean isHardwareAccelerated(){return true;}
+            public boolean isShown(){return true;}
+            public boolean hasWindowFocus(){return true;}
+        };
+        long seq=PodBenchmark.begin("gesture_down",new JSONObject());
+        PodBenchmark.watchVideo(view,new PodBenchmark.VideoAction(seq,2,1),()->true);
+        PodBenchmark.dispatch(new JSONObject().put("video_frame",seq).put("generation",2).toString());
+        PodBenchmark.cancelVideo(view);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(300));
+        assertFalse("superseded frame wait is a cancellation, not an error",
+            org.robolectric.shadows.ShadowLog.getLogsForTag("DYBENCH").stream().anyMatch(row->row.msg.contains("code=error seq="+seq+" ")));
+        assertFalse(org.robolectric.shadows.ShadowLog.getLogsForTag("DYBENCH").stream().anyMatch(row->row.msg.contains("code=incoming_first_frame seq="+seq+" ")));
+    }
 }

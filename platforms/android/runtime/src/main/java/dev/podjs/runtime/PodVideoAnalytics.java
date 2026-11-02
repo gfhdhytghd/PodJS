@@ -54,7 +54,7 @@ final class PodVideoAnalytics implements AnalyticsListener, TransferListener {
         }
         stage("network_start");networkTransfers++;if(lastByteMs<0)lastByteMs=SystemClock.elapsedRealtime();} }
     @Override public synchronized void onTransferEnd(DataSource source, DataSpec spec, boolean network) { if(network){stage("network_end");networkTransfers=Math.max(0,networkTransfers-1);} }
-    synchronized boolean networkStalled(){return networkTransfers>0&&lastByteMs>=0&&SystemClock.elapsedRealtime()-lastByteMs>=800;}
+    synchronized boolean networkStalled(){return networkTransfers>0&&lastByteMs>=0&&SystemClock.elapsedRealtime()-lastByteMs>1000;}
     @Override public synchronized void onBandwidthEstimate(EventTime time, int elapsedMs, long transferred, long bitrate) {
         if (elapsedMs > 0 && transferred > 0 && bitrate > 0) throughput = bitrate;
     }
