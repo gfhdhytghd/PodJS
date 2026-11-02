@@ -42,7 +42,7 @@ final class PodBenchmark {
         if(line==null||line.length()>1024)return 0;
         try {
             JSONObject args=new JSONObject(line);
-            if(args.has("video_frame")){if(args.length()!=2)return 0;long seq=integer(args,"video_frame"),generation=integer(args,"generation");if(!known(seq))return 0;confirmedVideo.put(seq,generation);tryVideo(seq);return seq;}
+            if(args.has("video_frame")){if(args.length()!=2)return 0;long seq=integer(args,"video_frame"),generation=integer(args,"generation");synchronized(PodBenchmark.class){if(!known(seq))return 0;confirmedVideo.put(seq,generation);tryVideo(seq);}return seq;}
             String code=args.optString("code","");
             if(PROOF.contains(code))return 0; // Mixer/target-surface proof cannot originate in guest state.
             if(args.optBoolean("cancel_presented",false)){args.remove("cancel_presented");if(args.length()!=2||!CODES.contains(code))return 0;long seq=integer(args,"seq");synchronized(PodBenchmark.class){String key=seq+":"+code;presentationVersions.put(key,presentationVersions.getOrDefault(key,0L)+1);}return seq;}
@@ -126,21 +126,45 @@ final class PodBenchmark {
         view.invalidate();return true;
     }
     private static final Map<Long,Long> confirmedVideo=new HashMap<>();
-    private static final Map<Long,Runnable> videos=new HashMap<>();
+    private static final Map<Long,VideoObservation> videos=new HashMap<>();
+    private static final class VideoObservation {
+        final View view;
+        final VideoAction action;
+        final BooleanSupplier guard;
+        VideoObservation(View view,VideoAction action,BooleanSupplier guard){this.view=view;this.action=action;this.guard=guard;}
+    }
+    /** A missing guest acknowledgement cannot outlive the surface generation. */
+    static synchronized void cancelVideo(View view){
+        if(view==null)return;
+        Iterator<Map.Entry<Long,VideoObservation>> pending=videos.entrySet().iterator();
+        while(pending.hasNext()){
+            Map.Entry<Long,VideoObservation> entry=pending.next();
+            if(entry.getValue().view==view){confirmedVideo.remove(entry.getKey());pending.remove();}
+        }
+    }
     static void watchVideo(View view,VideoAction action,BooleanSupplier guard){ watchVideo(view,action,guard,false); }
-    static void watchVideo(View view,VideoAction action,BooleanSupplier guard,boolean promoted){
-        videos.put(action.seq,()->{
-            if(!Objects.equals(confirmedVideo.get(action.seq),action.generation))return;
+    static synchronized void watchVideo(View view,VideoAction action,BooleanSupplier guard,boolean promoted){
+        // Each surface owns only its latest observation. A newer generation
+        // invalidates the old guard even if the guest never acknowledged it.
+        Long confirmation=confirmedVideo.get(action.seq);
+        cancelVideo(view);
+        if(confirmation!=null)confirmedVideo.put(action.seq,confirmation);
+        videos.put(action.seq,new VideoObservation(view,action,guard));
+        tryVideo(action.seq);
+    }
+    private static synchronized void tryVideo(long seq){
+        VideoObservation ready=videos.get(seq);
+        if(ready!=null&&Objects.equals(confirmedVideo.get(seq),ready.action.generation)){
+            videos.remove(seq);confirmedVideo.remove(seq);
+            View view=ready.view;VideoAction action=ready.action;BooleanSupplier guard=ready.guard;
             // JS confirms its cover is gone; native proves the bound decoded
             // target survives two window commits. A timeout is never success.
             PodAfterPaint.await(surface.get()==null?view:surface.get(),new Handler(Looper.getMainLooper()),committed->{
                 if(committed&&view.isAttachedToWindow()&&view.isShown()&&view.hasWindowFocus()&&view.getAlpha()>0&&guard.getAsBoolean()){emit(action.event("incoming_first_frame"),SystemClock.uptimeMillis());if(action.delta==2)try{emit(action.event("fling_done").put("delta",2),SystemClock.uptimeMillis());}catch(Exception ignored){}}
                 else emit(action.event("error"),SystemClock.uptimeMillis());
             });
-        });
-        tryVideo(action.seq);
+        }
     }
-    private static void tryVideo(long seq){Runnable ready=videos.get(seq);if(ready!=null&&confirmedVideo.containsKey(seq)){videos.remove(seq);ready.run();}}
     /** Player-state diagnostic only; never mixer/PCM silence proof. */
     static void playerPaused(JSONObject args,boolean playWhenReady,long sourceGeneration){
         VideoAction action=videoAction(args);

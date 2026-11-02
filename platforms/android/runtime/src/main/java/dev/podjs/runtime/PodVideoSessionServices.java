@@ -778,6 +778,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         }
 
         void resetPlayer() {
+            PodBenchmark.cancelVideo(videoView);
             benchmarkFramePending=false;benchmarkAction=null;
             cancelPrewarmTimeout();
             generation += 1;
@@ -841,6 +842,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         }
 
         void retire() {
+            PodBenchmark.cancelVideo(videoView);
             Callback pending=takePrepareCallback();
             if(pending!=null) { resetPlayer();pending.fail("cancelled","Video session retired"); }
             if(player != null) { if(audioPolicy!=null)audioPolicy.setHeldMuted(true);else player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_AUDIO,true).build()); player.pause(); }

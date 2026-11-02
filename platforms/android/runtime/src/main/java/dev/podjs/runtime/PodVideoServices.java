@@ -245,6 +245,7 @@ public final class PodVideoServices implements AutoCloseable {
     private MediaItem item(String url, String type) { MediaItem.Builder b=new MediaItem.Builder().setUri(Uri.parse(url)); if(!type.isEmpty()) b.setMimeType(type); return b.build(); }
     private void play(Callback c) throws Exception { require(); mediaGate(true);android.util.Log.i("PodVideoTiming","playCall seq="+prepareSequence+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-prepareStartedMs)); lifecyclePaused=false;audioPolicy.setHeldMuted(false);if(videoView!=null)videoView.setKeepScreenOn(true);player.play(); c.complete(state()); }
     private void retire(JSONObject args,Callback callback) throws Exception {
+        PodBenchmark.cancelVideo(videoView);
         mediaGate(args.optBoolean("handoff",false)&&!lifecyclePaused);
         if(prepareCallback != null) { Callback pending=prepareCallback;prepareCallback=null;detachPlayer(false);pending.fail("cancelled","Video retired"); }
         if(player != null) { if(audioPolicy!=null)audioPolicy.setHeldMuted(true);else player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_AUDIO,true).build()); player.pause(); }
@@ -334,6 +335,7 @@ public final class PodVideoServices implements AutoCloseable {
             +" decoderRendered="+(counters==null?-1:counters.renderedOutputBufferCount)+" decoderDropped="+(counters==null?-1:counters.droppedBufferCount)+" decoderSkipped="+(counters==null?-1:counters.skippedOutputBufferCount));
     }
     private void detachPlayer(boolean keepPlaying){
+        PodBenchmark.cancelVideo(videoView);
         if(!statsWindowLogged)logFrameStats("end");frameStats=null;
         ExoPlayer previous=player;player=null;audioPolicy=null;
         if(previous!=null){if(analytics!=null){previous.removeAnalyticsListener(analytics);previous.removeAnalyticsListener(analytics.playbackStats);}if(playerListener!=null)previous.removeListener(playerListener);previous.clearVideoSurface();if(!keepPlaying){previous.stop();previous.clearMediaItems();}}
