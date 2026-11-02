@@ -124,7 +124,7 @@ public class PodVideoPagerTest {
   Context c=ApplicationProvider.getApplicationContext();android.media.AudioManager setupAudio=(android.media.AudioManager)c.getSystemService(Context.AUDIO_SERVICE);setupAudio.setRingerMode(android.media.AudioManager.RINGER_MODE_NORMAL);setupAudio.setStreamVolume(android.media.AudioManager.STREAM_MUSIC,5,0);PodVideoServices s=new PodVideoServices(c);ExoPlayer p=new ExoPlayer.Builder(c).build();f(PodVideoServices.class,"player").set(s,p);PodMediaAudioPolicy policy=new PodMediaAudioPolicy(c,p::setVolume);f(PodVideoServices.class,"audioPolicy").set(s,policy);policy.setVolume(.6f,false);p.play();Result r=new Result();s.dispatch("video.retire",new JSONObject(),r);assertFalse(p.getPlayWhenReady());assertEquals(0,p.getVolume(),.001f);assertNotNull(r.value);
   android.media.AudioManager audio=(android.media.AudioManager)c.getSystemService(Context.AUDIO_SERVICE);
   for(int mode:new int[]{android.media.AudioManager.RINGER_MODE_SILENT,android.media.AudioManager.RINGER_MODE_NORMAL}){audio.setRingerMode(mode);policy.refresh();assertEquals(0,p.getVolume(),.001f);assertFalse(p.getPlayWhenReady());}
-  Result resumed=new Result();s.dispatch("video.play",new JSONObject(),resumed);assertNull(resumed.error);assertEquals(.6f,p.getVolume(),.001f);assertTrue(p.getPlayWhenReady());policy.close();s.close();Shadows.shadowOf(Looper.getMainLooper()).idle();
+  Result resumed=new Result();s.dispatch("video.play",new JSONObject(),resumed);assertNull(resumed.error);assertEquals(1f,p.getVolume(),.001f);assertTrue(p.getPlayWhenReady());policy.close();s.close();Shadows.shadowOf(Looper.getMainLooper()).idle();
  }
 
  @Test public void terminalForegroundFailureKeepsOriginalCodeAndReleasesDecoderForPolling()throws Exception {

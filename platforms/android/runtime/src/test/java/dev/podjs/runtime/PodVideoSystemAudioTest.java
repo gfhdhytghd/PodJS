@@ -22,7 +22,7 @@ public class PodVideoSystemAudioTest {
   for(int index:new int[]{0,1,2,8,16})for(boolean muted:new boolean[]{false,true}){
    audio.setStreamVolume(AudioManager.STREAM_MUSIC,index,0);audio.adjustStreamVolume(AudioManager.STREAM_MUSIC,muted?AudioManager.ADJUST_MUTE:AudioManager.ADJUST_UNMUTE,0);
    JSONObject state=PodVideoSystemAudio.snapshot(context,new JSONObject());
-   assertEquals(audio.getStreamVolume(AudioManager.STREAM_MUSIC),state.getInt("volumeIndex"));assertEquals(16,state.getInt("volumeMax"));assertEquals(audio.isStreamMute(AudioManager.STREAM_MUSIC),state.getBoolean("muted"));
+   assertEquals(audio.getStreamVolume(AudioManager.STREAM_MUSIC),state.getInt("volumeIndex"));assertEquals(16,state.getInt("volumeMax"));assertEquals(audio.isStreamMute(AudioManager.STREAM_MUSIC)||state.getInt("volumeIndex")==0,state.getBoolean("muted"));
    state.put("percent",Math.round(state.getDouble("volume")*100));cases.put(state);
   }
   System.out.println("SYSTEM_VOLUME_FIXTURE="+cases);

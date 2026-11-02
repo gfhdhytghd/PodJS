@@ -99,7 +99,10 @@ public final class PodVideoSessionServicesTest {
             assertTrue("prewarm must resolve below the old 10 second harness timeout: " + prewarmElapsedMs,
                     prewarmElapsedMs < 5_000);
             assertTrue(next.value.getBoolean("hasRenderedFirstFrame"));
-            assertTrue(next.value.getBoolean("muted"));
+            // Prewarm is a track hold; the mute field always describes STREAM_MUSIC.
+            assertEquals(current.value.getBoolean("muted"),next.value.getBoolean("muted"));
+            assertEquals(1d,next.value.getDouble("appliedVolume"),0d);
+            assertFalse(next.value.getBoolean("audioTrackSelected"));
             assertEquals(2, budget.inUse());
 
             List<TextureView> textures = textures(activity);
