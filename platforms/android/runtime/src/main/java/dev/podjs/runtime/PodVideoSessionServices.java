@@ -248,6 +248,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             if (created) { sessions.remove(id); session.close(); }
             throw new IllegalStateException("video_decoder_limit");
         }
+        if(!prewarming)PodBenchmark.startup(analytics.startupSeq,"prepare_admitted");
         session.decoderLease = true;
         session.generation += 1;
         final long generation = session.generation;
@@ -277,6 +278,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         try {
             player = new ExoPlayer.Builder(context).setLoadControl(loadControl).build();
             session.player = player;
+            PodBenchmark.startup(analytics.startupSeq,"player_constructed");
             session.audioPolicy = new PodMediaAudioPolicy(context, player);
             final Session audioOwner=session;
             session.audioPolicy.observeVolume(()->{if(!audioOwner.prewarming&&!audioOwner.disposed)try{callback.volumeChanged(audioOwner.snapshot());}catch(Exception ignored){}});
@@ -380,6 +382,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             if (session.prewarming) session.hideOffscreen(); else session.showPresented();
             player.setVideoTextureView(session.videoView);
             player.prepare();
+            PodBenchmark.startup(analytics.startupSeq,"prepare_dispatched");
             if (session.prewarming) player.play();
             else if (session.autoplay && !lifecyclePaused) player.play();
             else player.pause();
@@ -473,6 +476,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         session.bounds = bounds; session.applyBounds(bounds);
         if(!session.prewarming)session.presented=bounds.visible;
         if (session.presented) session.showPresented(); else session.hideOffscreen();
+        if(session.presented&&!session.prewarming&&session.hasRenderedFirstFrame&&session.analytics!=null)PodBenchmark.startup(session.analytics.startupSeq,"initial_frame_adopted");
         callback.complete(session.snapshot());
     }
 

@@ -17,6 +17,9 @@ final class PodVideoAnalytics implements AnalyticsListener, TransferListener {
     @Override public void onVideoDecoderInitialized(EventTime time,String decoderName,long initializedTimestampMs,long initializationDurationMs) {
         if(startupSeq>0)try{PodBenchmark.mark("startup_stage",startupSeq,new JSONObject().put("startup_stage","decoder_configured").put("duration_ms",Math.max(0,initializationDurationMs)));}catch(Exception ignored){}
     }
+    @Override public void onVideoInputFormatChanged(EventTime time,androidx.media3.common.Format format,androidx.media3.exoplayer.DecoderReuseEvaluation reuse) {
+        PodBenchmark.startup(startupSeq,"video_format_ready");
+    }
     private final long startedMs = SystemClock.elapsedRealtime();
     private long lastByteMs=-1;
     private int networkTransfers;

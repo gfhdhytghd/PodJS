@@ -10,6 +10,13 @@ import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLog;
 @RunWith(RobolectricTestRunner.class) @Config(sdk=30)
 public class PodBenchmarkTest {
+ @org.junit.Test public void coldPrepareStagesStayClosedAndNativeAdoptionDoesNotInventADecode() throws Exception {
+  long seq=PodBenchmark.begin("entry_start",new org.json.JSONObject());
+  for(String stage:new String[]{"prepare_admitted","player_constructed","prepare_dispatched","video_format_ready","initial_frame_adopted"})
+   org.junit.Assert.assertEquals(seq,PodBenchmark.mark("startup_stage",seq,new org.json.JSONObject().put("startup_stage",stage)));
+  org.junit.Assert.assertEquals(0,PodBenchmark.mark("startup_stage",seq,new org.json.JSONObject().put("startup_stage","arbitrary_private_text")));
+ }
+
  @Test public void requestDiagnosticsRequireExactClosedFields()throws Exception {
   ShadowLog.clear();JSONObject row=new JSONObject().put("code","douyin_request").put("category","detail").put("http_status",403).put("douyin_status_code",-1).put("challenge",false).put("signing_ok",true).put("cookie_present",true).put("retry_after_ms",30000).put("error_code","forbidden");
   assertTrue(PodBenchmark.dispatch(row.toString())>0);
