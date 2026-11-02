@@ -42,4 +42,21 @@ public class PodVideoFrameCacheTest {
   try{PodVideoFrameCache.capture(view,true,13,new JSONObject().put("sourceGeneration",12));fail();}catch(IllegalStateException expected){}
   try{PodVideoFrameCache.capture(view,false,12,new JSONObject().put("sourceGeneration",12));fail();}catch(IllegalStateException expected){}
  }
+ @Test public void persistentFrameUsesTheSameRenditionIdentityAsBytesAcrossRestartAndCredentialRotation()throws Exception {
+  File root=root();String binding;PodVideoFrameCache frames=new PodVideoFrameCache(root);
+  try(PodMediaPrefixCache cache=new PodMediaPrefixCache(root)){
+   String uri=cache.register("rendition-avc-320","https://old.test/movie?signature=old",Map.of("Cookie","old"),true);
+   binding=PodVideoFrameCache.binding(new JSONObject().put("url",uri),cache);
+   Bitmap frame=Bitmap.createBitmap(24,24,Bitmap.Config.ARGB_8888);frame.eraseColor(android.graphics.Color.GREEN);
+   frames.save("stock-item",binding,0,0,frame);frame.recycle();
+  }
+  try(PodMediaPrefixCache cache=new PodMediaPrefixCache(root)){
+   String uri=cache.register("rendition-avc-320","https://new.test/movie?signature=new",Map.of("Cookie","new"),true);
+   String restored=PodVideoFrameCache.binding(new JSONObject().put("url",uri).put("headers",new JSONObject().put("Cookie","current")),cache);
+   assertEquals(binding,restored);assertTrue(frames.restore("stock-item",restored).getBoolean("available"));
+   String other=cache.register("rendition-hevc-640","https://new.test/movie?signature=new",Map.of("Cookie","new"),true);
+   assertFalse(frames.restore("stock-item",PodVideoFrameCache.binding(new JSONObject().put("url",other),cache)).getBoolean("available"));
+  }
+ }
+
 }

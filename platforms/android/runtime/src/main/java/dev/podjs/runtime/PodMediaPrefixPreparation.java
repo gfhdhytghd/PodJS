@@ -3,8 +3,6 @@ package dev.podjs.runtime;
 import android.graphics.Bitmap;
 import android.media.MediaDataSource;
 import android.media.MediaMetadataRetriever;
-import androidx.media3.datasource.DataSource;
-import androidx.media3.datasource.DataSpec;
 import org.json.JSONObject;
 import java.io.*;
 
@@ -21,24 +19,20 @@ final class PodMediaPrefixPreparation {
         trace("started","none","none",job.entry);
         try {
             cache.prefetch(job);
+            if(job.failure!=null)throw job.failure;
             PodMediaPrefixCache.backgroundTurn(job);
             PodMediaPrefixCache.Entry entry=job.entry;
-            // The last bounded range includes MP4 metadata when moov follows mdat.
-            if(entry.length>entry.file.length()&&entry.length>0){
-                int count=(int)Math.min(TAIL_BYTES,Math.min(entry.length-entry.file.length(),budget-entry.file.length()));
-                if(count>0&&entry.tail().length()!=count){
-                    byte[] bytes=new byte[count];int used=0;
-                    DataSource source=cache.upstream.createDataSource();job.source=source;
-                    try{
-                        PodMediaPrefixCache.backgroundTurn(job);
-                        source.open(new DataSpec.Builder().setUri(entry.remote).setPosition(entry.length-count).setLength(count).setHttpRequestHeaders(entry.headers).build());
-                        while(used<count){PodMediaPrefixCache.backgroundTurn(job);int n=source.read(bytes,used,Math.min(PodMediaPrefixCache.CHUNK,count-used));if(n<0)throw new EOFException("short_tail");if(n>0)used+=n;}
-                        cache.saveTail(job,bytes);
-                    }finally{source.close();job.source=null;}
-                }
+            int count=PodMediaPrefixMp4.tailBytes(cache,job,budget);
+            if(count<0){trace("complete","metadata_over_budget","none",entry);return new JSONObject().put("ready",false).put("prefixBytes",entry.file.length()).put("tailBytes",entry.tail().length());}
+            if(count==0&&entry.tail().length()>0)cache.saveTail(job,new byte[0],budget);
+            if(count>0&&entry.tail().length()!=count){
+                byte[] bytes=cache.loadRange(job,entry.length-count,count);
+                cache.saveTail(job,bytes,budget);
             }
+            cache.fitPreparation(job,budget);
             JSONObject result=new JSONObject().put("ready",false).put("prefixBytes",entry.file.length()).put("tailBytes",entry.tail().length());
-            if(entry.length<=0||entry.file.length()<Math.min(entry.length,job.budget)){trace("complete",entry.length<=0?"length_unknown":"prefix_incomplete","none",entry);return result;}
+            long required=Math.min(entry.length,Math.min(job.budget,budget-entry.tail().length()));
+            if(entry.length<=0||entry.file.length()<required||entry.file.length()+entry.tail().length()>budget){trace("complete",entry.length<=0?"length_unknown":"prefix_incomplete","none",entry);return result;}
             PodMediaPrefixCache.backgroundTurn(job);
             Bitmap frame=decode(cache,entry);
             if(frame==null){trace("complete","frame_unavailable","none",entry);return result;}
@@ -48,6 +42,8 @@ final class PodMediaPrefixPreparation {
                 JSONObject saved;
                 synchronized(cache){
                     if(!job.current())throw new IOException("preparation_cancelled");
+                    // A concurrent cache eviction must not leave a durable ready marker.
+                    if(entry.file.length()<required||entry.tail().length()!=count)return result;
                     saved=new PodVideoFrameCache(cache.frameRoot).save(key,binding,0,0,frame);
                 }
                 trace("complete","ready","none",entry);return result.put("ready",true).put("frame",saved);
@@ -59,17 +55,23 @@ final class PodMediaPrefixPreparation {
         android.util.Log.i("PodMediaCache","stock_prepare phase="+phase+" reason="+reason+" exception_kind="+kind+" prefixBytes="+entry.file.length()+" tailBytes="+entry.tail().length()+" totalBytes="+Math.max(0,entry.length));
     }
     private static Bitmap decode(PodMediaPrefixCache cache,PodMediaPrefixCache.Entry entry)throws Exception {
+        java.util.concurrent.atomic.AtomicBoolean gap=new java.util.concurrent.atomic.AtomicBoolean();
         try(MediaDataSource bytes=new MediaDataSource(){
             public long getSize(){return entry.length;}
             public int readAt(long position,byte[] target,int offset,int size)throws IOException {
+                if(size==0)return 0;
                 if(position>=entry.length)return -1;
                 int n=cache.read(entry,position,target,offset,size);
-                if(n<=0){trace("decode","uncached_gap","io",entry);throw new IOException("uncached_media_gap");}return n;
+                if(n<=0){gap.set(true);trace("decode","uncached_gap","io",entry);android.util.Log.i("PodMediaCache","stock_gap position="+position+" requestedBytes="+size+" prefixBytes="+entry.file.length()+" tailStart="+(entry.length-entry.tail().length())+" totalBytes="+entry.length);throw new IOException("uncached_media_gap");}return n;
             }
             public void close(){}
         }){
             MediaMetadataRetriever decoder=new MediaMetadataRetriever();
-            try{decoder.setDataSource(bytes);return decoder.getScaledFrameAtTime(0,MediaMetadataRetriever.OPTION_CLOSEST_SYNC,320,320);}
+            try{
+                decoder.setDataSource(bytes);Bitmap frame=decoder.getScaledFrameAtTime(0,MediaMetadataRetriever.OPTION_CLOSEST_SYNC,320,320);
+                if(gap.get()&&frame!=null){frame.recycle();return null;}
+                return frame;
+            }
             catch(RuntimeException unavailable){trace("decode","decoder_failure",kind(unavailable),entry);return null;}
             finally{decoder.release();}
         }
