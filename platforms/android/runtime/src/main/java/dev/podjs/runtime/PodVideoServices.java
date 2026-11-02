@@ -149,8 +149,8 @@ public final class PodVideoServices implements AutoCloseable {
                 switch (method) {
                     case "video.prepare": prepare(args, callback); break;
                     case "video.play": play(callback); break;
-                    case "video.retire": retire(callback); break;
-                    case "video.pause": pause(callback); break;
+                    case "video.retire": retire(args,callback); break;
+                    case "video.pause": pause(args,callback); break;
                     case "video.seek": seek(args, callback); break;
                     case "video.stop": stop(callback); break;
                     case "video.setBounds": bounds(args, callback); break;
@@ -244,16 +244,17 @@ public final class PodVideoServices implements AutoCloseable {
     }
     private MediaItem item(String url, String type) { MediaItem.Builder b=new MediaItem.Builder().setUri(Uri.parse(url)); if(!type.isEmpty()) b.setMimeType(type); return b.build(); }
     private void play(Callback c) throws Exception { require(); mediaGate(true);android.util.Log.i("PodVideoTiming","playCall seq="+prepareSequence+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-prepareStartedMs)); lifecyclePaused=false;audioPolicy.setHeldMuted(false);if(videoView!=null)videoView.setKeepScreenOn(true);player.play(); c.complete(state()); }
-    private void retire(Callback callback) throws Exception {
-        mediaGate(false);
-        if(prepareCallback != null) { Callback pending=prepareCallback;prepareCallback=null;releasePlayer();pending.fail("cancelled","Video retired"); }
+    private void retire(JSONObject args,Callback callback) throws Exception {
+        mediaGate(args.optBoolean("handoff",false)&&!lifecyclePaused);
+        if(prepareCallback != null) { Callback pending=prepareCallback;prepareCallback=null;detachPlayer(false);pending.fail("cancelled","Video retired"); }
         if(player != null) { if(audioPolicy!=null)audioPolicy.setHeldMuted(true);else player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_AUDIO,true).build()); player.pause(); }
         state="paused"; boundsVisible=false;
         if(videoView != null) { videoView.setAlpha(0f); videoView.setKeepScreenOn(false); }
         if(videoBackground != null) videoBackground.setAlpha(0f);
+        mediaGate(args.optBoolean("handoff",false)&&!lifecyclePaused);
         callback.complete(state());
     }
-    private void pause(Callback c) throws Exception { require(); mediaGate(false); player.pause(); if(videoView!=null)videoView.setKeepScreenOn(false); state="paused"; c.complete(state()); }
+    private void pause(JSONObject args,Callback c) throws Exception { require(); mediaGate(args.optBoolean("handoff",false)&&!lifecyclePaused); player.pause(); if(videoView!=null)videoView.setKeepScreenOn(false); state="paused"; c.complete(state()); }
     private void seek(JSONObject a, Callback c) throws Exception { require(); long p=a.optLong("positionMs", -1); if(p<0) throw new IllegalArgumentException("invalid_position"); player.seekTo(p); c.complete(state()); }
     private void stop(Callback c) throws Exception { releasePlayer(); clearBackdrop(); state="stopped"; if(videoView!=null){videoView.setVisibility(View.GONE);videoView.setKeepScreenOn(false);} c.complete(state()); }
     private void bounds(JSONObject b, Callback c) throws Exception { applyBounds(b);PodBenchmark.VideoAction action=PodBenchmark.videoAction(b);if(action!=null&&hasRenderedFirstFrame&&videoView!=null&&videoView.getTranslationY()==0){final int own=prepareSequence;PodBenchmark.present(videoView,action.event("snap_back"),()->prepareSequence==own&&boundsVisible&&hasRenderedFirstFrame&&videoView.getTranslationY()==0);}c.complete(state()); }

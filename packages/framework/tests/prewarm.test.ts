@@ -153,3 +153,30 @@ test('DYSWIPE3 late drag transitions cannot race a pending native promotion',asy
  await m.advance(16);await promoted;expect(pool.selectStandby('1')).toBe(true);
  await pool.transition(.2,'down',options(1).bounds);expect(transitions).toBe(1);
 });
+
+test('T1202 pool forwards paging ownership independently from telemetry',async()=>{
+ const m=new Model(),calls:any[]=[];const pool=new VideoSessionPool({...m.port,
+  pause:async(id,action,handoff)=>{calls.push({operation:'pause',action,handoff});return m.value(id);},
+  retire:async(id,handoff)=>{calls.push({operation:'retire',handoff});return m.value(id);},
+ });
+ await pool.pause(undefined,true);await pool.retire(true);await pool.pause();await pool.retire();
+ expect(calls).toEqual([{operation:'pause',action:undefined,handoff:true},{operation:'retire',handoff:true},{operation:'pause',action:undefined,handoff:false},{operation:'retire',handoff:false}]);
+});
+
+
+test('T1202 cancelling a completed initial adoption cannot release the active player',async()=>{
+ const m=new Model(),pool=new VideoSessionPool(m.port);pool.prime(source(1),options(1));
+ const adopted=pool.prepare(source(1),options(1));await m.advance(400);await adopted.result;
+ expect(m.states.size).toBe(1);const cancelled=m.cancelCount;
+ adopted.cancel();adopted.cancel();
+ expect(m.cancelCount).toBe(cancelled);expect(m.states.size).toBe(1);expect((await pool.state()).hasRenderedFirstFrame).toBe(true);
+ await pool.releaseAll();expect(m.states.size).toBe(0);
+});
+
+test('T1202 cancelling an unfinished adoption still fences and releases its player',async()=>{
+ const m=new Model(),pool=new VideoSessionPool(m.port);pool.prime(source(1),options(1));
+ let unblock!:()=>void;const bounds=m.port.setBounds;m.port.setBounds=async(id,b)=>{await new Promise<void>(resolve=>{unblock=resolve;});if(!m.states.has(id))throw Error('stale released player');return bounds(id,b);};
+ const adopted=pool.prepare(source(1),options(1));const error=adopted.result.catch(value=>value);
+ await m.advance(400);adopted.cancel();adopted.cancel();unblock();
+ expect(String(await error)).toContain('stale');expect(m.cancelCount).toBe(1);expect(m.states.size).toBe(0);
+});

@@ -81,7 +81,9 @@ public class PodMediaPrefixCacheTest {
  }
  @Test public void lowBandwidthSmallerThanOneReadChunkStillMakesBoundedProgress()throws Exception {
   Remote r=new Remote(16384);ScheduledExecutorService clock=Executors.newSingleThreadScheduledExecutor();clock.scheduleAtFixedRate(()->org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(250)),250,250,TimeUnit.MILLISECONDS);try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
-   java.lang.reflect.Field field=PodMediaPrefixCache.class.getDeclaredField("totalBandwidth");field.setAccessible(true);field.setLong(c,24576);String uri=register(c,"low-rate");long start=System.nanoTime();c.execute("video.cache.window",window(uri,M).put("foregroundBitrate",100000));idle(c);long elapsed=(System.nanoTime()-start)/1000000;assertTrue("rate is bounded: "+elapsed,elapsed>=1700);assertEquals(r.body.length,c.stats().getLong("bytes"));
+   java.lang.reflect.Field field=PodMediaPrefixCache.class.getDeclaredField("totalBandwidth");field.setAccessible(true);field.setLong(c,24576);
+   DataSource foreground=c.factory(r).createDataSource();foreground.open(new DataSpec(Uri.parse(register(c,"actual-low-rate-foreground"))));
+   try{String uri=register(c,"low-rate");long start=System.nanoTime();c.execute("video.cache.window",window(uri,M).put("foregroundBitrate",100000));idle(c);long elapsed=(System.nanoTime()-start)/1000000;assertTrue("rate is bounded: "+elapsed,elapsed>=1700);assertEquals(r.body.length,c.stats().getLong("bytes"));}finally{foreground.close();}
   }finally{clock.shutdownNow();}
  }
  @Test public void rejectUnregisteredAndMalformedSourcesOrOversizedWindows()throws Exception {
@@ -179,4 +181,21 @@ public class PodMediaPrefixCacheTest {
    assertTrue(line.matches("cache_first_card seq=42 mono_ms=[0-9]+ files=[0-9]+ bytes=[0-9]+ downloadedBytes=[0-9]+ cacheReadBytes=[0-9]+ networkReadBytes=[0-9]+ maxBytes=[0-9]+"));
   }
  }
+ @Test public void cachedForegroundHintCannotDeadlockUnknownBandwidthPrefetch()throws Exception {
+  Remote r=new Remote(M);try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
+   String uri=register(c,"cached-foreground-neighbour");c.execute("video.cache.window",window(uri,M).put("foregroundBitrate",8000000));
+   idle(c);assertEquals(M,c.stats().getLong("bytes"));
+  }
+ }
+ @Test public void closingActualNetworkReaderReleasesTheSpeculativeReserve()throws Exception {
+  Remote r=new Remote(M);try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
+   DataSource foreground=c.factory(r).createDataSource();foreground.open(new DataSpec(Uri.parse(register(c,"actual-foreground"))));
+   try {
+    String next=register(c,"next-after-close");c.execute("video.cache.window",window(next,M).put("foregroundBitrate",8000000));
+    assertTrue(r.readEntered.await(2,TimeUnit.SECONDS));Thread.sleep(100);assertEquals(0,c.stats().getLong("bytes"));
+   } finally {foreground.close();}
+   idle(c);assertEquals(M,c.stats().getLong("bytes"));
+  }
+ }
+
 }

@@ -8,8 +8,8 @@ export interface VideoSessionPort {
   capabilities(profile?:VideoDecoderProfile):Promise<VideoSessionCapabilities>;
   prepare(options:Parameters<typeof videoSessions.prepare>[0]):HostOperation<VideoSessionState>;
   play(sessionId:string):Promise<VideoSessionState>;
-  retire(sessionId:string):Promise<VideoSessionState>;
-  pause(sessionId:string,benchmark?:VideoBenchmarkAction):Promise<VideoSessionState>;
+  retire(sessionId:string,handoff?:boolean):Promise<VideoSessionState>;
+  pause(sessionId:string,benchmark?:VideoBenchmarkAction,handoff?:boolean):Promise<VideoSessionState>;
   seek(sessionId:string,positionMs:number):Promise<VideoSessionState>;
   stop(sessionId:string):Promise<VideoSessionState>;
   release(sessionId:string):Promise<{sessionId:string;released:boolean}>;
@@ -91,7 +91,7 @@ export class VideoSessionPool<Source extends {key:string}> {
   prepare(source:Source,options:VideoPrepare):HostOperation<VideoState>{
     const initial=this.initialPreparation;this.initialPreparation=undefined;
     if(initial&&initial.key===source.key&&initial.identity===this.prepareIdentity(options)&&initial.generation===this.generation){
-      const own=this.generation;let cancelled=false;
+      const own=this.generation;let cancelled=false,settled=false;
       this.loop=options.loop===true;
       const current=()=>!cancelled&&own===this.generation;
       const result=initial.operation.result.then(async()=>{
@@ -99,9 +99,9 @@ export class VideoSessionPool<Source extends {key:string}> {
         await this.port.setBounds(this.activeId,options.bounds);
         if(!current())throw Error('stale initial video preparation');
         return state(await this.syncLoop(this.activeId));
-      });
+      }).finally(()=>{settled=true;});
       // An early native failure stays terminal; adoption must not silently retry it.
-      return {result,cancel:()=>{cancelled=true;if(own===this.generation){this.generation++;initial.operation.cancel();void this.port.release(this.activeId).catch(()=>{});}}};
+      return {result,cancel:()=>{if(settled||cancelled)return;cancelled=true;if(own===this.generation){this.generation++;initial.operation.cancel();void this.port.release(this.activeId).catch(()=>{});}}};
     }
     initial?.operation.cancel();
     const own=++this.generation;this.loop=options.loop===true;this.activeKey=source.key;this.activeSource=source;
@@ -175,8 +175,8 @@ export class VideoSessionPool<Source extends {key:string}> {
   private async syncLoop(id:string):Promise<VideoSessionState>{while(true){const loop=this.loop,value=await this.port.setLoop(id,loop);if(loop===this.loop)return value;}}
   async setLoop(loop:boolean):Promise<void>{this.loop=loop;await Promise.all([...(this.activeKey?[this.syncLoop(this.activeId)]:[]),...this.slots.filter(s=>s.ready).map(s=>this.syncLoop(s.id))]);}
   play():Promise<VideoState>{return this.port.play(this.activeId).then(state);}
-  retire():Promise<VideoState>{return this.port.retire(this.activeId).then(state);}
-  pause(benchmark?:VideoBenchmarkAction):Promise<VideoState>{return this.port.pause(this.activeId,benchmark).then(state);}
+  retire(handoff=false):Promise<VideoState>{return this.port.retire(this.activeId,handoff).then(state);}
+  pause(benchmark?:VideoBenchmarkAction,handoff=false):Promise<VideoState>{return this.port.pause(this.activeId,benchmark,handoff).then(state);}
   seek(positionMs:number):Promise<VideoState>{return this.port.seek(this.activeId,positionMs).then(state);}
   stop():Promise<VideoState>{return this.port.stop(this.activeId).then(state);}
   setBounds(bounds:VideoBounds):Promise<VideoState>{return this.port.setBounds(this.activeId,bounds).then(state);}

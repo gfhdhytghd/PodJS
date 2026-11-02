@@ -445,13 +445,13 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
 
     private void retire(JSONObject args, Callback callback) throws Exception {
         Session session = require(args);
-        if(!session.prewarming)mediaGate(false);
+        if(!session.prewarming)mediaGate(args.optBoolean("handoff",false)&&!lifecyclePaused);
         session.retire();
         callback.complete(session.snapshot());
     }
     private void pause(JSONObject args, Callback callback) throws Exception {
         Session session = require(args);
-        if(!session.prewarming)mediaGate(false); session.requirePlayer();
+        if(!session.prewarming)mediaGate(args.optBoolean("handoff",false)&&!lifecyclePaused); session.requirePlayer();
         session.player.pause(); session.state = session.prewarming ? "prewarmed" : "paused";
         PodBenchmark.playerPaused(args,session.player.getPlayWhenReady(),session.generation);
         callback.complete(session.snapshot());
@@ -477,6 +477,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         String id = sessionId(args, "sessionId");
         Session session = sessions.remove(id);
         if (session != null) { if(!session.prewarming)mediaGate(false); session.close(); }
+        if(sessions.isEmpty())mediaGate(false);
         callback.complete(new JSONObject().put("sessionId", id).put("released", session != null));
     }
 
