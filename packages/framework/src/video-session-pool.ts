@@ -19,7 +19,7 @@ export interface VideoSessionPort {
   setVolume(sessionId:string,volume:number):Promise<VideoSessionState>;
   setMuted?(sessionId:string,muted:boolean):Promise<VideoSessionState>;
   setLoop(sessionId:string,loop:boolean):Promise<VideoSessionState>;
-  promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean;benchmark?:VideoBenchmarkAction}):Promise<VideoSessionState>;
+  promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean;adoptPreparing?:boolean;benchmark?:VideoBenchmarkAction}):Promise<VideoSessionState>;
   transition(options:{fromSessionId:string;toSessionId:string;progress:number;direction:VideoPagerDirection;bounds?:VideoBounds;benchmark?:VideoBenchmarkAction}):Promise<VideoSessionTransitionState>;
 }
 
@@ -38,7 +38,7 @@ const state=(value:VideoSessionState):VideoState=>({
 /** Retained surfaces, bounded by native codec and byte budgets. Three slots
  * retain both neighbours; two-slot hosts retain the selected/likely neighbour.
  * Slot-local revisions prevent one neighbour cancelling the other. */
-interface WarmSlot<S> {direction?:'next'|'prev';id:string;source?:S;ready:boolean;revision:number;operation?:HostOperation<VideoSessionState>;pending?:Promise<VideoState>}
+interface WarmSlot<S> {direction?:'next'|'prev';id:string;source?:S;identity?:string;ready:boolean;revision:number;operation?:HostOperation<VideoSessionState>;pending?:Promise<VideoState>}
 export class VideoSessionPool<Source extends {key:string}> {
   private initialPreparation?:{key:string;identity:string;generation:number;operation:HostOperation<VideoState>};
   private prepareIdentity(options:VideoPrepare){return JSON.stringify([options.url,options.videoUrl,options.audioUrl,options.type,options.videoMime,options.videoWidth,options.videoHeight,Object.entries(options.headers??{}).sort()]);}
@@ -53,6 +53,7 @@ export class VideoSessionPool<Source extends {key:string}> {
   private activeId:string;
   private activeKey:string|undefined;
   private activeSource:Source|undefined;
+  private activeIdentity:string|undefined;
   private slots:WarmSlot<Source>[];
   private capacity=2;
   private selected:WarmSlot<Source>|undefined;
@@ -83,7 +84,7 @@ export class VideoSessionPool<Source extends {key:string}> {
   get neighbourCapacity(){return this.capacity-1;}
   private evict(slot:WarmSlot<Source>,reason:'stale'|'capacity'|'release'|'failure'|'timeout'){
     if(slot.source)benchmark.begin('prewarm_evicted',{reason,direction:slot.direction,generation:slot.revision});
-    slot.revision++;slot.operation?.cancel();slot.operation=undefined;slot.pending=undefined;slot.source=undefined;slot.ready=false;
+    slot.revision++;slot.operation?.cancel();slot.operation=undefined;slot.pending=undefined;slot.source=undefined;slot.identity=undefined;slot.ready=false;
     if(this.selected===slot)this.selected=undefined;
     return this.port.release(slot.id).catch(()=>undefined);
   }
@@ -104,7 +105,10 @@ export class VideoSessionPool<Source extends {key:string}> {
       return {result,cancel:()=>{if(settled||cancelled)return;cancelled=true;if(own===this.generation){this.generation++;initial.operation.cancel();void this.port.release(this.activeId).catch(()=>{});}}};
     }
     initial?.operation.cancel();
-    const own=++this.generation;this.loop=options.loop===true;this.activeKey=source.key;this.activeSource=source;
+    const identity=this.prepareIdentity(options);
+    const warming=this.slots.find(s=>s.source?.key===source.key&&s.identity===identity&&(s.ready||s.operation));
+    if(warming)return this.adoptPreparing(warming,source,options);
+    const own=++this.generation;this.loop=options.loop===true;this.activeKey=source.key;this.activeSource=source;this.activeIdentity=this.prepareIdentity(options);
     for(const slot of this.slots)if(slot.source||slot.operation)void this.evict(slot,'stale');
     // Explicit sessions are foreground-only. Do not leak a legacy preference
     // into the native API (which correctly rejects backgroundPlayback=true).
@@ -115,6 +119,31 @@ export class VideoSessionPool<Source extends {key:string}> {
       return this.syncLoop(this.activeId).then(state);
     })};
   }
+  /** A released gesture owns this source now. Keep its in-flight transport,
+   * extractor and decoder instead of cancelling them and preparing it again. */
+  private adoptPreparing(slot:WarmSlot<Source>,source:Source,options:VideoPrepare):HostOperation<VideoState>{
+    const own=++this.generation,id=slot.id,replacedId=this.activeId;
+    const previousSource=this.activeSource,previousIdentity=this.activeIdentity;
+    const operation=slot.operation;
+    this.loop=options.loop===true;this.selected=undefined;this.latestTransition=undefined;
+    slot.revision++;slot.operation=undefined;slot.pending=undefined;
+    slot.direction=slot.direction==='next'?'prev':slot.direction==='prev'?'next':undefined;
+    slot.id=replacedId;slot.source=previousSource;slot.identity=previousIdentity;slot.ready=false;
+    this.activeId=id;this.activeKey=source.key;this.activeSource=source;this.activeIdentity=this.prepareIdentity(options);
+    for(const other of this.slots)if(other!==slot&&(other.source||other.operation))void this.evict(other,'stale');
+    let cancelled=false,settled=false;
+    const result=(async()=>{
+      const promoted=await this.port.promote(id,{replaceSessionId:replacedId,bounds:options.bounds,autoplay:false,adoptPreparing:true,...(options.benchmark?{benchmark:options.benchmark}:{})});
+      if(cancelled||own!==this.generation)throw Error('stale video session adoption');
+      const retired=await this.port.state(replacedId).catch(()=>undefined);
+      if(cancelled||own!==this.generation)throw Error('stale video session adoption');
+      slot.ready=!!previousSource&&retired?.hasRenderedFirstFrame===true&&retired.state!=='error';
+      await this.syncLoop(id);
+      if(cancelled||own!==this.generation)throw Error('stale video session adoption');
+      return state(promoted);
+    })().finally(()=>{settled=true;});
+    return {result,cancel:()=>{if(cancelled||settled)return;cancelled=true;if(own===this.generation){this.generation++;operation?.cancel();}}};
+  }
   async prewarm(source:Source,options:VideoPrepare,direction?:'next'|'prev'):Promise<VideoState>{
     if(source.key===this.activeKey)return this.state();
     let slot=this.slots.find(s=>s.source?.key===source.key);
@@ -123,10 +152,10 @@ export class VideoSessionPool<Source extends {key:string}> {
     slot??=this.slots.slice(0,this.capacity-1).find(s=>!s.source);
     if(!slot){slot=this.slots.find(s=>s!==this.selected)??this.slots[0];this.evict(slot,'capacity');}
     const target=slot,own=++target.revision;
-    target.source=source;target.ready=false;target.direction=direction;
+    target.source=source;target.identity=this.prepareIdentity(options);target.ready=false;target.direction=direction;
     const seq=benchmark.begin('prewarm_requested',{generation:own,direction});
     const {backgroundPlayback,...foreground}=options;
-    const operation=this.port.prepare({...foreground,loop:this.loop,sessionId:target.id,prewarm:true,autoplay:false,muted:false});
+    const operation=this.port.prepare({...foreground,loop:this.loop,sessionId:target.id,prepareSeq:seq,prewarm:true,autoplay:false,muted:false});
     target.operation=operation;
     // Slot revisions fence evictions. A promotion can explicitly retain an
     // in-flight following neighbour while the pool generation advances.
@@ -159,15 +188,15 @@ export class VideoSessionPool<Source extends {key:string}> {
     this.promoting=true;
     try{
     if(this.transitionRunning)await this.transitionRunning;
-    const own=this.generation,id=slot.id;
+    const own=this.generation,id=slot.id,identity=slot.identity;
     const promoted=await this.port.promote(id,{replaceSessionId:this.activeId,bounds,autoplay,...(benchmark?{benchmark}:{})});
     // A fast swipe can retire the initial active before it decoded anything.
     // Retain its source, but never label that surface ready without host proof.
     const retired=await this.port.state(this.activeId).catch(()=>undefined);
     if(own!==this.generation||slot.source!==target)throw new Error('stale video session promotion');
     this.generation++;
-    slot.id=this.activeId;slot.direction=direction==='up'?'prev':'next';slot.source=this.activeSource;slot.ready=!!this.activeSource&&retired?.hasRenderedFirstFrame===true&&retired.state!=='error';slot.revision++;
-    this.activeId=id;this.activeKey=target.key;this.activeSource=target;this.selected=undefined;
+    slot.id=this.activeId;slot.direction=direction==='up'?'prev':'next';slot.source=this.activeSource;slot.identity=this.activeIdentity;slot.ready=!!this.activeSource&&retired?.hasRenderedFirstFrame===true&&retired.state!=='error';slot.revision++;
+    this.activeId=id;this.activeKey=target.key;this.activeSource=target;this.activeIdentity=identity;this.selected=undefined;
     for(const other of this.slots)if(other!==slot&&!retainKeys.includes(other.source?.key??''))this.evict(other,'stale');
     return {source:target,state:state(promoted)};
     }finally{this.promoting=false;}
@@ -184,5 +213,5 @@ export class VideoSessionPool<Source extends {key:string}> {
   setTransform(transform:{rotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}):Promise<VideoState>{return this.port.setTransform(this.activeId,transform).then(state);}
   setMuted(muted:boolean):Promise<VideoState>{if(!this.port.setMuted)return Promise.reject(new Error("unsupported"));return this.port.setMuted(this.activeId,muted).then(state);}
   setVolume(volume:number):Promise<VideoState>{return this.port.setVolume(this.activeId,volume).then(state);}
-  async releaseAll():Promise<void>{this.initialPreparation?.operation.cancel();this.initialPreparation=undefined;this.generation++;this.latestTransition=undefined;this.activeKey=undefined;this.activeSource=undefined;await Promise.allSettled([this.port.release(this.activeId),...this.slots.map(s=>this.evict(s,'release'))]);}
+  async releaseAll():Promise<void>{this.initialPreparation?.operation.cancel();this.initialPreparation=undefined;this.generation++;this.latestTransition=undefined;this.activeKey=undefined;this.activeSource=undefined;this.activeIdentity=undefined;await Promise.allSettled([this.port.release(this.activeId),...this.slots.map(s=>this.evict(s,'release'))]);}
 }

@@ -190,9 +190,11 @@ public final class PodVideoServices implements AutoCloseable {
         applyBounds(a.optJSONObject("bounds")); autoplay=a.optBoolean("autoplay", true); mediaGate(true); backgroundPlayback=a.optBoolean("backgroundPlayback",false); lifecyclePaused=false; density=context.getResources().getDisplayMetrics().density;
         Map<String,String> headers = headers(a.optJSONObject("headers"));
         analytics=new PodVideoAnalytics();analytics.startupSeq=a.optLong("startupSeq",0);
-        androidx.media3.datasource.DataSource.Factory http = PodVideoHttpDataSources.create(headers,analytics);
+        androidx.media3.datasource.DataSource.Factory http = PodVideoHttpDataSources.create(headers,null);
         DefaultDataSource.Factory data = new DefaultDataSource.Factory(context, http);
-        DefaultMediaSourceFactory factory = new DefaultMediaSourceFactory(mediaPrefixCache==null?data:mediaPrefixCache.factory(data));
+        androidx.media3.datasource.DataSource.Factory sources=mediaPrefixCache==null?data:mediaPrefixCache.factory(data);
+        PodVideoAnalytics observer=analytics;
+        DefaultMediaSourceFactory factory = new DefaultMediaSourceFactory(()->{androidx.media3.datasource.DataSource source=sources.createDataSource();source.addTransferListener(observer);return source;});
         MediaSource source;
         if (!videoUrl.isEmpty() && !audioUrl.isEmpty()) source = new MergingMediaSource(factory.createMediaSource(item(videoUrl, a.optString("type", ""))), factory.createMediaSource(item(audioUrl, "")));
         else source = factory.createMediaSource(item(url, a.optString("type", "")));

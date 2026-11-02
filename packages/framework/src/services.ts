@@ -363,7 +363,7 @@ export const video = {
 
 export interface VideoSessionCapabilities {
   capability:"media.video.sessions"; maxSessions:number; decoderLimit:number; decoderInUse:number;
-  targetBufferBytesPerSession:number; targetBufferBytesTotal:number; prewarmTimeoutMs:number;
+  targetBufferBytesPerSession:number; targetBufferBytesTotal:number; prewarmTimeoutMs:number;prewarmIdleTimeoutMs?:number;
   prewarmMode:"hidden_first_frame"; surfacePromotion:boolean; verticalTransition:boolean;
   surfaceComposition:"android_texture_view"; backgroundPlayback:false;
   decoderMime?:string|null; decoderWidth?:number; decoderHeight?:number; decoderName?:string|null;
@@ -372,7 +372,7 @@ export interface VideoSessionCapabilities {
 export interface VideoSessionPrepare extends Omit<VideoPrepare,"backgroundPlayback"> {
   sessionId:string;
   /** Decode silently to a retained hidden first frame. Prewarm never requests audio focus. */
-  prewarm?:boolean;
+  prepareSeq?:number;prewarm?:boolean;
 }
 export interface VideoSessionState {
   volumeIndex?:number; volumeMax?:number;
@@ -414,7 +414,7 @@ export const videoSessions = {
   setMuted(sessionId:string,muted:boolean):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setVolume",{sessionId,muted}).result; },
   setVolume(sessionId:string,volume:number):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setVolume",{sessionId,volume}).result; },
   /** Reveals the retained target first frame before hiding the replaced session. */
-  promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean;benchmark?:VideoBenchmarkAction}={}):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.promote",{sessionId,...options}).result; },
+  promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean;adoptPreparing?:boolean;benchmark?:VideoBenchmarkAction}={}):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.promote",{sessionId,...options}).result; },
   /** Atomically translates both native surfaces. Call promote after progress reaches one. */
   transition(options:VideoSessionTransition):Promise<VideoSessionTransitionState> { return hostOperation<VideoSessionTransitionState>("video.session.transition",options as unknown as Record<string,unknown>).result; },
 };

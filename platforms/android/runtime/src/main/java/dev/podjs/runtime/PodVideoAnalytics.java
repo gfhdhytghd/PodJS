@@ -14,11 +14,25 @@ import org.json.JSONObject;
 final class PodVideoAnalytics implements AnalyticsListener, TransferListener {
     final androidx.media3.exoplayer.analytics.PlaybackStatsListener playbackStats = new androidx.media3.exoplayer.analytics.PlaybackStatsListener(false,null);
     long startupSeq;
+    private long preparationProgressMs=SystemClock.uptimeMillis();
+    synchronized long preparationProgressMs(){return preparationProgressMs;}
+    private long prepareSeq, prepareGeneration;
+    private boolean prewarm;
+    synchronized void preparation(long requestedSeq,long generation,boolean prewarming) {
+        prepareGeneration=generation;prewarm=prewarming;
+        try {JSONObject row=prepareFields("start");prepareSeq=PodBenchmark.known(requestedSeq)?requestedSeq:PodBenchmark.begin("prepare_stage",row);if(prepareSeq==requestedSeq)PodBenchmark.mark("prepare_stage",prepareSeq,row);}catch(Exception ignored){}
+    }
+    private JSONObject prepareFields(String stage)throws Exception {return new JSONObject().put("prepare_stage",stage).put("source_generation",prepareGeneration).put("is_prewarm",prewarm).put("network_bytes",bytes);}
+    synchronized void stage(String stage){if(prepareSeq>0)try{PodBenchmark.mark("prepare_stage",prepareSeq,prepareFields(stage));}catch(Exception ignored){}}
+    synchronized void stage(String stage,androidx.media3.exoplayer.ExoPlayer player,android.view.TextureView view){if(prepareSeq>0)try{PodBenchmark.mark("prepare_stage",prepareSeq,prepareFields(stage).put("surface_ready",view!=null&&view.isAvailable()).put("playback_state",player==null?1:player.getPlaybackState()).put("buffered_ms",player==null?0:Math.max(0,player.getBufferedPosition()-player.getCurrentPosition())));}catch(Exception ignored){}}
+
     @Override public void onVideoDecoderInitialized(EventTime time,String decoderName,long initializedTimestampMs,long initializationDurationMs) {
+        synchronized(this){preparationProgressMs=SystemClock.uptimeMillis();}
+        stage("decoder_configured");
         if(startupSeq>0)try{PodBenchmark.mark("startup_stage",startupSeq,new JSONObject().put("startup_stage","decoder_configured").put("duration_ms",Math.max(0,initializationDurationMs)));}catch(Exception ignored){}
     }
     @Override public void onVideoInputFormatChanged(EventTime time,androidx.media3.common.Format format,androidx.media3.exoplayer.DecoderReuseEvaluation reuse) {
-        PodBenchmark.startup(startupSeq,"video_format_ready");
+        stage("format_ready");PodBenchmark.startup(startupSeq,"video_format_ready");
     }
     private final long startedMs = SystemClock.elapsedRealtime();
     private long lastByteMs=-1;
@@ -28,24 +42,25 @@ final class PodVideoAnalytics implements AnalyticsListener, TransferListener {
     private long firstByteMs = -1, firstFrameMs = -1, bytes, throughput, dropped;
     @Override public synchronized void onBytesTransferred(DataSource source, DataSpec spec, boolean network, int count) {
         if (!network || count <= 0) return;
-        if (firstByteMs < 0) firstByteMs = Math.max(0, SystemClock.elapsedRealtime() - startedMs);
-        bytes += count; lastByteMs=SystemClock.elapsedRealtime();
+        if (firstByteMs < 0) {firstByteMs = Math.max(0, SystemClock.elapsedRealtime() - startedMs);stage("network_first_byte");}
+        bytes += count; lastByteMs=SystemClock.elapsedRealtime();preparationProgressMs=SystemClock.uptimeMillis();
     }
-    @Override public void onTransferInitializing(DataSource source, DataSpec spec, boolean network) { }
+    @Override public synchronized void onTransferInitializing(DataSource source, DataSpec spec, boolean network) { if(network&&prepareSeq>0)try{PodBenchmark.mark("prepare_stage",prepareSeq,prepareFields("network_open").put("position_bytes",Math.max(0,spec.position)));}catch(Exception ignored){} }
     @Override public synchronized void onTransferStart(DataSource source, DataSpec spec, boolean network) { if(network){
         for(java.util.Map.Entry<String,java.util.List<String>> entry:(source==null?java.util.Collections.<String,java.util.List<String>>emptyMap():source.getResponseHeaders()).entrySet())if(entry.getKey()!=null&&entry.getKey().equalsIgnoreCase("Content-Type"))for(String value:entry.getValue()==null?java.util.Collections.<String>emptyList():entry.getValue()){
             if(value==null)continue;
             String mime=value.toLowerCase(java.util.Locale.ROOT).split(";",2)[0].trim();
             contentKind=mime.equals("video/mp4")?"mp4":mime.equals("video/webm")?"webm":mime.contains("mpegurl")?"hls":mime.equals("application/dash+xml")?"dash":mime.equals("application/octet-stream")?"octet":mime.equals("text/html")?"html":"unknown";
         }
-        networkTransfers++;if(lastByteMs<0)lastByteMs=SystemClock.elapsedRealtime();} }
-    @Override public synchronized void onTransferEnd(DataSource source, DataSpec spec, boolean network) { if(network)networkTransfers=Math.max(0,networkTransfers-1); }
+        stage("network_start");networkTransfers++;if(lastByteMs<0)lastByteMs=SystemClock.elapsedRealtime();} }
+    @Override public synchronized void onTransferEnd(DataSource source, DataSpec spec, boolean network) { if(network){stage("network_end");networkTransfers=Math.max(0,networkTransfers-1);} }
     synchronized boolean networkStalled(){return networkTransfers>0&&lastByteMs>=0&&SystemClock.elapsedRealtime()-lastByteMs>=800;}
     @Override public synchronized void onBandwidthEstimate(EventTime time, int elapsedMs, long transferred, long bitrate) {
         if (elapsedMs > 0 && transferred > 0 && bitrate > 0) throughput = bitrate;
     }
     @Override public synchronized void onDroppedVideoFrames(EventTime time, int count, long elapsedMs) { dropped += Math.max(0, count); }
     @Override public synchronized void onRenderedFirstFrame(EventTime time, Object output, long renderTimeMs) {
+        if(firstFrameMs<0)stage("first_frame");
         if(firstFrameMs<0)PodBenchmark.startup(startupSeq,"decoded_first_frame");
         if (firstFrameMs < 0) firstFrameMs = Math.max(0, SystemClock.elapsedRealtime() - startedMs);
     }

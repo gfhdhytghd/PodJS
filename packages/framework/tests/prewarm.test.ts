@@ -180,3 +180,54 @@ test('T1202 cancelling an unfinished adoption still fences and releases its play
  await m.advance(400);adopted.cancel();adopted.cancel();unblock();
  expect(String(await error)).toContain('stale');expect(m.cancelCount).toBe(1);expect(m.states.size).toBe(0);
 });
+
+test('foreground adopts matching in-flight neighbour without cancelling or reopening its source',async()=>{
+ const m=new Model();let resolveWarm!:(value:VideoSessionState)=>void;
+ const original=m.port.prepare;
+ m.port.prepare=(o:any)=>{
+  if(!o.prewarm)return original(o);
+  m.prepareCount++;m.states.set(o.sessionId,{...m.value(o.sessionId,true),hasRenderedFirstFrame:false,state:'buffering'});
+  return {result:new Promise<VideoSessionState>(resolve=>{resolveWarm=resolve;}),cancel:()=>{m.cancelCount++;}};
+ };
+ let adoptedId='';m.port.promote=async(id:string,o:any)=>{
+  expect(o.adoptPreparing).toBe(true);adoptedId=id;
+  const next={...m.states.get(id)!,prewarming:false,presented:true};m.states.set(id,next);return next;
+ };
+ const pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();
+ const active=pool.prepare(source(1),options(1));await m.advance(400);await active.result;
+ const pending=pool.prewarm(source(2),options(2));const stale=pending.catch(error=>expect(String(error)).toContain('stale'));
+ const foreground=pool.prepare(source(2),options(2));expect(m.prepareCount).toBe(2);expect(m.cancelCount).toBe(0);
+ expect((await foreground.result).hasRenderedFirstFrame).toBe(false);
+ expect(pool.ownsActiveSession(adoptedId)).toBe(true);
+ expect(pool.hasStandby('1')).toBe(true);
+ resolveWarm(m.value(adoptedId));await stale;foreground.cancel();
+ expect(m.cancelCount).toBe(0);expect(pool.ownsActiveSession(adoptedId)).toBe(true);
+ expect(m.states.has(adoptedId)).toBe(true);await pool.releaseAll();
+});
+
+test('in-flight adoption requires identical authorized source parameters',async()=>{
+ const m=new Model(),pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();
+ const active=pool.prepare(source(1),options(1));await m.advance(400);await active.result;
+ const pending=pool.prewarm(source(2),{...options(2),headers:{Cookie:'fixture-one'}}).catch(()=>{});
+ const replacement=pool.prepare(source(2),{...options(2),headers:{Cookie:'fixture-two'}});
+ await m.advance(500);await replacement.result;await pending;
+ expect(m.prepareCount).toBe(3);expect(m.cancelCount).toBe(1);await pool.releaseAll();
+});
+
+test('cancelling pending foreground adoption retains the native session for the following retire',async()=>{
+ const m=new Model();let resolvePromote!:(value:VideoSessionState)=>void;
+ const original=m.port.prepare;
+ m.port.prepare=(o:any)=>{
+  if(!o.prewarm)return original(o);
+  m.prepareCount++;m.states.set(o.sessionId,{...m.value(o.sessionId,true),hasRenderedFirstFrame:false,state:'buffering'});
+  return {result:new Promise<VideoSessionState>(()=>{}),cancel:()=>{m.cancelCount++;}};
+ };
+ let target='';m.port.promote=(id:string)=>{target=id;return new Promise(resolve=>{resolvePromote=resolve;});};
+ const pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();
+ const active=pool.prepare(source(1),options(1));await m.advance(400);await active.result;
+ void pool.prewarm(source(2),options(2));const foreground=pool.prepare(source(2),options(2));
+ const stale=foreground.result.catch(error=>expect(String(error)).toContain('stale'));
+ foreground.cancel();expect(m.cancelCount).toBe(1);
+ expect(m.states.has(target)).toBe(true);expect(pool.ownsActiveSession(target)).toBe(true);
+ resolvePromote(m.value(target));await stale;await pool.releaseAll();
+});
