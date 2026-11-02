@@ -458,7 +458,10 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     }
     private void pause(JSONObject args, Callback callback) throws Exception {
         Session session = require(args);
-        if(!session.prewarming)mediaGate(args.optBoolean("handoff",false)&&!lifecyclePaused); session.requirePlayer();
+        if(!session.prewarming)mediaGate(args.optBoolean("handoff",false)&&!lifecyclePaused);
+        // Cancellation/retirement can remove the player before a paging pause.
+        // Preserve the session state and do not emit playback proof for a no-op.
+        if(session.player==null){callback.complete(session.snapshot());return;}
         session.player.pause(); session.state = session.prewarming ? "prewarmed" : "paused";
         PodBenchmark.playerPaused(args,session.player.getPlayWhenReady(),session.generation);
         callback.complete(session.snapshot());
@@ -495,6 +498,11 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         if(!session.prewarming)session.presented=bounds.visible;
         if (session.presented) session.showPresented(); else session.hideOffscreen();
         if(session.presented&&!session.prewarming&&session.hasRenderedFirstFrame&&session.analytics!=null)PodBenchmark.startup(session.analytics.startupSeq,"initial_frame_adopted");
+        PodBenchmark.VideoAction action=PodBenchmark.videoAction(args.optJSONObject("bounds"));
+        if(action!=null&&session.presented&&session.hasRenderedFirstFrame&&bounds.translateYPx==0){
+            long own=session.generation;
+            PodBenchmark.present(session.videoView,action.event("snap_back"),()->session.generation==own&&session.presented&&session.hasRenderedFirstFrame&&session.videoView.getTranslationY()==0);
+        }
         callback.complete(session.snapshot());
     }
 

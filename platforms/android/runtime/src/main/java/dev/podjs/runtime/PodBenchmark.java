@@ -108,7 +108,7 @@ final class PodBenchmark {
                 else if(key.equals("direction")){if(!Arrays.asList("next","prev","cancel","fling").contains(value))return false;}
                 else if(key.equals("state")){if(!Arrays.asList("present","absent","running","idle","unknown","paused").contains(value))return false;}
                 else if(key.equals("kind")){if(!Arrays.asList("on","off").contains(value))return false;}
-                else if(key.equals("reason")){if(!Arrays.asList("stale","capacity","release","failure","bidirectional","single_neighbour","foreground_media","media_stopped","timeout","candidate_retry","exhausted","hidden","network_stalled").contains(value))return false;}
+                else if(key.equals("reason")){if(!Arrays.asList("stale","capacity","release","failure","bidirectional","single_neighbour","foreground_media","media_stopped","timeout","candidate_retry","exhausted","hidden","network_stalled","boundary","network_prompt","threshold","cancelled").contains(value))return false;}
                 else if(key.equals("backend")){if(!Arrays.asList("mixer","player").contains(value))return false;}
                 else return false;
                 if(code.equals("player_visible")&&key.equals("state")&&value.equals("present")){
