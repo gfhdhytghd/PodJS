@@ -89,3 +89,20 @@ test('an outgoing active that never decoded a frame is not falsely retained as r
  const next=pool.prewarm(source(2),options(2));await m.advance(500);await next;pool.selectStandby('2');
  const promotion=pool.promote('up',options(2).bounds);await m.advance(16);await promotion;expect(pool.hasStandby('1')).toBe(false);
 });
+
+test('DYFIX memory capacity recovers 3 to 2 to 1 to 3 without releasing foreground',async()=>{
+ const m=new Model();let limit=3;const capability=m.port.capabilities;
+ m.port.capabilities=async()=>({...await capability(),decoderLimit:limit});
+ const pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();
+ const active=pool.prepare(source(1),options(1)).result;await m.advance(400);await active;
+ const next=pool.prewarm(source(2),options(2),'next'),prev=pool.prewarm(source(0),options(0),'prev');
+ await m.advance(500);await Promise.all([next,prev]);expect(m.states.size).toBe(3);
+ limit=2;expect(await pool.supportsPrewarm()).toBe(true);expect(pool.hasStandby('2')).toBe(true);expect(pool.hasStandby('0')).toBe(false);expect(m.states.size).toBe(2);
+ limit=1;expect(await pool.supportsPrewarm()).toBe(false);expect(m.states.size).toBe(1);expect((await pool.state()).hasRenderedFirstFrame).toBe(true);
+ limit=3;expect(await pool.supportsPrewarm()).toBe(true);expect(pool.neighbourCapacity).toBe(2);
+ const nextAgain=pool.prewarm(source(2),options(2),'next'),prevAgain=pool.prewarm(source(0),options(0),'prev');
+ await m.advance(500);await Promise.all([nextAgain,prevAgain]);
+ expect(pool.hasStandby('2')).toBe(true);expect(pool.hasStandby('0')).toBe(true);expect(m.states.size).toBe(3);
+ expect(m.prepareCount).toBe(5); // One foreground prepare, four neighbour prepares.
+ await pool.releaseAll();expect(m.states.size).toBe(0);
+});

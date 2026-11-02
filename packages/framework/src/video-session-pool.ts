@@ -63,6 +63,8 @@ export class VideoSessionPool<Source extends {key:string}> {
   async supportsPrewarm(profile:VideoDecoderProfile={}):Promise<boolean>{
     const c=await this.port.capabilities(profile);
     this.capacity=Math.max(1,Math.min(3,c.decoderLimit,c.maxSessions??2));
+    this.slots.sort((a,b)=>Number(b===this.selected)-Number(a===this.selected)||Number(b.direction==='next')-Number(a.direction==='next'));
+    await Promise.all(this.slots.slice(this.capacity-1).filter(s=>s.source||s.operation).map(s=>this.evict(s,'capacity')));
     const supported=this.capacity>=2&&c.surfacePromotion&&c.verticalTransition;
     benchmark.begin('prewarm_policy',{reason:supported?(this.capacity>=3?'bidirectional':'single_neighbour'):'capacity',slots:this.capacity});
     return supported;
@@ -77,7 +79,7 @@ export class VideoSessionPool<Source extends {key:string}> {
   retainNeighbours(keys:readonly string[]){for(const slot of this.slots)if(slot.source&&!keys.includes(slot.source.key))this.evict(slot,'stale');}
   prepare(source:Source,options:VideoPrepare):HostOperation<VideoState>{
     const own=++this.generation;this.loop=options.loop===true;this.activeKey=source.key;this.activeSource=source;
-    for(const slot of this.slots.slice(0,this.capacity-1))void this.evict(slot,'stale');
+    for(const slot of this.slots)if(slot.source||slot.operation)void this.evict(slot,'stale');
     // Explicit sessions are foreground-only. Do not leak a legacy preference
     // into the native API (which correctly rejects backgroundPlayback=true).
     const {backgroundPlayback,...foreground}=options;
@@ -148,5 +150,5 @@ export class VideoSessionPool<Source extends {key:string}> {
   state():Promise<VideoState>{return this.port.state(this.activeId).then(state);}
   setTransform(transform:{rotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}):Promise<VideoState>{return this.port.setTransform(this.activeId,transform).then(state);}
   setVolume(volume:number):Promise<VideoState>{return this.port.setVolume(this.activeId,volume).then(state);}
-  async releaseAll():Promise<void>{this.generation++;this.latestTransition=undefined;this.activeKey=undefined;this.activeSource=undefined;await Promise.allSettled([this.port.release(this.activeId),...this.slots.slice(0,this.capacity-1).map(s=>this.evict(s,'release'))]);}
+  async releaseAll():Promise<void>{this.generation++;this.latestTransition=undefined;this.activeKey=undefined;this.activeSource=undefined;await Promise.allSettled([this.port.release(this.activeId),...this.slots.map(s=>this.evict(s,'release'))]);}
 }

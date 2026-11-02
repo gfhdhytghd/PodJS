@@ -1,6 +1,9 @@
 package dev.podjs.runtime;
 
 import android.content.Context;
+import android.content.ComponentCallbacks2;
+import android.content.res.Configuration;
+import android.app.ActivityManager;
 import android.graphics.Matrix;
 import android.graphics.Outline;
 import android.media.MediaExtractor;
@@ -40,7 +43,7 @@ import java.util.Map;
  * silently into a retained, off-screen TextureView. Promotion reveals that same
  * surface, so no decoder or SurfaceTexture is replaced at the page boundary.
  */
-final class PodVideoSessionServices implements AutoCloseable {
+final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks2 {
     interface Callback extends VideoFrameObserver { void complete(JSONObject value); void fail(String code, String message); }
 
     static final int MAX_SESSIONS = 3;
@@ -61,6 +64,7 @@ final class PodVideoSessionServices implements AutoCloseable {
     private final PodMediaPrefixCache mediaPrefixCache;
     private final PodVideoDecoderBudget decoderBudget;
     private final PodVideoDecoderCapabilities decoderCapabilities;
+    private final PodVideoMemoryBudget memoryBudget=new PodVideoMemoryBudget();
     private final LinkedHashMap<String, Session> sessions = new LinkedHashMap<>();
     private ViewGroup parent;
     private boolean closed;
@@ -81,6 +85,39 @@ final class PodVideoSessionServices implements AutoCloseable {
         try { mediaRoot = PodTakeover.filesRoot(this.context).getCanonicalFile(); }
         catch (Exception error) { throw new IllegalStateException("service_root_unavailable", error); }
         density = this.context.getResources().getDisplayMetrics().density;
+        this.context.registerComponentCallbacks(this);
+    }
+
+    @Override public void onConfigurationChanged(Configuration configuration) {}
+    @Override public void onLowMemory() { onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_COMPLETE); }
+    @Override public void onTrimMemory(int level) {
+        main.post(()->{if(!closed){memoryBudget.trim(level);enforceMemoryBudget(lastProfile);}});
+    }
+    private int memoryLimit(PodVideoDecoderCapabilities.Profile requested) {
+        long bytes=PodVideoMemoryBudget.decoderBytes(requested==null?0:requested.width,requested==null?0:requested.height);
+        int resident=0;
+        for(Session slot:sessions.values())if(slot.player!=null) {
+            if(slot.decoderLease&&slot.hasRenderedFirstFrame)resident++;
+            if(slot.profile!=null)bytes=Math.max(bytes,PodVideoMemoryBudget.decoderBytes(slot.profile.width,slot.profile.height));
+        }
+        ActivityManager.MemoryInfo info=new ActivityManager.MemoryInfo();
+        ActivityManager manager=(ActivityManager)context.getSystemService(Context.ACTIVITY_SERVICE);
+        if(manager!=null)manager.getMemoryInfo(info);
+        long system=manager==null?0:Math.max(0,info.availMem-info.threshold);
+        return Math.min(decoderBudget.limit(),memoryBudget.limit(system,info.lowMemory,bytes,decoderBudget.inUse(),Math.max(0,decoderBudget.inUse()-resident)));
+    }
+    private int enforceMemoryBudget(PodVideoDecoderCapabilities.Profile requested) {
+        int limit=memoryLimit(requested);
+        evictStandbyTo(limit,null);
+        return limit;
+    }
+    private void evictStandbyTo(int limit,String keep) {
+        for(Session slot:new java.util.ArrayList<>(sessions.values())) {
+            if(decoderBudget.inUse()<=limit)break;
+            if(slot.prewarming&&!slot.id.equals(keep)) {
+                sessions.remove(slot.id);slot.close();
+            }
+        }
     }
 
     void attachToParent(ViewGroup host) {
@@ -151,7 +188,7 @@ final class PodVideoSessionServices implements AutoCloseable {
     private JSONObject capabilities(JSONObject args) throws Exception {
         PodVideoDecoderCapabilities.Profile requested = profileFromArguments(args, false);
         PodVideoDecoderCapabilities.Result capability = requested == null ? lastCapability : decoderCapabilities.inspect(requested);
-        int limit = capability == null ? decoderBudget.limit() : Math.min(decoderBudget.limit(), capability.limit);
+        int limit = Math.min(enforceMemoryBudget(requested),capability == null ? decoderBudget.limit() : capability.limit);
         JSONObject value = new JSONObject()
                 .put("capability", CAPABILITY)
                 .put("maxSessions", MAX_SESSIONS)
@@ -185,6 +222,13 @@ final class PodVideoSessionServices implements AutoCloseable {
             PodVideoDecoderCapabilities.Result capability = decoderCapabilities.inspect(profile);
             lastProfile = profile; lastCapability = capability; decoderBudget.restrictTo(capability.limit);
         }
+        int memoryLimit=enforceMemoryBudget(profile);
+        // Foreground admission evicts speculative slots before claiming a lease.
+        // No codec is built while the process is above its memory allowance.
+        if(!prewarming)evictStandbyTo(Math.max(0,memoryLimit-1),id);
+        Session existing=sessions.get(id);
+        if(prewarming&&decoderBudget.inUse()-(existing!=null&&existing.decoderLease?1:0)>=memoryLimit)
+            throw new IllegalStateException("video_decoder_limit");
         PodVideoAnalytics analytics=new PodVideoAnalytics();
         MediaSource source = mediaSource(args,analytics);
         Session session = sessions.get(id);
@@ -205,6 +249,8 @@ final class PodVideoSessionServices implements AutoCloseable {
         session.generation += 1;
         final long generation = session.generation;
         session.analytics=analytics;
+        session.benchmarkAction=PodBenchmark.videoAction(args);
+        session.benchmarkFramePending=session.benchmarkAction!=null&&!prewarming;
         session.frameSource=new JSONObject(args.toString());
         session.bounds = bounds;
         session.prewarming = prewarming;
@@ -245,7 +291,11 @@ final class PodVideoSessionServices implements AutoCloseable {
         session.audioPolicy.setVolume(session.volume, session.prewarming);
         player.addListener(new Player.Listener() {
             @Override public void onVideoSizeChanged(androidx.media3.common.VideoSize size) {
-                if (own.matches(player, generation)) own.fitVideo();
+                if (own.matches(player, generation)) {
+                    own.profile=new PodVideoDecoderCapabilities.Profile(own.profile==null?"video/unknown":own.profile.mime,size.width,size.height);
+                    enforceMemoryBudget(own.profile);
+                    if(own.matches(player,generation))own.fitVideo();
+                }
             }
 
             @Override public void onTracksChanged(Tracks tracks) {
@@ -258,7 +308,8 @@ final class PodVideoSessionServices implements AutoCloseable {
                         own.profile = new PodVideoDecoderCapabilities.Profile(format.sampleMimeType, format.width, format.height);
                         PodVideoDecoderCapabilities.Result capability = decoderCapabilities.inspect(own.profile);
                         lastProfile = own.profile; lastCapability = capability; decoderBudget.restrictTo(capability.limit);
-                        if (own.prewarming && decoderBudget.inUse() > capability.limit) {
+                        enforceMemoryBudget(own.profile);
+                        if (own.matches(player,generation) && own.prewarming && decoderBudget.inUse() > capability.limit) {
                             failPrepare(own, player, generation, "resource_exhausted", "video_decoder_limit", false);
                         }
                         return;
@@ -657,6 +708,8 @@ final class PodVideoSessionServices implements AutoCloseable {
         long generation, completedLoops;
         JSONObject frameSource;
         PodVideoAnalytics analytics;
+        PodBenchmark.VideoAction benchmarkAction;
+        boolean benchmarkFramePending;
 
         Session(String id) { this.id = id; attachViews(parent); }
 
@@ -668,7 +721,12 @@ final class PodVideoSessionServices implements AutoCloseable {
                 background.setVisibility(View.GONE);
             }
             if (videoView == null) {
-                videoView = new TextureView(context) {
+                videoView = new PodObservedTextureView(context, texture -> {
+                    if(benchmarkFramePending&&benchmarkAction!=null&&!prewarming&&presented&&hasRenderedFirstFrame&&bounds!=null&&bounds.visible&&videoView.getAlpha()>0){
+                        PodBenchmark.VideoAction action=benchmarkAction;long own=generation;benchmarkFramePending=false;
+                        PodBenchmark.watchVideo(videoView,action,()->generation==own&&!prewarming&&presented&&hasRenderedFirstFrame&&bounds!=null&&bounds.visible&&videoView.getTranslationY()==bounds.translateYPx);
+                    }
+                }) {
                     @Override public boolean onTouchEvent(android.view.MotionEvent event) { return false; }
                     @Override public boolean dispatchTouchEvent(android.view.MotionEvent event) { return false; }
                 };
@@ -695,6 +753,7 @@ final class PodVideoSessionServices implements AutoCloseable {
         }
 
         void resetPlayer() {
+            benchmarkFramePending=false;benchmarkAction=null;
             cancelPrewarmTimeout();
             generation += 1;
             if (audioPolicy != null) { audioPolicy.close(); audioPolicy = null; }
@@ -865,6 +924,7 @@ final class PodVideoSessionServices implements AutoCloseable {
 
     @Override public void close() {
         closed = true;
+        context.unregisterComponentCallbacks(this);
             mediaGate(false);
         main.post(() -> {
             for (Session session : sessions.values()) session.close();

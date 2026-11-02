@@ -67,11 +67,11 @@ final class PodBenchmark {
                 if(key.equals("code")||key.equals("seq"))continue;
                 Object value=args.get(key);
                 if(NUMBERS.contains(key)){long n=integer(args,key);if((key.equals("delta")&&n>2)||(key.equals("pid")&&n>4_194_304)||(key.equals("active_tracks")&&n>4096))return false;}
-                else if(key.equals("muted")||key.equals("prewarmed")){if(!(value instanceof Boolean))return false;}
+                else if(key.equals("muted")||key.equals("prewarmed")||key.equals("network_stalled")){if(!(value instanceof Boolean))return false;}
                 else if(key.equals("direction")){if(!Arrays.asList("next","prev","cancel","fling").contains(value))return false;}
                 else if(key.equals("state")){if(!Arrays.asList("present","absent","running","idle","unknown","paused").contains(value))return false;}
                 else if(key.equals("kind")){if(!Arrays.asList("on","off").contains(value))return false;}
-                else if(key.equals("reason")){if(!Arrays.asList("stale","capacity","release","failure","bidirectional","single_neighbour","foreground_media","media_stopped","timeout","candidate_retry","exhausted","hidden").contains(value))return false;}
+                else if(key.equals("reason")){if(!Arrays.asList("stale","capacity","release","failure","bidirectional","single_neighbour","foreground_media","media_stopped","timeout","candidate_retry","exhausted","hidden","network_stalled").contains(value))return false;}
                 else if(key.equals("backend")){if(!Arrays.asList("mixer","player").contains(value))return false;}
                 else return false;
                 if(code.equals("player_visible")&&key.equals("state")&&value.equals("present")){
@@ -102,7 +102,7 @@ final class PodBenchmark {
             // JS confirms its cover is gone; native proves the bound decoded
             // target survives two window commits. A timeout is never success.
             PodAfterPaint.await(surface.get()==null?view:surface.get(),new Handler(Looper.getMainLooper()),committed->{
-                if(committed&&view.isAttachedToWindow()&&view.isShown()&&view.hasWindowFocus()&&view.getAlpha()>0&&guard.getAsBoolean()){emit(action.event("incoming_first_frame"),SystemClock.uptimeMillis());if(promoted)try{emit(action.event("fling_done").put("delta",1),SystemClock.uptimeMillis());}catch(Exception ignored){}}
+                if(committed&&view.isAttachedToWindow()&&view.isShown()&&view.hasWindowFocus()&&view.getAlpha()>0&&guard.getAsBoolean()){emit(action.event("incoming_first_frame"),SystemClock.uptimeMillis());if(action.delta==2)try{emit(action.event("fling_done").put("delta",2),SystemClock.uptimeMillis());}catch(Exception ignored){}}
                 else emit(action.event("error"),SystemClock.uptimeMillis());
             });
         });
@@ -111,11 +111,13 @@ final class PodBenchmark {
     private static void tryVideo(long seq){Runnable ready=videos.get(seq);if(ready!=null&&confirmedVideo.containsKey(seq)){videos.remove(seq);ready.run();}}
     static final class VideoAction {
         final long seq,generation,sourceGeneration;
-        VideoAction(long seq,long generation,long sourceGeneration){this.seq=seq;this.generation=generation;this.sourceGeneration=sourceGeneration;}
+        final int delta;
+        VideoAction(long seq,long generation,long sourceGeneration){this(seq,generation,sourceGeneration,1);}
+        VideoAction(long seq,long generation,long sourceGeneration,int delta){this.seq=seq;this.generation=generation;this.sourceGeneration=sourceGeneration;this.delta=delta;}
         JSONObject event(String code){try{return new JSONObject().put("code",code).put("seq",seq).put("generation",generation).put("source_generation",sourceGeneration);}catch(Exception ignored){return new JSONObject();}}
     }
     static VideoAction videoAction(JSONObject args){
-        try{JSONObject value=args.optJSONObject("benchmark");if(value==null)return null;long seq=integer(value,"seq"),generation=integer(value,"generation"),source=integer(value,"source_generation");return known(seq)?new VideoAction(seq,generation,source):null;}catch(Exception ignored){return null;}
+        try{JSONObject value=args.optJSONObject("benchmark");if(value==null)return null;long seq=integer(value,"seq"),generation=integer(value,"generation"),source=integer(value,"source_generation");long delta=value.has("delta")?integer(value,"delta"):1;return known(seq)&&(delta==1||delta==2)?new VideoAction(seq,generation,source,(int)delta):null;}catch(Exception ignored){return null;}
     }
     // No previous_audio_stopped/mixer_match producer: an audited mixer/PCM adapter is required.
 }

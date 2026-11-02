@@ -14,6 +14,12 @@ export function videoPagerSettleProgress(from:number,to:0|1,elapsedMs:number){
 export function videoPagerOffsets(progress:number,height:number,direction:VideoPagerDirection){
   const sign=direction==='up'?-1:1;return {outgoing:sign*progress*height,incoming:-sign*(1-progress)*height};
 }
+/** Fast releases cross two items; slower gestures keep the positional rule. */
+export const VIDEO_PAGER_SKIP_VELOCITY=1800;
+export function videoPagerDelta(progress:number,velocityY:number,direction:VideoPagerDirection):0|1|2 {
+  if(!shouldSettleVideoPager(progress,velocityY,direction))return 0;
+  return Math.abs(velocityY)>=VIDEO_PAGER_SKIP_VELOCITY?2:1;
+}
 /** First-frame waits never flash a spinner. The caller supplies its frame clock. */
 export class VideoFirstFrameWait {
   private started=0;

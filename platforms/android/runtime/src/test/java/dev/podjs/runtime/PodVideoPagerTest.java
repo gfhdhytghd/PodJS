@@ -44,6 +44,56 @@ public class PodVideoPagerTest {
   System.out.println("SWIPEFEED_NATIVE restoreReplies=800 replyCostMs=4 settleToOldPausedMs="+(r.completed-settled)+" settleToRetainedFrameMs="+(r.completed-settled)+" prepareAtSettle=0");
   s.close();Shadows.shadowOf(Looper.getMainLooper()).idle();
  }
+ @Test public void watchSystemMemoryCapacityRecoversWithoutServiceRebuild()throws Exception {
+  Context c=ApplicationProvider.getApplicationContext();android.app.ActivityManager manager=(android.app.ActivityManager)c.getSystemService(Context.ACTIVITY_SERVICE);
+  Shadows.shadowOf(manager).setMemoryClass(128);
+  android.app.ActivityManager.MemoryInfo info=new android.app.ActivityManager.MemoryInfo();info.availMem=920L*1024*1024;info.threshold=216L*1024*1024;info.lowMemory=false;
+  Shadows.shadowOf(manager).setMemoryInfo(info);
+  PodVideoSessionServices service=new PodVideoSessionServices(c,new PodVideoDecoderBudget(3));
+  Method limit=PodVideoSessionServices.class.getDeclaredMethod("memoryLimit",PodVideoDecoderCapabilities.Profile.class);limit.setAccessible(true);
+  PodVideoDecoderCapabilities.Profile profile=new PodVideoDecoderCapabilities.Profile("video/avc",1080,1920);
+  try {
+   assertEquals(3,limit.invoke(service,profile));
+   Result capabilities=new Result();service.dispatch("video.session.capabilities",new JSONObject(),capabilities);Shadows.shadowOf(Looper.getMainLooper()).idle();assertNull(capabilities.error);assertEquals(3,capabilities.value.getInt("decoderLimit"));
+   service.onTrimMemory(10);Shadows.shadowOf(Looper.getMainLooper()).idle();assertEquals(2,limit.invoke(service,profile));
+   service.onTrimMemory(15);Shadows.shadowOf(Looper.getMainLooper()).idle();assertEquals(1,limit.invoke(service,profile));
+   service.onTrimMemory(10);Shadows.shadowOf(Looper.getMainLooper()).idle();assertEquals(2,limit.invoke(service,profile));
+   service.onTrimMemory(0);Shadows.shadowOf(Looper.getMainLooper()).idle();assertEquals(3,limit.invoke(service,profile));
+   Result recovered=new Result();service.dispatch("video.session.capabilities",new JSONObject(),recovered);Shadows.shadowOf(Looper.getMainLooper()).idle();assertNull(recovered.error);assertEquals(3,recovered.value.getInt("decoderLimit"));
+   info.lowMemory=true;Shadows.shadowOf(manager).setMemoryInfo(info);assertEquals(1,limit.invoke(service,profile));
+   info.lowMemory=false;info.availMem=info.threshold;Shadows.shadowOf(manager).setMemoryInfo(info);assertEquals(1,limit.invoke(service,profile));
+   info.availMem=920L*1024*1024;Shadows.shadowOf(manager).setMemoryInfo(info);assertEquals(3,limit.invoke(service,profile));
+   service.onTrimMemory(80);Shadows.shadowOf(Looper.getMainLooper()).idle();service.onTrimMemory(0);Shadows.shadowOf(Looper.getMainLooper()).idle();assertEquals(1,limit.invoke(service,profile));
+  } finally {service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();}
+ }
+ @Test public void trimReleasesOnlySpeculativeLeasesAndForegroundCanTakeTheLastSlot()throws Exception {
+  Context c=ApplicationProvider.getApplicationContext();PodVideoDecoderBudget budget=new PodVideoDecoderBudget(3);
+  PodVideoSessionServices service=new PodVideoSessionServices(c,budget);
+  service.attachToParent(new FrameLayout(c));Shadows.shadowOf(Looper.getMainLooper()).idle();
+  Class<?> type=Class.forName("dev.podjs.runtime.PodVideoSessionServices$Session");
+  Constructor<?> ctor=type.getDeclaredConstructor(PodVideoSessionServices.class,String.class);ctor.setAccessible(true);
+  @SuppressWarnings("unchecked") Map<String,Object> slots=(Map<String,Object>)f(PodVideoSessionServices.class,"sessions").get(service);
+  Object foreground=null;
+  for(String id:new String[]{"active","next","prev"}){
+   assertTrue(budget.acquire());Object slot=ctor.newInstance(service,id);slots.put(id,slot);
+   f(type,"player").set(slot,new ExoPlayer.Builder(c).build());f(type,"decoderLease").set(slot,true);
+   f(type,"prewarming").set(slot,!id.equals("active"));if(id.equals("active"))foreground=slot;
+  }
+  service.onTrimMemory(15);Shadows.shadowOf(Looper.getMainLooper()).idle();
+  assertEquals(1,budget.inUse());assertEquals(1,slots.size());assertSame(foreground,slots.get("active"));assertNotNull(f(type,"player").get(foreground));
+  service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();assertEquals(0,budget.inUse());
+  // An active request claims the only remaining slot even if a warm decoder
+  // previously owned it. Admission is synchronous and does not await playback.
+  service=new PodVideoSessionServices(c,budget);service.attachToParent(new FrameLayout(c));Shadows.shadowOf(Looper.getMainLooper()).idle();
+  @SuppressWarnings("unchecked") Map<String,Object> warmSlots=(Map<String,Object>)f(PodVideoSessionServices.class,"sessions").get(service);
+  Object warm=ctor.newInstance(service,"warm");warmSlots.put("warm",warm);assertTrue(budget.acquire());
+  f(type,"decoderLease").set(warm,true);f(type,"prewarming").set(warm,true);f(type,"player").set(warm,new ExoPlayer.Builder(c).build());
+  service.onTrimMemory(15);Shadows.shadowOf(Looper.getMainLooper()).idle();
+  java.io.File fixture=new java.io.File(PodTakeover.filesRoot(c),"offline-fixture.mp4");fixture.getParentFile().mkdirs();try(java.io.FileOutputStream out=new java.io.FileOutputStream(fixture)){out.write(0);}
+  Result result=new Result();service.dispatch("video.session.prepare",new JSONObject().put("sessionId","foreground").put("url","offline-fixture.mp4").put("autoplay",false).put("bounds",new JSONObject().put("x",0).put("y",0).put("width",233).put("height",233)),result);
+  assertNull(result.error);assertFalse("warm survived",warmSlots.containsKey("warm"));assertTrue("foreground missing",warmSlots.containsKey("foreground"));assertEquals(1,budget.inUse());
+  service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();assertEquals(0,budget.inUse());fixture.delete();
+ }
  @Test public void legacyRetireMutesAndPausesBeforeAnyReply()throws Exception{
   Context c=ApplicationProvider.getApplicationContext();android.media.AudioManager setupAudio=(android.media.AudioManager)c.getSystemService(Context.AUDIO_SERVICE);setupAudio.setRingerMode(android.media.AudioManager.RINGER_MODE_NORMAL);setupAudio.setStreamVolume(android.media.AudioManager.STREAM_MUSIC,5,0);PodVideoServices s=new PodVideoServices(c);ExoPlayer p=new ExoPlayer.Builder(c).build();f(PodVideoServices.class,"player").set(s,p);PodMediaAudioPolicy policy=new PodMediaAudioPolicy(c,p::setVolume);f(PodVideoServices.class,"audioPolicy").set(s,policy);policy.setVolume(.6f,false);p.play();Result r=new Result();s.dispatch("video.retire",new JSONObject(),r);assertFalse(p.getPlayWhenReady());assertEquals(0,p.getVolume(),.001f);assertNotNull(r.value);
   android.media.AudioManager audio=(android.media.AudioManager)c.getSystemService(Context.AUDIO_SERVICE);
