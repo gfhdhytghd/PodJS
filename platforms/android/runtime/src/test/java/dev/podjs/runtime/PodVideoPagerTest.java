@@ -24,6 +24,20 @@ public class PodVideoPagerTest {
   public void complete(JSONObject v){value=v;completed=SystemClock.uptimeMillis();}
   public void fail(String c,String m){error=c;}
  }
+ @Test public void prewarmCreatesItsTextureBeforeWaitingForTheDecodedFrame()throws Exception {
+  Context c=ApplicationProvider.getApplicationContext();PodVideoSessionServices service=new PodVideoSessionServices(c,new PodVideoDecoderBudget(3));
+  service.attachToParent(new FrameLayout(c));Shadows.shadowOf(Looper.getMainLooper()).idle();
+  java.io.File fixture=new java.io.File(PodTakeover.filesRoot(c),"prewarm-surface-fixture.mp4");fixture.getParentFile().mkdirs();try(java.io.FileOutputStream out=new java.io.FileOutputStream(fixture)){out.write(0);}
+  try {
+   Result result=new Result();service.dispatch("video.session.prepare",new JSONObject().put("sessionId","warm").put("url","prewarm-surface-fixture.mp4").put("prewarm",true).put("bounds",new JSONObject().put("x",0).put("y",0).put("width",233).put("height",233)),result);
+   assertNull(result.error);Class<?> type=Class.forName("dev.podjs.runtime.PodVideoSessionServices$Session");
+   @SuppressWarnings("unchecked") Map<String,Object> slots=(Map<String,Object>)f(PodVideoSessionServices.class,"sessions").get(service);
+   Object slot=slots.get("warm");assertNotNull(slot);assertNotNull(f(type,"player").get(slot));
+   TextureView view=(TextureView)f(type,"videoView").get(slot);assertEquals(android.view.View.VISIBLE,view.getVisibility());
+   assertFalse(f(type,"hasRenderedFirstFrame").getBoolean(slot));assertFalse(f(type,"presented").getBoolean(slot));
+   assertTrue(view.getTranslationY()>233);assertTrue(view.getAlpha()>0);assertTrue(view.getAlpha()<1);
+  } finally {service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();fixture.delete();}
+ }
  @Test public void releasePauseKeepsDecodedSurfaceAndCancelDoesNotRestart()throws Exception {
   Context c=ApplicationProvider.getApplicationContext();PodVideoSessionServices service=new PodVideoSessionServices(c,new PodVideoDecoderBudget(3));
   service.attachToParent(new FrameLayout(c));Shadows.shadowOf(Looper.getMainLooper()).idle();

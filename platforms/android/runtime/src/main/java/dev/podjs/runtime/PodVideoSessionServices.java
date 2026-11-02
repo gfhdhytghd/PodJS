@@ -268,7 +268,6 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         session.presented = !session.prewarming && bounds.visible;
         session.prepareCallback = callback;
         session.applyBounds(bounds);
-        if (session.prewarming) session.hideOffscreen(); else session.showPresented();
 
         DefaultLoadControl loadControl = new DefaultLoadControl.Builder()
                 .setTargetBufferBytes(TARGET_BUFFER_BYTES)
@@ -375,6 +374,10 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         });
         try {
             player.setMediaSource(source);
+            // hideOffscreen keeps a live decoder's TextureView VISIBLE. Calling
+            // it before player allocation leaves a new standby GONE forever,
+            // so TextureView never creates the surface needed for first frame.
+            if (session.prewarming) session.hideOffscreen(); else session.showPresented();
             player.setVideoTextureView(session.videoView);
             player.prepare();
             if (session.prewarming) player.play();
