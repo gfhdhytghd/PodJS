@@ -256,3 +256,31 @@ test('DYSWAP an initially primed paused frame still starts when foreground reque
  const adopted=await pool.prepare(item,{...config,autoplay:true}).result;
  expect(plays).toBe(1);expect(adopted.state).toBe('playing');expect(m.prepareCount).toBe(1);
 });
+
+
+test('consecutive prepared adoptions retain the immediate reverse neighbour, not an older active',async()=>{
+ const m=new Model(),pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();
+ const initial=pool.prepare(source(10),options(10));await m.advance(400);await initial.result;
+ for(let current=10;current<16;current++){
+  const both=[pool.prewarm(source(current-1),options(current-1),'prev'),pool.prewarm(source(current+1),options(current+1),'next')];
+  await m.advance(400);await Promise.all(both);
+  expect(pool.hasStandby(String(current-1))).toBe(true);
+  expect(pool.hasStandby(String(current+1))).toBe(true);
+  const adopted=pool.prepare(source(current+1),options(current+1));await m.advance(30);await adopted.result;
+ }
+});
+
+test('five-slot window keeps four decoded neighbours while consecutive foreground adoptions rotate once per step',async()=>{
+ const m=new Model(),pool=new VideoSessionPool({...m.port,capabilities:async()=>({...await m.port.capabilities(),maxSessions:5,decoderLimit:5})});
+ await pool.supportsPrewarm();expect(pool.neighbourCapacity).toBe(4);
+ const initial=pool.prepare(source(20),options(20));await m.advance(400);await initial.result;
+ let current=20;
+ for(const step of [...Array(12).fill(1),...Array(12).fill(-1)]){
+  const keys=[current-2,current-1,current+1,current+2];pool.retainNeighbours(keys.map(String));
+  const all=keys.map(n=>pool.prewarm(source(n),options(n),n<current?'prev':'next'));await m.advance(400);await Promise.all(all);
+  for(const key of keys)expect(pool.sourceFor(String(key))?.key).toBe(String(key));
+  expect(m.states.size).toBe(5);
+  current+=step;const adopted=pool.prepare(source(current),options(current));await m.advance(30);await adopted.result;
+ }
+ expect(m.prepareCount).toBeLessThan(34);
+});

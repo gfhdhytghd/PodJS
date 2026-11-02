@@ -13,7 +13,8 @@ import org.json.JSONObject;
  * Transfer callbacks can run off-main. Never retain DataSpec/URI/request headers. */
 final class PodVideoAnalytics implements AnalyticsListener, TransferListener {
     final androidx.media3.exoplayer.analytics.PlaybackStatsListener playbackStats = new androidx.media3.exoplayer.analytics.PlaybackStatsListener(false,null);
-    long startupSeq,cacheEntry;
+    long decoderIndex,decoderInstances;
+    long startupSeq,cacheEntry,sourceOrdinal,slotOrdinal,admissionMs,deadlineMs,cacheReadBytes;
     java.util.function.LongSupplier cacheNetworkBytes=()->0,cacheRangeRequests=()->0,cacheBytes=()->0;
     private long preparationProgressMs=SystemClock.uptimeMillis();
     synchronized long preparationProgressMs(){return preparationProgressMs;}
@@ -23,12 +24,13 @@ final class PodVideoAnalytics implements AnalyticsListener, TransferListener {
         prepareGeneration=generation;prewarm=prewarming;
         try {JSONObject row=prepareFields("start");prepareSeq=PodBenchmark.known(requestedSeq)?requestedSeq:PodBenchmark.begin("prepare_stage",row);if(prepareSeq==requestedSeq)PodBenchmark.mark("prepare_stage",prepareSeq,row);}catch(Exception ignored){}
     }
-    private JSONObject prepareFields(String stage)throws Exception {return new JSONObject().put("prepare_stage",stage).put("source_generation",prepareGeneration).put("is_prewarm",prewarm).put("network_bytes",bytes).put("cache_network_bytes",cacheNetworkBytes.getAsLong()).put("cache_range_requests",cacheRangeRequests.getAsLong()).put("cache_bytes",cacheBytes.getAsLong()).put("cache_entry",cacheEntry).put("range_requests",requestCount).put("ttfb_ms",ttfbMs).put("steady_ms",steadyMs);}
+    private JSONObject prepareFields(String stage)throws Exception {return new JSONObject().put("prepare_stage",stage).put("decoder_index",decoderIndex).put("decoder_instances",decoderInstances).put("source_ordinal",sourceOrdinal).put("slot_ordinal",slotOrdinal).put("admission_ms",admissionMs).put("deadline_ms",deadlineMs).put("cache_read_bytes",cacheReadBytes).put("source_generation",prepareGeneration).put("is_prewarm",prewarm).put("network_bytes",bytes).put("cache_network_bytes",cacheNetworkBytes.getAsLong()).put("cache_range_requests",cacheRangeRequests.getAsLong()).put("cache_bytes",cacheBytes.getAsLong()).put("cache_entry",cacheEntry).put("range_requests",requestCount).put("ttfb_ms",ttfbMs).put("steady_ms",steadyMs);}
     synchronized void stage(String stage){if(prepareSeq>0)try{PodBenchmark.mark("prepare_stage",prepareSeq,prepareFields(stage));}catch(Exception ignored){}}
     synchronized void stage(String stage,androidx.media3.exoplayer.ExoPlayer player,android.view.TextureView view){if(prepareSeq>0)try{PodBenchmark.mark("prepare_stage",prepareSeq,prepareFields(stage).put("surface_ready",view!=null&&view.isAvailable()).put("playback_state",player==null?1:player.getPlaybackState()).put("buffered_ms",player==null?0:Math.max(0,player.getBufferedPosition()-player.getCurrentPosition())));}catch(Exception ignored){}}
 
     @Override public void onVideoDecoderInitialized(EventTime time,String decoderName,long initializedTimestampMs,long initializationDurationMs) {
         synchronized(this){preparationProgressMs=SystemClock.uptimeMillis();}
+        try{android.media.MediaCodecInfo[] codecs=new android.media.MediaCodecList(android.media.MediaCodecList.REGULAR_CODECS).getCodecInfos();for(int i=0;i<codecs.length;i++)if(codecs[i].getName().equals(decoderName)){decoderIndex=i+1;for(String mime:codecs[i].getSupportedTypes())if(mime.equals("video/avc")||mime.equals("video/hevc")){decoderInstances=codecs[i].getCapabilitiesForType(mime).getMaxSupportedInstances();break;}break;}}catch(RuntimeException ignored){}
         stage("decoder_configured");
         if(startupSeq>0)try{PodBenchmark.mark("startup_stage",startupSeq,new JSONObject().put("startup_stage","decoder_configured").put("duration_ms",Math.max(0,initializationDurationMs)));}catch(Exception ignored){}
     }
@@ -42,7 +44,8 @@ final class PodVideoAnalytics implements AnalyticsListener, TransferListener {
     synchronized String contentKind(){return contentKind;}
     private long firstByteMs = -1, firstFrameMs = -1, bytes, throughput, dropped;
     @Override public synchronized void onBytesTransferred(DataSource source, DataSpec spec, boolean network, int count) {
-        if (!network || count <= 0) return;
+        if(count<=0)return;
+        if(!network){cacheReadBytes+=count;return;}
         if (firstByteMs < 0) {firstByteMs = Math.max(0, SystemClock.elapsedRealtime() - startedMs);stage("network_first_byte");}
         long now=SystemClock.uptimeMillis();if(requestFirstByteMs<0){requestFirstByteMs=now;ttfbMs=openMs>=0?Math.max(0,now-openMs):0;}else steadyMs+=Math.max(0,now-preparationProgressMs);
         bytes += count; lastByteMs=SystemClock.elapsedRealtime();preparationProgressMs=SystemClock.uptimeMillis();

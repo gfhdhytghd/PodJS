@@ -35,10 +35,10 @@ const state=(value:VideoSessionState):VideoState=>({
   sourceGeneration:value.sourceGeneration,errorCode:value.errorCode,hasRenderedFirstFrame:value.hasRenderedFirstFrame,
 });
 
-/** Retained surfaces, bounded by native codec and byte budgets. Three slots
- * retain both neighbours; two-slot hosts retain the selected/likely neighbour.
+/** Retained surfaces, bounded by native codec and byte budgets. Three slots retain immediate neighbours; five retain two on each side.
+ * Two-slot hosts retain the selected/likely neighbour.
  * Slot-local revisions prevent one neighbour cancelling the other. */
-interface WarmSlot<S> {direction?:'next'|'prev';id:string;source?:S;identity?:string;ready:boolean;revision:number;recentlyActive?:boolean;operation?:HostOperation<VideoSessionState>;pending?:Promise<VideoState>}
+interface WarmSlot<S> {direction?:'next'|'prev';id:string;source?:S;identity?:string;ready:boolean;revision:number;recentlyActive?:boolean;prepareSeq?:number;operation?:HostOperation<VideoSessionState>;pending?:Promise<VideoState>}
 export class VideoSessionPool<Source extends {key:string}> {
   private initialPreparation?:{key:string;identity:string;generation:number;operation:HostOperation<VideoState>};
   private prepareIdentity(options:VideoPrepare){return JSON.stringify([options.url,options.videoUrl,options.audioUrl,options.type,options.videoMime,options.videoWidth,options.videoHeight,Object.entries(options.headers??{}).sort()]);}
@@ -49,11 +49,17 @@ export class VideoSessionPool<Source extends {key:string}> {
     this.initialPreparation={key:source.key,identity:this.prepareIdentity(options),generation:this.generation,operation};
     return operation;
   }
+  private readonly ordinals=new Map<string,number>();
+  private ordinal(key:string){let value=this.ordinals.get(key);if(value===undefined&&this.ordinals.size<4096){value=this.ordinals.size+1;this.ordinals.set(key,value);}return value??0;}
+  private slotOrdinal(id:string){return id.charCodeAt(id.length-1)-96;}
+  traceSelection(key:string|undefined,action?:VideoBenchmarkAction){if(action)benchmark.mark('pool_stage',action.seq,{pool_stage:'select',source_ordinal:key?this.ordinal(key):0,generation:action.generation,pool_generation:this.generation});}
+  traceNeighbour(key:string,index:number,anchor:number){benchmark.begin('pool_stage',{pool_stage:'neighbour',source_ordinal:this.ordinal(key),queue_index:index,anchor_index:anchor,pool_generation:this.generation});}
   private loop=false;
   private activeId:string;
   private activeKey:string|undefined;
   private activeSource:Source|undefined;
   private activeIdentity:string|undefined;
+  private activePrepareSeq:number|undefined;
   private slots:WarmSlot<Source>[];
   private capacity=2;
   private selected:WarmSlot<Source>|undefined;
@@ -63,7 +69,7 @@ export class VideoSessionPool<Source extends {key:string}> {
   private latestTransition:{slot:WarmSlot<Source>;epoch:number;revision:number;fromId:string;toId:string;progress:number;direction:VideoPagerDirection;bounds:VideoBounds;benchmark?:VideoBenchmarkAction}|undefined;
   constructor(private readonly port:VideoSessionPort=defaultSessionPort){
     const id=nextPoolId++;
-    this.activeId=`vp${id}a`;this.slots=[{id:`vp${id}b`,ready:false,revision:0},{id:`vp${id}c`,ready:false,revision:0}];
+    this.activeId=`vp${id}a`;this.slots=['b','c','d','e'].map(suffix=>({id:`vp${id}${suffix}`,ready:false,revision:0}));
   }
   async diagnostics(){
     const generation=this.generation;
@@ -74,7 +80,7 @@ export class VideoSessionPool<Source extends {key:string}> {
   }
   async supportsPrewarm(profile:VideoDecoderProfile={}):Promise<boolean>{
     const c=await this.port.capabilities(profile);
-    this.capacity=Math.max(1,Math.min(3,c.decoderLimit,c.maxSessions??2));
+    this.capacity=Math.max(1,Math.min(5,c.decoderLimit,c.maxSessions??2));
     this.slots.sort((a,b)=>Number(b===this.selected)-Number(a===this.selected)||Number(b.direction==='next')-Number(a.direction==='next'));
     await Promise.all(this.slots.slice(this.capacity-1).filter(s=>s.source||s.operation).map(s=>this.evict(s,'capacity')));
     const supported=this.capacity>=2&&c.surfacePromotion&&c.verticalTransition;
@@ -83,13 +89,14 @@ export class VideoSessionPool<Source extends {key:string}> {
   }
   get neighbourCapacity(){return this.capacity-1;}
   private evict(slot:WarmSlot<Source>,reason:'stale'|'capacity'|'release'|'failure'|'timeout'){
-    if(slot.source)benchmark.begin('prewarm_evicted',{reason,direction:slot.direction,generation:slot.revision});
-    slot.revision++;slot.operation?.cancel();slot.operation=undefined;slot.pending=undefined;slot.source=undefined;slot.identity=undefined;slot.ready=false;
+    if(slot.source){const fields={reason,direction:slot.direction,generation:slot.revision,source_ordinal:this.ordinal(slot.source.key),slot_ordinal:this.slotOrdinal(slot.id),pool_generation:this.generation};if(slot.prepareSeq)benchmark.mark('prewarm_evicted',slot.prepareSeq,fields);else benchmark.begin('prewarm_evicted',fields);}
+    slot.revision++;slot.operation?.cancel();slot.operation=undefined;slot.pending=undefined;slot.source=undefined;slot.identity=undefined;slot.prepareSeq=undefined;slot.ready=false;
     if(this.selected===slot)this.selected=undefined;
     return this.port.release(slot.id).catch(()=>undefined);
   }
   retainNeighbours(keys:readonly string[]){for(const slot of this.slots)if(slot.source&&!keys.includes(slot.source.key))this.evict(slot,'stale');}
   prepare(source:Source,options:VideoPrepare):HostOperation<VideoState>{
+    this.traceSelection(source.key,options.benchmark);
     const initial=this.initialPreparation;this.initialPreparation=undefined;
     if(initial&&initial.key===source.key&&initial.identity===this.prepareIdentity(options)&&initial.generation===this.generation){
       const own=this.generation;let cancelled=false,settled=false;
@@ -112,12 +119,12 @@ export class VideoSessionPool<Source extends {key:string}> {
     const identity=this.prepareIdentity(options);
     const warming=this.slots.find(s=>s.source?.key===source.key&&s.identity===identity&&(s.ready||s.operation));
     if(warming)return this.adoptPreparing(warming,source,options);
-    const own=++this.generation;this.loop=options.loop===true;this.activeKey=source.key;this.activeSource=source;this.activeIdentity=this.prepareIdentity(options);
+    const own=++this.generation;this.activePrepareSeq=undefined;this.loop=options.loop===true;this.activeKey=source.key;this.activeSource=source;this.activeIdentity=this.prepareIdentity(options);
     for(const slot of this.slots)if(slot.source||slot.operation)void this.evict(slot,'stale');
     // Explicit sessions are foreground-only. Do not leak a legacy preference
     // into the native API (which correctly rejects backgroundPlayback=true).
     const {backgroundPlayback,...foreground}=options;
-    const operation=this.port.prepare({...foreground,sessionId:this.activeId,prewarm:false,autoplay:options.autoplay===true});
+    const operation=this.port.prepare({...foreground,sessionId:this.activeId,sourceOrdinal:this.ordinal(source.key),slotOrdinal:this.slotOrdinal(this.activeId),prewarm:false,autoplay:options.autoplay===true});
     return {cancel:()=>operation.cancel(),result:operation.result.then(value=>{
       if(own!==this.generation)throw new Error('stale video session preparation');
       return this.syncLoop(this.activeId).then(state);
@@ -127,11 +134,13 @@ export class VideoSessionPool<Source extends {key:string}> {
    * extractor and decoder instead of cancelling them and preparing it again. */
   private adoptPreparing(slot:WarmSlot<Source>,source:Source,options:VideoPrepare):HostOperation<VideoState>{
     const own=++this.generation,id=slot.id,replacedId=this.activeId;
-    const previousSource=this.activeSource,previousIdentity=this.activeIdentity;
+    const previousSource=this.activeSource,previousIdentity=this.activeIdentity,previousPrepareSeq=this.activePrepareSeq;
+    this.activePrepareSeq=slot.prepareSeq;slot.prepareSeq=previousPrepareSeq;
     const operation=slot.operation;
     this.loop=options.loop===true;this.selected=undefined;this.latestTransition=undefined;
     slot.revision++;slot.operation=undefined;slot.pending=undefined;
     slot.direction=slot.direction==='next'?'prev':slot.direction==='prev'?'next':undefined;
+    for(const other of this.slots)other.recentlyActive=false;
     slot.recentlyActive=true;slot.id=replacedId;slot.source=previousSource;slot.identity=previousIdentity;slot.ready=false;
     this.activeId=id;this.activeKey=source.key;this.activeSource=source;this.activeIdentity=this.prepareIdentity(options);
     // A speculative codec release can block the UI thread. Reclaim its slot
@@ -161,9 +170,9 @@ export class VideoSessionPool<Source extends {key:string}> {
     if(!slot){slot=this.slots.find(s=>s!==this.selected&&!s.recentlyActive)??this.slots.find(s=>s!==this.selected)??this.slots[0];this.evict(slot,'capacity');}
     const target=slot,own=++target.revision;
     target.recentlyActive=false;target.source=source;target.identity=this.prepareIdentity(options);target.ready=false;target.direction=direction;
-    const seq=benchmark.begin('prewarm_requested',{generation:own,direction});
+    const seq=benchmark.begin('prewarm_requested',{generation:own,direction,source_ordinal:this.ordinal(source.key),slot_ordinal:this.slotOrdinal(target.id),pool_generation:this.generation});target.prepareSeq=seq;
     const {backgroundPlayback,...foreground}=options;
-    const operation=this.port.prepare({...foreground,loop:this.loop,sessionId:target.id,prepareSeq:seq,prewarm:true,autoplay:false,muted:false});
+    const operation=this.port.prepare({...foreground,loop:this.loop,sessionId:target.id,sourceOrdinal:this.ordinal(source.key),slotOrdinal:this.slotOrdinal(target.id),prepareSeq:seq,prewarm:true,autoplay:false,muted:false});
     target.operation=operation;
     // Slot revisions fence evictions. A promotion can explicitly retain an
     // in-flight following neighbour while the pool generation advances.
@@ -181,6 +190,7 @@ export class VideoSessionPool<Source extends {key:string}> {
   invalidateStandby(key:string){const slot=this.slots.find(s=>s.source?.key===key);if(slot)this.evict(slot,'stale');}
   hasStandby(key?:string):boolean{return !!key&&this.slots.some(s=>s.ready&&s.source?.key===key);}
   selectStandby(key:string):boolean{if(this.promoting)return false;const slot=this.slots.find(s=>s.ready&&s.source?.key===key);if(!slot)return false;this.selected=slot;return true;}
+  sourceFor(key:string|undefined):Source|undefined{return key?this.slots.find(s=>s.ready&&s.source?.key===key)?.source:undefined;}
   standbySource():Source|undefined{return (this.selected??this.slots.find(s=>s.ready))?.source;}
   async transition(progress:number,direction:VideoPagerDirection,bounds:VideoBounds,benchmark?:VideoBenchmarkAction):Promise<void>{
     if(this.promoting)throw Error('stale video session transition during promotion');
@@ -196,7 +206,7 @@ export class VideoSessionPool<Source extends {key:string}> {
     this.promoting=true;
     try{
     if(this.transitionRunning)await this.transitionRunning;
-    const own=this.generation,id=slot.id,identity=slot.identity;
+    const own=this.generation,id=slot.id,identity=slot.identity,prepareSeq=slot.prepareSeq;
     const loop=this.loop;
     const promoted=await this.port.promote(id,{replaceSessionId:this.activeId,bounds,autoplay,loop,...(benchmark?{benchmark}:{})});
     // A fast swipe can retire the initial active before it decoded anything.
@@ -205,6 +215,8 @@ export class VideoSessionPool<Source extends {key:string}> {
     if(typeof promoted.replacedHasRenderedFirstFrame!=='boolean'||loop!==this.loop)await this.syncLoop(id);
     if(own!==this.generation||slot.source!==target)throw new Error('stale video session promotion');
     this.generation++;
+    for(const other of this.slots)other.recentlyActive=false;
+    slot.prepareSeq=this.activePrepareSeq;this.activePrepareSeq=prepareSeq;
     slot.recentlyActive=true;slot.id=this.activeId;slot.direction=direction==='up'?'prev':'next';slot.source=this.activeSource;slot.identity=this.activeIdentity;slot.ready=!!this.activeSource&&retired?.hasRenderedFirstFrame===true&&retired.state!=='error';slot.revision++;
     this.activeId=id;this.activeKey=target.key;this.activeSource=target;this.activeIdentity=identity;this.selected=undefined;
     for(const other of this.slots)if(other!==slot&&!retainKeys.includes(other.source?.key??''))this.evict(other,'stale');

@@ -221,6 +221,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         if (args.optBoolean("backgroundPlayback", false)) throw new IllegalArgumentException("background_playback_unsupported");
         String id = sessionId(args, "sessionId");
         Bounds bounds = Bounds.read(args.optJSONObject("bounds"), density, true);
+        long admissionStarted=android.os.SystemClock.uptimeMillis();
         boolean prewarming = args.optBoolean("prewarm", false);
         PodVideoDecoderCapabilities.Profile profile = profileFromArguments(args, true);
         if ((profile == null || !profile.known()) && prewarming) profile = lastProfile;
@@ -266,6 +267,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         session.generation += 1;
         final long generation = session.generation;
         session.analytics=analytics;
+        analytics.sourceOrdinal=Math.max(0,args.optLong("sourceOrdinal",0));analytics.slotOrdinal=Math.max(0,args.optLong("slotOrdinal",0));analytics.admissionMs=android.os.SystemClock.uptimeMillis()-admissionStarted;analytics.deadlineMs=prewarming?PREWARM_MAX_LIFETIME_MS:0;
         analytics.preparation(args.optLong("prepareSeq",0),generation,prewarming);
         session.benchmarkAction=PodBenchmark.videoAction(args);
         session.benchmarkFramePending=session.benchmarkAction!=null&&!prewarming;
@@ -418,12 +420,13 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         Callback pending = session.takePrepareCallback();
         PodVideoDecoderCapabilities.Profile profile = session.profile;
         if (downgrade && profile != null && profile.known()) {
-            decoderCapabilities.recordSingleInstance(profile);
-            decoderBudget.restrictTo(1);
+            int surviving=Math.max(1,decoderBudget.inUse()-1);
+            decoderCapabilities.recordRuntimeLimit(profile,surviving);
+            decoderBudget.restrictTo(surviving);
             lastProfile = profile;
             PodVideoDecoderCapabilities.Result probed = decoderCapabilities.inspect(profile);
             lastCapability = new PodVideoDecoderCapabilities.Result(profile, probed.decoderName,
-                    probed.advertisedInstances, 1, probed.sizeSupported, true);
+                    probed.advertisedInstances, surviving, probed.sizeSupported, true);
         }
         session.state = "error";session.errorCode=code;
         if(session.prewarming){if(sessions.get(session.id)==session)sessions.remove(session.id);session.close();}

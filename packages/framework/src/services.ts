@@ -333,7 +333,7 @@ export function onVideoFirstFrame(listener:(state:VideoState & {sessionId?:strin
   return __onHostEvent(event=>{if(event.t==='video.firstFrame'&&event.value&&typeof event.value==='object')listener(event.value as VideoState & {sessionId?:string});});
 }
 export interface VideoBounds { benchmark?:VideoBenchmarkAction; x:number; y:number; width:number; height:number; translateX?:number; translateY?:number; visible?:boolean; roundClip?:{cx:number;cy:number;radius:number} }
-export interface VideoPrepare { startupSeq?:number; benchmark?:VideoBenchmarkAction; url?:string; videoUrl?:string; audioUrl?:string; type?:string; videoMime?:string; videoWidth?:number; videoHeight?:number; headers?:Record<string,string>; bounds:VideoBounds; autoplay?:boolean; muted?:boolean; loop?:boolean; backgroundPlayback?:boolean }
+export interface VideoPrepare {sourceOrdinal?:number;slotOrdinal?:number; startupSeq?:number; benchmark?:VideoBenchmarkAction; url?:string; videoUrl?:string; audioUrl?:string; type?:string; videoMime?:string; videoWidth?:number; videoHeight?:number; headers?:Record<string,string>; bounds:VideoBounds; autoplay?:boolean; muted?:boolean; loop?:boolean; backgroundPlayback?:boolean }
 export interface VideoFrameSource {url?:string;videoUrl?:string;audioUrl?:string;headers?:Record<string,string>}
 export interface VideoFrame {available:true;kind:"actual_frame";path:string;width:number;height:number;positionMs:number;capturedAt:number;capturedGeneration:number}
 export interface VideoFrameCapture {key:string;source:VideoFrameSource;sourceGeneration:number}

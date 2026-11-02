@@ -285,24 +285,24 @@ final class PodMediaPrefixCache implements AutoCloseable {
     @Override public synchronized void close(){closed=true;generation++;for(Job j:jobs.values())j.cancel();jobs.clear();protectedTokens.clear();trimSnapshots();entries.clear();workers.shutdownNow();cancellations.shutdown();}
     DataSource.Factory factory(DataSource.Factory fallback){return ()->new PrefixDataSource(fallback);}
     private final class PrefixDataSource implements DataSource {
-        private final DataSource.Factory fallback;private final List<TransferListener> listeners=new ArrayList<>();private DataSource network;private DataSpec spec;private Entry entry;private long position,remaining,epoch;private boolean ended,hitLogged,networkCounted;
+        private final DataSource.Factory fallback;private final List<TransferListener> listeners=new ArrayList<>();private DataSource network;private DataSpec spec;private Entry entry;private long position,remaining,epoch;private boolean ended,hitLogged,networkCounted,cacheTransfer;
         PrefixDataSource(DataSource.Factory f){fallback=f;}
         @Override public void addTransferListener(TransferListener l){listeners.add(l);if(network!=null)network.addTransferListener(l);}
         @Override public long open(DataSpec data)throws IOException {
             close();spec=data;position=data.position;remaining=data.length;epoch=generation;ended=false;
-            if(SCHEME.equals(data.uri.getScheme())){entry=target(data.uri.toString());if(entry.length>=0&&position>=entry.length){ended=true;return 0;}if(position>=entry.file.length()&&!(entry.tail().isFile()&&entry.length>=0&&position>=entry.length-entry.tail().length()&&position<entry.length))openNetwork();return remaining>=0?remaining:entry.length>=0?Math.max(0,entry.length-position):C.LENGTH_UNSET;}
+            if(SCHEME.equals(data.uri.getScheme())){entry=target(data.uri.toString());cacheTransfer=true;for(TransferListener l:listeners){l.onTransferInitializing(this,data,false);l.onTransferStart(this,data,false);}if(entry.length>=0&&position>=entry.length){ended=true;return 0;}if(position>=entry.file.length()&&!(entry.tail().isFile()&&entry.length>=0&&position>=entry.length-entry.tail().length()&&position<entry.length))openNetwork();return remaining>=0?remaining:entry.length>=0?Math.max(0,entry.length-position):C.LENGTH_UNSET;}
             network=fallback.createDataSource();for(TransferListener l:listeners)network.addTransferListener(l);return network.open(data);
         }
         private void openNetwork()throws IOException {if(network!=null)return;network=observedSource(entry);for(TransferListener l:listeners)network.addTransferListener(l);Map<String,String> h=new HashMap<>(spec.httpRequestHeaders);h.putAll(entry.headers);DataSpec next=spec.buildUpon().setUri(entry.remote).setPosition(position).setLength(remaining).setHttpRequestHeaders(h).build();synchronized(PodMediaPrefixCache.this){foregroundNetworkReaders++;networkCounted=true;}try{long length=network.open(next);metadata(entry,network,position,length,remaining==C.LENGTH_UNSET);}catch(IOException|RuntimeException error){try{network.close();}catch(IOException ignored){}network=null;releaseNetworkReader();int status=httpStatus(error);android.util.Log.i("PodMediaCache","upstreamFailure category="+(status>0?"http_"+status:"transport"));throw error;}}
         @Override public int read(byte[] b,int offset,int length)throws IOException {
             if(length==0)return 0;if(ended||remaining==0)return C.RESULT_END_OF_INPUT;if(spec==null)throw new IOException("source_not_open");int wanted=remaining<0?length:(int)Math.min(length,remaining);int n=0;
-            if(entry!=null&&network==null){n=PodMediaPrefixCache.this.read(entry,position,b,offset,wanted);if(n>0&&!hitLogged){hitLogged=true;android.util.Log.i("PodMediaCache","prefixHit bytes="+n+" position="+position);}}
+            if(entry!=null&&network==null){n=PodMediaPrefixCache.this.read(entry,position,b,offset,wanted);if(n>0)for(TransferListener l:listeners)l.onBytesTransferred(this,spec,false,n);if(n>0&&!hitLogged){hitLogged=true;android.util.Log.i("PodMediaCache","prefixHit bytes="+n+" position="+position);}}
             if(n==0){if(entry!=null&&entry.length>=0&&position>=entry.length){ended=true;return C.RESULT_END_OF_INPUT;}if(network==null)openNetwork();n=network.read(b,offset,wanted);if(n<0){ended=true;releaseNetworkReader();return n;}if(entry!=null){append(entry,position,b,offset,n,epoch);}}
             position+=n;if(remaining>=0){remaining-=n;if(remaining==0)releaseNetworkReader();}return n;
         }
         private void releaseNetworkReader(){synchronized(PodMediaPrefixCache.this){if(networkCounted){networkCounted=false;foregroundNetworkReaders--;}}}
         @Override public Uri getUri(){return spec==null?null:spec.uri;}
         @Override public Map<String,List<String>> getResponseHeaders(){return network==null?Collections.emptyMap():network.getResponseHeaders();}
-        @Override public void close()throws IOException {DataSource n=network;network=null;spec=null;entry=null;position=0;remaining=C.LENGTH_UNSET;ended=false;hitLogged=false;try{if(n!=null)n.close();}finally{releaseNetworkReader();}}
+        @Override public void close()throws IOException {DataSource n=network;network=null;if(cacheTransfer){cacheTransfer=false;for(TransferListener l:listeners)l.onTransferEnd(this,spec,false);}spec=null;entry=null;position=0;remaining=C.LENGTH_UNSET;ended=false;hitLogged=false;try{if(n!=null)n.close();}finally{releaseNetworkReader();}}
     }
 }

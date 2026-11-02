@@ -57,7 +57,7 @@ final class PodVideoDecoderCapabilities {
         }
     }
 
-    private static final String PREFS = "podjs-video-decoder-capacity-v2";
+    private static final String PREFS = "podjs-video-decoder-capacity-v3";
     private static final String FINGERPRINT = "device-fingerprint";
     private static final String LIMIT_PREFIX = "mime-limit:";
     private final SharedPreferences preferences;
@@ -108,17 +108,17 @@ final class PodVideoDecoderCapabilities {
         int limit = Math.min(PodVideoSessionServices.MAX_SESSIONS, advertised);
         if (selected.isEmpty()) limit = 1;
         if (cached > 0) limit = Math.min(limit, cached);
-        return new Result(profile, selected, advertised, limit, sizeSupported, cached == 1);
+        return new Result(profile, selected, advertised, limit, sizeSupported, cached > 0 && cached < Math.min(PodVideoSessionServices.MAX_SESSIONS,advertised));
     }
 
-    void recordSingleInstance(Profile profile) {
+    void recordRuntimeLimit(Profile profile,int limit) {
         if (profile == null || !profile.known()) return;
         SharedPreferences.Editor edit = preferences.edit();
         if (!cacheMatchesDevice) {
             edit.clear().putString(FINGERPRINT, Build.FINGERPRINT);
             cacheMatchesDevice = true;
         }
-        edit.putInt(LIMIT_PREFIX + profile.mime, 1).apply();
+        edit.putInt(LIMIT_PREFIX + profile.mime, Math.max(1,Math.min(PodVideoSessionServices.MAX_SESSIONS,limit))).apply();
     }
 
     private int cachedMimeLimit(String mime) {
