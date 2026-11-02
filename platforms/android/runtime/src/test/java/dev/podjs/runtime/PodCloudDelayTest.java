@@ -45,6 +45,6 @@ public class PodCloudDelayTest {
    delay(services,1,0);delay(services,2,120001);awaitReplies(replies,2);
    for(String line:replies){JSONObject reply=new JSONObject(line);assertFalse(reply.getBoolean("ok"));assertEquals("invalid_argument",reply.getString("code"));}
   }
-  for(int attempt=0;attempt<5;attempt++)assertEquals(androidx.work.ListenableWorker.Result.failure().getClass(),PodCloudWorker.resultFor(new JSONObject().put("code","completed").put("status","failure"),attempt,true).getClass());
+  for(int attempt=0;attempt<5;attempt++)assertEquals(androidx.work.ListenableWorker.Result.failure().getClass(),PodCloudWorker.resultFor(new JSONObject().put("code","completed").put("status","failure"),attempt).getClass());
  }
 }

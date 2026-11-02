@@ -2,7 +2,7 @@
 // including the retained-event mode, rather than a Promise mock.
 fn job_fixture(kind: &str) -> String {
     format!(r#"
-      globalThis.done=false; globalThis.inputs=0; globalThis.seen=[];
+      globalThis.done=false; globalThis.inputs=0; globalThis.workUnits=0; globalThis.seen=[];
       globalThis.frame=(buttons)=>{{ if(buttons) inputs++; }};
       const chunk=JSON.stringify(Array.from({{length:1024}},(_,i)=>i));
       let started=false, at=0, checksum=0;
@@ -17,7 +17,7 @@ fn job_fixture(kind: &str) -> String {
             const row=JSON.parse({kind:?}==='response'?responseChunks[at%responseChunks.length]:chunk);
             checksum+=row[at%row.length];
           }}
-          at++;
+          at++; workUnits=at;
           if(at<24000)Promise.resolve().then(step);
           else{{done=true;pod.emit(JSON.stringify({{at,checksum,inputs}}));}}
         }}
@@ -43,20 +43,34 @@ fn job_start(runtime: *mut PodRuntime) {
     assert_eq!(pod_runtime_post_event(runtime,event.as_ptr()),OK);
 }
 
+fn job_work_units(runtime: *mut PodRuntime) -> u32 {
+    runtime_mut(runtime).unwrap().guest.with(|ctx|ctx.globals().get::<_,u32>("workUnits").unwrap())
+}
+
+fn assert_job_slice(runtime: *mut PodRuntime, before: pocket_mod::JobStats, kind: &str) {
+    let after=runtime_mut(runtime).unwrap().guest.job_stats();
+    let jobs=after.jobs-before.jobs;
+    assert!(jobs>0&&jobs<=64,"{kind}: slice ran {jobs} jobs, budget is 64");
+    assert_eq!(after.errors,before.errors,"{kind}: slice raised a guest error");
+    if pod_runtime_has_pending_jobs(runtime) {
+        assert_eq!(after.yields,before.yields+1,"{kind}: pending work must yield");
+    }
+}
+
 fn job_responsiveness_case(kind: &str) {
         let runtime=job_runtime(&job_fixture(kind));
         if std::env::var_os("PODJS_TEST_LEGACY_JOB_PUMP").is_none() {
             assert_eq!(pod_runtime_set_job_budget(runtime,64,2000),OK);
         }
         job_start(runtime);
-        let began=Instant::now();
+        // Count completed jobs/work, not elapsed host time: descheduling a
+        // test thread says nothing about whether the guest yielded to input.
+        let before=runtime_mut(runtime).unwrap().guest.job_stats();
         assert_eq!(pod_runtime_pump_service_results(runtime),OK);
-        let first_ms=began.elapsed().as_secs_f64()*1000.0;
+        assert_job_slice(runtime,before,kind);
         let done=runtime_mut(runtime).unwrap().guest.with(|ctx|ctx.globals().get::<_,bool>("done").unwrap());
-        eprintln!("watch-hang case={kind} firstSliceMs={first_ms:.3} done={done}");
-        // A 50ms input turn gate, fixed before measuring the old implementation.
-        // The total workload must NOT finish before input can be delivered.
-        assert!(first_ms<50.0&&!done,"{kind}: first turn blocked {first_ms:.3}ms; done={done}");
+        let work=job_work_units(runtime);
+        assert!(work>0&&work<24000&&!done,"{kind}: first turn drained the workload; work={work}, done={done}");
         let mut input=PodInputFrame {struct_size:std::mem::size_of::<PodInputFrame>() as u32,buttons:1,
             analog:spec::ANALOG_CENTER,touches:std::ptr::null(),touch_count:0,
             rotary_primary_millidegrees:0,rotary_secondary_millidegrees:0};
@@ -64,11 +78,16 @@ fn job_responsiveness_case(kind: &str) {
         assert_eq!(runtime_mut(runtime).unwrap().guest.with(|ctx|ctx.globals().get::<_,u32>("inputs").unwrap()),1);
         let mut turns=0;
         while pod_runtime_has_pending_jobs(runtime) {
-            let began=Instant::now();
+            let before=runtime_mut(runtime).unwrap().guest.job_stats();
+            let work_before=job_work_units(runtime);
             assert_eq!(pod_runtime_pump_jobs(runtime),OK);
-            assert!(began.elapsed().as_millis()<50,"continuation exceeded input turn budget");
+            assert_job_slice(runtime,before,kind);
+            let work_after=job_work_units(runtime);
+            assert!(work_after>work_before&&work_after-work_before<=64,
+                "{kind}: continuation work must progress within the job budget");
             turns+=1;assert!(turns<24000,"continuations must make progress");
         }
+        assert!(turns>0,"input must precede at least one continuation");
         let effect: Value=serde_json::from_str(cstr(pod_runtime_poll_effect(runtime)).unwrap()).unwrap();
         let expected=if kind=="chain" {24000u64*32640} else {(0..24000u64).map(|v|v%1024).sum()};
         assert_eq!(effect,json!({"at":24000,"checksum":expected,"inputs":1}));

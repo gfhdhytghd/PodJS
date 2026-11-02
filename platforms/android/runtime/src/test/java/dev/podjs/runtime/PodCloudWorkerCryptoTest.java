@@ -14,14 +14,15 @@ import static org.junit.Assert.*;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk=33)
 public class PodCloudWorkerCryptoTest {
-    @Test public void hardBudgetsAndGuestFailuresNeverEnterShortRetryBackoff()throws Exception {
+    @Test public void deadlinesAndCheckpointsRetryButGuestFailuresStop()throws Exception {
         for(int attempt=0;attempt<4;attempt++) {
-            for(String code:new String[]{"deadline_exceeded","cancelled","script_exception"})
+            for(String code:new String[]{"cancelled","script_exception"})
                 assertEquals(androidx.work.ListenableWorker.Result.failure().getClass(),PodCloudWorker.resultFor(new JSONObject().put("status","failure").put("code",code),attempt).getClass());
-            assertEquals((attempt<3?androidx.work.ListenableWorker.Result.retry():androidx.work.ListenableWorker.Result.failure()).getClass(),PodCloudWorker.resultFor(new JSONObject().put("status","retry").put("code","completed"),attempt).getClass());
+            assertEquals(androidx.work.ListenableWorker.Result.retry().getClass(),PodCloudWorker.resultFor(new JSONObject().put("status","retry").put("code","completed"),attempt).getClass());
         }
         assertEquals(androidx.work.ListenableWorker.Result.success().getClass(),PodCloudWorker.resultFor(new JSONObject().put("status","success").put("code","completed"),0).getClass());
-        assertEquals(androidx.work.ListenableWorker.Result.failure().getClass(),PodCloudWorker.resultFor(new JSONObject().put("status","success").put("code","deadline_exceeded"),0).getClass());
+        for(String status:new String[]{"success","retry","failure"})
+            assertEquals(androidx.work.ListenableWorker.Result.retry().getClass(),PodCloudWorker.resultFor(new JSONObject().put("status",status).put("code","deadline_exceeded"),20).getClass());
         assertEquals(androidx.work.ListenableWorker.Result.failure().getClass(),PodCloudWorker.resultFor(new JSONObject(),0).getClass());
     }
     private static String b64(byte[] bytes){return Base64.encodeToString(bytes,Base64.NO_WRAP);}
