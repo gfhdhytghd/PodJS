@@ -19,6 +19,8 @@ public final class PodVideoPlaybackService extends MediaSessionService {
     private MediaSession session;
     private ExoPlayer player;
     private PodMediaAudioPolicy audioPolicy;
+    private PodVideoAudioStop audioStop;
+    PodVideoAudioStop audioStop() { return audioStop; }
     PodMediaAudioPolicy audioPolicy() { return audioPolicy; }
     private final android.os.Binder localBinder = new LocalBinder();
     public final class LocalBinder extends android.os.Binder { public PodVideoPlaybackService service() { return PodVideoPlaybackService.this; } }
@@ -33,7 +35,8 @@ public final class PodVideoPlaybackService extends MediaSessionService {
             .setBufferDurationsMs(1_000,4_000,100,250)
             .build();
         long createStarted=android.os.SystemClock.elapsedRealtime();
-        player=new ExoPlayer.Builder(this).setLoadControl(loadControl).build();
+        audioStop=new PodVideoAudioStop();
+        player=new ExoPlayer.Builder(this,audioStop.renderers(this)).setLoadControl(loadControl).build();
         android.util.Log.i("PodVideoTiming","playerCreated durationMs="+(android.os.SystemClock.elapsedRealtime()-createStarted));
         audioPolicy=new PodMediaAudioPolicy(this, player);
         audioPolicy.observeMuteChanges(player::isPlaying, player::getVolume, new PodVideoMuteTelemetry());

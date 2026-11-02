@@ -24,7 +24,7 @@ public class PodVideoKeyframesTest {
         assertEquals(3,PodVideoDecoderCapabilities.validatedLimit(new PodVideoDecoderCapabilities.Profile("video/avc",240,240),"c2.android.avc.decoder",false));
         assertEquals(3,PodVideoDecoderCapabilities.validatedLimit(new PodVideoDecoderCapabilities.Profile("video/hevc",240,240),"c2.android.hevc.decoder",true));
         assertEquals(3,PodVideoDecoderCapabilities.validatedLimit(new PodVideoDecoderCapabilities.Profile("video/avc",1280,720),"c2.android.avc.decoder",true));
-        assertEquals(8,PodVideoDecoderCapabilities.validatedLimit(new PodVideoDecoderCapabilities.Profile("video/avc",240,240),"c2.android.avc.decoder",true));
+        assertEquals(3,PodVideoDecoderCapabilities.validatedLimit(new PodVideoDecoderCapabilities.Profile("video/avc",240,240),"c2.android.avc.decoder",true));
     }
 
     @Test public void cachedLayerFollowsTheDragWithTheSameFixedRoundClip()throws Exception {

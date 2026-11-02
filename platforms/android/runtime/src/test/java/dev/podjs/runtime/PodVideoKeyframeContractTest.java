@@ -16,5 +16,5 @@ public class PodVideoKeyframeContractTest {
   service.dispatch("video.session.capabilities",new JSONObject(),new PodVideoSessionServices.Callback(){public void complete(JSONObject v){value[0]=v;}public void fail(String code,String message){throw new AssertionError(code);}});Shadows.shadowOf(Looper.getMainLooper()).idle();
   try{assertTrue("decoded frames must outlive leases",value[0].optBoolean("keyframeCache"));assertEquals(8L*466*466*4,value[0].getLong("keyframeMaxBytes"));}finally{service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();}
  }
- @Test public void hostCanUseMoreThanThreeAdvertisedInstances(){assertEquals("capability and memory decide live decoder count",8,PodVideoSessionServices.MAX_SESSIONS);}
+ @Test public void hostRetainsThreeDecoderCeiling(){assertEquals(3,PodVideoSessionServices.MAX_SESSIONS);}
 }

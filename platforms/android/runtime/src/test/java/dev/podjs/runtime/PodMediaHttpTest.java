@@ -17,14 +17,14 @@ public class PodMediaHttpTest {
  static class Server implements AutoCloseable {
   final ServerSocket server=new ServerSocket(0);final ExecutorService workers=Executors.newCachedThreadPool();
   final AtomicInteger connections=new AtomicInteger(),requests=new AtomicInteger();final List<String> headers=Collections.synchronizedList(new ArrayList<>());
-  final int headerDelay,bodyDelay,status;final byte[] body;final CountDownLatch received=new CountDownLatch(1);
+  final int headerDelay,bodyDelay,status;final byte[] body;final CountDownLatch received=new CountDownLatch(1);volatile CountDownLatch responseGate;
   Server(int headerDelay,int bodyDelay,int status,byte value)throws Exception{this.headerDelay=headerDelay;this.bodyDelay=bodyDelay;this.status=status;body=new byte[1024];Arrays.fill(body,value);
    workers.execute(()->{while(!server.isClosed())try{Socket socket=server.accept();connections.incrementAndGet();workers.execute(()->serve(socket));}catch(IOException ignored){}});
   }
   String url(){return "http://127.0.0.1:"+server.getLocalPort()+"/fixture";}
   void serve(Socket socket){try(Socket s=socket){s.setSoTimeout(5000);BufferedReader input=new BufferedReader(new InputStreamReader(s.getInputStream()));while(true){String line=input.readLine();if(line==null)return;int lo=0,hi=body.length-1;StringBuilder seen=new StringBuilder(line);
    while((line=input.readLine())!=null&&!line.isEmpty()){seen.append('\n').append(line);if(line.toLowerCase(Locale.ROOT).startsWith("range: bytes=")){String[] range=line.substring(line.indexOf('=')+1).split("-",-1);lo=Integer.parseInt(range[0]);if(!range[1].isEmpty())hi=Math.min(hi,Integer.parseInt(range[1]));}}
-   requests.incrementAndGet();headers.add(seen.toString());received.countDown();Thread.sleep(headerDelay);int length=status==206?hi-lo+1:0;
+   requests.incrementAndGet();headers.add(seen.toString());received.countDown();if(responseGate!=null&&!responseGate.await(2,TimeUnit.SECONDS))return;Thread.sleep(headerDelay);int length=status==206?hi-lo+1:0;
    s.getOutputStream().write(("HTTP/1.1 "+status+" Fixture\r\nContent-Length: "+length+"\r\nContent-Range: bytes "+lo+"-"+hi+"/"+body.length+"\r\n\r\n").getBytes(java.nio.charset.StandardCharsets.US_ASCII));s.getOutputStream().flush();Thread.sleep(bodyDelay);
    if(length>0){s.getOutputStream().write(body,lo,length);s.getOutputStream().flush();}
   }}catch(Exception ignored){}}
@@ -48,6 +48,9 @@ public class PodMediaHttpTest {
  }
  @Test public void forbiddenMirrorStopsAllLaterRequestsAndDoesNotRetry()throws Exception {
   try(Server primary=new Server(0,0,403,(byte)1);Server alternate=new Server(300,0,206,(byte)2);PodMediaHttp http=new PodMediaHttp()){
+   // Both requests are in flight before 403. Delayed server acceptance is not
+   // evidence of a new retry after the transport has stopped.
+   primary.responseGate=alternate.received;alternate.responseGate=new CountDownLatch(1);
    DataSource source=http.race(Arrays.asList(primary.url(),alternate.url()),url->{});
    try{source.open(spec(primary.url()));fail("403 must stop race");}catch(IOException failure){assertEquals(403,PodMediaPrefixCache.httpStatus(failure));}finally{source.close();}
    int requests=primary.requests.get()+alternate.requests.get();DataSource later=http.createDataSource();

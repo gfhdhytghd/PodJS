@@ -343,3 +343,37 @@ test('DYFRAME cached foreground reveal does not wait behind unrelated standby re
  for(const n of [11,9]){const warm=pool.prewarm(source(n),options(n));await m.advance(400);await warm;}
  const before=m.states.size,foreground=pool.prepare(source(15),options(15)).result;expect(m.states.size).toBe(before);await m.advance(400);await foreground;expect(m.states.size).toBe(1);await pool.releaseAll();
 });
+
+test('DYREGRESS distant keyframes never evict either decoded nearest neighbour',async()=>{
+ const m=new Model();m.port.capabilities=async()=>({...await new Model().port.capabilities(),keyframeCache:true});
+ const pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();
+ const active=pool.prepare(source(10),options(10)).result;await m.advance(400);await active;
+ const next=pool.prewarm(source(11),options(11),'next'),prev=pool.prewarm(source(9),options(9),'prev');
+ await m.advance(500);await Promise.all([next,prev]);const count=m.prepareCount;
+ await pool.warmNeighbourhood([11,9,12,8,13,14,15].map(n=>async()=>({source:source(n),options:options(n),direction:n>10?'next' as const:'prev' as const})));
+ expect(m.prepareCount).toBe(count);expect(pool.hasStandby('11')).toBe(true);expect(pool.hasStandby('9')).toBe(true);
+ await pool.releaseAll();
+});
+
+test('DYREGRESS adopting a pending live neighbour does not cancel its decoder',async()=>{
+ const m=new Model(),pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();
+ const active=pool.prepare(source(10),options(10)).result;await m.advance(400);await active;
+ const pending=pool.prewarm(source(11),options(11),'next',true).catch(()=>undefined);
+ const adopted=pool.prepare(source(11),options(11)).result;
+ expect(m.cancelCount).toBe(0);await m.advance(500);await Promise.all([pending,adopted]);
+ expect(m.cancelCount).toBe(0);await pool.releaseAll();
+});
+
+test('DYREGRESS expired native standby gets one foreground admission; transport failures never retry',async()=>{
+ for(const missing of [true,false]){
+  const m=new Model(),pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();
+  const initial=pool.prepare(source(1),options(1)).result;await m.advance(400);await initial;
+  const warming=pool.prewarm(source(2),options(2));warming.catch(()=>{});
+  const failure=Object.assign(new Error(missing?'unknown_video_session':'http_403'),{code:missing?'invalid_argument':'permission_denied'});
+  m.port.promote=async()=>{throw failure;};m.port.retire=async id=>m.states.get(id)!;
+  const selected=pool.prepare(source(2),options(2)).result;selected.catch(()=>{});
+  await m.advance(800);
+  if(missing){expect((await selected).hasRenderedFirstFrame).toBe(true);expect(m.prepareCount).toBe(3);}
+  else{await expect(selected).rejects.toBe(failure);expect(m.prepareCount).toBe(2);}
+ }
+});

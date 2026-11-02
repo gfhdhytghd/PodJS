@@ -18,8 +18,29 @@ final class PodMediaHttp implements DataSource.Factory, AutoCloseable {
     private volatile IOException stopped;private volatile boolean closed;
     PodMediaHttp(){
         client=new OkHttpClient.Builder().connectionPool(new ConnectionPool(4,2,TimeUnit.MINUTES))
+            .protocols(Collections.singletonList(Protocol.HTTP_1_1))
             .dns(new CachedDns()).connectTimeout(12,TimeUnit.SECONDS).readTimeout(25,TimeUnit.SECONDS)
+            .eventListenerFactory(call->new TransportEvents())
             .retryOnConnectionFailure(false).build();
+    }
+    /** Numeric request identity and closed phases; never host names or request fields. */
+    private static final java.util.concurrent.atomic.AtomicLong REQUESTS=new java.util.concurrent.atomic.AtomicLong();
+    private static final class TransportEvents extends okhttp3.EventListener {
+        private final long request=REQUESTS.incrementAndGet();
+        private void phase(String phase){android.util.Log.i("PodMediaCache","transport phase="+phase+" request="+request+" mono_ms="+android.os.SystemClock.uptimeMillis());}
+        @Override public void callStart(Call c){phase("call_start");}
+        @Override public void dnsStart(Call c,String host){phase("dns_start");}
+        @Override public void dnsEnd(Call c,String host,List<InetAddress> addresses){phase("dns_end");}
+        @Override public void connectStart(Call c,InetSocketAddress address,Proxy proxy){phase("connect_start");}
+        @Override public void secureConnectStart(Call c){phase("tls_start");}
+        @Override public void secureConnectEnd(Call c,Handshake handshake){phase("tls_end");}
+        @Override public void connectionAcquired(Call c,Connection connection){phase(connection.protocol()==Protocol.HTTP_2?"connection_h2":"connection_http1");}
+        @Override public void requestHeadersEnd(Call c,Request request){phase("request_headers");}
+        @Override public void responseHeadersStart(Call c){phase("response_start");}
+        @Override public void responseHeadersEnd(Call c,Response response){phase("response_headers");}
+        @Override public void responseBodyStart(Call c){phase("body_start");}
+        @Override public void callEnd(Call c){phase("call_end");}
+        @Override public void callFailed(Call c,IOException error){phase(c.isCanceled()?"cancelled":error instanceof java.net.SocketTimeoutException?"timeout":"io_failure");}
     }
     public DataSource createDataSource(){return new Stream();}
     DataSource race(List<String> urls,Consumer<String> winner){return new Race(urls,winner);}

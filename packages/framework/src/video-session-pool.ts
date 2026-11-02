@@ -158,10 +158,23 @@ export class VideoSessionPool<Source extends {key:string}> {
     this.activeId=id;this.activeKey=source.key;this.activeSource=source;this.activeIdentity=this.prepareIdentity(options);
     // A speculative codec release can block the UI thread. Reclaim its slot
     // when the following prewarm needs it, after the foreground reveal.
-    let cancelled=false,settled=false;
+    let cancelled=false,settled=false,recovery:HostOperation<VideoSessionState>|undefined;
     const result=(async()=>{
       const loop=this.loop;
-      const promoted=await this.port.promote(id,{replaceSessionId:replacedId,bounds:options.bounds,autoplay:options.autoplay===true,loop,adoptPreparing:true,...(options.benchmark?{benchmark:options.benchmark}:{})});
+      let promoted:VideoSessionState;
+      try{promoted=await this.port.promote(id,{replaceSessionId:replacedId,bounds:options.bounds,autoplay:options.autoplay===true,loop,adoptPreparing:true,...(options.benchmark?{benchmark:options.benchmark}:{})});}
+      catch(error){
+        const failure=error as {code?:string;message?:string};
+        // Native expiry can win between guest selection and host promotion.
+        // Only this absent-session acknowledgement permits one cold prepare.
+        // Transport, authorization and decoder failures remain terminal.
+        if(failure.code!=='invalid_argument'||failure.message!=='unknown_video_session'||cancelled||own!==this.generation)throw error;
+        const {backgroundPlayback,...foreground}=options;
+        await this.port.retire(replacedId,true).catch(()=>undefined);
+        if(cancelled||own!==this.generation)throw Error('stale video session adoption');
+        recovery=this.port.prepare({...foreground,sessionId:id,sourceOrdinal:this.ordinal(source.key),slotOrdinal:this.slotOrdinal(id),prewarm:false,autoplay:options.autoplay===true});
+        promoted=await recovery.result;
+      }
       if(cancelled||own!==this.generation)throw Error('stale video session adoption');
       // Current hosts return old-surface readiness in the promotion command.
       // Older hosts retain the diagnostic fallback. Neither path reparses media.
@@ -172,7 +185,7 @@ export class VideoSessionPool<Source extends {key:string}> {
       if(cancelled||own!==this.generation)throw Error('stale video session adoption');
       return state(promoted);
     })().finally(()=>{settled=true;});
-    return {result,cancel:()=>{if(cancelled||settled)return;cancelled=true;if(own===this.generation){this.generation++;operation?.cancel();}}};
+    return {result,cancel:()=>{if(cancelled||settled)return;cancelled=true;if(own===this.generation){this.generation++;operation?.cancel();recovery?.cancel();}}};
   }
   async prewarm(source:Source,options:VideoPrepare,direction?:'next'|'prev',background=false):Promise<VideoState>{
     if(source.key===this.activeKey)return this.state();
@@ -184,7 +197,8 @@ export class VideoSessionPool<Source extends {key:string}> {
     slot??=this.slots.slice(0,this.capacity-1).find(s=>!s.source);
     if(!slot){const usable=this.slots.slice(0,this.capacity-1);slot=usable.find(s=>s!==this.selected&&!s.recentlyActive)??usable.find(s=>s!==this.selected)??usable[0];if(!slot)throw Error('video_decoder_limit');await this.evict(slot,'capacity');}
     const target=slot,own=++target.revision;
-    if(background)this.neighbourhoodSlot=target;
+    // A live standby can become the next foreground while still preparing.
+    // Only pixel-only workers belong to the cancellable neighbourhood task.
     target.recentlyActive=false;target.source=source;target.identity=this.prepareIdentity(options);target.ready=false;target.direction=direction;
     const seq=benchmark.begin('prewarm_requested',{generation:own,direction,source_ordinal:this.ordinal(source.key),slot_ordinal:this.slotOrdinal(target.id),pool_generation:this.generation});target.prepareSeq=seq;
     const {backgroundPlayback,...foreground}=options;
@@ -256,7 +270,9 @@ export class VideoSessionPool<Source extends {key:string}> {
     // Native admission may never steal the active decoder. Free one speculative
     // lease before constructing the short-lived worker, even on a 3-codec watch.
     const usable=this.slots.slice(0,this.capacity-1);
-    const slot=usable.find(s=>!s.source)??usable.find(s=>s!==this.selected&&!s.recentlyActive)??usable.find(s=>s!==this.selected);
+    // Frame-zero readback is opportunistic. Never evict either live neighbour
+    // to decode a more distant image on a three-decoder host.
+    const slot=usable.find(s=>!s.source&&!s.operation);
     if(!slot)return;
     await this.evict(slot,'capacity');
     if(!current())return;

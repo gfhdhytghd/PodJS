@@ -39,6 +39,16 @@ final class HostWorkPriority {
         private final boolean headless;
         private boolean cancelled, entered;
         Ticket(boolean headless) { this.headless = headless; }
+        /** Shared pumps must yield a queued background unit instead of blocking
+         * the worker that also serves foreground media. Caller closes the ticket. */
+        boolean tryEnter() {
+            synchronized (HostWorkPriority.this) {
+                if(cancelled||active!=null||next()!=this)return false;
+                (headless?background:foreground).remove(this);
+                entered=true;active=this;foregroundBurst=headless?0:foregroundBurst+1;
+                return true;
+            }
+        }
         void enter() throws InterruptedException { enter(() -> true); }
         void enter(java.util.function.BooleanSupplier current) throws InterruptedException {
             synchronized (HostWorkPriority.this) {

@@ -30,13 +30,18 @@ public class PodVideoDragOcclusionTest {
   try {
    for(String id:new String[]{"old","next","prev"}){
     Object slot=ctor.newInstance(service,id);sessions.put(id,slot);ExoPlayer player=new ExoPlayer.Builder(c).build();
-    field(t,"player").set(slot,player);field(t,"audioPolicy").set(slot,new PodMediaAudioPolicy(c,player));field(t,"hasRenderedFirstFrame").setBoolean(slot,true);field(t,"prewarming").setBoolean(slot,!id.equals("old"));
+    field(t,"player").set(slot,player);field(t,"audioPolicy").set(slot,new PodMediaAudioPolicy(c,player));field(t,"hasRenderedFirstFrame").setBoolean(slot,true);field(t,"hasUpdatedFrame").setBoolean(slot,true);field(t,"prewarming").setBoolean(slot,!id.equals("old"));
     Reply r=new Reply();service.dispatch("video.session.setBounds",new JSONObject().put("sessionId",id).put("bounds",bounds),r);assertNull(r.error);
    }
    ExoPlayer old=(ExoPlayer)field(t,"player").get(sessions.get("old"));old.play();
    // Baseline puts the third standby above the requested incoming texture.
    // A black pager base and the selected pair must cover all other standbys.
+   PodVideoLastFrame held=(PodVideoLastFrame)field(PodVideoSessionServices.class,"lastFrame").get(service);
+   TextureView copySource=new TextureView(c){@Override public boolean isAvailable(){return true;}@Override public android.graphics.Bitmap getBitmap(int w,int h){return android.graphics.Bitmap.createBitmap(w,h,android.graphics.Bitmap.Config.ARGB_8888);}};
+   copySource.setLayoutParams(new FrameLayout.LayoutParams(466,466));copySource.layout(0,0,466,466);
+   held.capture(sessions.get("old"),1,copySource,parent);assertTrue(held.present());
    Reply r=new Reply();service.dispatch("video.session.transition",new JSONObject().put("fromSessionId","old").put("toSessionId","next").put("direction","up").put("progress",.5).put("bounds",bounds),r);assertNull(r.error);
+   assertFalse("a decoded incoming page replaces the fallback copy during drag",held.present());
    TextureView incoming=(TextureView)field(t,"videoView").get(sessions.get("next"));
    TextureView unselected=(TextureView)field(t,"videoView").get(sessions.get("prev"));
    assertTrue("incoming decoded texture must be above the unrelated standby",parent.indexOfChild(incoming)>parent.indexOfChild(unselected));

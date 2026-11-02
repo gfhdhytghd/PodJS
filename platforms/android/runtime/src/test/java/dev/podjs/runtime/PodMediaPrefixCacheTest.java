@@ -19,10 +19,11 @@ public class PodMediaPrefixCacheTest {
  static final int M=1024*1024;
  static class Remote implements DataSource.Factory {
   final byte[] body;final List<DataSpec> opened=Collections.synchronizedList(new ArrayList<>());volatile boolean block;volatile CountDownLatch readEntered=new CountDownLatch(1);
+  String blockPath;
   Remote(int length){body=new byte[length];for(int i=0;i<length;i++)body[i]=(byte)(i*31+7);}
   public DataSource createDataSource(){return new DataSource(){int p,end;DataSpec spec;volatile boolean closed;
    public void addTransferListener(TransferListener l){}public long open(DataSpec s){spec=s;opened.add(s);p=(int)s.position;end=s.length<0?body.length:Math.min(body.length,p+(int)s.length);return end-p;}
-   public int read(byte[] b,int offset,int length)throws IOException {readEntered.countDown();while(block&&!closed)try{Thread.sleep(10);}catch(InterruptedException e){Thread.currentThread().interrupt();throw new IOException("cancelled");}if(closed)throw new IOException("closed");if(p>=end)return -1;int n=Math.min(length,end-p);System.arraycopy(body,p,b,offset,n);p+=n;return n;}
+   public int read(byte[] b,int offset,int length)throws IOException {readEntered.countDown();while(block&&(blockPath==null||blockPath.equals(spec.uri.getPath()))&&!closed)try{Thread.sleep(10);}catch(InterruptedException e){Thread.currentThread().interrupt();throw new IOException("cancelled");}if(closed)throw new IOException("closed");if(p>=end)return -1;int n=Math.min(length,end-p);System.arraycopy(body,p,b,offset,n);p+=n;return n;}
    public Uri getUri(){return spec==null?null:spec.uri;}public Map<String,List<String>> getResponseHeaders(){return Map.of("Content-Range",List.of("bytes "+(spec==null?0:spec.position)+"-"+(body.length-1)+"/"+body.length));}public void close(){closed=true;}
   };}
  }
@@ -97,11 +98,12 @@ public class PodMediaPrefixCacheTest {
   }
  }
  @Test public void lowBandwidthSmallerThanOneReadChunkStillMakesBoundedProgress()throws Exception {
-  Remote r=new Remote(16384);ScheduledExecutorService clock=Executors.newSingleThreadScheduledExecutor();clock.scheduleAtFixedRate(()->org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(250)),250,250,TimeUnit.MILLISECONDS);try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
+  Remote r=new Remote(16384);r.block=true;r.blockPath="/actual-low-rate-foreground";ExecutorService reader=Executors.newSingleThreadExecutor();ScheduledExecutorService clock=Executors.newSingleThreadScheduledExecutor();clock.scheduleAtFixedRate(()->org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(250)),250,250,TimeUnit.MILLISECONDS);try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
    java.lang.reflect.Field field=PodMediaPrefixCache.class.getDeclaredField("totalBandwidth");field.setAccessible(true);field.setLong(c,24576);
    DataSource foreground=c.factory(r).createDataSource();foreground.open(new DataSpec(Uri.parse(register(c,"actual-low-rate-foreground"))));
+   Future<?> read=reader.submit(()->{try{foreground.read(new byte[8192],0,8192);}catch(IOException cancelled){}});assertTrue(r.readEntered.await(2,TimeUnit.SECONDS));
    try{String uri=register(c,"low-rate");long start=System.nanoTime();c.execute("video.cache.window",window(uri,M).put("foregroundBitrate",100000));idle(c);long elapsed=(System.nanoTime()-start)/1000000;assertTrue("rate is bounded: "+elapsed,elapsed>=1700);assertEquals(r.body.length,c.stats().getLong("bytes"));}finally{foreground.close();}
-  }finally{clock.shutdownNow();}
+  }finally{clock.shutdownNow();reader.shutdownNow();}
  }
  @Test public void rejectUnregisteredAndMalformedSourcesOrOversizedWindows()throws Exception {
   Remote r=new Remote(M);try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
@@ -162,6 +164,24 @@ public class PodMediaPrefixCacheTest {
   }finally{HostWorkPriority.DEVICE.foregroundMedia(foreground,false);worker.shutdownNow();}
  }
 
+ @Test public void backgroundStockCannotBlockPlayableNeighbourOnTheSingleQueue()throws Exception {
+  Remote remote=new Remote(M);Object foreground=new Object();HostWorkPriority.DEVICE.foregroundMedia(foreground,true);
+  ExecutorService waiter=Executors.newSingleThreadExecutor();
+  try(PodMediaPrefixCache cache=new PodMediaPrefixCache(root(),remote,6*M)){
+   String stock=register(cache,"stock-held"),next=register(cache,"next-playable");
+   PodMediaPrefixCache.Job preparation=cache.beginPreparation(stock,M);
+   waiter.submit(()->cache.prefetch(preparation));
+   Thread.sleep(100);
+   cache.execute("video.cache.window",new JSONObject().put("items",new JSONArray()
+    .put(new JSONObject().put("uri",stock).put("prefetchBytes",0))
+    .put(new JSONObject().put("uri",next).put("prefetchBytes",M))));
+   long until=System.nanoTime()+TimeUnit.SECONDS.toNanos(2);
+   while(cache.target(next).file.length()==0&&System.nanoTime()<until)Thread.sleep(10);
+   assertTrue("paused stock must yield the single pump to live neighbours",cache.target(next).file.length()>0);
+   assertEquals(0,cache.target(stock).file.length());
+  }finally{HostWorkPriority.DEVICE.foregroundMedia(foreground,false);waiter.shutdownNow();}
+ }
+
  @Test public void persistentPreparationsEvictPrefixAndTailTogetherWithinBudget()throws Exception {
   Remote r=new Remote(5*M);try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
    for(int i=0;i<4;i++){
@@ -205,14 +225,18 @@ public class PodMediaPrefixCacheTest {
   }
  }
  @Test public void closingActualNetworkReaderReleasesTheSpeculativeReserve()throws Exception {
-  Remote r=new Remote(M);try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
+  Remote r=new Remote(M);r.block=true;r.blockPath="/actual-foreground";
+  ExecutorService reader=Executors.newSingleThreadExecutor();
+  try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
    DataSource foreground=c.factory(r).createDataSource();foreground.open(new DataSpec(Uri.parse(register(c,"actual-foreground"))));
+   Future<?> read=reader.submit(()->{try{foreground.read(new byte[8192],0,8192);}catch(IOException cancelled){}});
+   assertTrue(r.readEntered.await(2,TimeUnit.SECONDS));
    try {
     String next=register(c,"next-after-close");c.execute("video.cache.window",window(next,M).put("foregroundBitrate",8000000));
-    assertTrue(r.readEntered.await(2,TimeUnit.SECONDS));Thread.sleep(100);assertEquals(0,c.stats().getLong("bytes"));
+    Thread.sleep(150);assertEquals(0,c.stats().getLong("bytes"));
    } finally {foreground.close();}
-   idle(c);assertEquals(M,c.stats().getLong("bytes"));
-  }
+   read.get(2,TimeUnit.SECONDS);idle(c);assertEquals(M,c.stats().getLong("bytes"));
+  }finally{reader.shutdownNow();}
  }
 
  @Test public void oneSchedulerReordersQueuedFirstFramesBeforePrefixRemainders()throws Exception {
@@ -258,6 +282,27 @@ public class PodMediaPrefixCacheTest {
    });
    source.open(new DataSpec.Builder().setUri(uri).setLength(8192).build());assertEquals(8192,read(source,8192).length);source.close();
    assertArrayEquals(new int[]{1,8192,0,1},counts);
+  }
+ }
+
+ @Test public void stockPreparationBecomesPlayableWithoutWaitingForForegroundToEnd()throws Exception {
+  Object owner=new Object();HostWorkPriority.DEVICE.foregroundMedia(owner,true);
+  try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),new Remote(M),6*M)){
+   String uri=register(c,"stock-promoted-to-live");PodMediaPrefixCache.Job stock=c.beginPreparation(uri,M);
+   c.execute("video.cache.window",window(uri,128*1024));
+   assertFalse(stock.background);c.prefetch(stock);assertTrue(c.target(uri).file.length()>=128*1024);c.endPreparation(stock);
+  }finally{HostWorkPriority.DEVICE.foregroundMedia(owner,false);}
+ }
+
+ @Test public void pausedNetworkConnectionMustNotStarveTheNextPrefix()throws Exception {
+  Remote r=new Remote(M);try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
+   DataSource foreground=c.factory(r).createDataSource();foreground.open(new DataSpec(Uri.parse(register(c,"paused-current"))));
+   try{
+    String next=register(c,"paused-next");c.execute("video.cache.window",window(next,M).put("foregroundBitrate",8000000));
+    long end=System.nanoTime()+TimeUnit.SECONDS.toNanos(2);
+    while(c.target(next).file.length()==0&&System.nanoTime()<end)Thread.sleep(10);
+    assertTrue("an open but paused loader must not reserve all measured bandwidth",c.target(next).file.length()>0);
+   }finally{foreground.close();}
   }
  }
 
