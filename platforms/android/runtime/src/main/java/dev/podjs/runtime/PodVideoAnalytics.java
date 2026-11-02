@@ -13,16 +13,17 @@ import org.json.JSONObject;
  * Transfer callbacks can run off-main. Never retain DataSpec/URI/request headers. */
 final class PodVideoAnalytics implements AnalyticsListener, TransferListener {
     final androidx.media3.exoplayer.analytics.PlaybackStatsListener playbackStats = new androidx.media3.exoplayer.analytics.PlaybackStatsListener(false,null);
-    long startupSeq;
+    long startupSeq,cacheEntry;
+    java.util.function.LongSupplier cacheNetworkBytes=()->0,cacheRangeRequests=()->0,cacheBytes=()->0;
     private long preparationProgressMs=SystemClock.uptimeMillis();
     synchronized long preparationProgressMs(){return preparationProgressMs;}
-    private long prepareSeq, prepareGeneration;
+    private long prepareSeq, prepareGeneration,requestCount,openMs=-1,requestFirstByteMs=-1,ttfbMs,steadyMs,transferBytes;
     private boolean prewarm;
     synchronized void preparation(long requestedSeq,long generation,boolean prewarming) {
         prepareGeneration=generation;prewarm=prewarming;
         try {JSONObject row=prepareFields("start");prepareSeq=PodBenchmark.known(requestedSeq)?requestedSeq:PodBenchmark.begin("prepare_stage",row);if(prepareSeq==requestedSeq)PodBenchmark.mark("prepare_stage",prepareSeq,row);}catch(Exception ignored){}
     }
-    private JSONObject prepareFields(String stage)throws Exception {return new JSONObject().put("prepare_stage",stage).put("source_generation",prepareGeneration).put("is_prewarm",prewarm).put("network_bytes",bytes);}
+    private JSONObject prepareFields(String stage)throws Exception {return new JSONObject().put("prepare_stage",stage).put("source_generation",prepareGeneration).put("is_prewarm",prewarm).put("network_bytes",bytes).put("cache_network_bytes",cacheNetworkBytes.getAsLong()).put("cache_range_requests",cacheRangeRequests.getAsLong()).put("cache_bytes",cacheBytes.getAsLong()).put("cache_entry",cacheEntry).put("range_requests",requestCount).put("ttfb_ms",ttfbMs).put("steady_ms",steadyMs);}
     synchronized void stage(String stage){if(prepareSeq>0)try{PodBenchmark.mark("prepare_stage",prepareSeq,prepareFields(stage));}catch(Exception ignored){}}
     synchronized void stage(String stage,androidx.media3.exoplayer.ExoPlayer player,android.view.TextureView view){if(prepareSeq>0)try{PodBenchmark.mark("prepare_stage",prepareSeq,prepareFields(stage).put("surface_ready",view!=null&&view.isAvailable()).put("playback_state",player==null?1:player.getPlaybackState()).put("buffered_ms",player==null?0:Math.max(0,player.getBufferedPosition()-player.getCurrentPosition())));}catch(Exception ignored){}}
 
@@ -43,9 +44,10 @@ final class PodVideoAnalytics implements AnalyticsListener, TransferListener {
     @Override public synchronized void onBytesTransferred(DataSource source, DataSpec spec, boolean network, int count) {
         if (!network || count <= 0) return;
         if (firstByteMs < 0) {firstByteMs = Math.max(0, SystemClock.elapsedRealtime() - startedMs);stage("network_first_byte");}
+        long now=SystemClock.uptimeMillis();if(requestFirstByteMs<0){requestFirstByteMs=now;ttfbMs=openMs>=0?Math.max(0,now-openMs):0;}else steadyMs+=Math.max(0,now-preparationProgressMs);
         bytes += count; lastByteMs=SystemClock.elapsedRealtime();preparationProgressMs=SystemClock.uptimeMillis();
     }
-    @Override public synchronized void onTransferInitializing(DataSource source, DataSpec spec, boolean network) { if(network&&prepareSeq>0)try{PodBenchmark.mark("prepare_stage",prepareSeq,prepareFields("network_open").put("position_bytes",Math.max(0,spec.position)));}catch(Exception ignored){} }
+    @Override public synchronized void onTransferInitializing(DataSource source, DataSpec spec, boolean network) { if(network&&prepareSeq>0)try{requestCount++;openMs=SystemClock.uptimeMillis();requestFirstByteMs=-1;PodBenchmark.mark("prepare_stage",prepareSeq,prepareFields("network_open").put("position_bytes",Math.max(0,spec.position)));}catch(Exception ignored){} }
     @Override public synchronized void onTransferStart(DataSource source, DataSpec spec, boolean network) { if(network){
         for(java.util.Map.Entry<String,java.util.List<String>> entry:(source==null?java.util.Collections.<String,java.util.List<String>>emptyMap():source.getResponseHeaders()).entrySet())if(entry.getKey()!=null&&entry.getKey().equalsIgnoreCase("Content-Type"))for(String value:entry.getValue()==null?java.util.Collections.<String>emptyList():entry.getValue()){
             if(value==null)continue;

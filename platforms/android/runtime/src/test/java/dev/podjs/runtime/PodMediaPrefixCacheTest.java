@@ -31,6 +31,23 @@ public class PodMediaPrefixCacheTest {
  static JSONObject window(String uri,int bytes)throws Exception{return new JSONObject().put("items",new JSONArray().put(new JSONObject().put("uri",uri).put("prefetchBytes",bytes).put("captureBytes",4*M)));}
  static byte[] read(DataSource d,int limit)throws Exception {ByteArrayOutputStream out=new ByteArrayOutputStream();byte[] b=new byte[8192];int n;while(out.size()<limit&&(n=d.read(b,0,Math.min(b.length,limit-out.size())))!=-1)out.write(b,0,n);return out.toByteArray();}
  static void idle(PodMediaPrefixCache c)throws Exception {long end=System.currentTimeMillis()+5000;while(c.stats().getInt("activePrefetches")>0&&System.currentTimeMillis()<end)Thread.sleep(10);assertEquals(0,c.stats().getInt("activePrefetches"));}
+ @Test public void smallUnknownContainerPreparationKeepsBothRangesWithinBudget()throws Exception {
+  Remote r=new Remote(M);try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
+   String uri=register(c,"small-unknown");JSONObject result=c.execute("video.cache.prepare",new JSONObject().put("uri",uri).put("bytes",128*1024).put("frameKey","fixture"));
+   assertFalse(result.getBoolean("ready"));assertTrue(c.stats().getLong("bytes")<=128*1024);assertEquals(64*1024,c.target(uri).tail().length());
+  }
+ }
+ @Test public void ordinaryWindowCachesTailMoovWithoutDownloadingMdat()throws Exception {
+  Remote r=new Remote(2*M);java.nio.ByteBuffer b=java.nio.ByteBuffer.wrap(r.body);b.putInt(24).putInt(0x66747970);b.position(24);b.putInt(2*M-24-128).putInt(0x6d646174);b.position(2*M-128);b.putInt(128).putInt(0x6d6f6f76);
+  try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
+   String uri=register(c,"tail-metadata");c.execute("video.cache.window",window(uri,128*1024));idle(c);
+   assertEquals(128*1024,c.target(uri).file.length());assertEquals(65536+128,c.target(uri).tail().length());
+   DataSource d=c.factory(r).createDataSource();int requests=r.opened.size();d.open(new DataSpec.Builder().setUri(uri).setPosition(2*M-128).setLength(128).build());assertArrayEquals(Arrays.copyOfRange(r.body,2*M-128,2*M),read(d,128));d.close();assertEquals(requests,r.opened.size());
+   assertTrue(c.stats().getLong("networkReadBytes")<256*1024);
+   assertEquals(c.stats().getLong("networkReadBytes"),c.target(uri).getClass().getDeclaredField("networkBytes").getLong(c.target(uri)));
+   assertEquals(r.opened.size(),c.target(uri).getClass().getDeclaredField("rangeRequests").getLong(c.target(uri)));
+  }
+ }
  @Test public void prefixThenRangeAndTailAreByteIdenticalWithAllHeaders()throws Exception {
   Remote r=new Remote(5*M);try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
    String uri=register(c,"one");c.execute("video.cache.window",window(uri,M));idle(c);assertEquals(M,c.stats().getLong("bytes"));assertEquals(M,c.stats().getLong("downloadedBytes"));

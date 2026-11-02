@@ -236,6 +236,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         if(prewarming&&decoderBudget.inUse()-(existing!=null&&existing.decoderLease?1:0)>=memoryLimit)
             throw new IllegalStateException("video_decoder_limit");
         PodVideoAnalytics analytics=new PodVideoAnalytics();analytics.startupSeq=args.optBoolean("prewarm",false)?0:args.optLong("startupSeq",0);
+        if(mediaPrefixCache!=null)try{PodMediaPrefixCache.Entry entry=mediaPrefixCache.target(args.optString("url",""));analytics.cacheEntry=entry.ordinal;analytics.cacheNetworkBytes=()->entry.networkBytes;analytics.cacheRangeRequests=()->entry.rangeRequests;analytics.cacheBytes=()->entry.file.length()+entry.tail().length();}catch(Exception ignored){}
         MediaSource source = mediaSource(args,analytics);
         Session session = sessions.get(id);
         boolean created = false;

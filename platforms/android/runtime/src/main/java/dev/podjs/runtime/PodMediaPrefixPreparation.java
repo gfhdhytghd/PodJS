@@ -12,27 +12,27 @@ final class PodMediaPrefixPreparation {
     static final int TAIL_BYTES=512*1024;
     static JSONObject prepare(PodMediaPrefixCache cache,JSONObject args)throws Exception {
         int budget=args.getInt("bytes");
-        if(budget<512*1024||budget>PodMediaPrefixCache.MAX_ENTRY)throw new IllegalArgumentException("invalid_prefix_budget");
+        if(budget<128*1024||budget>PodMediaPrefixCache.MAX_ENTRY)throw new IllegalArgumentException("invalid_prefix_budget");
         String key=PodVideoFrameCache.key(new JSONObject().put("key",args.getString("frameKey")));
         String uri=args.getString("uri");
-        PodMediaPrefixCache.Job job=cache.beginPreparation(uri,Math.max(512*1024,budget-TAIL_BYTES));
+        PodMediaPrefixCache.Job job=cache.beginPreparation(uri,budget);
         trace("started","none","none",job.entry);
         try {
             cache.prefetch(job);
             if(job.failure!=null)throw job.failure;
             PodMediaPrefixCache.backgroundTurn(job);
             PodMediaPrefixCache.Entry entry=job.entry;
-            int count=PodMediaPrefixMp4.tailBytes(cache,job,budget);
-            if(count<0){trace("complete","metadata_over_budget","none",entry);return new JSONObject().put("ready",false).put("prefixBytes",entry.file.length()).put("tailBytes",entry.tail().length());}
-            if(count==0&&entry.tail().length()>0)cache.saveTail(job,new byte[0],budget);
-            if(count>0&&entry.tail().length()!=count){
-                byte[] bytes=cache.loadRange(job,entry.length-count,count);
-                cache.saveTail(job,bytes,budget);
+            PodMediaPrefixMp4.cacheMetadata(cache,job);
+            // Unknown containers retain the legacy bounded suffix fallback.
+            byte[] magic=new byte[8];try(RandomAccessFile input=new RandomAccessFile(entry.file,"r")){if(input.length()>=8)input.readFully(magic);}
+            if(!(magic[4]=='f'&&magic[5]=='t'&&magic[6]=='y'&&magic[7]=='p')&&entry.length>entry.file.length()){
+                int tail=(int)Math.min(Math.min(TAIL_BYTES,budget/2),entry.length);cache.fitPreparation(job,Math.max(0,budget-tail));
+                cache.saveTail(job,cache.loadRange(job,entry.length-tail,tail),budget);
             }
-            cache.fitPreparation(job,budget);
+            int count=(int)entry.tail().length();
             JSONObject result=new JSONObject().put("ready",false).put("prefixBytes",entry.file.length()).put("tailBytes",entry.tail().length());
             long required=Math.min(entry.length,Math.min(job.budget,budget-entry.tail().length()));
-            if(entry.length<=0||entry.file.length()<required||entry.file.length()+entry.tail().length()>budget){trace("complete",entry.length<=0?"length_unknown":"prefix_incomplete","none",entry);return result;}
+            if(entry.length<=0||entry.file.length()<required||entry.file.length()+entry.tail().length()>PodMediaPrefixCache.MAX_ENTRY){trace("complete",entry.length<=0?"length_unknown":"prefix_incomplete","none",entry);return result;}
             PodMediaPrefixCache.backgroundTurn(job);
             Bitmap frame=decode(cache,entry);
             if(frame==null){trace("complete","frame_unavailable","none",entry);return result;}
