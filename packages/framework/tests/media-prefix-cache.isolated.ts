@@ -15,3 +15,12 @@ test('prefetch result events carry opaque identities, HTTP classification and ge
  for(const invalid of [{...value,itemToken:'https://secret'},{...value,generation:-1},{...value,httpStatus:900},{...value,category:'arbitrary'}]){events.push({t:'video.cache.result',value:invalid});__pumpPodEvents();}expect(seen).toHaveLength(1);
  off();events.push({t:'video.cache.result',value});__pumpPodEvents();expect(seen).toHaveLength(1);
 });
+test('persistent registration and preparation retain the media capability contract',async()=>{
+ const operations=[
+  [()=>mediaPrefixCache.register('stable','https://example.test/new',{},true),'video.cache.register',{uri:'podjs-media-cache://play/stable'}],
+  [()=>mediaPrefixCache.prepare('podjs-media-cache://play/stable',1048576,'frame'),'video.cache.prepare',{ready:true,prefixBytes:524288,tailBytes:524288}],
+  [()=>mediaPrefixCache.inspect('podjs-media-cache://play/stable'),'video.cache.inspect',{prefixBytes:524288,tailBytes:524288,length:10000000}],
+  [()=>mediaPrefixCache.remove('podjs-media-cache://play/stable'),'video.cache.remove',{}],
+ ] as const;
+ for(const [start,method,value] of operations){const op=start();const call=emitted.at(-1);expect(call.method).toBe(method);if(method==='video.cache.register')expect(call.args.persistent).toBe(true);events.push({t:'service.result',id:call.id,ok:true,value});__pumpPodEvents();expect(await op.result).toEqual(value as any);}
+});

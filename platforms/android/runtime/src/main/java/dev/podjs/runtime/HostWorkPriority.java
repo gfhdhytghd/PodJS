@@ -39,10 +39,11 @@ final class HostWorkPriority {
         private final boolean headless;
         private boolean cancelled, entered;
         Ticket(boolean headless) { this.headless = headless; }
-        void enter() throws InterruptedException {
+        void enter() throws InterruptedException { enter(() -> true); }
+        void enter(java.util.function.BooleanSupplier current) throws InterruptedException {
             synchronized (HostWorkPriority.this) {
-                while (!cancelled && (active != null || next() != this)) HostWorkPriority.this.wait();
-                if (cancelled || Thread.currentThread().isInterrupted()) { cancel(); throw new InterruptedException("Host work cancelled"); }
+                while (!cancelled && current.getAsBoolean() && (active != null || next() != this)) HostWorkPriority.this.wait(100);
+                if (cancelled || !current.getAsBoolean() || Thread.currentThread().isInterrupted()) { cancel(); throw new InterruptedException("Host work cancelled"); }
                 (headless ? background : foreground).remove(this);
                 entered = true; active = this;
                 foregroundBurst = headless ? 0 : foregroundBurst + 1;

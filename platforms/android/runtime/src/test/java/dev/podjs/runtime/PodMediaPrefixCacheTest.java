@@ -105,4 +105,53 @@ public class PodMediaPrefixCacheTest {
    c.setResultSink(events::add);String uri=register(c,"old");JSONObject window=window(uri,M);window.getJSONArray("items").getJSONObject(0).put("itemToken","old").put("generation",1);c.execute("video.cache.window",window);assertTrue(r.readEntered.await(2,TimeUnit.SECONDS));c.execute("video.cache.window",new JSONObject().put("items",new JSONArray()));r.block=false;Thread.sleep(50);assertTrue(events.isEmpty());
   }
  }
+ @Test public void persistentContentReRegistersAcrossRestartWithoutNetworkAndIgnoresRotatingAuth()throws Exception {
+  Remote r=new Remote(4096);File directory=root();String uri;
+  try(PodMediaPrefixCache c=new PodMediaPrefixCache(directory,r,6*M)){
+   uri=c.register("stable-rendition","https://example.test/old?expires=1",Map.of("Cookie","old"),true);
+   c.execute("video.cache.window",window(uri,M));idle(c);
+  }
+  r.opened.clear();
+  try(PodMediaPrefixCache c=new PodMediaPrefixCache(directory,r,6*M)){
+   String restored=c.register("stable-rendition","https://new.test/new?expires=2",Map.of("Cookie","new"),true);assertEquals(uri,restored);
+   DataSource d=c.factory(r).createDataSource();assertEquals(4096,d.open(new DataSpec(Uri.parse(restored))));assertArrayEquals(r.body,read(d,8192));d.close();
+   assertEquals(0,r.opened.size());assertEquals(4096,c.stats().getLong("cacheReadBytes"));
+  }
+ }
+ @Test public void persistentTailAndPrefixShareBudgetAndServeSeeksOffline()throws Exception {
+  Remote r=new Remote(5*M);File directory=root();String uri;
+  try(PodMediaPrefixCache c=new PodMediaPrefixCache(directory,r,6*M)){
+   uri=c.register("tail-rendition","https://example.test/old",Map.of(),true);
+   c.execute("video.cache.prepare",new JSONObject().put("uri",uri).put("bytes",4*M).put("frameKey","fixture"));
+   assertEquals(4*M,c.stats().getLong("bytes"));
+  }
+  r.opened.clear();try(PodMediaPrefixCache c=new PodMediaPrefixCache(directory,r,6*M)){
+   String restored=c.register("tail-rendition","https://example.test/fresh",Map.of(),true);DataSource d=c.factory(r).createDataSource();
+   d.open(new DataSpec.Builder().setUri(restored).setLength(1024).build());assertArrayEquals(Arrays.copyOf(r.body,1024),read(d,1024));d.close();
+   d.open(new DataSpec.Builder().setUri(restored).setPosition(5*M-1024).setLength(1024).build());assertArrayEquals(Arrays.copyOfRange(r.body,5*M-1024,5*M),read(d,1024));d.close();assertEquals(0,r.opened.size());
+  }
+ }
+ @Test public void backgroundPreparationOpensNoNetworkDuringForegroundAndCancelsWithoutPublishing()throws Exception {
+  Remote r=new Remote(M);Object foreground=new Object();HostWorkPriority.DEVICE.foregroundMedia(foreground,true);
+  ExecutorService worker=Executors.newSingleThreadExecutor();try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
+   String uri=c.register("priority","https://example.test/video",Map.of(),true);
+   Future<?> pending=worker.submit(()->{try{c.execute("video.cache.prepare",new JSONObject().put("uri",uri).put("bytes",M).put("frameKey","fixture"));}catch(Exception expected){}});
+   long end=System.currentTimeMillis()+2000;while(c.stats().getInt("activePrefetches")==0&&System.currentTimeMillis()<end)Thread.sleep(10);
+   assertEquals(1,c.stats().getInt("activePrefetches"));assertEquals(0,r.opened.size());
+   c.execute("video.cache.window",new JSONObject().put("items",new JSONArray()));
+   pending.get(2,TimeUnit.SECONDS);HostWorkPriority.DEVICE.foregroundMedia(foreground,false);assertEquals(0,r.opened.size());assertEquals(0,c.stats().getLong("bytes"));
+  }finally{HostWorkPriority.DEVICE.foregroundMedia(foreground,false);worker.shutdownNow();}
+ }
+
+ @Test public void persistentPreparationsEvictPrefixAndTailTogetherWithinBudget()throws Exception {
+  Remote r=new Remote(5*M);try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
+   for(int i=0;i<4;i++){
+    String uri=c.register("stock"+i,"https://example.test/"+i,Map.of(),true);
+    c.execute("video.cache.prepare",new JSONObject().put("uri",uri).put("bytes",2*M).put("frameKey","frame"+i));
+    assertTrue(c.stats().getLong("bytes")<=6*M);
+   }
+   assertEquals(3,c.stats().getInt("files"));assertEquals(6*M,c.stats().getLong("bytes"));
+  }
+ }
+
 }
