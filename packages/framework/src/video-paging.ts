@@ -8,8 +8,11 @@ export function shouldSettleVideoPager(progress:number,velocityY:number,directio
   if(Math.abs(velocityY)>=VIDEO_PAGER_MIN_FLING_VELOCITY)return direction==='up'?velocityY<0:velocityY>0;
   return progress>=VIDEO_PAGER_SNAP_POSITIONAL_THRESHOLD;
 }
+/** Commit within a 200ms gesture cadence, leaving time to decode the new
+ * neighbour. Cancellation keeps the slower rebound and never stops playback. */
+export function videoPagerSettleDuration(to:0|1){return to===1?96:VIDEO_PAGER_SETTLE_DURATION_MS;}
 export function videoPagerSettleProgress(from:number,to:0|1,elapsedMs:number){
-  const t=Math.max(0,Math.min(1,elapsedMs/VIDEO_PAGER_SETTLE_DURATION_MS));return from+(to-from)*(1-Math.pow(1-t,3));
+  const t=Math.max(0,Math.min(1,elapsedMs/videoPagerSettleDuration(to)));return from+(to-from)*(1-Math.pow(1-t,3));
 }
 export function videoPagerOffsets(progress:number,height:number,direction:VideoPagerDirection){
   const sign=direction==='up'?-1:1;return {outgoing:sign*progress*height,incoming:-sign*(1-progress)*height};

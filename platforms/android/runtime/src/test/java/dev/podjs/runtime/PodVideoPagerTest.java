@@ -24,6 +24,32 @@ public class PodVideoPagerTest {
   public void complete(JSONObject v){value=v;completed=SystemClock.uptimeMillis();}
   public void fail(String c,String m){error=c;}
  }
+ @Test public void releasePauseKeepsDecodedSurfaceAndCancelDoesNotRestart()throws Exception {
+  Context c=ApplicationProvider.getApplicationContext();PodVideoSessionServices service=new PodVideoSessionServices(c,new PodVideoDecoderBudget(3));
+  service.attachToParent(new FrameLayout(c));Shadows.shadowOf(Looper.getMainLooper()).idle();
+  Class<?> type=Class.forName("dev.podjs.runtime.PodVideoSessionServices$Session");Constructor<?> ctor=type.getDeclaredConstructor(PodVideoSessionServices.class,String.class);ctor.setAccessible(true);
+  @SuppressWarnings("unchecked") Map<String,Object> slots=(Map<String,Object>)f(PodVideoSessionServices.class,"sessions").get(service);
+  JSONObject bounds=new JSONObject().put("x",0).put("y",0).put("width",233).put("height",233);
+  ExoPlayer active=null;TextureView view=null;
+  try {
+   for(String id:new String[]{"active","warm"}){
+    Object slot=ctor.newInstance(service,id);slots.put(id,slot);ExoPlayer player=new ExoPlayer.Builder(c).build();
+    f(type,"player").set(slot,player);f(type,"audioPolicy").set(slot,new PodMediaAudioPolicy(c,player));f(type,"hasRenderedFirstFrame").set(slot,true);f(type,"prewarming").set(slot,id.equals("warm"));
+    service.dispatch("video.session.setBounds",new JSONObject().put("sessionId",id).put("bounds",bounds),new Result());
+    if(id.equals("active")){active=player;view=(TextureView)f(type,"videoView").get(slot);}
+   }
+   active.play();Object owner=slots.get("active"),layout=view.getLayoutParams();long generation=f(type,"generation").getLong(owner);
+   // A cancelled drag returns the same playing player and decoded surface.
+   for(double progress:new double[]{.4,0}){
+    Result r=new Result();service.dispatch("video.session.transition",new JSONObject().put("fromSessionId","active").put("toSessionId","warm").put("progress",progress).put("direction","up").put("bounds",bounds),r);assertNull(r.error);
+   }
+   assertTrue(active.getPlayWhenReady());assertSame(active,f(type,"player").get(owner));assertEquals(generation,f(type,"generation").getLong(owner));
+   // A committed release pauses immediately but leaves the strip frame intact.
+   long released=SystemClock.uptimeMillis();Result paused=new Result();service.dispatch("video.session.pause",new JSONObject().put("sessionId","active"),paused);
+   assertNull(paused.error);assertFalse(active.getPlayWhenReady());assertTrue(paused.completed-released<=100);assertTrue(paused.value.getBoolean("hasRenderedFirstFrame"));
+   assertSame(view,f(type,"videoView").get(owner));assertSame(layout,view.getLayoutParams());assertEquals(generation,f(type,"generation").getLong(owner));
+  } finally {service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();}
+ }
  @Test public void settledPromotionIsAtomicUnderRestoreReplies()throws Exception{
   Context c=ApplicationProvider.getApplicationContext();PodVideoSessionServices s=new PodVideoSessionServices(c,new PodVideoDecoderBudget(2));
   s.attachToParent(new FrameLayout(c));Shadows.shadowOf(Looper.getMainLooper()).idle();
