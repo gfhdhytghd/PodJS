@@ -22,6 +22,7 @@ class Model {
   release:async(id:string)=>{this.states.delete(id);return {sessionId:id,released:true};},
   state:async(id:string)=>this.states.get(id)!,
   setLoop:async(id:string)=>this.states.get(id)!,
+  setBounds:async(id:string,bounds:any)=>{const next={...this.states.get(id)!,presented:bounds.visible!==false};this.states.set(id,next);return next;},
   promote:(id:string,options:any)=>new Promise<VideoSessionState>(resolve=>this.later(16,()=>{const value={...this.states.get(id)!,prewarming:false,presented:true,state:'playing'};this.states.set(id,value);resolve(value);})),
   transition:async(options:any)=>({...options,composited:true}),
  } as unknown as VideoSessionPort;
@@ -105,4 +106,23 @@ test('DYFIX memory capacity recovers 3 to 2 to 1 to 3 without releasing foregrou
  expect(pool.hasStandby('2')).toBe(true);expect(pool.hasStandby('0')).toBe(true);expect(m.states.size).toBe(3);
  expect(m.prepareCount).toBe(5); // One foreground prepare, four neighbour prepares.
  await pool.releaseAll();expect(m.states.size).toBe(0);
+});
+
+test('initial foreground preparation overlaps navigation and is adopted without rebuilding its decoder',async()=>{
+ const m=new Model(),pool=new VideoSessionPool(m.port),value=source(1),config=options(1);
+ const prime=pool.prime(value,config);await m.advance(100);expect(m.prepareCount).toBe(1);
+ const opened=pool.prepare(value,config).result;expect(m.prepareCount).toBe(1);await m.advance(300);await Promise.all([prime.result,opened]);
+ expect(m.prepareCount).toBe(1);expect(m.states.size).toBe(1);await pool.releaseAll();expect(m.states.size).toBe(0);
+});
+test('releasing an initial reservation fences a late completion and changed media never adopts it',async()=>{
+ const m=new Model(),pool=new VideoSessionPool(m.port),prime=pool.prime(source(1),options(1));const rejected=prime.result.catch(()=>undefined);
+ await pool.releaseAll();await m.advance(400);await rejected;expect(m.states.size).toBe(0);
+ const again=pool.prime(source(1),options(1));await m.advance(400);await again.result;
+ const changed=pool.prepare(source(1),{...options(1),url:'https://fixture.invalid/new'}).result;await m.advance(400);await changed;expect(m.prepareCount).toBe(3);await pool.releaseAll();
+});
+
+test('an initial prepare failure retains its code and does not start a second decoder',async()=>{
+ const m=new Model(),error=Object.assign(Error('fixture'),{code:'decode_error'});m.port.prepare=()=>{m.prepareCount++;return {result:Promise.reject(error),cancel(){}};};
+ const pool=new VideoSessionPool(m.port),prime=pool.prime(source(1),options(1));const first=prime.result.catch(e=>e),opened=pool.prepare(source(1),options(1)).result.catch(e=>e);
+ expect(await first).toBe(error);expect(await opened).toBe(error);expect(m.prepareCount).toBe(1);await pool.releaseAll();
 });

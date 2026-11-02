@@ -26,6 +26,12 @@ final class PodMediaAudioPolicy implements AutoCloseable {
     private final AudioManager audio;
     private final Consumer<Float> output;
     private final Handler main = new Handler(Looper.getMainLooper());
+    private Consumer<Float> unityOutput;
+    private Consumer<Boolean> audioEnabled;
+    private Runnable volumeChanged=()->{};
+    private boolean systemVideo;
+    private Integer lastIndex,lastMax;
+    private Boolean lastMute;
     private float requestedVolume;
     private float appliedVolume;
     private boolean prewarming, closed;
@@ -73,6 +79,16 @@ final class PodMediaAudioPolicy implements AutoCloseable {
         }
     }
 
+    /** Video always uses unity gain. Speculative slots disable their audio track. */
+    PodMediaAudioPolicy(Context context, androidx.media3.exoplayer.ExoPlayer player) {
+        this(context, ignored -> {});
+        systemVideo=true;unityOutput=player::setVolume;
+        audioEnabled=enabled->player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon()
+                .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_AUDIO,!enabled).build());
+        player.setVolume(1f);
+    }
+    void observeVolume(Runnable changed) { volumeChanged=changed;refresh(); }
+
     void setVolume(float requestedVolume, boolean prewarming) {
         if (closed) return;
         this.requestedVolume = requestedVolume;
@@ -91,6 +107,18 @@ final class PodMediaAudioPolicy implements AutoCloseable {
     void refresh() {
         final long observedAt = SystemClock.uptimeMillis();
         if (closed) return;
+        if(systemVideo) {
+            int index=audio.getStreamVolume(AudioManager.STREAM_MUSIC),max=audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+            boolean muted=audio.isStreamMute(AudioManager.STREAM_MUSIC);
+            boolean changed=lastIndex==null||lastIndex!=index||lastMax!=max||lastMute!=muted;
+            boolean muteChanged=lastMute!=null&&lastMute!=muted;
+            lastIndex=index;lastMax=max;lastMute=muted;
+            unityOutput.accept(1f);audioEnabled.accept(!prewarming);
+            if(muteChanged&&!prewarming&&playing.getAsBoolean())try{muteObserver.changed(muted,observedAt);}catch(RuntimeException ignored){}
+            // System readback is not a player-gain mute receipt or audible PCM.
+            if(changed)volumeChanged.run();
+            return;
+        }
         boolean silent = audio.getRingerMode() != AudioManager.RINGER_MODE_NORMAL
                 || audio.isStreamMute(AudioManager.STREAM_MUSIC)
                 || audio.getStreamVolume(AudioManager.STREAM_MUSIC) == 0;

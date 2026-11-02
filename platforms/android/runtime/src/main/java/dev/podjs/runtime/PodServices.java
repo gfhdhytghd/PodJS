@@ -268,6 +268,10 @@ final class PodServices implements Closeable {
     void attachApprovedSync(PodSyncServices approvedSync) {
         worker.execute(() -> { if (!closed) sync = approvedSync; });
     }
+    void attachBenchmark(android.view.View view){
+        java.lang.ref.WeakReference<PodServices> owner=new java.lang.ref.WeakReference<>(this);
+        PodBenchmark.attach(view,seq->{PodServices current=owner.get();if(current!=null&&!current.closed)current.mediaPrefixCache.logFirstCardStats(seq);});
+    }
     void attachVideo(android.view.ViewGroup parent) { video.attachToParent(parent); videoSessions.attachToParent(parent); }
     void attachMediaSurfaces(android.view.ViewGroup parent,PodMediaSurfaceServices.TextureSink sink){mediaSurfaces.attach(parent,sink);}
     void attachInlineText(android.view.ViewGroup parent){inlineText.attach(parent);}
@@ -407,6 +411,7 @@ final class PodServices implements Closeable {
         if (method.startsWith("video.session.")) {
             request.videoSessionId=args.optString("sessionId",null);
             videoSessions.dispatch(method,args,new PodVideoSessionServices.Callback(){
+                public void volumeChanged(JSONObject value) { try { if(!closed)sink.complete(new JSONObject().put("t","video.audioChanged").put("value",value).toString()); } catch(Exception ignored) {} }
                 public void firstFrame(JSONObject value) { try { if(!closed)sink.complete(new JSONObject().put("t","video.firstFrame").put("value",value).toString()); } catch(Exception error) { android.util.Log.w("PodJS","Video first frame event unavailable"); } }
                 public void complete(JSONObject value){if(requests.remove(id,request))reply(id,true,value,null,null);}
                 public void fail(String code,String message){if(requests.remove(id,request))failure(id,code,message);}
@@ -418,6 +423,7 @@ final class PodServices implements Closeable {
         }
         if (method.startsWith("video.")) {
             video.dispatch(method, args, new PodVideoServices.Callback() {
+                public void volumeChanged(JSONObject value) { try { if(!closed)sink.complete(new JSONObject().put("t","video.audioChanged").put("value",value).toString()); } catch(Exception ignored) {} }
                 public void firstFrame(JSONObject value) { try { if(!closed)sink.complete(new JSONObject().put("t","video.firstFrame").put("value",value).toString()); } catch(Exception error) { android.util.Log.w("PodJS","Video first frame event unavailable"); } }
                 public void complete(JSONObject value) { if (requests.remove(id,request)) reply(id,true,value,null,null); }
                 public void fail(String code,String message) { if (requests.remove(id,request)) failure(id,code,message); }

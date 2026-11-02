@@ -35,7 +35,7 @@ public final class PodVideoPlaybackService extends MediaSessionService {
         long createStarted=android.os.SystemClock.elapsedRealtime();
         player=new ExoPlayer.Builder(this).setLoadControl(loadControl).build();
         android.util.Log.i("PodVideoTiming","playerCreated durationMs="+(android.os.SystemClock.elapsedRealtime()-createStarted));
-        audioPolicy=new PodMediaAudioPolicy(this, player::setVolume);
+        audioPolicy=new PodMediaAudioPolicy(this, player);
         audioPolicy.observeMuteChanges(player::isPlaying, player::getVolume, new PodVideoMuteTelemetry());
         session=new MediaSession.Builder(this,player).build();
         addSession(session);

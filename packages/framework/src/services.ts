@@ -333,12 +333,12 @@ export function onVideoFirstFrame(listener:(state:VideoState & {sessionId?:strin
   return __onHostEvent(event=>{if(event.t==='video.firstFrame'&&event.value&&typeof event.value==='object')listener(event.value as VideoState & {sessionId?:string});});
 }
 export interface VideoBounds { benchmark?:VideoBenchmarkAction; x:number; y:number; width:number; height:number; translateX?:number; translateY?:number; visible?:boolean; roundClip?:{cx:number;cy:number;radius:number} }
-export interface VideoPrepare { benchmark?:VideoBenchmarkAction; url?:string; videoUrl?:string; audioUrl?:string; type?:string; videoMime?:string; videoWidth?:number; videoHeight?:number; headers?:Record<string,string>; bounds:VideoBounds; autoplay?:boolean; muted?:boolean; loop?:boolean; backgroundPlayback?:boolean }
+export interface VideoPrepare { startupSeq?:number; benchmark?:VideoBenchmarkAction; url?:string; videoUrl?:string; audioUrl?:string; type?:string; videoMime?:string; videoWidth?:number; videoHeight?:number; headers?:Record<string,string>; bounds:VideoBounds; autoplay?:boolean; muted?:boolean; loop?:boolean; backgroundPlayback?:boolean }
 export interface VideoFrameSource {url?:string;videoUrl?:string;audioUrl?:string;headers?:Record<string,string>}
 export interface VideoFrame {available:true;kind:"actual_frame";path:string;width:number;height:number;positionMs:number;capturedAt:number;capturedGeneration:number}
 export interface VideoFrameCapture {key:string;source:VideoFrameSource;sourceGeneration:number}
 export interface VideoPlaybackMetrics { bytesLoaded:number; droppedFrames:number; rebufferCount:number; rebufferMs:number; firstByteMs?:number; firstFrameMs?:number; throughputBps?:number; [key:string]:number|undefined }
-export interface VideoState { bufferedMs?:number; networkStalled?:boolean; presented?:boolean; metrics?:VideoPlaybackMetrics; sourceGeneration?:number; /** Completed native repeats since prepare; seeks do not increment it. */ completedLoops?:number; loop?:boolean; hasRenderedFirstFrame?:boolean; errorCode?:string; ok:boolean; state:string; positionMs:number; durationMs:number; width:number; height:number; volume:number; volumeMax:number }
+export interface VideoState { volumeIndex?:number; muted?:boolean; appliedVolume?:number; audioTrackSelected?:boolean; bufferedMs?:number; networkStalled?:boolean; presented?:boolean; metrics?:VideoPlaybackMetrics; sourceGeneration?:number; /** Completed native repeats since prepare; seeks do not increment it. */ completedLoops?:number; loop?:boolean; hasRenderedFirstFrame?:boolean; errorCode?:string; ok:boolean; state:string; positionMs:number; durationMs:number; width:number; height:number; volume:number; volumeMax:number }
 export const video = {
   /** Capture only a rendered frame from the exact still-current source generation. */
   clearFrames():Promise<{removedFiles:number}> {return hostOperation<{removedFiles:number}>("video.frame.clear",{}).result;},
@@ -353,10 +353,11 @@ export const video = {
   stop(): Promise<VideoState> { return hostOperation<VideoState>("video.stop", {}).result; },
   setBounds(bounds:VideoBounds): Promise<VideoState> { return hostOperation<VideoState>("video.setBounds", bounds as unknown as Record<string,unknown>).result; },
   state(): Promise<VideoState> { return hostOperation<VideoState>("video.state", {}).result; },
-  captureBackdrop(): Promise<{ok:boolean}> { return hostOperation<{ok:boolean}>("video.captureBackdrop", {}).result; },
+  captureBackdrop(options: {opaque?:boolean} = {}): Promise<{ok:boolean}> { return hostOperation<{ok:boolean}>("video.captureBackdrop", options).result; },
   setTransform(transform:{rotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}): Promise<VideoState> { return hostOperation<VideoState>("video.setTransform", transform as Record<string,unknown>).result; },
   /** Change repeat mode on the current player without preparing or seeking. */
   setLoop(loop:boolean): Promise<VideoState> { return hostOperation<VideoState>("video.setLoop", {loop}).result; },
+  setMuted(muted:boolean):Promise<VideoState> { return hostOperation<VideoState>("video.setVolume",{muted}).result; },
   setVolume(volume:number): Promise<VideoState> { return hostOperation<VideoState>("video.setVolume", {volume}).result; },
 };
 
@@ -374,6 +375,8 @@ export interface VideoSessionPrepare extends Omit<VideoPrepare,"backgroundPlayba
   prewarm?:boolean;
 }
 export interface VideoSessionState {
+  volumeIndex?:number; volumeMax?:number;
+  appliedVolume?:number; audioTrackSelected?:boolean;
   bufferedMs?:number; networkStalled?:boolean;
   metrics?:VideoPlaybackMetrics;
   sourceGeneration?:number;
@@ -408,6 +411,7 @@ export const videoSessions = {
   state(sessionId:string):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.state",{sessionId}).result; },
   setTransform(sessionId:string,transform:{rotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setTransform",{sessionId,...transform}).result; },
   setLoop(sessionId:string,loop:boolean):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setLoop",{sessionId,loop}).result; },
+  setMuted(sessionId:string,muted:boolean):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setVolume",{sessionId,muted}).result; },
   setVolume(sessionId:string,volume:number):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setVolume",{sessionId,volume}).result; },
   /** Reveals the retained target first frame before hiding the replaced session. */
   promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean;benchmark?:VideoBenchmarkAction}={}):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.promote",{sessionId,...options}).result; },
@@ -876,3 +880,8 @@ export const debugExternal={
 
 /** Actual system capacity, or null when the device cannot report it. */
 export const battery = Object.freeze({percent:():Promise<number|null>=>hostOperation<number|null>("battery.percent",{}).result});
+
+/** System STREAM_MUSIC readback pushed by volume/mute broadcasts and settings changes. */
+export function onVideoAudioChanged(listener:(state:VideoState & {sessionId?:string})=>void):()=>void {
+ return __onHostEvent(event=>{if(event.t==='video.audioChanged'&&event.value&&typeof event.value==='object')listener(event.value as VideoState & {sessionId?:string});});
+}

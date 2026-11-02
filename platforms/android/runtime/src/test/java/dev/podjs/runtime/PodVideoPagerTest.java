@@ -100,4 +100,47 @@ public class PodVideoPagerTest {
   for(int mode:new int[]{android.media.AudioManager.RINGER_MODE_SILENT,android.media.AudioManager.RINGER_MODE_NORMAL}){audio.setRingerMode(mode);policy.refresh();assertEquals(0,p.getVolume(),.001f);assertFalse(p.getPlayWhenReady());}
   Result resumed=new Result();s.dispatch("video.play",new JSONObject(),resumed);assertNull(resumed.error);assertEquals(.6f,p.getVolume(),.001f);assertTrue(p.getPlayWhenReady());policy.close();s.close();Shadows.shadowOf(Looper.getMainLooper()).idle();
  }
+
+ @Test public void terminalForegroundFailureKeepsOriginalCodeAndReleasesDecoderForPolling()throws Exception {
+  Context c=ApplicationProvider.getApplicationContext();PodVideoDecoderBudget budget=new PodVideoDecoderBudget(3);PodVideoSessionServices service=new PodVideoSessionServices(c,budget);
+  service.attachToParent(new FrameLayout(c));Shadows.shadowOf(Looper.getMainLooper()).idle();
+  Class<?> type=Class.forName("dev.podjs.runtime.PodVideoSessionServices$Session");Constructor<?> ctor=type.getDeclaredConstructor(PodVideoSessionServices.class,String.class);ctor.setAccessible(true);
+  Object active=ctor.newInstance(service,"active");ExoPlayer player=new ExoPlayer.Builder(c).build();f(type,"player").set(active,player);f(type,"prewarming").set(active,false);assertTrue(budget.acquire());f(type,"decoderLease").set(active,true);
+  @SuppressWarnings("unchecked") Map<String,Object> slots=(Map<String,Object>)f(PodVideoSessionServices.class,"sessions").get(service);slots.put("active",active);
+  Method fail=PodVideoSessionServices.class.getDeclaredMethod("failPrepare",type,ExoPlayer.class,long.class,String.class,String.class,boolean.class);fail.setAccessible(true);fail.invoke(service,active,player,f(type,"generation").getLong(active),"decode_error","PRIVATE",false);
+  Result result=new Result();service.dispatch("video.session.state",new JSONObject().put("sessionId","active"),result);Shadows.shadowOf(Looper.getMainLooper()).idle();
+  assertNull(result.error);assertEquals("error",result.value.getString("state"));assertEquals("decode_error",result.value.getString("errorCode"));assertEquals(0,budget.inUse());assertNull(f(type,"player").get(active));
+  service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();
+ }
+ @Test public void immersiveFloorIsOpaqueStationaryAndNeverCapturesEntryPixels()throws Exception {
+  Context c=ApplicationProvider.getApplicationContext();FrameLayout host=new FrameLayout(c);
+  host.layout(0,0,466,466);host.setBackgroundColor(android.graphics.Color.MAGENTA);
+  PodVideoServices service=new PodVideoServices(c);service.attachToParent(host);Shadows.shadowOf(Looper.getMainLooper()).idle();
+  Result capture=new Result();service.dispatch("video.captureBackdrop",new JSONObject().put("opaque",true),capture);Shadows.shadowOf(Looper.getMainLooper()).idle();
+  assertNull(capture.error);assertNotNull(capture.value);
+  android.widget.ImageView floor=(android.widget.ImageView)f(PodVideoServices.class,"backdrop").get(service);
+  android.graphics.Bitmap bitmap=(android.graphics.Bitmap)f(PodVideoServices.class,"backdropBitmap").get(service);
+  assertEquals(android.graphics.Color.BLACK,bitmap.getPixel(0,0));assertEquals(1,bitmap.getWidth());
+  assertEquals(0,host.indexOfChild(floor));assertEquals(-1,floor.getLayoutParams().width);assertEquals(-1,floor.getLayoutParams().height);
+  for(int offset:new int[]{-200,0,200}){
+   Result bounds=new Result();service.dispatch("video.setBounds",new JSONObject().put("x",0).put("y",0).put("width",233).put("height",233).put("translateY",offset).put("visible",true),bounds);Shadows.shadowOf(Looper.getMainLooper()).idle();
+   assertNull(bounds.error);assertEquals(android.view.View.VISIBLE,floor.getVisibility());assertEquals(1f,floor.getAlpha(),0f);assertEquals(0f,floor.getTranslationY(),0f);assertFalse(floor.getClipToOutline());
+  }
+  // Preparing textures can be transparent. The fixed full-parent black floor
+  // still covers both edges and the absent/unready incoming slot.
+  assertEquals(0f,((TextureView)f(PodVideoServices.class,"videoView").get(service)).getAlpha(),0f);
+  service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();assertTrue(bitmap.isRecycled());
+ }
+
+ @Test public void hiddenForegroundReservationRetainsTheSameSurfaceUntilNavigationShowsIt()throws Exception {
+  Context c=ApplicationProvider.getApplicationContext();PodVideoSessionServices service=new PodVideoSessionServices(c,new PodVideoDecoderBudget(3));service.attachToParent(new FrameLayout(c));Shadows.shadowOf(Looper.getMainLooper()).idle();
+  Class<?> type=Class.forName("dev.podjs.runtime.PodVideoSessionServices$Session");Constructor<?> ctor=type.getDeclaredConstructor(PodVideoSessionServices.class,String.class);ctor.setAccessible(true);Object session=ctor.newInstance(service,"reserved");
+  @SuppressWarnings("unchecked") Map<String,Object> slots=(Map<String,Object>)f(PodVideoSessionServices.class,"sessions").get(service);slots.put("reserved",session);ExoPlayer player=new ExoPlayer.Builder(c).build();f(type,"player").set(session,player);f(type,"hasRenderedFirstFrame").set(session,true);
+  TextureView texture=(TextureView)f(type,"videoView").get(session);long generation=f(type,"generation").getLong(session);
+  JSONObject bounds=new JSONObject().put("x",0).put("y",0).put("width",233).put("height",233).put("visible",false);
+  service.dispatch("video.session.setBounds",new JSONObject().put("sessionId","reserved").put("bounds",bounds),new Result());Shadows.shadowOf(Looper.getMainLooper()).idle();
+  assertEquals(android.view.View.VISIBLE,texture.getVisibility());assertTrue(texture.getTranslationY()>233);assertEquals(.01f,texture.getAlpha(),.001f);assertFalse(player.getPlayWhenReady());
+  bounds.put("visible",true);service.dispatch("video.session.setBounds",new JSONObject().put("sessionId","reserved").put("bounds",bounds),new Result());Shadows.shadowOf(Looper.getMainLooper()).idle();
+  assertSame(texture,f(type,"videoView").get(session));assertEquals(generation,f(type,"generation").getLong(session));assertEquals(0,texture.getTranslationY(),.001f);assertEquals(1,texture.getAlpha(),.001f);service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();
+ }
 }

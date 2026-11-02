@@ -69,6 +69,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     private ViewGroup parent;
     private boolean closed;
     private boolean lifecyclePaused;
+    private int lastMemoryLimit=3;
     private float density;
     private PodVideoDecoderCapabilities.Profile lastProfile;
     private PodVideoDecoderCapabilities.Result lastCapability;
@@ -104,7 +105,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         ActivityManager manager=(ActivityManager)context.getSystemService(Context.ACTIVITY_SERVICE);
         if(manager!=null)manager.getMemoryInfo(info);
         long system=manager==null?0:Math.max(0,info.availMem-info.threshold);
-        return Math.min(decoderBudget.limit(),memoryBudget.limit(system,info.lowMemory,bytes,decoderBudget.inUse(),Math.max(0,decoderBudget.inUse()-resident)));
+        lastMemoryLimit=Math.min(decoderBudget.limit(),memoryBudget.limit(system,info.lowMemory,bytes,decoderBudget.inUse(),Math.max(0,decoderBudget.inUse()-resident)));return lastMemoryLimit;
     }
     private int enforceMemoryBudget(PodVideoDecoderCapabilities.Profile requested) {
         int limit=memoryLimit(requested);
@@ -166,6 +167,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                     default: callback.fail("unsupported_method", "Unsupported video session method: " + method);
                 }
             } catch (Exception error) {
+                PodVideoFailure.record("sessions",PodVideoFailure.stage(method),errorCode(error),error,args,decoderBudget.inUse(),lastMemoryLimit,parent==null?"missing":parent.isAttachedToWindow()?"attached":"detached","unknown");
                 callback.fail(errorCode(error), error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage());
             }
         });
@@ -211,6 +213,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     }
 
     private void prepare(JSONObject args, Callback callback) throws Exception {
+        if(!args.optBoolean("prewarm",false))PodBenchmark.startup(args.optLong("startupSeq",0),"prepare_start");
         if (parent == null) throw new IllegalStateException("video_surface_unavailable");
         if (args.optBoolean("backgroundPlayback", false)) throw new IllegalArgumentException("background_playback_unsupported");
         String id = sessionId(args, "sessionId");
@@ -229,7 +232,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         Session existing=sessions.get(id);
         if(prewarming&&decoderBudget.inUse()-(existing!=null&&existing.decoderLease?1:0)>=memoryLimit)
             throw new IllegalStateException("video_decoder_limit");
-        PodVideoAnalytics analytics=new PodVideoAnalytics();
+        PodVideoAnalytics analytics=new PodVideoAnalytics();analytics.startupSeq=args.optBoolean("prewarm",false)?0:args.optLong("startupSeq",0);
         MediaSource source = mediaSource(args,analytics);
         Session session = sessions.get(id);
         boolean created = false;
@@ -257,8 +260,8 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         if(!prewarming)mediaGate(true);
         session.profile = profile;
         session.autoplay = args.optBoolean("autoplay", true);
-        session.muted = args.optBoolean("muted", false);
-        session.volume = session.muted ? 0f : 1f;
+        // Old private muted/volume arguments must not survive a new session.
+
         session.errorCode = null;
         session.state = "preparing";
         session.hasRenderedFirstFrame = false;
@@ -275,7 +278,9 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         try {
             player = new ExoPlayer.Builder(context).setLoadControl(loadControl).build();
             session.player = player;
-            session.audioPolicy = new PodMediaAudioPolicy(context, player::setVolume);
+            session.audioPolicy = new PodMediaAudioPolicy(context, player);
+            final Session audioOwner=session;
+            session.audioPolicy.observeVolume(()->{if(!audioOwner.prewarming&&!audioOwner.disposed)try{callback.volumeChanged(audioOwner.snapshot());}catch(Exception ignored){}});
             session.audioPolicy.observeMuteChanges(player::isPlaying, player::getVolume, new PodVideoMuteTelemetry());
         }
         catch (RuntimeException error) {
@@ -288,7 +293,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         player.setAudioAttributes(mediaAudioAttributes(), !session.prewarming);
         session.completedLoops = 0;
         player.setRepeatMode(args.optBoolean("loop", false) ? Player.REPEAT_MODE_ONE : Player.REPEAT_MODE_OFF);
-        session.audioPolicy.setVolume(session.volume, session.prewarming);
+        session.audioPolicy.setVolume(1f, session.prewarming);
         player.addListener(new Player.Listener() {
             @Override public void onVideoSizeChanged(androidx.media3.common.VideoSize size) {
                 if (own.matches(player, generation)) {
@@ -339,6 +344,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             @Override public void onRenderedFirstFrame() {
                 if (!own.matches(player, generation)) return;
                 own.hasRenderedFirstFrame = true;
+                if(!own.prewarming&&mediaPrefixCache!=null)mediaPrefixCache.logPlaybackStats();
                 try { callback.firstFrame(own.snapshot()); } catch (Exception ignored) { }
                 if (own.prewarming) {
                     player.pause();
@@ -356,6 +362,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                         || error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED
                         || error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED;
                 String code = PodVideoAnalytics.errorCode(error);
+                PodVideoFailure.record("sessions",own.prepareCallback==null?"playback":"prepare",code,error,own.frameSource,decoderBudget.inUse(),lastMemoryLimit,own.videoView==null?"missing":own.videoView.isAttachedToWindow()?"attached":"detached",own.analytics==null?"unknown":own.analytics.contentKind());
                 if ("network_error".equals(code) && own.prepareCallback == null) {
                     // Retain the terminal state for polling, but release decoder/player resources.
                     own.errorCode = code; own.state = "error"; own.resetPlayer(); own.hideOffscreen();
@@ -384,6 +391,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     private void failPrepare(Session session, ExoPlayer player, long generation, String code, String message, boolean downgrade) {
         if (!session.matches(player, generation)) return;
         if(!session.prewarming)mediaGate(false);
+        if(code.equals("timeout")||code.equals("resource_exhausted"))PodVideoFailure.record("sessions","prepare",code,null,session.frameSource,decoderBudget.inUse(),lastMemoryLimit,session.videoView==null?"missing":session.videoView.isAttachedToWindow()?"attached":"detached",session.analytics==null?"unknown":session.analytics.contentKind());
         Callback pending = session.takePrepareCallback();
         PodVideoDecoderCapabilities.Profile profile = session.profile;
         if (downgrade && profile != null && profile.known()) {
@@ -394,9 +402,9 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             lastCapability = new PodVideoDecoderCapabilities.Result(profile, probed.decoderName,
                     probed.advertisedInstances, 1, probed.sizeSupported, true);
         }
-        session.state = "error";
-        if (sessions.get(session.id) == session) sessions.remove(session.id);
-        session.close();
+        session.state = "error";session.errorCode=code;
+        if(session.prewarming){if(sessions.get(session.id)==session)sessions.remove(session.id);session.close();}
+        else {session.resetPlayer();session.hideOffscreen();}
         if (pending != null) pending.fail(code, message);
     }
 
@@ -414,7 +422,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         session.prewarming = false;
         mediaGate(!lifecyclePaused);
         session.player.setAudioAttributes(mediaAudioAttributes(), true);
-        session.audioPolicy.setVolume(session.volume, false);
+        session.audioPolicy.setVolume(1f, false);
         if (!lifecyclePaused) session.player.play();
         session.state = lifecyclePaused ? "paused" : "playing";
         callback.complete(session.snapshot());
@@ -460,6 +468,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         Session session = require(args);
         Bounds bounds = Bounds.read(args.optJSONObject("bounds"), density, true);
         session.bounds = bounds; session.applyBounds(bounds);
+        if(!session.prewarming)session.presented=bounds.visible;
         if (session.presented) session.showPresented(); else session.hideOffscreen();
         callback.complete(session.snapshot());
     }
@@ -485,10 +494,8 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
 
     private void setVolume(JSONObject args, Callback callback) throws Exception {
         Session session = require(args);
-        if (!args.has("volume")) throw new IllegalArgumentException("invalid_volume");
-        float volume = finite(args, "volume", -1, 0, 1);
-        session.volume = volume; session.muted = volume == 0f;
-        if (session.audioPolicy != null) session.audioPolicy.setVolume(volume, session.prewarming);
+        PodVideoSystemAudio.update(context,args);
+        if (session.audioPolicy != null) session.audioPolicy.refresh();
         callback.complete(session.snapshot());
     }
 
@@ -513,7 +520,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         target.showPresented();
         boolean autoplay = args.optBoolean("autoplay", true);
         target.player.setAudioAttributes(mediaAudioAttributes(), true);
-        target.audioPolicy.setVolume(target.volume, false);
+        target.audioPolicy.setVolume(1f, false);
         if (autoplay && !lifecyclePaused) { target.player.play(); target.state = "playing"; }
         else { target.player.pause(); target.state = "paused"; }
         PodBenchmark.VideoAction action=PodBenchmark.videoAction(args);
@@ -703,8 +710,8 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         String state = "idle";
         String errorCode;
         String scaleMode = "standard";
-        float rotationDeg, panX, panY, volume = 1f;
-        boolean decoderLease, prewarming, autoplay, muted, presented, hasRenderedFirstFrame, disposed;
+        float rotationDeg, panX, panY;
+        boolean decoderLease, prewarming, autoplay, presented, hasRenderedFirstFrame, disposed;
         long generation, completedLoops;
         JSONObject frameSource;
         PodVideoAnalytics analytics;
@@ -818,7 +825,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         void retire() {
             Callback pending=takePrepareCallback();
             if(pending!=null) { resetPlayer();pending.fail("cancelled","Video session retired"); }
-            if(player != null) { if(audioPolicy!=null)audioPolicy.setHeldMuted(true);else player.setVolume(0f); player.pause(); }
+            if(player != null) { if(audioPolicy!=null)audioPolicy.setHeldMuted(true);else player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_AUDIO,true).build()); player.pause(); }
             prewarming=true; presented=false;
             if(player != null) state="prewarmed";
             hideOffscreen();
@@ -826,6 +833,8 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
 
         void showPresented() {
             if (bounds == null) return;
+            // A hidden foreground reservation still needs its decoded TextureView.
+            if(!bounds.visible){hideOffscreen();return;}
             setTranslation(bounds.translateXPx, bounds.translateYPx);
             videoView.setAlpha(1f);
             videoView.setVisibility(bounds.visible ? View.VISIBLE : View.GONE);
@@ -853,21 +862,20 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         }
 
         JSONObject snapshot() throws Exception {
-            return new JSONObject()
-                    .put("metrics",analytics==null?null:analytics.snapshot()).put("ok", true).put("sessionId", id).put("state", state).put("errorCode", "error".equals(state) ? errorCode : null)
+            return PodVideoSystemAudio.snapshot(context,new JSONObject()
+                    .put("appliedVolume",player==null?null:player.getVolume()).put("audioTrackSelected",player!=null&&player.getAudioFormat()!=null).put("metrics",analytics==null?null:analytics.snapshot()).put("ok", true).put("sessionId", id).put("state", state).put("errorCode", "error".equals(state) ? errorCode : null)
                     .put("positionMs", player == null ? 0 : player.getCurrentPosition())
                     .put("bufferedMs",player==null?0:Math.max(0,player.getBufferedPosition()-player.getCurrentPosition()))
                     .put("networkStalled",analytics!=null&&analytics.networkStalled())
                     .put("durationMs", player == null ? 0 : Math.max(0, player.getDuration()))
                     .put("width", player == null ? 0 : player.getVideoSize().width)
                     .put("height", player == null ? 0 : player.getVideoSize().height)
-                    .put("muted", prewarming || volume == 0f)
-                    .put("volume", volume)
+
                     .put("prewarming", prewarming)
                     .put("presented", presented)
                     .put("hasRenderedFirstFrame", hasRenderedFirstFrame)
                     .put("sourceGeneration",generation).put("completedLoops", completedLoops).put("loop", player!=null && player.getRepeatMode()==Player.REPEAT_MODE_ONE)
-                    .put("targetBufferBytes", TARGET_BUFFER_BYTES);
+                    .put("targetBufferBytes", TARGET_BUFFER_BYTES));
         }
 
         @Override public void close() {

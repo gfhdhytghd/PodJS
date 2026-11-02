@@ -16,13 +16,18 @@ final class PodBenchmark {
     private static final long MAX=9_007_199_254_740_991L;
     private static long sequence;
     private static WeakReference<View> surface=new WeakReference<>(null);
-    private static final Set<String> CODES=new HashSet<>(Arrays.asList(("douyin_request entry_start home_entry first_card refresh_start refresh_done player_visible gesture_down gesture_release previous_audio_stopped incoming_first_frame spinner_shown snap_back fling_done mute_changed player_audio_applied mixer_match login_entry login_tap qr_ready scan_accepted auth_persisted logout_start logout_feedback auth_cleared auth_state needs_login refreshing restore_state renderer_process prewarm_requested prewarm_ready prewarm_evicted prewarm_policy background_gate error_page error").split(" ")));
+    private static final Set<String> CODES=new HashSet<>(Arrays.asList(("startup_stage home_first_frame douyin_request entry_start home_entry first_card refresh_start refresh_done player_visible gesture_down gesture_release previous_audio_stopped incoming_first_frame spinner_shown snap_back fling_done mute_changed player_audio_applied mixer_match login_entry login_tap qr_ready scan_accepted auth_persisted logout_start logout_feedback auth_cleared auth_state needs_login refreshing restore_state renderer_process prewarm_requested prewarm_ready prewarm_evicted prewarm_policy background_gate error_page error").split(" ")));
     private static final Set<String> NUMBERS=new HashSet<>(Arrays.asList("seq","attempt","delta","generation","source_generation","pid","active_tracks","buffered_ms","slots","http_status","retry_after_ms"));
     private static final Set<String> AUTH=new HashSet<>(Arrays.asList("login_entry","login_tap","qr_ready","scan_accepted","auth_persisted","renderer_process"));
-    private static final Set<String> PRESENTED=new HashSet<>(Arrays.asList("first_card","refresh_done","qr_ready","logout_feedback","needs_login","refreshing","spinner_shown"));
+    private static final Set<String> PRESENTED=new HashSet<>(Arrays.asList("home_first_frame","first_card","refresh_done","qr_ready","logout_feedback","needs_login","refreshing","spinner_shown"));
     private static final Set<String> PROOF=new HashSet<>(Arrays.asList("incoming_first_frame","snap_back","previous_audio_stopped","player_audio_applied","mixer_match","fling_done"));
     private static final LinkedHashMap<Long,Set<String>> actions=new LinkedHashMap<>();
-    static void attach(View view){surface=new WeakReference<>(view);}
+    private static java.util.function.LongConsumer firstCardStats=seq->{};
+    private static long startupSequence;
+    static void attach(View view){attach(view,seq->{});}
+    static void attach(View view,java.util.function.LongConsumer stats){firstCardStats=stats;surface=new WeakReference<>(view);if(view!=null&&startupSequence==0)try{startupSequence=begin("startup_stage",new JSONObject().put("startup_stage","process_start"),android.os.Process.getStartUptimeMillis());}catch(Exception ignored){}}
+    static void startup(long seq,String stage){if(seq>0)try{mark("startup_stage",seq,new JSONObject().put("startup_stage",stage));}catch(Exception ignored){}}
+
     static long begin(String code,JSONObject fields){return begin(code,fields,SystemClock.uptimeMillis());}
     /** Native observers can preserve an uptime captured before applying policy. Guest cannot set it. */
     static synchronized long begin(String code,JSONObject fields,long now){
@@ -65,12 +70,28 @@ final class PodBenchmark {
                 for(String key:Arrays.asList("category","http_status","douyin_status_code","challenge","signing_ok","cookie_present","retry_after_ms","error_code"))if(!args.has(key))return false;
                 if(args.length()!=10||integer(args,"http_status")>599)return false;
             }
+            if(code.equals("player_visible")&&args.optString("state").equals("present")){
+                View view=surface.get();
+                if(view==null||!view.isShown())args.put("state","absent").put("visibility_reason","native_hidden");
+                else if(!view.hasWindowFocus())args.put("state","absent").put("visibility_reason","native_unfocused");
+            }
             StringBuilder line=new StringBuilder("code=").append(code).append(" seq=").append(seq).append(" mono_ms=").append(now);
             TreeSet<String> keys=new TreeSet<>();args.keys().forEachRemaining(keys::add);
             for(String key:keys){
                 if(key.equals("code")||key.equals("seq"))continue;
                 Object value=args.get(key);
-                if(NUMBERS.contains(key)){long n=integer(args,key);if((key.equals("delta")&&n>2)||(key.equals("pid")&&n>4_194_304)||(key.equals("active_tracks")&&n>4096))return false;}
+                if(NUMBERS.contains(key)){long n=integer(args,key);if(code.equals("startup_stage")&&key.equals("slots")&&(!args.optString("startup_stage").equals("stock_saved")||n>3))return false;if((key.equals("delta")&&n>2)||(key.equals("pid")&&n>4_194_304)||(key.equals("active_tracks")&&n>4096))return false;}
+                else if(key.equals("startup_stage")){if(!code.equals("startup_stage")||!Arrays.asList("stock_saved","process_start","home_mounted","home_tap","entry_mounted","play_tap","headers_ready","preview_start","preview_ready","source_ready","persist_start","persist_done","backdrop_start","backdrop_done","player_mounted","prepare_start","decoder_configured","decoded_first_frame").contains(value))return false;}
+                else if(key.equals("duration_ms")){if(!code.equals("startup_stage")||integer(args,key)>600000)return false;}
+                else if(key.equals("visibility_reason")){if(!code.equals("player_visible")||!Arrays.asList("ready","inactive","route_offset","lifecycle","player_error","network_prompt","native_hidden","native_unfocused").contains(value))return false;}
+                else if(key.equals("player_state")){if(!code.equals("player_visible")||!Arrays.asList("idle","preparing","buffering","ready","playing","paused","ended","stopped","error","unknown").contains(value))return false;}
+                else if(key.equals("system_index")||key.equals("system_max")){if(!code.equals("player_visible")||integer(args,key)>1024)return false;}
+                else if(key.equals("system_muted")){if(!code.equals("player_visible")||!(value instanceof Boolean))return false;}
+                else if(key.equals("audio_gain_milli")){if(!code.equals("player_visible")||integer(args,key)>1000)return false;}
+                else if(key.equals("audio_track")){if(!code.equals("player_visible")||!(value instanceof Boolean))return false;}
+                else if(key.equals("has_frame")){if(!code.equals("player_visible")||!(value instanceof Boolean))return false;}
+                else if(key.equals("offset_abs_milli")){if(!code.equals("player_visible")||integer(args,key)>1000000000L)return false;}
+                else if(PodVideoFailure.field(key)){if(!(code.equals("error")||code.equals("error_page"))||!PodVideoFailure.accept(key,value))return false;}
                 else if(key.equals("douyin_status_code")){if(!code.equals("douyin_request")||!(value instanceof Number))return false;double n=((Number)value).doubleValue();if(!Double.isFinite(n)||n!=((Number)value).longValue()||n < -1||n>Integer.MAX_VALUE)return false;}
                 else if(key.equals("category")){if(!code.equals("douyin_request")||!Arrays.asList("feed","detail","auth_probe","media").contains(value))return false;}
                 else if(key.equals("error_code")){if(!code.equals("douyin_request")||!Arrays.asList("success","forbidden","http","signing","challenge","empty","blocked","api_status","timeout","cancelled","network","cooldown","client_limit","decode").contains(value))return false;}
@@ -97,7 +118,10 @@ final class PodBenchmark {
     static boolean present(View view,JSONObject event,BooleanSupplier guard){
         if(view==null||!view.isAttachedToWindow()||!view.isHardwareAccelerated()||!view.getViewTreeObserver().isAlive())return false;
         view.getViewTreeObserver().registerFrameCommitCallback(()->{
-            if(view.isAttachedToWindow()&&view.isShown()&&view.hasWindowFocus()&&view.getAlpha()>0&&guard.getAsBoolean())emit(event,SystemClock.uptimeMillis());
+            if(view.isAttachedToWindow()&&view.isShown()&&view.hasWindowFocus()&&view.getAlpha()>0&&guard.getAsBoolean()){
+                if(event.optString("code").equals("first_card")&&surface.get()==view)try{firstCardStats.accept(event.optLong("seq",0));}catch(Exception ignored){}
+                emit(event,SystemClock.uptimeMillis());
+            }
         });
         view.invalidate();return true;
     }

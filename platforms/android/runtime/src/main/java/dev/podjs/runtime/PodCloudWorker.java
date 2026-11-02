@@ -34,6 +34,11 @@ public final class PodCloudWorker extends Worker {
         for(String line:text.split("\\n")){int at=line.indexOf('{');if(at<0)continue;
             try{JSONObject row=new JSONObject(line.substring(at));String event=row.optString("event"),phase=CloudWorkerOutcome.guestStage(row.optString("stage")),outcome=row.optString("outcome");
                 String code=CloudWorkerOutcome.guestCode(row.optString("code"));
+                if("restore_progress".equals(event)){
+                    String progress=RestoreProgressDiagnostic.format(row);
+                    if(progress!=null)android.util.Log.i("PodJSCloudWorker",progress);
+                    continue;
+                }
                 if("host-callsite-summary".equals(event)){
                     org.json.JSONArray counts=row.getJSONArray("counts"),bands=row.getJSONArray("bands");
                     if(counts.length()>128||bands.length()!=6)continue;

@@ -78,8 +78,10 @@ export class CrownVolumeController {
             if(generation!==this.generation)continue;
             this.observed=readback;
           }
-          const progress=actual.max<=actual.min?0:clamp(f(f(this.virtual-actual.min)/f(actual.max-actual.min)),0,1);
-          const percent=Math.round(f(progress*100));
+          // Fractional motion belongs to the guard only. Display the actual
+          // active output readback, including any clamp applied by Android.
+          const readback=this.observed??actual;
+          const percent=readback.max<=0?0:Math.round(clamp(readback.current/readback.max,0,1)*100);
           this.changed({visible:true,percent});this.hide?.();
           this.hide=this.clock.after(this.profile.hideMs,()=>{this.hide=undefined;this.changed({visible:false,percent});});
         }catch(error){

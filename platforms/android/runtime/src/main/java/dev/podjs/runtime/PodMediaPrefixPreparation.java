@@ -18,6 +18,7 @@ final class PodMediaPrefixPreparation {
         String key=PodVideoFrameCache.key(new JSONObject().put("key",args.getString("frameKey")));
         String uri=args.getString("uri");
         PodMediaPrefixCache.Job job=cache.beginPreparation(uri,Math.max(512*1024,budget-TAIL_BYTES));
+        trace("started","none","none",job.entry);
         try {
             cache.prefetch(job);
             PodMediaPrefixCache.backgroundTurn(job);
@@ -37,10 +38,10 @@ final class PodMediaPrefixPreparation {
                 }
             }
             JSONObject result=new JSONObject().put("ready",false).put("prefixBytes",entry.file.length()).put("tailBytes",entry.tail().length());
-            if(entry.length<=0||entry.file.length()<Math.min(entry.length,job.budget))return result;
+            if(entry.length<=0||entry.file.length()<Math.min(entry.length,job.budget)){trace("complete",entry.length<=0?"length_unknown":"prefix_incomplete","none",entry);return result;}
             PodMediaPrefixCache.backgroundTurn(job);
             Bitmap frame=decode(cache,entry);
-            if(frame==null)return result;
+            if(frame==null){trace("complete","frame_unavailable","none",entry);return result;}
             try {
                 PodMediaPrefixCache.backgroundTurn(job);
                 String binding=PodVideoFrameCache.binding(new JSONObject().put("url",uri),cache);
@@ -49,9 +50,13 @@ final class PodMediaPrefixPreparation {
                     if(!job.current())throw new IOException("preparation_cancelled");
                     saved=new PodVideoFrameCache(cache.frameRoot).save(key,binding,0,0,frame);
                 }
-                return result.put("ready",true).put("frame",saved);
+                trace("complete","ready","none",entry);return result.put("ready",true).put("frame",saved);
             }finally{frame.recycle();}
-        }finally{cache.endPreparation(job);}
+        }catch(Exception error){trace("failed",error.getMessage()!=null&&error.getMessage().contains("cancelled")?"cancelled":"prepare_failure",kind(error),job.entry);throw error;}finally{cache.endPreparation(job);}
+    }
+    private static String kind(Throwable error){return error instanceof java.io.IOException?"io":error instanceof IllegalArgumentException?"illegal_argument":error instanceof IllegalStateException?"illegal_state":error instanceof SecurityException?"security":"runtime";}
+    private static void trace(String phase,String reason,String kind,PodMediaPrefixCache.Entry entry){
+        android.util.Log.i("PodMediaCache","stock_prepare phase="+phase+" reason="+reason+" exception_kind="+kind+" prefixBytes="+entry.file.length()+" tailBytes="+entry.tail().length()+" totalBytes="+Math.max(0,entry.length));
     }
     private static Bitmap decode(PodMediaPrefixCache cache,PodMediaPrefixCache.Entry entry)throws Exception {
         try(MediaDataSource bytes=new MediaDataSource(){
@@ -59,13 +64,13 @@ final class PodMediaPrefixPreparation {
             public int readAt(long position,byte[] target,int offset,int size)throws IOException {
                 if(position>=entry.length)return -1;
                 int n=cache.read(entry,position,target,offset,size);
-                if(n<=0)throw new IOException("uncached_media_gap");return n;
+                if(n<=0){trace("decode","uncached_gap","io",entry);throw new IOException("uncached_media_gap");}return n;
             }
             public void close(){}
         }){
             MediaMetadataRetriever decoder=new MediaMetadataRetriever();
             try{decoder.setDataSource(bytes);return decoder.getScaledFrameAtTime(0,MediaMetadataRetriever.OPTION_CLOSEST_SYNC,320,320);}
-            catch(RuntimeException unavailable){return null;}
+            catch(RuntimeException unavailable){trace("decode","decoder_failure",kind(unavailable),entry);return null;}
             finally{decoder.release();}
         }
     }

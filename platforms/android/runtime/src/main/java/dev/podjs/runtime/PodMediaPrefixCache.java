@@ -137,7 +137,8 @@ final class PodMediaPrefixCache implements AutoCloseable {
     static int httpStatus(Throwable error){for(Throwable x=error;x!=null;x=x.getCause())if(x instanceof androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)return ((androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)x).responseCode;return 0;}
     private boolean throttle(Job j,int bytes)throws InterruptedException {
         while(j.current()){
-            synchronized(this){long budget=foregroundBitrate<=0?(totalBandwidth>0?totalBandwidth:Long.MAX_VALUE):totalBandwidth<=0?0:Math.max(0,totalBandwidth-(foregroundBitrate*13+79)/80);long now=android.os.SystemClock.elapsedRealtime();long elapsed=bandwidthWindow==0?0:Math.max(0,now-bandwidthWindow);bandwidthWindow=now;
+            // Idle transfers are limited by the transport itself. Only reserve bandwidth for an actual foreground stream.
+            synchronized(this){long budget=foregroundBitrate<=0?Long.MAX_VALUE:totalBandwidth<=0?0:Math.max(0,totalBandwidth-(foregroundBitrate*13+79)/80);long now=android.os.SystemClock.elapsedRealtime();long elapsed=bandwidthWindow==0?0:Math.max(0,now-bandwidthWindow);bandwidthWindow=now;
                 if(budget==Long.MAX_VALUE)return true;
                 if(budget>0){bandwidthCredit=Math.min(CHUNK,bandwidthCredit+elapsed*budget/1000d);if(bandwidthCredit>=bytes){bandwidthCredit-=bytes;return true;}}else bandwidthCredit=0;}
             Thread.sleep(250);
@@ -169,6 +170,13 @@ final class PodMediaPrefixCache implements AutoCloseable {
     private void trimFiles(){File[] fs=files();Arrays.sort(fs,Comparator.comparingLong(File::lastModified));long bytes=fileBytes();int count=fs.length;for(File f:fs){if(bytes<=maxTotal&&count<=MAX_ENTRIES)break;String t=f.getName().substring(0,64);if(protectedTokens.contains(t))continue;bytes-=f.length()+new File(root,t+".tail").length();count--;f.delete();new File(root,t+".tail").delete();new File(root,t+".length").delete();}}
     private void trim(){while(entries.size()>MAX_ENTRIES){String remove=null;for(String k:entries.keySet())if(!protectedTokens.contains(k)){remove=k;break;}if(remove==null)break;Entry e=entries.remove(remove);Job j=jobs.remove(remove);if(j!=null)j.cancel();e.file.delete();e.tail().delete();new File(root,e.token+".length").delete();}trimFiles();}
     private void trimSnapshots(){File[] fs=files();Arrays.sort(fs,Comparator.comparingLong(File::lastModified).reversed());for(int i=6;i<fs.length;i++){fs[i].delete();new File(root,fs[i].getName().replace(".prefix",".tail")).delete();new File(root,fs[i].getName().replace(".prefix",".length")).delete();}}
+    /** One closed counter snapshot at a real foreground decoded first frame. */
+    synchronized void logPlaybackStats(){
+        android.util.Log.i("PodMediaCache","cache_stats mono_ms="+android.os.SystemClock.elapsedRealtime()+" files="+files().length+" bytes="+fileBytes()+" downloadedBytes="+downloadedBytes+" cacheReadBytes="+cacheReadBytes+" networkReadBytes="+networkReadBytes+" maxBytes="+maxTotal);
+    }
+    synchronized void logFirstCardStats(long seq){
+        android.util.Log.i("PodMediaCache","cache_first_card seq="+seq+" mono_ms="+android.os.SystemClock.uptimeMillis()+" files="+files().length+" bytes="+fileBytes()+" downloadedBytes="+downloadedBytes+" cacheReadBytes="+cacheReadBytes+" networkReadBytes="+networkReadBytes+" maxBytes="+maxTotal);
+    }
     synchronized JSONObject stats()throws Exception {return new JSONObject().put("files",files().length).put("bytes",fileBytes()).put("maxBytes",maxTotal).put("maxEntries",MAX_ENTRIES).put("activePrefetches",jobs.size()).put("downloadedBytes",downloadedBytes).put("networkReadBytes",networkReadBytes).put("cacheReadBytes",cacheReadBytes).put("failures",failures).put("bandwidthBytesPerSecond",totalBandwidth);}
     private void clear(){generation++;for(Job j:jobs.values())j.cancel();jobs.clear();entries.clear();protectedTokens.clear();for(File f:root.listFiles()==null?new File[0]:root.listFiles())if(f.getName().matches("[a-f0-9]{64}\\.(prefix|length|tail)"))f.delete();}
     @Override public synchronized void close(){closed=true;generation++;for(Job j:jobs.values())j.cancel();jobs.clear();protectedTokens.clear();trimSnapshots();entries.clear();workers.shutdownNow();cancellations.shutdown();}

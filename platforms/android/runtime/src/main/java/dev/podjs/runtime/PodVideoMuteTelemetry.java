@@ -35,7 +35,9 @@ final class PodVideoMuteTelemetry implements PodMediaAudioPolicy.MuteObserver {
 
     private void emit(String code, long at, boolean muted, boolean player) {
         try {
-            PodBenchmark.emit(fields(muted, player).put("code", code).put("seq", seq), at);
+            JSONObject value=fields(muted,player).put("code",code).put("seq",seq);
+            if(code.equals("error"))value.put("failure_code","host_error").put("failure_stage","volume").put("exception_kind","unknown");
+            PodBenchmark.emit(value,at);
         } catch (Exception ignored) { /* Telemetry must not interrupt playback. */ }
     }
 }

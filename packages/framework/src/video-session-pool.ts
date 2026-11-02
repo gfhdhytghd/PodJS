@@ -17,6 +17,7 @@ export interface VideoSessionPort {
   state(sessionId:string):Promise<VideoSessionState>;
   setTransform(sessionId:string,transform:{rotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}):Promise<VideoSessionState>;
   setVolume(sessionId:string,volume:number):Promise<VideoSessionState>;
+  setMuted?(sessionId:string,muted:boolean):Promise<VideoSessionState>;
   setLoop(sessionId:string,loop:boolean):Promise<VideoSessionState>;
   promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean;benchmark?:VideoBenchmarkAction}):Promise<VideoSessionState>;
   transition(options:{fromSessionId:string;toSessionId:string;progress:number;direction:VideoPagerDirection;bounds?:VideoBounds;benchmark?:VideoBenchmarkAction}):Promise<VideoSessionTransitionState>;
@@ -29,8 +30,8 @@ const defaultSessionPort:VideoSessionPort={
 
 let nextPoolId=1;
 const state=(value:VideoSessionState):VideoState=>({
-  bufferedMs:value.bufferedMs,networkStalled:value.networkStalled,presented:value.presented,metrics:value.metrics,ok:value.ok,state:value.state,positionMs:value.positionMs,durationMs:value.durationMs,completedLoops:value.completedLoops,loop:value.loop,
-  width:value.width,height:value.height,volume:value.volume,volumeMax:15,
+  appliedVolume:value.appliedVolume,audioTrackSelected:value.audioTrackSelected,bufferedMs:value.bufferedMs,networkStalled:value.networkStalled,presented:value.presented,metrics:value.metrics,ok:value.ok,state:value.state,positionMs:value.positionMs,durationMs:value.durationMs,completedLoops:value.completedLoops,loop:value.loop,
+  width:value.width,height:value.height,volume:value.volume,volumeMax:value.volumeMax??15,volumeIndex:value.volumeIndex,muted:value.muted,
   sourceGeneration:value.sourceGeneration,errorCode:value.errorCode,hasRenderedFirstFrame:value.hasRenderedFirstFrame,
 });
 
@@ -39,6 +40,15 @@ const state=(value:VideoSessionState):VideoState=>({
  * Slot-local revisions prevent one neighbour cancelling the other. */
 interface WarmSlot<S> {direction?:'next'|'prev';id:string;source?:S;ready:boolean;revision:number;operation?:HostOperation<VideoSessionState>;pending?:Promise<VideoState>}
 export class VideoSessionPool<Source extends {key:string}> {
+  private initialPreparation?:{key:string;identity:string;generation:number;operation:HostOperation<VideoState>};
+  private prepareIdentity(options:VideoPrepare){return JSON.stringify([options.url,options.videoUrl,options.audioUrl,options.type,options.videoMime,options.videoWidth,options.videoHeight,Object.entries(options.headers??{}).sort()]);}
+  /** Begin a user-requested foreground prepare while navigation is being saved.
+   * Hidden bounds retain the surface. The first visible prepare adopts it once. */
+  prime(source:Source,options:VideoPrepare):HostOperation<VideoState>{
+    const operation=this.prepare(source,{...options,autoplay:false,bounds:{...options.bounds,visible:false}});
+    this.initialPreparation={key:source.key,identity:this.prepareIdentity(options),generation:this.generation,operation};
+    return operation;
+  }
   private loop=false;
   private activeId:string;
   private activeKey:string|undefined;
@@ -78,6 +88,21 @@ export class VideoSessionPool<Source extends {key:string}> {
   }
   retainNeighbours(keys:readonly string[]){for(const slot of this.slots)if(slot.source&&!keys.includes(slot.source.key))this.evict(slot,'stale');}
   prepare(source:Source,options:VideoPrepare):HostOperation<VideoState>{
+    const initial=this.initialPreparation;this.initialPreparation=undefined;
+    if(initial&&initial.key===source.key&&initial.identity===this.prepareIdentity(options)&&initial.generation===this.generation){
+      const own=this.generation;let cancelled=false;
+      this.loop=options.loop===true;
+      const current=()=>!cancelled&&own===this.generation;
+      const result=initial.operation.result.then(async()=>{
+        if(!current())throw Error('stale initial video preparation');
+        await this.port.setBounds(this.activeId,options.bounds);
+        if(!current())throw Error('stale initial video preparation');
+        return state(await this.syncLoop(this.activeId));
+      });
+      // An early native failure stays terminal; adoption must not silently retry it.
+      return {result,cancel:()=>{cancelled=true;if(own===this.generation){this.generation++;initial.operation.cancel();void this.port.release(this.activeId).catch(()=>{});}}};
+    }
+    initial?.operation.cancel();
     const own=++this.generation;this.loop=options.loop===true;this.activeKey=source.key;this.activeSource=source;
     for(const slot of this.slots)if(slot.source||slot.operation)void this.evict(slot,'stale');
     // Explicit sessions are foreground-only. Do not leak a legacy preference
@@ -149,6 +174,7 @@ export class VideoSessionPool<Source extends {key:string}> {
   setBounds(bounds:VideoBounds):Promise<VideoState>{return this.port.setBounds(this.activeId,bounds).then(state);}
   state():Promise<VideoState>{return this.port.state(this.activeId).then(state);}
   setTransform(transform:{rotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}):Promise<VideoState>{return this.port.setTransform(this.activeId,transform).then(state);}
+  setMuted(muted:boolean):Promise<VideoState>{if(!this.port.setMuted)return Promise.reject(new Error("unsupported"));return this.port.setMuted(this.activeId,muted).then(state);}
   setVolume(volume:number):Promise<VideoState>{return this.port.setVolume(this.activeId,volume).then(state);}
-  async releaseAll():Promise<void>{this.generation++;this.latestTransition=undefined;this.activeKey=undefined;this.activeSource=undefined;await Promise.allSettled([this.port.release(this.activeId),...this.slots.map(s=>this.evict(s,'release'))]);}
+  async releaseAll():Promise<void>{this.initialPreparation?.operation.cancel();this.initialPreparation=undefined;this.generation++;this.latestTransition=undefined;this.activeKey=undefined;this.activeSource=undefined;await Promise.allSettled([this.port.release(this.activeId),...this.slots.map(s=>this.evict(s,'release'))]);}
 }

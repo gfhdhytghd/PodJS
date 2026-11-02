@@ -49,4 +49,24 @@ public class PodBenchmarkTest {
   int count=ShadowLog.getLogsForTag("DYBENCH").size();assertEquals(seq,PodBenchmark.dispatch(new JSONObject().put("video_frame",seq).put("generation",3).toString()));assertEquals(count,ShadowLog.getLogsForTag("DYBENCH").size());
   long at=SystemClock.uptimeMillis();long mute=PodBenchmark.begin("mute_changed",new JSONObject().put("kind","on").put("muted",true),at);assertTrue(mute>second);assertTrue(ShadowLog.getLogsForTag("DYBENCH").get(count).msg.contains("mono_ms="+at));
  }
+
+ @Test public void visibilityExplainsNativeFocusGuardWithoutForgingVideoProof()throws Exception{
+  ShadowLog.clear();PodBenchmark.attach(null);
+  JSONObject row=new JSONObject().put("code","player_visible").put("state","present").put("visibility_reason","ready").put("player_state","playing").put("has_frame",true).put("offset_abs_milli",0);
+  assertTrue(PodBenchmark.dispatch(row.toString())>0);String log=ShadowLog.getLogsForTag("DYBENCH").get(0).msg;assertTrue(log.contains("visibility_reason=native_hidden"));assertTrue(log.contains("state=absent"));assertTrue(log.contains("has_frame=true"));
+  assertEquals(0,PodBenchmark.dispatch(new JSONObject(row.toString()).put("player_state","PRIVATE").toString()));
+  assertEquals(0,PodBenchmark.dispatch(new JSONObject(row.toString()).put("offset_abs_milli",-1).toString()));
+  assertEquals(0,PodBenchmark.dispatch(new JSONObject(row.toString()).put("has_frame","PRIVATE").toString()));
+  assertEquals(0,PodBenchmark.dispatch(new JSONObject(row.toString()).put("code","error").toString()));
+ }
+ @org.junit.Test public void startupStageKeepsNativeUptimeAndClosedFields()throws Exception {
+  long seq=PodBenchmark.begin("entry_start",new org.json.JSONObject());
+  org.robolectric.shadows.ShadowLog.clear();
+  assertEquals(seq,PodBenchmark.mark("startup_stage",seq,new org.json.JSONObject().put("startup_stage","decoder_configured").put("duration_ms",128)));
+  assertEquals(0,PodBenchmark.mark("startup_stage",seq,new org.json.JSONObject().put("startup_stage","arbitrary_secret")));
+  assertEquals(0,PodBenchmark.mark("entry_start",seq,new org.json.JSONObject().put("startup_stage","play_tap")));
+  assertEquals(1,org.robolectric.shadows.ShadowLog.getLogsForTag("DYBENCH").size());
+  assertEquals(seq,PodBenchmark.mark("startup_stage",seq,new JSONObject().put("startup_stage","stock_saved").put("slots",3)));
+  assertEquals(0,PodBenchmark.mark("startup_stage",seq,new JSONObject().put("startup_stage","stock_saved").put("slots",4)));
+ }
 }
