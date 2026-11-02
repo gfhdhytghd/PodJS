@@ -563,7 +563,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         if (!audioUrl.isEmpty()) audioUrl = sourceValue(audioUrl);
         if (!videoUrl.isEmpty()) videoUrl = sourceValue(videoUrl);
         Map<String, String> headers = headers(args.optJSONObject("headers"));
-        DefaultHttpDataSource.Factory http = PodVideoHttpDataSources.create(headers,analytics);
+        androidx.media3.datasource.DataSource.Factory http = PodVideoHttpDataSources.create(headers,analytics);
         DefaultMediaSourceFactory factory = new DefaultMediaSourceFactory(mediaPrefixCache==null?new DefaultDataSource.Factory(context,http):mediaPrefixCache.factory(new DefaultDataSource.Factory(context,http)));
         if (!videoUrl.isEmpty() && !audioUrl.isEmpty()) {
             return new MergingMediaSource(factory.createMediaSource(item(videoUrl, args.optString("type", ""))), factory.createMediaSource(item(audioUrl, "")));

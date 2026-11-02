@@ -16,8 +16,8 @@ final class PodBenchmark {
     private static final long MAX=9_007_199_254_740_991L;
     private static long sequence;
     private static WeakReference<View> surface=new WeakReference<>(null);
-    private static final Set<String> CODES=new HashSet<>(Arrays.asList(("entry_start home_entry first_card refresh_start refresh_done player_visible gesture_down gesture_release previous_audio_stopped incoming_first_frame spinner_shown snap_back fling_done mute_changed player_audio_applied mixer_match login_entry login_tap qr_ready scan_accepted auth_persisted logout_start logout_feedback auth_cleared auth_state needs_login refreshing restore_state renderer_process prewarm_requested prewarm_ready prewarm_evicted prewarm_policy background_gate error_page error").split(" ")));
-    private static final Set<String> NUMBERS=new HashSet<>(Arrays.asList("seq","attempt","delta","generation","source_generation","pid","active_tracks","buffered_ms","slots"));
+    private static final Set<String> CODES=new HashSet<>(Arrays.asList(("douyin_request entry_start home_entry first_card refresh_start refresh_done player_visible gesture_down gesture_release previous_audio_stopped incoming_first_frame spinner_shown snap_back fling_done mute_changed player_audio_applied mixer_match login_entry login_tap qr_ready scan_accepted auth_persisted logout_start logout_feedback auth_cleared auth_state needs_login refreshing restore_state renderer_process prewarm_requested prewarm_ready prewarm_evicted prewarm_policy background_gate error_page error").split(" ")));
+    private static final Set<String> NUMBERS=new HashSet<>(Arrays.asList("seq","attempt","delta","generation","source_generation","pid","active_tracks","buffered_ms","slots","http_status","retry_after_ms"));
     private static final Set<String> AUTH=new HashSet<>(Arrays.asList("login_entry","login_tap","qr_ready","scan_accepted","auth_persisted","renderer_process"));
     private static final Set<String> PRESENTED=new HashSet<>(Arrays.asList("first_card","refresh_done","qr_ready","logout_feedback","needs_login","refreshing","spinner_shown"));
     private static final Set<String> PROOF=new HashSet<>(Arrays.asList("incoming_first_frame","snap_back","previous_audio_stopped","player_audio_applied","mixer_match","fling_done"));
@@ -61,12 +61,20 @@ final class PodBenchmark {
             String code=args.getString("code");if(!CODES.contains(code)||now<0)return false;
             long seq=integer(args,"seq");if(!known(seq))return false;
             if(AUTH.contains(code)&&(!args.has("attempt")||integer(args,"attempt")==0))return false;
+            if(code.equals("douyin_request")){
+                for(String key:Arrays.asList("category","http_status","douyin_status_code","challenge","signing_ok","cookie_present","retry_after_ms","error_code"))if(!args.has(key))return false;
+                if(args.length()!=10||integer(args,"http_status")>599)return false;
+            }
             StringBuilder line=new StringBuilder("code=").append(code).append(" seq=").append(seq).append(" mono_ms=").append(now);
             TreeSet<String> keys=new TreeSet<>();args.keys().forEachRemaining(keys::add);
             for(String key:keys){
                 if(key.equals("code")||key.equals("seq"))continue;
                 Object value=args.get(key);
                 if(NUMBERS.contains(key)){long n=integer(args,key);if((key.equals("delta")&&n>2)||(key.equals("pid")&&n>4_194_304)||(key.equals("active_tracks")&&n>4096))return false;}
+                else if(key.equals("douyin_status_code")){if(!code.equals("douyin_request")||!(value instanceof Number))return false;double n=((Number)value).doubleValue();if(!Double.isFinite(n)||n!=((Number)value).longValue()||n < -1||n>Integer.MAX_VALUE)return false;}
+                else if(key.equals("category")){if(!code.equals("douyin_request")||!Arrays.asList("feed","detail","auth_probe","media").contains(value))return false;}
+                else if(key.equals("error_code")){if(!code.equals("douyin_request")||!Arrays.asList("success","forbidden","http","signing","challenge","empty","blocked","api_status","timeout","cancelled","network","cooldown","client_limit","decode").contains(value))return false;}
+                else if(key.equals("challenge")||key.equals("signing_ok")||key.equals("cookie_present")){if(!code.equals("douyin_request")||!(value instanceof Boolean))return false;}
                 else if(key.equals("muted")||key.equals("prewarmed")||key.equals("network_stalled")){if(!(value instanceof Boolean))return false;}
                 else if(key.equals("direction")){if(!Arrays.asList("next","prev","cancel","fling").contains(value))return false;}
                 else if(key.equals("state")){if(!Arrays.asList("present","absent","running","idle","unknown","paused").contains(value))return false;}

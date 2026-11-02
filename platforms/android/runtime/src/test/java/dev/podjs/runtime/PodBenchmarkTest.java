@@ -10,6 +10,15 @@ import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLog;
 @RunWith(RobolectricTestRunner.class) @Config(sdk=30)
 public class PodBenchmarkTest {
+ @Test public void requestDiagnosticsRequireExactClosedFields()throws Exception {
+  ShadowLog.clear();JSONObject row=new JSONObject().put("code","douyin_request").put("category","detail").put("http_status",403).put("douyin_status_code",-1).put("challenge",false).put("signing_ok",true).put("cookie_present",true).put("retry_after_ms",30000).put("error_code","forbidden");
+  assertTrue(PodBenchmark.dispatch(row.toString())>0);
+  for(String key:new String[]{"url","id","cookie","token","text"})assertEquals(0,PodBenchmark.dispatch(new JSONObject(row.toString()).put(key,"PRIVATE").toString()));
+  for(String key:new String[]{"category","http_status","douyin_status_code","challenge","signing_ok","cookie_present","retry_after_ms","error_code"}){JSONObject missing=new JSONObject(row.toString());missing.remove(key);assertEquals(0,PodBenchmark.dispatch(missing.toString()));assertEquals(0,PodBenchmark.dispatch(new JSONObject(row.toString()).put(key,"PRIVATE").toString()));}
+  for(Object value:new Object[]{-2,1.5,2147483648L})assertEquals(0,PodBenchmark.dispatch(new JSONObject(row.toString()).put("douyin_status_code",value).toString()));
+  assertEquals(0,PodBenchmark.dispatch(new JSONObject(row.toString()).put("http_status",600).toString()));
+  assertEquals(1,ShadowLog.getLogsForTag("DYBENCH").size());assertFalse(ShadowLog.getLogsForTag("DYBENCH").get(0).msg.contains("PRIVATE"));
+ }
  @Test public void closedSchemaOwnsClockAndRejectsPrivateOrForgedProof()throws Exception {
   ShadowLog.clear();long seq=PodBenchmark.dispatch("{\"code\":\"gesture_down\",\"direction\":\"next\"}");assertTrue(seq>0);
   long now=SystemClock.uptimeMillis();assertEquals(seq,PodBenchmark.dispatch(new JSONObject().put("code","gesture_release").put("seq",seq).put("direction","next").put("prewarmed",true).put("generation",3).put("source_generation",2).toString()));

@@ -189,7 +189,7 @@ public final class PodVideoServices implements AutoCloseable {
         applyBounds(a.optJSONObject("bounds")); autoplay=a.optBoolean("autoplay", true); mediaGate(true); backgroundPlayback=a.optBoolean("backgroundPlayback",false); lifecyclePaused=false; density=context.getResources().getDisplayMetrics().density;
         Map<String,String> headers = headers(a.optJSONObject("headers"));
         analytics=new PodVideoAnalytics();
-        DefaultHttpDataSource.Factory http = PodVideoHttpDataSources.create(headers,analytics);
+        androidx.media3.datasource.DataSource.Factory http = PodVideoHttpDataSources.create(headers,analytics);
         DefaultDataSource.Factory data = new DefaultDataSource.Factory(context, http);
         DefaultMediaSourceFactory factory = new DefaultMediaSourceFactory(mediaPrefixCache==null?data:mediaPrefixCache.factory(data));
         MediaSource source;

@@ -30,7 +30,7 @@ public class PodVideoHttpDataSourcesTest {
             String url = "http://127.0.0.1:"+server.port()+"/media?signature=synthetic";
             Map<String,String> defaults = new HashMap<>();
             defaults.put("User-Agent","Mozilla/5.0");defaults.put("Referer","https://www.bilibili.com/");defaults.put("Cookie","synthetic-session");
-            DefaultHttpDataSource.Factory factory = PodVideoHttpDataSources.create(defaults,null);
+            androidx.media3.datasource.DataSource.Factory factory = PodVideoHttpDataSources.create(defaults,null);
             open(factory,new DataSpec.Builder().setUri(Uri.parse(url)).build());
             Map<String,String> old = received.poll(5,TimeUnit.SECONDS);assertNotNull(old);
             assertEquals("Mozilla/5.0",old.get("user-agent"));assertEquals("https://www.bilibili.com/",old.get("referer"));
@@ -70,8 +70,8 @@ public class PodVideoHttpDataSourcesTest {
         int port(){return socket.getLocalPort();}
         public void close() throws Exception {closed=true;socket.close();worker.join(5000);assertFalse(worker.isAlive());if(failure!=null)throw new AssertionError(failure);}
     }
-    private static void open(DefaultHttpDataSource.Factory factory, DataSpec spec) throws Exception {
-        DefaultHttpDataSource source = factory.createDataSource();
+    private static void open(androidx.media3.datasource.DataSource.Factory factory, DataSpec spec) throws Exception {
+        androidx.media3.datasource.DataSource source = factory.createDataSource();
         try { source.open(spec);assertEquals(2,source.read(new byte[2],0,2)); }
         finally { source.close(); }
     }

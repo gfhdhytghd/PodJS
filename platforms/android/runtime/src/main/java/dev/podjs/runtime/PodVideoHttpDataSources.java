@@ -6,10 +6,10 @@ import java.util.Map;
 
 /** Shared native playback factory. App-supplied headers also apply to DASH audio. */
 final class PodVideoHttpDataSources {
-    static DefaultHttpDataSource.Factory create(Map<String, String> headers, TransferListener listener) {
+    static androidx.media3.datasource.DataSource.Factory create(Map<String, String> headers, TransferListener listener) {
         DefaultHttpDataSource.Factory factory = new DefaultHttpDataSource.Factory().setTransferListener(listener);
         if (!headers.isEmpty()) factory.setDefaultRequestProperties(headers);
-        return factory;
+        return PodDouyinRequest.factory(factory,headers);
     }
     private PodVideoHttpDataSources() {}
 }

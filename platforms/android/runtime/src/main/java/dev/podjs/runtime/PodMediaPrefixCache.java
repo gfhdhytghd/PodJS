@@ -45,7 +45,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
         void cancel(){active=false;DataSource s=source;if(s!=null&&!cancellations.isShutdown())cancellations.execute(()->{try{s.close();}catch(Exception ignored){}});}
         boolean current(){synchronized(PodMediaPrefixCache.this){return active&&!closed&&epoch==generation&&entries.get(entry.token)==entry;}}
     }
-    PodMediaPrefixCache(File root){this(root,new DefaultHttpDataSource.Factory().setConnectTimeoutMs(12000).setReadTimeoutMs(25000),Math.max(6L*1024*1024,Math.min(16L*1024*1024,Runtime.getRuntime().maxMemory()/4)));}
+    PodMediaPrefixCache(File root){this(root,PodDouyinRequest.factory(new DefaultHttpDataSource.Factory().setConnectTimeoutMs(12000).setReadTimeoutMs(25000),Collections.emptyMap()),Math.max(6L*1024*1024,Math.min(16L*1024*1024,Runtime.getRuntime().maxMemory()/4)));}
     PodMediaPrefixCache(File root,DataSource.Factory upstream,long budget){
         this.root=root;this.upstream=upstream;this.maxTotal=Math.max(MAX_ENTRY,Math.min(16L*1024*1024,budget));
         // Files are opaque media bytes, never a durable capability. Registrations
@@ -88,7 +88,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
             long position; synchronized(this){position=job.entry.file.length();}
             if(!job.current()||position>=job.budget)return;
             source=upstream.createDataSource();job.source=source;if(!job.current())return;
-            long remaining=source.open(new DataSpec.Builder().setUri(job.entry.remote).setPosition(position).setHttpRequestHeaders(job.entry.headers).build());if(source instanceof androidx.media3.datasource.HttpDataSource)status=((androidx.media3.datasource.HttpDataSource)source).getResponseCode();metadata(job.entry,source,position,remaining,true);
+            long remaining=source.open(new DataSpec.Builder().setUri(job.entry.remote).setPosition(position).setHttpRequestHeaders(job.entry.headers).build());if(source instanceof androidx.media3.datasource.HttpDataSource)status=((androidx.media3.datasource.HttpDataSource)source).getResponseCode();else if(source instanceof PodDouyinRequest)status=((PodDouyinRequest)source).responseCode();metadata(job.entry,source,position,remaining,true);
             byte[] buffer=new byte[CHUNK];
             while(position<job.budget&&job.current()){
                 int limit=(int)Math.min(buffer.length,job.budget-position);
