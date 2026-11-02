@@ -9,12 +9,15 @@ final class PodVideoMemoryBudget {
     static final long RESERVE_BYTES=96*MIB;
     static final long RECOVERY_QUIET_MS=30_000L;
     private final LongSupplier now;
-    private int trimLimit=3;
+    private final int maximum;
+    private int trimLimit;
     private long lastTrimAt;
     private boolean complete;
 
-    PodVideoMemoryBudget() { this(()->System.nanoTime()/1_000_000L); }
-    PodVideoMemoryBudget(LongSupplier now) { this.now=now; }
+    PodVideoMemoryBudget() { this(3); }
+    PodVideoMemoryBudget(int maximum) { this(()->System.nanoTime()/1_000_000L,maximum); }
+    PodVideoMemoryBudget(LongSupplier now) { this(now,3); }
+    PodVideoMemoryBudget(LongSupplier now,int maximum) { this.now=now;this.maximum=maximum;this.trimLimit=maximum; }
 
     void trim(int level) {
         // UI_HIDDEN (20) is visibility, not an allocation-pressure signal.
@@ -22,7 +25,7 @@ final class PodVideoMemoryBudget {
         if(level>=80)complete=true; // TRIM_MEMORY_COMPLETE requires service rebuild.
         if(complete){trimLimit=1;return;}
         // A lower pressure report supersedes the earlier report immediately.
-        trimLimit=level>=15?1:level>=5?2:3;
+        trimLimit=level>=15?1:level>=5?2:maximum;
         lastTrimAt=now.getAsLong();
     }
 
@@ -43,11 +46,11 @@ final class PodVideoMemoryBudget {
         long spare=systemHeadroom-RESERVE_BYTES;
         // availMem excludes resident decoders, but pending prepares may not have
         // allocated their buffers yet. Reserve those leases before new admission.
-        int leases=Math.max(0,Math.min(3,inUse));
+        int leases=Math.max(0,Math.min(maximum,inUse));
         int pending=Math.max(0,Math.min(leases,preparing));
-        int memoryLimit=(int)Math.min(3,leases+Math.min(3,spare/perSlot)-pending);
+        int memoryLimit=(int)Math.min(maximum,leases+Math.min(maximum,spare/perSlot)-pending);
         long at=now.getAsLong();
-        if(trimLimit<3&&memoryLimit==3&&at>=lastTrimAt&&at-lastTrimAt>=RECOVERY_QUIET_MS)trimLimit=3;
+        if(trimLimit<maximum&&memoryLimit==maximum&&at>=lastTrimAt&&at-lastTrimAt>=RECOVERY_QUIET_MS)trimLimit=maximum;
         return Math.max(1,Math.min(trimLimit,memoryLimit));
     }
 }

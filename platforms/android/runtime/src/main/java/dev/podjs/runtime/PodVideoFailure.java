@@ -22,8 +22,8 @@ final class PodVideoFailure {
         NUMBERS.put("media3_code",1000000);
         NUMBERS.put("video_width",16384);
         NUMBERS.put("video_height",16384);
-        NUMBERS.put("decoder_count",3);
-        NUMBERS.put("slot_limit",3);
+        NUMBERS.put("decoder_count",8);
+        NUMBERS.put("slot_limit",8);
     }
     static boolean field(String key){return key.equals("is_prewarm")||ENUMS.containsKey(key)||NUMBERS.containsKey(key);}
     static boolean accept(String key,Object value){
@@ -72,7 +72,7 @@ final class PodVideoFailure {
             String kind=kind(error);if(kind.equals("unknown")&&error instanceof PlaybackException)kind="media3";
             JSONObject row=new JSONObject().put("reason","failure").put("failure_origin",origin).put("failure_stage",stage)
                 .put("failure_code",fault(code,error)).put("exception_kind",kind).put("media3_code",Math.max(0,media3))
-                .put("decoder_count",Math.max(0,Math.min(3,inUse))).put("slot_limit",Math.max(0,Math.min(3,limit)))
+                .put("decoder_count",Math.max(0,Math.min(8,inUse))).put("slot_limit",Math.max(0,Math.min(8,limit)))
                 .put("source_kind",source(args)).put("surface_state",surface).put("content_kind",content)
                 .put("is_prewarm",args!=null&&args.optBoolean("prewarm",false)).put("codec_kind",codec(args==null?"":args.optString("videoMime","")))
                 .put("video_width",args==null?0:Math.max(0,Math.min(16384,args.optInt("videoWidth",0))))

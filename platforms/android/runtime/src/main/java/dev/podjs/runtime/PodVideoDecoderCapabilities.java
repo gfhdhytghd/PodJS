@@ -68,7 +68,18 @@ final class PodVideoDecoderCapabilities {
         cacheMatchesDevice = Build.FINGERPRINT.equals(preferences.getString(FINGERPRINT, ""));
     }
 
+    // DYHIT measured a terminal HEVC decoder-init failure in a five-slot watch
+    // trial. Advertised instances cannot override that observed safe ceiling.
+    // Only the small AVC/ranchu profile exercised by DYFRAME admits eight.
+    static int validatedLimit(Profile profile,String decoder,boolean ranchu) {
+        return ranchu && "c2.android.avc.decoder".equals(decoder)
+                && profile!=null && "video/avc".equals(profile.mime)
+                && profile.width>0 && profile.width<=240 && profile.height>0 && profile.height<=240
+                ? PodVideoSessionServices.MAX_SESSIONS : 3;
+    }
+
     int cachedDeviceLimit(int fallback) {
+        if (!"ranchu".equals(Build.HARDWARE)) fallback=Math.min(3,fallback);
         if (!cacheMatchesDevice) return fallback;
         int result = fallback;
         for (Map.Entry<String, ?> entry : preferences.getAll().entrySet()) {
@@ -79,9 +90,11 @@ final class PodVideoDecoderCapabilities {
         return result;
     }
 
-    Result inspect(Profile profile) {
+    Result inspect(Profile profile) { return inspect(profile, null); }
+
+    Result inspect(Profile profile,String actualDecoder) {
         if (profile == null || !profile.known()) {
-            int limit = cachedDeviceLimit(PodVideoSessionServices.MAX_SESSIONS);
+            int limit = cachedDeviceLimit(3);
             return new Result(profile, "", limit, limit, false, limit < PodVideoSessionServices.MAX_SESSIONS);
         }
         int cached = cachedMimeLimit(profile.mime);
@@ -89,7 +102,7 @@ final class PodVideoDecoderCapabilities {
         int advertised = 1;
         boolean sizeSupported = false;
         for (MediaCodecInfo info : new MediaCodecList(MediaCodecList.REGULAR_CODECS).getCodecInfos()) {
-            if (info.isEncoder()) continue;
+            if (info.isEncoder() || actualDecoder!=null&&!actualDecoder.equals(info.getName())) continue;
             MediaCodecInfo.CodecCapabilities capabilities;
             try { capabilities = info.getCapabilitiesForType(profile.mime); }
             catch (IllegalArgumentException ignored) { continue; }
@@ -105,10 +118,11 @@ final class PodVideoDecoderCapabilities {
             sizeSupported = true;
             break;
         }
-        int limit = Math.min(PodVideoSessionServices.MAX_SESSIONS, advertised);
+        int policyLimit=validatedLimit(profile,selected,"ranchu".equals(Build.HARDWARE));
+        int limit = Math.min(policyLimit, advertised);
         if (selected.isEmpty()) limit = 1;
         if (cached > 0) limit = Math.min(limit, cached);
-        return new Result(profile, selected, advertised, limit, sizeSupported, cached > 0 && cached < Math.min(PodVideoSessionServices.MAX_SESSIONS,advertised));
+        return new Result(profile, selected, advertised, limit, sizeSupported, cached > 0 && cached < Math.min(policyLimit,advertised));
     }
 
     void recordRuntimeLimit(Profile profile,int limit) {

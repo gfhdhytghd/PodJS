@@ -39,14 +39,14 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Three-slot foreground video pool for pager-style feeds. A prewarm slot decodes
+ * Capability-bounded foreground video pool for pager-style feeds. A prewarm slot decodes
  * silently into a retained, off-screen TextureView. Promotion reveals that same
  * surface, so no decoder or SurfaceTexture is replaced at the page boundary.
  */
 final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks2 {
     interface Callback extends VideoFrameObserver { void complete(JSONObject value); void fail(String code, String message); }
 
-    static final int MAX_SESSIONS = 3;
+    static final int MAX_SESSIONS = 8;
     static final int TARGET_BUFFER_BYTES = 4 * 1024 * 1024;
     static final long PREWARM_TIMEOUT_MS = 2_500L;
     static final long PREWARM_MAX_LIFETIME_MS = 10_000L;
@@ -65,12 +65,13 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     private final PodMediaPrefixCache mediaPrefixCache;
     private final PodVideoDecoderBudget decoderBudget;
     private final PodVideoDecoderCapabilities decoderCapabilities;
-    private final PodVideoMemoryBudget memoryBudget=new PodVideoMemoryBudget();
+    private final PodVideoMemoryBudget memoryBudget=new PodVideoMemoryBudget(MAX_SESSIONS);
+    private final PodVideoKeyframes keyframes = new PodVideoKeyframes();
     private final LinkedHashMap<String, Session> sessions = new LinkedHashMap<>();
     private ViewGroup parent;
     private boolean closed;
     private boolean lifecyclePaused;
-    private int lastMemoryLimit=3;
+    private int lastMemoryLimit=MAX_SESSIONS;
     private float density;
     private PodVideoDecoderCapabilities.Profile lastProfile;
     private PodVideoDecoderCapabilities.Result lastCapability;
@@ -93,7 +94,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     @Override public void onConfigurationChanged(Configuration configuration) {}
     @Override public void onLowMemory() { onTrimMemory(ComponentCallbacks2.TRIM_MEMORY_COMPLETE); }
     @Override public void onTrimMemory(int level) {
-        main.post(()->{if(!closed){memoryBudget.trim(level);enforceMemoryBudget(lastProfile);}});
+        main.post(()->{if(!closed){memoryBudget.trim(level);enforceMemoryBudget(lastProfile);if(level!=20&&level>=5)keyframes.trim();}});
     }
     private int memoryLimit(PodVideoDecoderCapabilities.Profile requested) {
         long bytes=PodVideoMemoryBudget.decoderBytes(requested==null?0:requested.width,requested==null?0:requested.height);
@@ -105,7 +106,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         ActivityManager.MemoryInfo info=new ActivityManager.MemoryInfo();
         ActivityManager manager=(ActivityManager)context.getSystemService(Context.ACTIVITY_SERVICE);
         if(manager!=null)manager.getMemoryInfo(info);
-        long system=manager==null?0:Math.max(0,info.availMem-info.threshold);
+        long system=manager==null?0:Math.max(0,info.availMem-info.threshold-keyframes.bytes*2-(long)PodVideoKeyframes.MAX_EDGE*PodVideoKeyframes.MAX_EDGE*4);
         lastMemoryLimit=Math.min(decoderBudget.limit(),memoryBudget.limit(system,info.lowMemory,bytes,decoderBudget.inUse(),Math.max(0,decoderBudget.inUse()-resident)));return lastMemoryLimit;
     }
     private int enforceMemoryBudget(PodVideoDecoderCapabilities.Profile requested) {
@@ -186,6 +187,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             session.resetPlayer();
             session.state = "stopped";
             session.hideOffscreen();
+            if(session.keyframeOnly){sessions.remove(session.id);session.close();}
             pending.fail("cancelled", "Video session preparation cancelled");
         });
     }
@@ -197,6 +199,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         JSONObject value = new JSONObject()
                 .put("capability", CAPABILITY)
                 .put("maxSessions", MAX_SESSIONS)
+                .put("keyframeCache", true).put("keyframeEntries",keyframes.size()).put("keyframeBytes",keyframes.bytes).put("keyframeMaxBytes",PodVideoKeyframes.MAX_BYTES).put("decoderPeak",decoderBudget.peakInUse())
                 .put("decoderLimit", limit)
                 .put("decoderInUse", decoderBudget.inUse())
                 .put("targetBufferBytesPerSession", TARGET_BUFFER_BYTES)
@@ -224,6 +227,16 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         Bounds bounds = Bounds.read(args.optJSONObject("bounds"), density, true);
         long admissionStarted=android.os.SystemClock.uptimeMillis();
         boolean prewarming = args.optBoolean("prewarm", false);
+        String requestedBinding=keyframeBinding(args,bounds);
+        if(prewarming&&args.optBoolean("keyframeOnly",false)&&keyframes.get(requestedBinding)!=null){
+            callback.complete(new JSONObject().put("ok",true).put("sessionId",id).put("state","cached").put("keyframeAvailable",true));return;
+        }
+        if(prewarming&&args.optBoolean("keyframeOnly",false)){
+            for(Session foreground:sessions.values())if(!foreground.prewarming&&foreground.player!=null&&
+                (!foreground.hasRenderedFirstFrame||foreground.player.getPlaybackState()==Player.STATE_BUFFERING||
+                 foreground.player.getPlayWhenReady()&&foreground.player.getBufferedPosition()-foreground.player.getCurrentPosition()<1000))
+                throw new IllegalStateException("video_foreground_busy");
+        }
         PodVideoDecoderCapabilities.Profile profile = profileFromArguments(args, true);
         if ((profile == null || !profile.known()) && prewarming) profile = lastProfile;
         if (profile != null && profile.known()) {
@@ -233,8 +246,8 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         int memoryLimit=enforceMemoryBudget(profile);
         // Foreground admission evicts speculative slots before claiming a lease.
         // No codec is built while the process is above its memory allowance.
-        if(!prewarming)evictStandbyTo(Math.max(0,memoryLimit-1),id);
         Session existing=sessions.get(id);
+        if(!prewarming)evictStandbyTo(Math.max(0,memoryLimit-(existing!=null&&existing.decoderLease?0:1)),id);
         if(prewarming&&decoderBudget.inUse()-(existing!=null&&existing.decoderLease?1:0)>=memoryLimit)
             throw new IllegalStateException("video_decoder_limit");
         PodVideoAnalytics analytics=new PodVideoAnalytics();analytics.startupSeq=args.optBoolean("prewarm",false)?0:args.optLong("startupSeq",0);
@@ -273,8 +286,9 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         session.benchmarkAction=PodBenchmark.videoAction(args);
         session.benchmarkFramePending=session.benchmarkAction!=null&&!prewarming;
         session.frameSource=new JSONObject(args.toString());
+        session.frameBinding=keyframeBinding(args,bounds);session.decoderName=null;
         session.bounds = bounds;
-        session.prewarming = prewarming;
+        session.prewarming = prewarming;session.keyframeOnly=prewarming&&args.optBoolean("keyframeOnly",false);
         if(!prewarming)mediaGate(true);
         session.profile = profile;
         session.autoplay = args.optBoolean("autoplay", true);
@@ -286,10 +300,11 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         session.presented = !session.prewarming && bounds.visible;
         session.prepareCallback = callback;
         session.applyBounds(bounds);
+        if(!prewarming && args.optLong("resumePositionMs",0)==0)session.revealKeyframe();
 
         DefaultLoadControl loadControl = new DefaultLoadControl.Builder()
-                .setTargetBufferBytes(TARGET_BUFFER_BYTES)
-                .setBufferDurationsMs(1_000, 4_000, 100, 250)
+                .setTargetBufferBytes(session.keyframeOnly?256*1024:TARGET_BUFFER_BYTES)
+                .setBufferDurationsMs(session.keyframeOnly?250:1_000, session.keyframeOnly?500:4_000, 100, 250)
                 .build();
         ExoPlayer player;
         try {
@@ -308,6 +323,13 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         }
         Session own = session;
         player.addAnalyticsListener(session.analytics);player.addAnalyticsListener(session.analytics.playbackStats);
+        player.addAnalyticsListener(new androidx.media3.exoplayer.analytics.AnalyticsListener(){
+            @Override public void onVideoDecoderInitialized(EventTime time,String name,long at,long duration){
+                if(!own.matches(player,generation))return;
+                own.decoderName=name;lastCapability=decoderCapabilities.inspect(own.profile,name);
+                decoderBudget.restrictTo(lastCapability.limit);enforceMemoryBudget(own.profile);
+            }
+        });
         player.setAudioAttributes(mediaAudioAttributes(), !session.prewarming);
         session.completedLoops = 0;
         player.setRepeatMode(args.optBoolean("loop", false) ? Player.REPEAT_MODE_ONE : Player.REPEAT_MODE_OFF);
@@ -329,7 +351,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                         androidx.media3.common.Format format = group.getTrackFormat(index);
                         if (format.sampleMimeType == null || !format.sampleMimeType.startsWith("video/")) continue;
                         own.profile = new PodVideoDecoderCapabilities.Profile(format.sampleMimeType, format.width, format.height);
-                        PodVideoDecoderCapabilities.Result capability = decoderCapabilities.inspect(own.profile);
+                        PodVideoDecoderCapabilities.Result capability = decoderCapabilities.inspect(own.profile,own.decoderName);
                         lastProfile = own.profile; lastCapability = capability; decoderBudget.restrictTo(capability.limit);
                         enforceMemoryBudget(own.profile);
                         if (own.matches(player,generation) && own.prewarming && decoderBudget.inUse() > capability.limit) {
@@ -345,6 +367,8 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             }
 
             @Override public void onPlaybackStateChanged(int playbackState) {
+                if(own.matches(player,generation)&&!own.prewarming&&playbackState==Player.STATE_BUFFERING)
+                    for(Session worker:new java.util.ArrayList<>(sessions.values()))if(worker.keyframeOnly)cancel(worker.id);
                 if (!own.matches(player, generation)) return;
                 if (playbackState == Player.STATE_BUFFERING) own.state = "buffering";
                 else if (playbackState == Player.STATE_ENDED) { own.state = "ended"; if(!own.prewarming)mediaGate(false); }
@@ -364,14 +388,14 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                 own.hasRenderedFirstFrame = true;
                 PodBenchmark.swapStage(own.benchmarkAction,"rendered_first_frame",own.generation);
                 if(!own.prewarming&&mediaPrefixCache!=null)mediaPrefixCache.logPlaybackStats();
-                try { callback.firstFrame(own.snapshot()); } catch (Exception ignored) { }
+                if(!own.hasCachedFrame())try { callback.firstFrame(own.snapshot()); } catch (Exception ignored) { }
                 if (own.prewarming) {
                     player.pause();
                     player.setPlayWhenReady(false);
                     own.state = "prewarmed";
                     own.hideOffscreen();
-                    if(own.hasUpdatedFrame)own.completePrepare();
-                } else own.completePrepare();
+                    if(own.hasUpdatedFrame)own.finishDecodedFrame();
+                } else {if(own.hasUpdatedFrame&&own.hasCachedFrame())own.finishDecodedFrame();own.completePrepare();}
             }
 
             @Override public void onPlayerError(PlaybackException error) {
@@ -402,7 +426,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             player.prepare();
             analytics.stage("dispatched",player,session.videoView);
             PodBenchmark.startup(analytics.startupSeq,"prepare_dispatched");
-            if (session.prewarming) player.play();
+            if (session.prewarming || session.hasCachedFrame()) player.pause();
             else if (session.autoplay && !lifecyclePaused) player.play();
             else player.pause();
             if (session.prewarming) session.armPrewarmTimeout(player, generation);
@@ -450,7 +474,8 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         mediaGate(!lifecyclePaused);
         session.player.setAudioAttributes(mediaAudioAttributes(), true);
         session.audioPolicy.setVolume(1f, false);
-        if (!lifecyclePaused) session.player.play();
+        session.autoplay=true;
+        if (!lifecyclePaused&&!session.hasCachedFrame()) session.player.play();
         PodBenchmark.swapStage(session.benchmarkAction,"play_command",session.generation);
         session.state = lifecyclePaused ? "paused" : "playing";
         callback.complete(session.snapshot());
@@ -467,6 +492,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         if(!session.prewarming)mediaGate(args.optBoolean("handoff",false)&&!lifecyclePaused);
         // Cancellation/retirement can remove the player before a paging pause.
         // Preserve the session state and do not emit playback proof for a no-op.
+        session.autoplay=false;
         if(session.player==null){callback.complete(session.snapshot());return;}
         session.player.pause(); session.state = session.prewarming ? "prewarmed" : "paused";
         PodBenchmark.playerPaused(args,session.player.getPlayWhenReady(),session.generation);
@@ -477,6 +503,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         Session session = require(args); session.requirePlayer();
         long position = args.optLong("positionMs", -1);
         if (position < 0) throw new IllegalArgumentException("invalid_position");
+        session.clearKeyframe();
         session.player.seekTo(position); callback.complete(session.snapshot());
     }
 
@@ -690,6 +717,11 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         return factory.createMediaSource(item(url, args.optString("type", "")));
     }
 
+    private String keyframeBinding(JSONObject args,Bounds bounds) {
+        try{return PodVideoFrameCache.binding(args,mediaPrefixCache)+":"+bounds.widthPx+":"+bounds.heightPx;}
+        catch(Exception unavailable){return null;}
+    }
+
     private PodVideoDecoderCapabilities.Profile profileFromArguments(JSONObject args, boolean inspectLocal) throws Exception {
         String mime = args.optString("videoMime", "").trim().toLowerCase(java.util.Locale.US);
         if (mime.isEmpty()) {
@@ -799,7 +831,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     private static String errorCode(Exception error) {
         if (error instanceof SecurityException) return "permission_denied";
         if (error instanceof IllegalArgumentException) return "invalid_argument";
-        if ("video_session_limit".equals(error.getMessage()) || "video_decoder_limit".equals(error.getMessage())) return "resource_exhausted";
+        if ("video_foreground_busy".equals(error.getMessage()) || "video_session_limit".equals(error.getMessage()) || "video_decoder_limit".equals(error.getMessage())) return "resource_exhausted";
         if ("video_not_prewarmed".equals(error.getMessage())) return "not_ready";
         return "video_session_error";
     }
@@ -823,9 +855,13 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         String errorCode;
         String scaleMode = "standard";
         float rotationDeg, panX, panY;
-        boolean decoderLease, prewarming, autoplay, presented, hasRenderedFirstFrame, disposed;
+        boolean decoderLease, prewarming, autoplay, presented, hasRenderedFirstFrame, disposed, keyframeOnly;
         long generation, completedLoops;
         JSONObject frameSource;
+        String frameBinding, decoderName;
+        android.widget.ImageView keyframeView;
+        PodVideoKeyframes.Frame cachedFrame;
+        Runnable frameCompletionCancel;
         PodVideoAnalytics analytics;
         PodBenchmark.VideoAction benchmarkAction;
         boolean swapTextureLogged, hasUpdatedFrame;
@@ -843,12 +879,18 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             if (videoView == null) {
                 videoView = new PodObservedTextureView(context, texture -> {
                     hasUpdatedFrame=true;
-                    if(prewarming&&hasRenderedFirstFrame)completePrepare();
+                    // TextureView calls this from draw(). Releasing its layer or
+                    // removing an overlay there invalidates the ongoing traversal.
+                    long updatedGeneration=generation;
+                    main.post(()->{
+                    if(disposed||generation!=updatedGeneration)return;
+                    if(hasRenderedFirstFrame&&(prewarming||hasCachedFrame()))finishDecodedFrame();
                     if(benchmarkAction!=null&&!swapTextureLogged){swapTextureLogged=true;PodBenchmark.swapStage(benchmarkAction,"texture_updated",generation);}
                     if(benchmarkFramePending&&benchmarkAction!=null&&!prewarming&&presented&&hasRenderedFirstFrame&&bounds!=null&&bounds.visible&&videoView.getAlpha()>0){
                         PodBenchmark.VideoAction original=benchmarkAction;PodBenchmark.VideoAction action=new PodBenchmark.VideoAction(original.seq,original.generation,generation,original.delta);long own=generation;benchmarkFramePending=false;
                         PodBenchmark.watchVideo(videoView,action,()->generation==own&&!prewarming&&presented&&hasRenderedFirstFrame&&bounds!=null&&bounds.visible&&videoView.getTranslationY()==bounds.translateYPx);
                     }
+                    });
                 }) {
                     @Override public boolean onTouchEvent(android.view.MotionEvent event) { return false; }
                     @Override public boolean dispatchTouchEvent(android.view.MotionEvent event) { return false; }
@@ -871,12 +913,18 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             cancelPrewarmTimeout();
             Callback callback = takePrepareCallback();
             if (callback == null) return;
-            try { callback.complete(snapshot()); }
+            try {
+                JSONObject result=snapshot();
+                if(keyframeOnly){sessions.remove(id);close();}
+                callback.complete(result);
+            }
             catch (Exception error) { callback.fail("video_session_error", error.getMessage()); }
         }
 
         void resetPlayer() {
             if(this == dragFrom || this == dragTo || presented) endDrag();
+            if(frameCompletionCancel!=null){frameCompletionCancel.run();frameCompletionCancel=null;}
+            clearKeyframe();
             PodBenchmark.cancelVideo(videoView);
             if(analytics!=null)analytics.stage("release",player,videoView);
             benchmarkFramePending=false;benchmarkAction=null;
@@ -931,6 +979,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                 params.leftMargin=value.xPx;params.topMargin=value.yPx;
                 videoView.setLayoutParams(params);
                 background.setLayoutParams(new FrameLayout.LayoutParams(params));
+                if(keyframeView!=null)keyframeView.setLayoutParams(new FrameLayout.LayoutParams(params));
             }
             if(translate) setTranslation(value.translateXPx, value.translateYPx);
             if(layout)fitVideo();
@@ -946,6 +995,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         void setTranslation(float x, float y) {
             videoView.setTranslationX(x); videoView.setTranslationY(y);
             background.setTranslationX(x); background.setTranslationY(y);
+            if(keyframeView!=null){keyframeView.setTranslationX(x);keyframeView.setTranslationY(y);}
             if(bounds != null && bounds.clipRadiusPx>0) {
                 float cx=bounds.clipCxPx-(x-bounds.translateXPx),cy=bounds.clipCyPx-(y-bounds.translateYPx),r=bounds.clipRadiusPx;
                 int left=Math.round(cx-r),top=Math.round(cy-r),right=Math.round(cx+r),bottom=Math.round(cy+r);
@@ -954,12 +1004,19 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                 if(videoView.getOutlineProvider()!=pagerOutline){videoView.setOutlineProvider(pagerOutline);background.setOutlineProvider(pagerOutline);}
                 videoView.setClipToOutline(true);background.setClipToOutline(true);
                 if(changed){videoView.invalidateOutline();background.invalidateOutline();}
-            } else { videoView.setClipToOutline(false);background.setClipToOutline(false); }
+                if(keyframeView!=null){
+                    boolean newOutline=keyframeView.getOutlineProvider()!=pagerOutline;
+                    if(newOutline)keyframeView.setOutlineProvider(pagerOutline);
+                    keyframeView.setClipToOutline(true);
+                    if(changed||newOutline)keyframeView.invalidateOutline();
+                }
+            } else { videoView.setClipToOutline(false);background.setClipToOutline(false);if(keyframeView!=null)keyframeView.setClipToOutline(false); }
 
         }
 
         void retire() {
             if(this == dragFrom || this == dragTo || presented) endDrag();
+            autoplay=false;
             PodBenchmark.cancelVideo(videoView);
             if(analytics!=null)analytics.stage("retire",player,videoView);
             Callback pending=takePrepareCallback();
@@ -977,6 +1034,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             setTranslation(bounds.translateXPx, bounds.translateYPx);
             raisePresented();
             videoView.setAlpha(1f);
+            if(keyframeView!=null)keyframeView.setVisibility(View.VISIBLE);
             videoView.setVisibility(bounds.visible ? View.VISIBLE : View.GONE);
             background.setVisibility(bounds.visible ? View.VISIBLE : View.GONE);
             videoView.setKeepScreenOn(bounds.visible && player != null && player.getPlayWhenReady());
@@ -989,12 +1047,14 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             View runtime=null;
             for(int i=0;i<parent.getChildCount();i++)if(parent.getChildAt(i) instanceof PodRuntimeView)runtime=parent.getChildAt(i);
             parent.bringChildToFront(background);parent.bringChildToFront(videoView);
+            if(keyframeView!=null)parent.bringChildToFront(keyframeView);
             if(runtime!=null)parent.bringChildToFront(runtime);
         }
 
         void hideOffscreen() {
             if (videoView == null || background == null) return;
             if (dragFrom != null && this == dragTo) return;
+            if(keyframeView!=null)keyframeView.setVisibility(View.GONE);
             // A decoded buffer submitted offscreen is not yet latched by
             // TextureView. Draw standby underneath the opaque active page so
             // adoption reveals an already-updated texture, not a poster.
@@ -1020,7 +1080,75 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             videoView.setKeepScreenOn(false);
         }
 
+        void finishDecodedFrame() {
+            if(frameCompletionCancel!=null||!hasRenderedFirstFrame||!hasUpdatedFrame)return;
+            if(prewarming){cacheKeyframe();return;}
+            long own=generation;
+            // MediaCodec's callback can precede TextureLayer's crop/transform
+            // commit. Read pixels and cross over only after HWUI latches it.
+            frameCompletionCancel=PodAfterPaint.await(videoView,main,1,(frame,time)->{},committed->{
+                frameCompletionCancel=null;
+                if(disposed||generation!=own)return;
+                if(!committed){main.postDelayed(()->{if(!disposed&&generation==own)finishDecodedFrame();},50);return;}
+                if(prewarming)cacheKeyframe();
+                else if(hasCachedFrame()){clearKeyframe();if(autoplay&&!lifecyclePaused)player.play();}
+            });
+        }
+        boolean hasCachedFrame() { return cachedFrame != null; }
+        void cacheKeyframe() {
+            if (!prewarming || !hasRenderedFirstFrame || !hasUpdatedFrame || frameBinding == null) return;
+            long own=generation;
+            frameCompletionCancel=()->{}; // Fences duplicate texture callbacks during readback.
+            androidx.media3.common.VideoSize size=player.getVideoSize();
+            keyframes.capture(frameBinding,videoView,size.width,size.height,main,()->!disposed&&generation==own,frame->{
+                if(disposed||generation!=own)return;
+                frameCompletionCancel=null;
+                if(frame==null&&keyframeOnly){failPrepare(this,player,own,"prepare_failed","keyframe_copy_failed",false);return;}
+                if(frame!=null)frame.pixelAspectRatio=size.pixelWidthHeightRatio;
+                completePrepare();
+            });
+        }
+        void revealKeyframe() {
+            PodVideoKeyframes.Frame frame=keyframes.get(frameBinding);
+            if(frame==null)return;
+            cachedFrame=frame;frame.pins++;
+            keyframeView=new android.widget.ImageView(context);
+            keyframeView.setScaleType(android.widget.ImageView.ScaleType.MATRIX);
+            keyframeView.setImageBitmap(frame.pixels);
+            keyframeView.setClickable(false);keyframeView.setFocusable(false);
+            parent.addView(keyframeView,new FrameLayout.LayoutParams((FrameLayout.LayoutParams)videoView.getLayoutParams()));
+            setTranslation(bounds.translateXPx,bounds.translateYPx);
+            fitKeyframe();showPresented();
+            if(benchmarkAction!=null){
+                long own=generation;
+                PodBenchmark.VideoAction action=new PodBenchmark.VideoAction(benchmarkAction.seq,benchmarkAction.generation,own,benchmarkAction.delta);
+                benchmarkFramePending=false;
+                PodBenchmark.watchVideo(keyframeView,action,()->generation==own&&hasCachedFrame()&&presented&&!prewarming,true);
+            }
+            // Push the decoded-cache receipt separately from live decoder state.
+            try{if(prepareCallback!=null)prepareCallback.firstFrame(snapshot());}catch(Exception ignored){}
+        }
+        void clearKeyframe() {
+            if(keyframeView!=null){
+                PodBenchmark.cancelVideo(keyframeView);
+                keyframeView.setImageDrawable(null);
+                if(keyframeView.getParent() instanceof ViewGroup)((ViewGroup)keyframeView.getParent()).removeView(keyframeView);
+                keyframeView=null;
+            }
+            if(cachedFrame!=null){cachedFrame.pins--;cachedFrame=null;}
+        }
+
+        void fitKeyframe() {
+            if(keyframeView==null||cachedFrame==null||bounds==null)return;
+            android.graphics.drawable.Drawable image=keyframeView.getDrawable();
+            android.graphics.Matrix transform=PodVideoServices.videoTransform(bounds.widthPx,bounds.heightPx,
+                    cachedFrame.pixels.getWidth()*cachedFrame.pixelAspectRatio,cachedFrame.pixels.getHeight(),
+                    rotationDeg,scaleMode,Math.round(panX*density),Math.round(panY*density));
+            transform.preScale(bounds.widthPx/(float)image.getIntrinsicWidth(),bounds.heightPx/(float)image.getIntrinsicHeight());
+            keyframeView.setImageMatrix(transform);
+        }
         void fitVideo() {
+            fitKeyframe();
             if (player == null || videoView == null || bounds == null) return;
             androidx.media3.common.VideoSize size = player.getVideoSize();
             if (size.width <= 0 || size.height <= 0 || bounds.widthPx <= 0 || bounds.heightPx <= 0) return;
@@ -1040,6 +1168,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
 
                     .put("prewarming", prewarming)
                     .put("presented", presented)
+                    .put("hasCachedFirstFrame",hasCachedFrame()).put("keyframeAvailable",frameBinding!=null&&keyframes.get(frameBinding)!=null)
                     .put("hasRenderedFirstFrame", hasRenderedFirstFrame)
                     .put("sourceGeneration",generation).put("completedLoops", completedLoops).put("loop", player!=null && player.getRepeatMode()==Player.REPEAT_MODE_ONE)
                     .put("targetBufferBytes", TARGET_BUFFER_BYTES));
@@ -1105,7 +1234,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             endDrag();
             if(pagerBackground!=null&&pagerBackground.getParent() instanceof ViewGroup)((ViewGroup)pagerBackground.getParent()).removeView(pagerBackground);
             for (Session session : sessions.values()) session.close();
-            sessions.clear(); parent = null;
+            sessions.clear();keyframes.close(); parent = null;
         });
     }
 }

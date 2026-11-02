@@ -260,7 +260,7 @@ test('DYSWAP an initially primed paused frame still starts when foreground reque
 test('DYDRAG native pointer tracking removes repeated move RPCs but releases cancellation back to JS',async()=>{
  const m=new Model(),pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();const start=pool.prepare(source(1),options(1)).result;await m.advance(400);await start;
  const warm=pool.prewarm(source(2),options(2));await m.advance(400);await warm;pool.selectStandby('2');let calls=0;
- m.port.transition=async args=>{calls++;expect(args.trackPointer).toBe(calls===1);return {...args,composited:true,nativeTracking:args.trackPointer===true};};
+ m.port.transition=async args=>{calls++;expect(args.trackPointer).toBe(calls===1);return {...args,fromOffsetYPx:0,toOffsetYPx:0,composited:true,nativeTracking:args.trackPointer===true};};
  (pool as any).beginDrag?.();await pool.setBounds(options(1).bounds);
  await pool.transition(.1,'up',options(1).bounds);for(let i=2;i<10;i++)await pool.transition(i/10,'up',options(1).bounds);
  expect(calls).toBe(1);
@@ -271,7 +271,7 @@ test('DYDRAG native pointer tracking removes repeated move RPCs but releases can
 test('DYDRAG a late native tracking receipt cannot capture the next gesture or rebound',async()=>{
  const m=new Model(),pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();const start=pool.prepare(source(1),options(1)).result;await m.advance(400);await start;
  const warm=pool.prewarm(source(2),options(2));await m.advance(400);await warm;pool.selectStandby('2');let release!:(value:any)=>void,calls=0;
- m.port.transition=args=>{calls++;return calls===1?new Promise(resolve=>release=resolve):Promise.resolve({...args,composited:true,nativeTracking:false});};
+ m.port.transition=args=>{calls++;return calls===1?new Promise(resolve=>release=resolve):Promise.resolve({...args,fromOffsetYPx:0,toOffsetYPx:0,composited:true,nativeTracking:false});};
  pool.beginDrag();const first=pool.transition(.1,'up',options(1).bounds);pool.endDrag();release({nativeTracking:true});await first;
  await pool.transition(.2,'up',options(1).bounds);await pool.transition(.3,'up',options(1).bounds);expect(calls).toBe(3);
 });
@@ -302,4 +302,44 @@ test('five-slot window keeps four decoded neighbours while consecutive foregroun
   current+=step;const adopted=pool.prepare(source(current),options(current));await m.advance(30);await adopted.result;
  }
  expect(m.prepareCount).toBeLessThan(34);
+});
+
+test('DYFRAME serially decodes seven neighbours with a 3-lease budget and restores nearest live slots',async()=>{
+ const m=new Model();m.port.capabilities=async()=>({...await new Model().port.capabilities(),keyframeCache:true});
+ const cached=new Set<string>();const original=m.port.prepare;
+ m.port.prepare=(o:any)=>{const operation=original(o);return {...operation,result:operation.result.then(value=>{if(o.prewarm)cached.add(o.url);expect(m.states.size).toBeLessThanOrEqual(3);if(o.keyframeOnly)m.states.delete(o.sessionId);return {...value,keyframeAvailable:o.prewarm};})};};
+ const pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();const active=pool.prepare(source(10),options(10)).result;await m.advance(500);await active;
+ const ids=[11,9,12,8,13,14,15];let resolved=0;
+ const warm=pool.warmNeighbourhood(ids.map(n=>async()=>{resolved++;return {source:source(n),options:options(n),direction:n>10?'next' as const:'prev' as const};}));
+ await m.advance(6000);await warm;expect(resolved).toBe(7);expect(cached.size).toBe(7);expect(pool.hasStandby('11')).toBe(true);expect(pool.hasStandby('9')).toBe(true);expect(m.states.size).toBe(3);await pool.releaseAll();
+});
+
+test('DYFRAME foreground preparation cancels queued neighbourhood work and releases its worker',async()=>{
+ const m=new Model();m.port.capabilities=async()=>({...await new Model().port.capabilities(),keyframeCache:true});
+ const pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();const a=pool.prepare(source(10),options(10)).result;await m.advance(400);await a;
+ let loaded=0;const warm=pool.warmNeighbourhood([11,12,13,14,15].map(n=>async()=>{loaded++;return {source:source(n),options:options(n),direction:'next' as const};})).catch(()=>{});
+ await m.advance(20);const foreground=pool.prepare(source(20),options(20)).result;await m.advance(1000);await Promise.all([foreground,warm]);expect(loaded).toBe(1);expect(m.cancelCount).toBeGreaterThan(0);expect((await pool.state()).hasRenderedFirstFrame).toBe(true);await pool.releaseAll();
+});
+
+test('DYFRAME honors codec-advertised capacity above three and never exceeds eight',async()=>{
+ const m=new Model();m.port.capabilities=async()=>({...await new Model().port.capabilities(),decoderLimit:16,maxSessions:8,keyframeCache:true});
+ const pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();expect(pool.neighbourCapacity).toBe(7);const a=pool.prepare(source(10),options(10)).result;await m.advance(400);await a;
+ for(let n=11;n<=17;n++){const warm=pool.prewarm(source(n),options(n));await m.advance(400);await warm;}
+ expect(m.states.size).toBe(8);expect(pool.hasStandby('11')).toBe(true);expect(pool.hasStandby('17')).toBe(true);await pool.releaseAll();expect(m.states.size).toBe(0);
+});
+
+test('DYFRAME navigation while worker eviction awaits cannot enqueue a stale decoder',async()=>{
+ const m=new Model();m.port.capabilities=async()=>({...await new Model().port.capabilities(),keyframeCache:true});
+ const pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();const a=pool.prepare(source(10),options(10)).result;await m.advance(400);await a;
+ const originalRelease=m.port.release;let unblock!:()=>void;const gate=new Promise<void>(r=>unblock=r);let first=true;
+ m.port.release=async(id:string)=>{if(first){first=false;await gate;}return originalRelease(id);};
+ const warm=pool.warmNeighbourhood([async()=>({source:source(11),options:options(11),direction:'next' as const})]);
+ await m.advance(5);const fg=pool.prepare(source(20),options(20)).result;unblock();await m.advance(1000);await Promise.all([warm,fg]);expect(m.prepareCount).toBe(2);await pool.releaseAll();
+});
+
+test('DYFRAME cached foreground reveal does not wait behind unrelated standby release commands',async()=>{
+ const m=new Model();m.port.capabilities=async()=>({...await new Model().port.capabilities(),keyframeCache:true});
+ const pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();const a=pool.prepare(source(10),options(10)).result;await m.advance(400);await a;
+ for(const n of [11,9]){const warm=pool.prewarm(source(n),options(n));await m.advance(400);await warm;}
+ const before=m.states.size,foreground=pool.prepare(source(15),options(15)).result;expect(m.states.size).toBe(before);await m.advance(400);await foreground;expect(m.states.size).toBe(1);await pool.releaseAll();
 });

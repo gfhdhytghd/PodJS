@@ -20,7 +20,7 @@ public class PodVideoFailureTest {
   JSONObject row=new JSONObject().put("code","error_page").put("failure_code","resource_exhausted").put("failure_stage","prepare").put("exception_kind","illegal_state").put("slot_limit",1).put("decoder_count",1);
   assertTrue(PodBenchmark.dispatch(row.toString())>0);
   for(String key:new String[]{"failure_code","failure_stage","exception_kind","slot_limit","decoder_count","content_kind","source_kind","surface_state"})assertEquals(0,PodBenchmark.dispatch(new JSONObject(row.toString()).put(key,"PRIVATE").toString()));
-  assertEquals(0,PodBenchmark.dispatch(new JSONObject(row.toString()).put("slot_limit",4).toString()));
+  assertEquals(0,PodBenchmark.dispatch(new JSONObject(row.toString()).put("slot_limit",9).toString()));
   assertEquals(0,PodBenchmark.dispatch(new JSONObject(row.toString()).put("media3_code",-1).toString()));
   assertEquals(0,PodBenchmark.dispatch(new JSONObject(row.toString()).put("code","entry_start").toString()));
   assertFalse(ShadowLog.getLogsForTag("DYBENCH").toString().contains("PRIVATE"));

@@ -338,7 +338,7 @@ export interface VideoFrameSource {url?:string;videoUrl?:string;audioUrl?:string
 export interface VideoFrame {available:true;kind:"actual_frame";path:string;width:number;height:number;positionMs:number;capturedAt:number;capturedGeneration:number}
 export interface VideoFrameCapture {key:string;source:VideoFrameSource;sourceGeneration:number}
 export interface VideoPlaybackMetrics { bytesLoaded:number; droppedFrames:number; rebufferCount:number; rebufferMs:number; firstByteMs?:number; firstFrameMs?:number; throughputBps?:number; [key:string]:number|undefined }
-export interface VideoState { volumeIndex?:number; muted?:boolean; appliedVolume?:number; audioTrackSelected?:boolean; bufferedMs?:number; networkStalled?:boolean; presented?:boolean; metrics?:VideoPlaybackMetrics; sourceGeneration?:number; /** Completed native repeats since prepare; seeks do not increment it. */ completedLoops?:number; loop?:boolean; hasRenderedFirstFrame?:boolean; errorCode?:string; ok:boolean; state:string; positionMs:number; durationMs:number; width:number; height:number; volume:number; volumeMax:number }
+export interface VideoState { volumeIndex?:number; muted?:boolean; appliedVolume?:number; audioTrackSelected?:boolean; bufferedMs?:number; networkStalled?:boolean; presented?:boolean; metrics?:VideoPlaybackMetrics; sourceGeneration?:number; /** Completed native repeats since prepare; seeks do not increment it. */ completedLoops?:number; loop?:boolean; hasCachedFirstFrame?:boolean; hasRenderedFirstFrame?:boolean; errorCode?:string; ok:boolean; state:string; positionMs:number; durationMs:number; width:number; height:number; volume:number; volumeMax:number }
 export const video = {
   /** Capture only a rendered frame from the exact still-current source generation. */
   clearFrames():Promise<{removedFiles:number}> {return hostOperation<{removedFiles:number}>("video.frame.clear",{}).result;},
@@ -367,12 +367,15 @@ export interface VideoSessionCapabilities {
   prewarmMode:"hidden_first_frame"; surfacePromotion:boolean; verticalTransition:boolean;
   surfaceComposition:"android_texture_view"; backgroundPlayback:false;
   decoderMime?:string|null; decoderWidth?:number; decoderHeight?:number; decoderName?:string|null;
+  keyframeCache?:boolean; keyframeEntries?:number; keyframeBytes?:number; keyframeMaxBytes?:number; decoderPeak?:number;
   decoderAdvertisedInstances?:number; decoderSizeSupported?:boolean; decoderRuntimeDowngraded?:boolean;
 }
 export interface VideoSessionPrepare extends Omit<VideoPrepare,"backgroundPlayback"> {
   sessionId:string;
   /** Decode silently to a retained hidden first frame. Prewarm never requests audio focus. */
   prepareSeq?:number;prewarm?:boolean;
+  /** Decode frame zero into the bounded native cache and release this codec. */
+  keyframeOnly?:boolean;
 }
 export interface VideoSessionState {
   volumeIndex?:number; volumeMax?:number;
@@ -384,6 +387,7 @@ export interface VideoSessionState {
   errorCode?:string;
   ok:boolean; sessionId:string; state:string; positionMs:number; durationMs:number;
   width:number; height:number; muted:boolean; volume:number; prewarming:boolean;
+  hasCachedFirstFrame?:boolean; keyframeAvailable?:boolean;
   presented:boolean; hasRenderedFirstFrame:boolean; targetBufferBytes:number;
   /** Atomic promotion receipt; absent on older hosts. */
   replacedHasRenderedFirstFrame?:boolean;
