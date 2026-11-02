@@ -385,6 +385,8 @@ export interface VideoSessionState {
   ok:boolean; sessionId:string; state:string; positionMs:number; durationMs:number;
   width:number; height:number; muted:boolean; volume:number; prewarming:boolean;
   presented:boolean; hasRenderedFirstFrame:boolean; targetBufferBytes:number;
+  /** Atomic promotion receipt; absent on older hosts. */
+  replacedHasRenderedFirstFrame?:boolean;
 }
 export interface VideoSessionTransition {
   fromSessionId:string; toSessionId:string; progress:number; direction:"up"|"down"; bounds?:VideoBounds; benchmark?:VideoBenchmarkAction;
@@ -414,7 +416,7 @@ export const videoSessions = {
   setMuted(sessionId:string,muted:boolean):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setVolume",{sessionId,muted}).result; },
   setVolume(sessionId:string,volume:number):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setVolume",{sessionId,volume}).result; },
   /** Reveals the retained target first frame before hiding the replaced session. */
-  promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean;adoptPreparing?:boolean;benchmark?:VideoBenchmarkAction}={}):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.promote",{sessionId,...options}).result; },
+  promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean;loop?:boolean;adoptPreparing?:boolean;benchmark?:VideoBenchmarkAction}={}):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.promote",{sessionId,...options}).result; },
   /** Atomically translates both native surfaces. Call promote after progress reaches one. */
   transition(options:VideoSessionTransition):Promise<VideoSessionTransitionState> { return hostOperation<VideoSessionTransitionState>("video.session.transition",options as unknown as Record<string,unknown>).result; },
 };

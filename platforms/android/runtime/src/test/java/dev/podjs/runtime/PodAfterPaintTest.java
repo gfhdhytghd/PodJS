@@ -33,4 +33,12 @@ public class PodAfterPaintTest {
  @Test public void productionUnattachedViewReportsFallbackImmediately(){
   List<Boolean> values=new ArrayList<>();PodAfterPaint.await(new View(RuntimeEnvironment.getApplication()),new Handler(Looper.getMainLooper()),values::add);assertEquals(Arrays.asList(false),values);
  }
+ @Test public void retainedDecodedTextureUsesFirstCommitAndTimeoutStillIsNotProof(){
+  Commits commits=new Commits();List<Boolean> values=new ArrayList<>();List<Integer> observed=new ArrayList<>();
+  PodAfterPaint.await(commits,new Handler(Looper.getMainLooper()),1,(frame,at)->observed.add(frame),values::add);
+  assertTrue(values.isEmpty());commits.callbacks.get(0).run();shadowOf(Looper.getMainLooper()).idle();
+  assertEquals(Arrays.asList(true),values);assertEquals(Arrays.asList(1),observed);assertEquals(1,commits.callbacks.size());
+  values.clear();PodAfterPaint.await(new Commits(),new Handler(Looper.getMainLooper()),1,(frame,at)->{},values::add);
+  shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(251));assertEquals(Arrays.asList(false),values);
+ }
 }

@@ -231,3 +231,28 @@ test('cancelling pending foreground adoption retains the native session for the 
  expect(m.states.has(target)).toBe(true);expect(pool.ownsActiveSession(target)).toBe(true);
  resolvePromote(m.value(target));await stale;await pool.releaseAll();
 });
+
+test('DYSWAP decoded adoption publishes the atomic promotion receipt without diagnostic round trips',async()=>{
+ const m=new Model(),pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();
+ const active=pool.prepare(source(1),options(1));await m.advance(400);await active.result;
+ const warm=pool.prewarm(source(2),options(2));await m.advance(400);await warm;
+ let promoteOptions:any;
+ m.port.promote=async(id,o)=>{promoteOptions=o;return {...m.value(id),replacedHasRenderedFirstFrame:true};};
+ // A congested diagnostic/state or loop reply must not gate a retained frame.
+ m.port.state=()=>new Promise(()=>{});m.port.setLoop=()=>new Promise(()=>{});
+ let published=false;
+ const adoption=pool.prepare(source(2),{...options(2),autoplay:true});void adoption.result.then(()=>{published=true;});
+ for(let i=0;i<32;i++)await Promise.resolve();
+ expect(promoteOptions.autoplay).toBe(true);expect(promoteOptions.loop).toBe(false);
+ expect(published).toBe(true);expect(pool.hasStandby('1')).toBe(true);
+ expect(m.prepareCount).toBe(2);expect(m.cancelCount).toBe(0);
+});
+
+test('DYSWAP an initially primed paused frame still starts when foreground requests autoplay',async()=>{
+ const m=new Model();let plays=0;
+ m.port.play=async id=>{plays++;return {...m.value(id),state:'playing'};};
+ const pool=new VideoSessionPool(m.port),item=source(1),config=options(1);
+ const initial=pool.prime(item,config);await m.advance(400);await initial.result;
+ const adopted=await pool.prepare(item,{...config,autoplay:true}).result;
+ expect(plays).toBe(1);expect(adopted.state).toBe('playing');expect(m.prepareCount).toBe(1);
+});

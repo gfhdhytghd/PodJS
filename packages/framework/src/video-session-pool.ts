@@ -19,7 +19,7 @@ export interface VideoSessionPort {
   setVolume(sessionId:string,volume:number):Promise<VideoSessionState>;
   setMuted?(sessionId:string,muted:boolean):Promise<VideoSessionState>;
   setLoop(sessionId:string,loop:boolean):Promise<VideoSessionState>;
-  promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean;adoptPreparing?:boolean;benchmark?:VideoBenchmarkAction}):Promise<VideoSessionState>;
+  promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean;loop?:boolean;adoptPreparing?:boolean;benchmark?:VideoBenchmarkAction}):Promise<VideoSessionState>;
   transition(options:{fromSessionId:string;toSessionId:string;progress:number;direction:VideoPagerDirection;bounds?:VideoBounds;benchmark?:VideoBenchmarkAction}):Promise<VideoSessionTransitionState>;
 }
 
@@ -38,7 +38,7 @@ const state=(value:VideoSessionState):VideoState=>({
 /** Retained surfaces, bounded by native codec and byte budgets. Three slots
  * retain both neighbours; two-slot hosts retain the selected/likely neighbour.
  * Slot-local revisions prevent one neighbour cancelling the other. */
-interface WarmSlot<S> {direction?:'next'|'prev';id:string;source?:S;identity?:string;ready:boolean;revision:number;operation?:HostOperation<VideoSessionState>;pending?:Promise<VideoState>}
+interface WarmSlot<S> {direction?:'next'|'prev';id:string;source?:S;identity?:string;ready:boolean;revision:number;recentlyActive?:boolean;operation?:HostOperation<VideoSessionState>;pending?:Promise<VideoState>}
 export class VideoSessionPool<Source extends {key:string}> {
   private initialPreparation?:{key:string;identity:string;generation:number;operation:HostOperation<VideoState>};
   private prepareIdentity(options:VideoPrepare){return JSON.stringify([options.url,options.videoUrl,options.audioUrl,options.type,options.videoMime,options.videoWidth,options.videoHeight,Object.entries(options.headers??{}).sort()]);}
@@ -99,7 +99,11 @@ export class VideoSessionPool<Source extends {key:string}> {
         if(!current())throw Error('stale initial video preparation');
         await this.port.setBounds(this.activeId,options.bounds);
         if(!current())throw Error('stale initial video preparation');
-        return state(await this.syncLoop(this.activeId));
+        let value=await this.syncLoop(this.activeId);
+        if(!current())throw Error('stale initial video preparation');
+        if(options.autoplay===true)value=await this.port.play(this.activeId);
+        if(!current())throw Error('stale initial video preparation');
+        return state(value);
       }).finally(()=>{settled=true;});
       // An early native failure stays terminal; adoption must not silently retry it.
       return {result,cancel:()=>{if(settled||cancelled)return;cancelled=true;if(own===this.generation){this.generation++;initial.operation.cancel();void this.port.release(this.activeId).catch(()=>{});}}};
@@ -113,7 +117,7 @@ export class VideoSessionPool<Source extends {key:string}> {
     // Explicit sessions are foreground-only. Do not leak a legacy preference
     // into the native API (which correctly rejects backgroundPlayback=true).
     const {backgroundPlayback,...foreground}=options;
-    const operation=this.port.prepare({...foreground,sessionId:this.activeId,prewarm:false,autoplay:false});
+    const operation=this.port.prepare({...foreground,sessionId:this.activeId,prewarm:false,autoplay:options.autoplay===true});
     return {cancel:()=>operation.cancel(),result:operation.result.then(value=>{
       if(own!==this.generation)throw new Error('stale video session preparation');
       return this.syncLoop(this.activeId).then(state);
@@ -128,17 +132,21 @@ export class VideoSessionPool<Source extends {key:string}> {
     this.loop=options.loop===true;this.selected=undefined;this.latestTransition=undefined;
     slot.revision++;slot.operation=undefined;slot.pending=undefined;
     slot.direction=slot.direction==='next'?'prev':slot.direction==='prev'?'next':undefined;
-    slot.id=replacedId;slot.source=previousSource;slot.identity=previousIdentity;slot.ready=false;
+    slot.recentlyActive=true;slot.id=replacedId;slot.source=previousSource;slot.identity=previousIdentity;slot.ready=false;
     this.activeId=id;this.activeKey=source.key;this.activeSource=source;this.activeIdentity=this.prepareIdentity(options);
-    for(const other of this.slots)if(other!==slot&&(other.source||other.operation))void this.evict(other,'stale');
+    // A speculative codec release can block the UI thread. Reclaim its slot
+    // when the following prewarm needs it, after the foreground reveal.
     let cancelled=false,settled=false;
     const result=(async()=>{
-      const promoted=await this.port.promote(id,{replaceSessionId:replacedId,bounds:options.bounds,autoplay:false,adoptPreparing:true,...(options.benchmark?{benchmark:options.benchmark}:{})});
+      const loop=this.loop;
+      const promoted=await this.port.promote(id,{replaceSessionId:replacedId,bounds:options.bounds,autoplay:options.autoplay===true,loop,adoptPreparing:true,...(options.benchmark?{benchmark:options.benchmark}:{})});
       if(cancelled||own!==this.generation)throw Error('stale video session adoption');
-      const retired=await this.port.state(replacedId).catch(()=>undefined);
+      // Current hosts return old-surface readiness in the promotion command.
+      // Older hosts retain the diagnostic fallback. Neither path reparses media.
+      const retired=typeof promoted.replacedHasRenderedFirstFrame==='boolean'?{hasRenderedFirstFrame:promoted.replacedHasRenderedFirstFrame,state:'prewarmed'}:await this.port.state(replacedId).catch(()=>undefined);
       if(cancelled||own!==this.generation)throw Error('stale video session adoption');
       slot.ready=!!previousSource&&retired?.hasRenderedFirstFrame===true&&retired.state!=='error';
-      await this.syncLoop(id);
+      if(typeof promoted.replacedHasRenderedFirstFrame!=='boolean'||loop!==this.loop)await this.syncLoop(id);
       if(cancelled||own!==this.generation)throw Error('stale video session adoption');
       return state(promoted);
     })().finally(()=>{settled=true;});
@@ -150,9 +158,9 @@ export class VideoSessionPool<Source extends {key:string}> {
     if(slot?.ready)return this.port.state(slot.id).then(state);
     if(slot?.pending)return slot.pending;
     slot??=this.slots.slice(0,this.capacity-1).find(s=>!s.source);
-    if(!slot){slot=this.slots.find(s=>s!==this.selected)??this.slots[0];this.evict(slot,'capacity');}
+    if(!slot){slot=this.slots.find(s=>s!==this.selected&&!s.recentlyActive)??this.slots.find(s=>s!==this.selected)??this.slots[0];this.evict(slot,'capacity');}
     const target=slot,own=++target.revision;
-    target.source=source;target.identity=this.prepareIdentity(options);target.ready=false;target.direction=direction;
+    target.recentlyActive=false;target.source=source;target.identity=this.prepareIdentity(options);target.ready=false;target.direction=direction;
     const seq=benchmark.begin('prewarm_requested',{generation:own,direction});
     const {backgroundPlayback,...foreground}=options;
     const operation=this.port.prepare({...foreground,loop:this.loop,sessionId:target.id,prepareSeq:seq,prewarm:true,autoplay:false,muted:false});
@@ -189,13 +197,15 @@ export class VideoSessionPool<Source extends {key:string}> {
     try{
     if(this.transitionRunning)await this.transitionRunning;
     const own=this.generation,id=slot.id,identity=slot.identity;
-    const promoted=await this.port.promote(id,{replaceSessionId:this.activeId,bounds,autoplay,...(benchmark?{benchmark}:{})});
+    const loop=this.loop;
+    const promoted=await this.port.promote(id,{replaceSessionId:this.activeId,bounds,autoplay,loop,...(benchmark?{benchmark}:{})});
     // A fast swipe can retire the initial active before it decoded anything.
     // Retain its source, but never label that surface ready without host proof.
-    const retired=await this.port.state(this.activeId).catch(()=>undefined);
+    const retired=typeof promoted.replacedHasRenderedFirstFrame==='boolean'?{hasRenderedFirstFrame:promoted.replacedHasRenderedFirstFrame,state:'prewarmed'}:await this.port.state(this.activeId).catch(()=>undefined);
+    if(typeof promoted.replacedHasRenderedFirstFrame!=='boolean'||loop!==this.loop)await this.syncLoop(id);
     if(own!==this.generation||slot.source!==target)throw new Error('stale video session promotion');
     this.generation++;
-    slot.id=this.activeId;slot.direction=direction==='up'?'prev':'next';slot.source=this.activeSource;slot.identity=this.activeIdentity;slot.ready=!!this.activeSource&&retired?.hasRenderedFirstFrame===true&&retired.state!=='error';slot.revision++;
+    slot.recentlyActive=true;slot.id=this.activeId;slot.direction=direction==='up'?'prev':'next';slot.source=this.activeSource;slot.identity=this.activeIdentity;slot.ready=!!this.activeSource&&retired?.hasRenderedFirstFrame===true&&retired.state!=='error';slot.revision++;
     this.activeId=id;this.activeKey=target.key;this.activeSource=target;this.activeIdentity=identity;this.selected=undefined;
     for(const other of this.slots)if(other!==slot&&!retainKeys.includes(other.source?.key??''))this.evict(other,'stale');
     return {source:target,state:state(promoted)};

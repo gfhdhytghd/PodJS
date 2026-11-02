@@ -16,7 +16,7 @@ final class PodBenchmark {
     private static final long MAX=9_007_199_254_740_991L;
     private static long sequence;
     private static WeakReference<View> surface=new WeakReference<>(null);
-    private static final Set<String> CODES=new HashSet<>(Arrays.asList(("media_variant prepare_stage startup_stage home_first_frame douyin_request entry_start home_entry first_card refresh_start refresh_done player_visible gesture_down gesture_release player_paused previous_audio_stopped incoming_first_frame spinner_shown snap_back fling_done mute_changed player_audio_applied mixer_match login_entry login_tap qr_ready scan_accepted auth_persisted logout_start logout_feedback auth_cleared auth_state needs_login refreshing restore_state renderer_process prewarm_requested prewarm_ready prewarm_evicted prewarm_policy background_gate error_page error").split(" ")));
+    private static final Set<String> CODES=new HashSet<>(Arrays.asList(("swap_stage media_variant prepare_stage startup_stage home_first_frame douyin_request entry_start home_entry first_card refresh_start refresh_done player_visible gesture_down gesture_release player_paused previous_audio_stopped incoming_first_frame spinner_shown snap_back fling_done mute_changed player_audio_applied mixer_match login_entry login_tap qr_ready scan_accepted auth_persisted logout_start logout_feedback auth_cleared auth_state needs_login refreshing restore_state renderer_process prewarm_requested prewarm_ready prewarm_evicted prewarm_policy background_gate error_page error").split(" ")));
     private static final Set<String> NUMBERS=new HashSet<>(Arrays.asList("seq","attempt","delta","generation","source_generation","pid","active_tracks","buffered_ms","slots","http_status","retry_after_ms"));
     private static final Set<String> AUTH=new HashSet<>(Arrays.asList("login_entry","login_tap","qr_ready","scan_accepted","auth_persisted","renderer_process"));
     private static final Set<String> PRESENTED=new HashSet<>(Arrays.asList("home_first_frame","first_card","refresh_done","qr_ready","logout_feedback","needs_login","refreshing","spinner_shown"));
@@ -33,7 +33,7 @@ final class PodBenchmark {
     static synchronized long begin(String code,JSONObject fields,long now){
         if(now<0||now>SystemClock.uptimeMillis())return 0;sequence=Math.max(sequence+1,now*1024);
         if(sequence<1||sequence>MAX)return 0;
-        try {JSONObject args=new JSONObject(fields==null?"{}":fields.toString()).put("code",code).put("seq",sequence);actions.put(sequence,new HashSet<>());while(actions.size()>1024){Long old=actions.keySet().iterator().next();actions.remove(old);presentationVersions.keySet().removeIf(key->key.startsWith(old+":"));videos.remove(old);confirmedVideo.remove(old);}return emit(args,now)?sequence:0;}catch(Exception ignored){return 0;}
+        try {JSONObject args=new JSONObject(fields==null?"{}":fields.toString()).put("code",code).put("seq",sequence);actions.put(sequence,new HashSet<>());while(actions.size()>1024){Long old=actions.keySet().iterator().next();actions.remove(old);presentationVersions.keySet().removeIf(key->key.startsWith(old+":"));videos.remove(old);confirmedVideo.remove(old);confirmedVideoTime.remove(old);}return emit(args,now)?sequence:0;}catch(Exception ignored){return 0;}
     }
     static long mark(String code,long seq,JSONObject fields){try{return emit(new JSONObject(fields==null?"{}":fields.toString()).put("code",code).put("seq",seq),SystemClock.uptimeMillis())?seq:0;}catch(Exception ignored){return 0;}}
     private static final Map<String,Long> presentationVersions=new HashMap<>();
@@ -42,9 +42,9 @@ final class PodBenchmark {
         if(line==null||line.length()>1024)return 0;
         try {
             JSONObject args=new JSONObject(line);
-            if(args.has("video_frame")){if(args.length()!=2)return 0;long seq=integer(args,"video_frame"),generation=integer(args,"generation");synchronized(PodBenchmark.class){if(!known(seq))return 0;confirmedVideo.put(seq,generation);tryVideo(seq);}return seq;}
+            if(args.has("video_frame")){if(args.length()!=2)return 0;long seq=integer(args,"video_frame"),generation=integer(args,"generation");synchronized(PodBenchmark.class){if(!known(seq))return 0;confirmedVideo.put(seq,generation);confirmedVideoTime.put(seq,SystemClock.uptimeMillis());VideoObservation observed=videos.get(seq);if(observed!=null)swapStage(observed.action,"ui_confirm",observed.action.sourceGeneration,confirmedVideoTime.get(seq));tryVideo(seq);}return seq;}
             String code=args.optString("code","");
-            if(PROOF.contains(code)||code.equals("prepare_stage"))return 0; // Mixer/target-surface proof cannot originate in guest state.
+            if(PROOF.contains(code)||code.equals("swap_stage")||code.equals("prepare_stage"))return 0; // Mixer/target-surface proof cannot originate in guest state.
             if(args.optBoolean("cancel_presented",false)){args.remove("cancel_presented");if(args.length()!=2||!CODES.contains(code))return 0;long seq=integer(args,"seq");synchronized(PodBenchmark.class){String key=seq+":"+code;presentationVersions.put(key,presentationVersions.getOrDefault(key,0L)+1);}return seq;}
             boolean presented=args.optBoolean("presented",false);args.remove("presented");
             if(presented&&!PRESENTED.contains(code))return 0;
@@ -85,6 +85,7 @@ final class PodBenchmark {
                 else if(key.equals("variant_outlet")){if(!code.equals("media_variant")||!Arrays.asList("feed","detail","foreground").contains(value))return false;}
                 else if(key.equals("codec")){if(!code.equals("media_variant")||!Arrays.asList("h264","h265","unknown").contains(value))return false;}
                 else if(key.equals("selected")){if(!code.equals("media_variant")||!(value instanceof Boolean))return false;}
+                else if(key.equals("swap_stage")){if(!code.equals("swap_stage")||!Arrays.asList("promote_enter","surface_promoted","play_command","texture_updated","rendered_first_frame","ui_confirm","observer_armed","window_commit_1","window_commit_2").contains(value))return false;}
                 else if(key.equals("prepare_stage")){if(!code.equals("prepare_stage")||!Arrays.asList("start","dispatched","network_open","network_start","network_first_byte","network_end","decoder_configured","format_ready","first_frame","timeout","cancel","adopt","retire","release").contains(value))return false;}
                 else if((key.equals("network_bytes")||key.equals("position_bytes")||key.equals("cache_network_bytes")||key.equals("cache_range_requests")||key.equals("cache_bytes")||key.equals("cache_entry")||key.equals("range_requests")||key.equals("ttfb_ms")||key.equals("steady_ms"))){if(!code.equals("prepare_stage")||integer(args,key)>MAX)return false;}
                 else if(key.equals("surface_ready")){if(!code.equals("prepare_stage")||!(value instanceof Boolean))return false;}
@@ -134,14 +135,16 @@ final class PodBenchmark {
         view.invalidate();return true;
     }
     private static final Map<Long,Long> confirmedVideo=new HashMap<>();
+    private static final Map<Long,Long> confirmedVideoTime=new HashMap<>();
     private static final Map<Long,VideoObservation> videos=new HashMap<>();
     private static final Map<Long,VideoObservation> committingVideos=new HashMap<>();
     private static final class VideoObservation {
         final View view;
         final VideoAction action;
         final BooleanSupplier guard;
+        final boolean retainedFrame;
         Runnable cancelCommit;
-        VideoObservation(View view,VideoAction action,BooleanSupplier guard){this.view=view;this.action=action;this.guard=guard;}
+        VideoObservation(View view,VideoAction action,BooleanSupplier guard,boolean retainedFrame){this.view=view;this.action=action;this.guard=guard;this.retainedFrame=retainedFrame;}
     }
     /** A missing guest acknowledgement cannot outlive the surface generation. */
     static synchronized void cancelVideo(View view){
@@ -149,7 +152,7 @@ final class PodBenchmark {
         Iterator<Map.Entry<Long,VideoObservation>> pending=videos.entrySet().iterator();
         while(pending.hasNext()){
             Map.Entry<Long,VideoObservation> entry=pending.next();
-            if(entry.getValue().view==view){confirmedVideo.remove(entry.getKey());pending.remove();}
+            if(entry.getValue().view==view){confirmedVideo.remove(entry.getKey());confirmedVideoTime.remove(entry.getKey());pending.remove();}
         }
         Iterator<Map.Entry<Long,VideoObservation>> committing=committingVideos.entrySet().iterator();
         while(committing.hasNext()){
@@ -161,23 +164,26 @@ final class PodBenchmark {
     static synchronized void watchVideo(View view,VideoAction action,BooleanSupplier guard,boolean promoted){
         // Each surface owns only its latest observation. A newer generation
         // invalidates the old guard even if the guest never acknowledged it.
-        Long confirmation=confirmedVideo.get(action.seq);
+        Long confirmation=confirmedVideo.get(action.seq),confirmationTime=confirmedVideoTime.get(action.seq);
         cancelVideo(view);
-        if(confirmation!=null)confirmedVideo.put(action.seq,confirmation);
-        videos.put(action.seq,new VideoObservation(view,action,guard));
+        if(confirmation!=null){confirmedVideo.put(action.seq,confirmation);if(confirmationTime!=null){confirmedVideoTime.put(action.seq,confirmationTime);swapStage(action,"ui_confirm",action.sourceGeneration,confirmationTime);}}
+        videos.put(action.seq,new VideoObservation(view,action,guard,promoted));
         tryVideo(action.seq);
     }
     private static synchronized void tryVideo(long seq){
         VideoObservation ready=videos.get(seq);
         if(ready!=null&&Objects.equals(confirmedVideo.get(seq),ready.action.generation)){
-            videos.remove(seq);confirmedVideo.remove(seq);
+            videos.remove(seq);confirmedVideo.remove(seq);confirmedVideoTime.remove(seq);
             View view=ready.view;VideoAction action=ready.action;BooleanSupplier guard=ready.guard;
-            // JS confirms its cover is gone; native proves the bound decoded
-            // target survives two window commits. A timeout is never success.
+            // A retained, already-latched decoded texture becomes visible in its
+            // first native window commit. Fresh surfaces still wait for two
+            // UI commits after cover removal. A timeout is never success.
+            swapStage(action,"observer_armed",action.sourceGeneration);
             committingVideos.put(seq,ready);
-            ready.cancelCommit=PodAfterPaint.await(surface.get()==null?view:surface.get(),new Handler(Looper.getMainLooper()),committed->{
+            final long[] commitAt={-1};
+            ready.cancelCommit=PodAfterPaint.await(ready.retainedFrame||surface.get()==null?view:surface.get(),new Handler(Looper.getMainLooper()),ready.retainedFrame?1:2,(frame,at)->{commitAt[0]=at;swapStage(action,frame==1?"window_commit_1":"window_commit_2",action.sourceGeneration,at);},committed->{
                 synchronized(PodBenchmark.class){if(committingVideos.get(seq)!=ready)return;committingVideos.remove(seq);}
-                if(committed&&view.isAttachedToWindow()&&view.isShown()&&view.hasWindowFocus()&&view.getAlpha()>0&&guard.getAsBoolean()){emit(action.event("incoming_first_frame"),SystemClock.uptimeMillis());if(action.delta==2)try{emit(action.event("fling_done").put("delta",2),SystemClock.uptimeMillis());}catch(Exception ignored){}}
+                if(committed&&view.isAttachedToWindow()&&view.isShown()&&view.hasWindowFocus()&&view.getAlpha()>0&&guard.getAsBoolean()){emit(action.event("incoming_first_frame"),commitAt[0]);if(action.delta==2)try{emit(action.event("fling_done").put("delta",2),commitAt[0]);}catch(Exception ignored){}}
                 else emit(action.event("error"),SystemClock.uptimeMillis());
             });
         }
@@ -188,6 +194,8 @@ final class PodBenchmark {
         if(action==null||playWhenReady||action.sourceGeneration!=sourceGeneration)return;
         try{emit(action.event("player_paused").put("backend","player"),SystemClock.uptimeMillis());}catch(Exception ignored){}
     }
+    static void swapStage(VideoAction action,String stage,long sourceGeneration){swapStage(action,stage,sourceGeneration,SystemClock.uptimeMillis());}
+    static void swapStage(VideoAction action,String stage,long sourceGeneration,long at){if(action!=null&&at<=SystemClock.uptimeMillis())try{emit(action.event("swap_stage").put("swap_stage",stage).put("source_generation",sourceGeneration),at);}catch(Exception ignored){}}
     static final class VideoAction {
         final long seq,generation,sourceGeneration;
         final int delta;

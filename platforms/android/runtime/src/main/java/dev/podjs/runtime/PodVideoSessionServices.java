@@ -359,6 +359,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             @Override public void onRenderedFirstFrame() {
                 if (!own.matches(player, generation)) return;
                 own.hasRenderedFirstFrame = true;
+                PodBenchmark.swapStage(own.benchmarkAction,"rendered_first_frame",own.generation);
                 if(!own.prewarming&&mediaPrefixCache!=null)mediaPrefixCache.logPlaybackStats();
                 try { callback.firstFrame(own.snapshot()); } catch (Exception ignored) { }
                 if (own.prewarming) {
@@ -366,7 +367,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                     player.setPlayWhenReady(false);
                     own.state = "prewarmed";
                     own.hideOffscreen();
-                    own.completePrepare();
+                    if(own.hasUpdatedFrame)own.completePrepare();
                 } else own.completePrepare();
             }
 
@@ -446,6 +447,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         session.player.setAudioAttributes(mediaAudioAttributes(), true);
         session.audioPolicy.setVolume(1f, false);
         if (!lifecyclePaused) session.player.play();
+        PodBenchmark.swapStage(session.benchmarkAction,"play_command",session.generation);
         session.state = lifecyclePaused ? "paused" : "playing";
         callback.complete(session.snapshot());
     }
@@ -535,6 +537,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     private void promote(JSONObject args, Callback callback) throws Exception {
         Session target = require(args);
         target.requirePlayer();
+        PodBenchmark.swapStage(PodBenchmark.videoAction(args),"promote_enter",target.generation);
         if (!target.hasRenderedFirstFrame && !(args.optBoolean("adoptPreparing",false)&&target.prewarming&&target.prepareCallback!=null))
             throw new IllegalStateException("video_not_prewarmed");
         Bounds requested = args.has("bounds") ? Bounds.read(args.optJSONObject("bounds"), density, true) : target.bounds;
@@ -544,7 +547,10 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         Session replaced = replacedId.isEmpty() ? null : sessions.get(replacedId);
         if (!replacedId.isEmpty() && replaced == null) throw new IllegalArgumentException("unknown_replace_session");
 
+        if(args.has("loop")&&!(args.opt("loop") instanceof Boolean))throw new IllegalArgumentException("loop_must_be_boolean");
+        boolean replacedReady=replaced!=null&&replaced.hasRenderedFirstFrame&&!"error".equals(replaced.state);
         if (replaced != null) replaced.retire();
+        if(args.has("loop"))target.player.setRepeatMode(args.optBoolean("loop")?Player.REPEAT_MODE_ONE:Player.REPEAT_MODE_OFF);
         target.bounds = requested;
         if(target.analytics!=null)target.analytics.stage("adopt",target.player,target.videoView);
         target.cancelPrewarmTimeout();
@@ -555,15 +561,17 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         target.applyBounds(requested);
         // Reveal the retained first-frame surface before hiding the old one.
         target.showPresented();
+        PodBenchmark.swapStage(PodBenchmark.videoAction(args),"surface_promoted",target.generation);
         boolean autoplay = args.optBoolean("autoplay", true);
         target.player.setAudioAttributes(mediaAudioAttributes(), true);
         target.audioPolicy.setVolume(1f, false);
         if (autoplay && !lifecyclePaused) target.player.play(); else target.player.pause();
+        PodBenchmark.swapStage(PodBenchmark.videoAction(args),"play_command",target.generation);
         target.state=target.player.getPlaybackState()==Player.STATE_BUFFERING?"buffering":target.player.isPlaying()?"playing":"paused";
         PodBenchmark.VideoAction action=PodBenchmark.videoAction(args);
-        target.benchmarkAction=action;target.benchmarkFramePending=action!=null&&!target.hasRenderedFirstFrame;
-        if(action!=null&&target.hasRenderedFirstFrame){long own=target.generation;PodBenchmark.watchVideo(target.videoView,action,()->target.generation==own&&!target.prewarming&&target.presented&&target.hasRenderedFirstFrame&&target.videoView.getTranslationY()==requested.translateYPx,true);}
-        callback.complete(target.snapshot());
+        target.swapTextureLogged=false;target.benchmarkAction=action;target.benchmarkFramePending=action!=null&&(!target.hasRenderedFirstFrame||!target.hasUpdatedFrame);
+        if(action!=null&&target.hasRenderedFirstFrame&&target.hasUpdatedFrame){long own=target.generation;PodBenchmark.watchVideo(target.videoView,new PodBenchmark.VideoAction(action.seq,action.generation,target.generation,action.delta),()->target.generation==own&&!target.prewarming&&target.presented&&target.hasRenderedFirstFrame&&target.videoView.getTranslationY()==requested.translateYPx,true);}
+        callback.complete(target.snapshot().put("replacedHasRenderedFirstFrame",replacedReady));
     }
 
     private void transition(JSONObject args, Callback callback) throws Exception {
@@ -755,6 +763,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         JSONObject frameSource;
         PodVideoAnalytics analytics;
         PodBenchmark.VideoAction benchmarkAction;
+        boolean swapTextureLogged, hasUpdatedFrame;
         boolean benchmarkFramePending;
 
         Session(String id) { this.id = id; attachViews(parent); }
@@ -768,8 +777,11 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             }
             if (videoView == null) {
                 videoView = new PodObservedTextureView(context, texture -> {
+                    hasUpdatedFrame=true;
+                    if(prewarming&&hasRenderedFirstFrame)completePrepare();
+                    if(benchmarkAction!=null&&!swapTextureLogged){swapTextureLogged=true;PodBenchmark.swapStage(benchmarkAction,"texture_updated",generation);}
                     if(benchmarkFramePending&&benchmarkAction!=null&&!prewarming&&presented&&hasRenderedFirstFrame&&bounds!=null&&bounds.visible&&videoView.getAlpha()>0){
-                        PodBenchmark.VideoAction action=benchmarkAction;long own=generation;benchmarkFramePending=false;
+                        PodBenchmark.VideoAction original=benchmarkAction;PodBenchmark.VideoAction action=new PodBenchmark.VideoAction(original.seq,original.generation,generation,original.delta);long own=generation;benchmarkFramePending=false;
                         PodBenchmark.watchVideo(videoView,action,()->generation==own&&!prewarming&&presented&&hasRenderedFirstFrame&&bounds!=null&&bounds.visible&&videoView.getTranslationY()==bounds.translateYPx);
                     }
                 }) {
@@ -812,7 +824,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                 previous.release();
             }
             if (decoderLease) { decoderLease = false; decoderBudget.release(); }
-            hasRenderedFirstFrame = false;
+            hasRenderedFirstFrame = false;hasUpdatedFrame=false;
             if (videoView != null) videoView.setKeepScreenOn(false);
         }
 
@@ -889,14 +901,34 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             // A hidden foreground reservation still needs its decoded TextureView.
             if(!bounds.visible){hideOffscreen();return;}
             setTranslation(bounds.translateXPx, bounds.translateYPx);
+            raisePresented();
             videoView.setAlpha(1f);
             videoView.setVisibility(bounds.visible ? View.VISIBLE : View.GONE);
             background.setVisibility(bounds.visible ? View.VISIBLE : View.GONE);
             videoView.setKeepScreenOn(bounds.visible && player != null && player.getPlayWhenReady());
         }
 
+        // bringChildToFront reorders retained children; it never detaches the
+        // TextureView or reconnects MediaCodec's Surface/BufferQueue.
+        void raisePresented() {
+            if(parent==null)return;
+            View runtime=null;
+            for(int i=0;i<parent.getChildCount();i++)if(parent.getChildAt(i) instanceof PodRuntimeView)runtime=parent.getChildAt(i);
+            parent.bringChildToFront(background);parent.bringChildToFront(videoView);
+            if(runtime!=null)parent.bringChildToFront(runtime);
+        }
+
         void hideOffscreen() {
             if (videoView == null || background == null) return;
+            // A decoded buffer submitted offscreen is not yet latched by
+            // TextureView. Draw standby underneath the opaque active page so
+            // adoption reveals an already-updated texture, not a poster.
+            Session foreground=null;
+            for(Session candidate:sessions.values())if(candidate!=this&&candidate.presented&&candidate.bounds!=null&&candidate.bounds.visible&&candidate.hasRenderedFirstFrame){foreground=candidate;break;}
+            if(player!=null&&bounds!=null&&foreground!=null){
+                videoView.setAlpha(1f);videoView.setVisibility(View.VISIBLE);background.setVisibility(View.GONE);
+                setTranslation(bounds.translateXPx,bounds.translateYPx);foreground.raisePresented();videoView.setKeepScreenOn(false);return;
+            }
             int base = Math.max(parent == null ? 0 : parent.getHeight(), bounds == null ? 0 : bounds.heightPx);
             float offscreen = Math.max(base, Math.round(1024 * density)) * 2f;
             videoView.setAlpha(PREWARM_ALPHA);
