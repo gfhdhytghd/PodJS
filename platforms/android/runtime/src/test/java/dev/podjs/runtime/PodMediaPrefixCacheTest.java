@@ -32,6 +32,26 @@ public class PodMediaPrefixCacheTest {
  static JSONObject window(String uri,int bytes)throws Exception{return new JSONObject().put("items",new JSONArray().put(new JSONObject().put("uri",uri).put("prefetchBytes",bytes).put("captureBytes",4*M)));}
  static byte[] read(DataSource d,int limit)throws Exception {ByteArrayOutputStream out=new ByteArrayOutputStream();byte[] b=new byte[8192];int n;while(out.size()<limit&&(n=d.read(b,0,Math.min(b.length,limit-out.size())))!=-1)out.write(b,0,n);return out.toByteArray();}
  static void idle(PodMediaPrefixCache c)throws Exception {long end=System.currentTimeMillis()+5000;while(c.stats().getInt("activePrefetches")>0&&System.currentTimeMillis()<end)Thread.sleep(10);assertEquals(0,c.stats().getInt("activePrefetches"));}
+ @Test public void metadataKeepsItsRangeOffsetWhenForegroundExtendsThePrefix()throws Exception {
+  Remote r=new Remote(16384);try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
+   String uri=register(c,"metadata-overlap");PodMediaPrefixCache.Job job=c.beginPreparation(uri,16384);
+   DataSource player=c.factory(r).createDataSource();player.open(new DataSpec(Uri.parse(uri)));
+   assertArrayEquals(Arrays.copyOfRange(r.body,0,5000),read(player,5000));
+   byte[] metadata=c.loadRange(job,5000,6000);
+   // Complete the foreground read while the metadata response is in flight.
+   assertArrayEquals(Arrays.copyOfRange(r.body,5000,9000),read(player,4000));
+   c.appendMetadata(job,5000,metadata);
+   assertArrayEquals(Arrays.copyOfRange(r.body,0,11000),java.nio.file.Files.readAllBytes(c.target(uri).file.toPath()));
+   player.close();c.endPreparation(job);
+  }
+ }
+ @Test public void metadataDoesNotFillAnEvictedPrefixGapWithMisplacedBytes()throws Exception {
+  Remote r=new Remote(16384);try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
+   String uri=register(c,"metadata-gap");PodMediaPrefixCache.Job job=c.beginPreparation(uri,16384);
+   IOException error=assertThrows(IOException.class,()->c.appendMetadata(job,5000,new byte[6000]));
+   assertEquals("metadata_prefix_gap",error.getMessage());assertEquals(0,c.target(uri).file.length());c.endPreparation(job);
+  }
+ }
  @Test public void smallUnknownContainerPreparationKeepsBothRangesWithinBudget()throws Exception {
   Remote r=new Remote(M);try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
    String uri=register(c,"small-unknown");JSONObject result=c.execute("video.cache.prepare",new JSONObject().put("uri",uri).put("bytes",128*1024).put("frameKey","fixture"));
@@ -239,17 +259,18 @@ public class PodMediaPrefixCacheTest {
   }finally{reader.shutdownNow();}
  }
 
- @Test public void oneSchedulerReordersQueuedFirstFramesBeforePrefixRemainders()throws Exception {
-  Remote r=new Remote(2*M);r.block=true;
+ @Test public void aSlowNeighbourDoesNotBlockTheFollowingFirstRange()throws Exception {
+  Remote r=new Remote(2*M);r.block=true;r.blockPath="/slow";
   try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
-   String a=register(c,"priority-a"),b=register(c,"priority-b"),d=register(c,"priority-c");
-   JSONArray items=new JSONArray();for(String uri:List.of(a,b,d))items.put(new JSONObject().put("uri",uri).put("prefetchBytes",M));
-   c.execute("video.cache.window",new JSONObject().put("items",items));assertTrue(r.readEntered.await(2,TimeUnit.SECONDS));
-   assertEquals(1,r.opened.size());JSONArray reordered=new JSONArray();for(String uri:List.of(d,b,a))reordered.put(new JSONObject().put("uri",uri).put("prefetchBytes",M));
-   c.execute("video.cache.window",new JSONObject().put("items",reordered));r.block=false;idle(c);
-   assertEquals(List.of("/priority-a","/priority-c","/priority-b","/priority-c","/priority-b","/priority-a"),r.opened.stream().map(x->x.uri.getPath()).collect(java.util.stream.Collectors.toList()));
-   for(int i=0;i<3;i++){assertEquals(0,r.opened.get(i).position);assertEquals(192*1024,r.opened.get(i).length);}
-   for(int i=3;i<6;i++)assertEquals(192*1024,r.opened.get(i).position);
+   String slow=register(c,"slow"),next=register(c,"following");
+   JSONArray items=new JSONArray();for(String uri:List.of(slow,next))items.put(new JSONObject().put("uri",uri).put("prefetchBytes",M));
+   c.execute("video.cache.window",new JSONObject().put("items",items));
+   long deadline=System.currentTimeMillis()+2000;
+   while(c.target(next).file.length()<M&&System.currentTimeMillis()<deadline)Thread.sleep(10);
+   assertEquals("following bytes must finish while the first neighbour is still blocked",M,c.target(next).file.length());
+   assertEquals(0,c.target(slow).file.length());
+   for(DataSpec request:r.opened)if(request.position==0)assertEquals(64*1024,request.length);
+   r.block=false;idle(c);assertEquals(M,c.target(slow).file.length());
   }
  }
  @Test public void mirrorsAreBoundedAndPartOfRegistrationIdentity()throws Exception {

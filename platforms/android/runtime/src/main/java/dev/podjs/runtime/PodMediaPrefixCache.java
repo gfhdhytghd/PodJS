@@ -24,7 +24,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
     File frameRoot;
     final long maxTotal;
     final DataSource.Factory upstream;
-    private final ExecutorService workers=Executors.newSingleThreadExecutor();
+    private final ExecutorService workers=Executors.newFixedThreadPool(2);
     private final ExecutorService cancellations=Executors.newSingleThreadExecutor();
     private final LinkedHashMap<String,Entry> entries=new LinkedHashMap<>(16,.75f,true);
     private final Map<String,Job> jobs=new LinkedHashMap<>();
@@ -35,7 +35,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
     private int foregroundNetworkReaders;
     private long totalBandwidth,foregroundBitrate,sampleStart,sampleBytes,bandwidthWindow,bandwidthUsed;
     private double bandwidthCredit;
-    private boolean closed,pumping;
+    private boolean closed;private int pumps;
     private java.util.function.Consumer<JSONObject> resultSink=value->{};
     synchronized void setResultSink(java.util.function.Consumer<JSONObject> sink){resultSink=sink;}
     static final class Entry {
@@ -45,7 +45,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
         Entry(String token,String remote,Map<String,String> headers,File file,boolean persistent){this.token=token;this.remote=remote;this.selectedRemote=remote;this.headers=headers;this.file=file;this.persistent=persistent;}
     }
     final class Job {
-        final Entry entry;final int budget;final long epoch;volatile String itemToken;volatile long sourceGeneration;boolean background,preparing,done,fetching;long deferredUntil;int stage;volatile boolean active=true;volatile DataSource source;Exception failure;
+        final Entry entry;final int budget;final long epoch;volatile String itemToken;volatile long sourceGeneration;boolean background,preparing,done;volatile boolean fetching;long deferredUntil;int stage;volatile boolean active=true;volatile DataSource source;Exception failure;
         Job(Entry e,int budget,String itemToken,long sourceGeneration){entry=e;this.budget=budget;epoch=generation;this.itemToken=itemToken;this.sourceGeneration=sourceGeneration;}
         void cancel(){active=false;DataSource s=source;if(s!=null&&!cancellations.isShutdown())cancellations.execute(()->{try{s.close();}catch(Exception ignored){}});}
         boolean current(){synchronized(PodMediaPrefixCache.this){return active&&!closed&&epoch==generation&&entries.get(entry.token)==entry;}}
@@ -113,18 +113,19 @@ final class PodMediaPrefixCache implements AutoCloseable {
         return new ObservedSource(source,entry);
     }
     private static List<String> mirrors(JSONObject args)throws Exception {JSONArray values=args.optJSONArray("alternates");List<String> result=new ArrayList<>();if(values!=null)for(int i=0;i<values.length();i++)result.add(values.getString(i));return result;}
-    /** A single fetch owner: first-frame stages first, then remaining prefixes, each in window order.
+    /** Two bounded fetch owners: first-frame stages first, then remaining prefixes, each in window order.
      * Foreground readers never enter this queue. Their bandwidth reserve still gates every read. */
-    private synchronized void schedule(){if(pumping||closed)return;pumping=true;workers.execute(()->{
+    private synchronized void schedule(){if(closed)return;while(pumps<2){pumps++;workers.execute(()->{
         while(true){Job next=null;synchronized(PodMediaPrefixCache.this){
             for(int stage=0;stage<2&&next==null;stage++){
                 for(String token:protectedTokens){Job candidate=jobs.get(token);if(eligible(candidate,stage)){next=candidate;break;}}
                 if(next==null)for(Job candidate:jobs.values())if(eligible(candidate,stage)){next=candidate;break;}
             }
-            if(next==null||closed){pumping=false;PodMediaPrefixCache.this.notifyAll();return;}
+            if(next==null||closed){pumps--;PodMediaPrefixCache.this.notifyAll();return;}
+            next.fetching=true;
         }fetchStep(next);}
-    });}
-    private boolean eligible(Job job,int stage){return job!=null&&job.active&&!job.done&&job.stage==stage
+    });}}
+    private boolean eligible(Job job,int stage){return job!=null&&job.active&&!job.done&&!job.fetching&&job.stage==stage
         &&android.os.SystemClock.uptimeMillis()>=job.deferredUntil&&(!job.background||!HostWorkPriority.DEVICE.mediaActive());}
     void prefetch(Job job){synchronized(this){while(job.current()&&!job.done)try{schedule();wait(100);}catch(InterruptedException error){Thread.currentThread().interrupt();job.cancel();job.failure=error;break;}}}
     private final class ObservedSource implements DataSource {
@@ -152,7 +153,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
         job.fetching=true;
         try{
             long position; synchronized(this){position=job.entry.file.length();}
-            long goal=job.stage==0?Math.min(job.budget,192*1024):Math.max(job.budget,job.entry.sampleEnd);
+            long goal=job.stage==0?Math.min(job.budget,64*1024):Math.max(job.budget,job.entry.sampleEnd);
             int fallbackTail=PodMediaPrefixPreparation.fallbackTailBytes(job);
             if(fallbackTail>0)goal=Math.min(goal,job.budget-fallbackTail);
             boolean pendingFallback=job.preparing&&(position<8||job.entry.length<0);
@@ -201,7 +202,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
             if(succeeded&&job.preparing)PodMediaPrefixPreparation.cacheFallback(this,job);
         }catch(BackgroundDeferred deferred){job.deferredUntil=android.os.SystemClock.uptimeMillis()+100;}
         catch(Exception error){succeeded=false;job.failure=error;if(job.current()){status=httpStatus(error);failed=true;synchronized(this){failures++;}android.util.Log.i("PodMediaCache","prefetchFailure category="+(status>0?"http_"+status:"transport"));}}
-        finally{job.fetching=false;if((succeeded||failed)&&job.current())publish(job,succeeded,status);synchronized(this){if(succeeded||failed||!job.current()){job.done=true;if(!job.preparing&&jobs.get(job.entry.token)==job)jobs.remove(job.entry.token);}notifyAll();trim();android.util.Log.i("PodMediaCache","prefetchProgress downloadedBytes="+downloadedBytes+" cacheBytes="+fileBytes());}}
+        finally{synchronized(this){if(succeeded||failed||!job.current()){job.done=true;if(!job.preparing&&jobs.get(job.entry.token)==job)jobs.remove(job.entry.token);}job.fetching=false;if((succeeded||failed)&&job.current())publish(job,succeeded,status);notifyAll();trim();android.util.Log.i("PodMediaCache","prefetchProgress downloadedBytes="+downloadedBytes+" cacheBytes="+fileBytes());}}
     }
     /** Exact range reads account bytes even if cancellation or a short body prevents publication. */
     byte[] loadRange(Job job,long position,int count)throws Exception {
@@ -237,10 +238,16 @@ final class PodMediaPrefixCache implements AutoCloseable {
         }
         if(!job.current())throw new IOException("preparation_cancelled");
     }
-    synchronized void appendMetadata(Job job,byte[] bytes)throws IOException {
+    synchronized void appendMetadata(Job job,long position,byte[] bytes)throws IOException {
         if(!job.current())throw new IOException("preparation_cancelled");
-        job.entry.captureBytes=MAX_ENTRY;long position=job.entry.file.length();
-        append(job.entry,position,bytes,0,bytes.length,job.epoch);downloadedBytes+=bytes.length;
+        long current=job.entry.file.length();
+        // The foreground loader can extend the prefix while this range is in flight.
+        // Keep the response's original offset and append only its unclaimed suffix.
+        if(position>current)throw new IOException("metadata_prefix_gap");
+        int overlap=(int)Math.min(bytes.length,current-position);
+        job.entry.captureBytes=MAX_ENTRY;
+        if(overlap<bytes.length)append(job.entry,current,bytes,overlap,bytes.length-overlap,job.epoch);
+        downloadedBytes+=bytes.length;
     }
     synchronized void fitPreparation(Job job,int budget)throws IOException {
         if(!job.current())throw new IOException("preparation_cancelled");

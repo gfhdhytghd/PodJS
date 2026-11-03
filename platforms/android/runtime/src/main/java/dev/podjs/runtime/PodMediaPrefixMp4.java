@@ -63,7 +63,8 @@ final class PodMediaPrefixMp4 {
                 if(end<=e.file.length()){try(java.io.RandomAccessFile input=new java.io.RandomAccessFile(e.file,"r")){input.seek(position);input.readFully(moov);}}
                 else if(position<=e.file.length()){
                     if(end>PodMediaPrefixCache.MAX_ENTRY)throw new IOException("metadata_over_budget");
-                    cache.appendMetadata(job,cache.loadRange(job,e.file.length(),(int)(end-e.file.length())));
+                    long start=e.file.length();
+                    if(start<end)cache.appendMetadata(job,start,cache.loadRange(job,start,(int)(end-start)));
                     try(java.io.RandomAccessFile input=new java.io.RandomAccessFile(e.file,"r")){input.seek(position);input.readFully(moov);}
                 }else{
                     long start=Math.max(0,position-PodMediaPrefixCache.CHUNK),count=e.length-start;
@@ -79,7 +80,8 @@ final class PodMediaPrefixMp4 {
                 android.util.Log.i("PodMediaCache","mp4_samples entry="+e.ordinal+" sample_end="+Math.max(0,e.sampleEnd)+" sample_ms=1500 planned="+(e.sampleEnd>=0));
                 if(samples>e.file.length()){
                     if(samples>PodMediaPrefixCache.MAX_ENTRY-e.tail().length())throw new IOException("samples_over_budget");
-                    cache.appendMetadata(job,cache.loadRange(job,e.file.length(),(int)(samples-e.file.length())));
+                    long start=e.file.length();
+                    if(start<samples)cache.appendMetadata(job,start,cache.loadRange(job,start,(int)(samples-start)));
                 }
                 return;
             }

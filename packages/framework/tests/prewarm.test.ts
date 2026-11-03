@@ -377,3 +377,49 @@ test('DYREGRESS expired native standby gets one foreground admission; transport 
   else{await expect(selected).rejects.toBe(failure);expect(m.prepareCount).toBe(2);}
  }
 });
+
+test('DYNEXT pending metadata can be selected without claiming a decoded standby or restarting its request',async()=>{
+ const m=new Model(),pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();
+ const active=pool.prepare(source(10),options(10)).result;await m.advance(400);await active;
+ const warm=pool.prewarm(source(11),options(11),'next').catch(()=>undefined);
+ expect(pool.hasStandby('11')).toBe(false);expect(pool.sourceFor('11')).toBeUndefined();
+ expect(pool.preparingSourceFor('11')).toEqual(source(11));
+ const count=m.prepareCount,selected=pool.prepare(pool.preparingSourceFor('11')!,options(11));
+ await m.advance(500);await selected.result;await warm;
+ expect(m.prepareCount).toBe(count);expect(m.cancelCount).toBe(0);
+ await pool.releaseAll();expect(pool.preparingSourceFor('11')).toBeUndefined();
+});
+
+test('DYNEXT a retired codec can warm +2 only after native confirms its cached pixels',async()=>{
+ const m=new Model(),cached=new Set<string>(),original=m.port.prepare;
+ m.port.capabilities=async()=>({...await new Model().port.capabilities(),keyframeCache:true});
+ m.port.prepare=(o:any)=>{const operation=original(o);return {...operation,result:operation.result.then(value=>{
+  const ready={...value,keyframeAvailable:true};m.states.set(o.sessionId,ready);cached.add(o.url);
+  expect(m.states.size).toBeLessThanOrEqual(3);if(o.keyframeOnly)m.states.delete(o.sessionId);return ready;
+ })};};
+ const pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();
+ const a=pool.prepare(source(10),options(10)).result;await m.advance(400);await a;
+ const n=pool.prewarm(source(11),options(11),'next'),p=pool.prewarm(source(9),options(9),'prev');await m.advance(500);await Promise.all([n,p]);
+ const promoted=pool.prepare(source(11),options(11));await m.advance(100);await promoted.result;
+ const next=pool.prewarm(source(12),options(12),'next');await m.advance(400);await next;
+ const deep=pool.warmNeighbourhood([12,10,13].map(n=>async()=>({source:source(n),options:options(n),direction:n>11?'next' as const:'prev' as const})));
+ await m.advance(2000);await deep;
+ expect(cached.has(options(13).url)).toBe(true);expect(pool.hasStandby('12')).toBe(true);expect(pool.hasStandby('10')).toBe(true);
+ await pool.releaseAll();
+});
+
+test('DYNEXT a native cached frame is a drag target while live playback is still preparing',async()=>{
+ const m=new Model(),original=m.port.prepare;
+ m.port.prepare=(o:any)=>{const op=original(o);return {...op,result:op.result.then(value=>{
+  const v=o.prewarm?{...value,hasRenderedFirstFrame:false,hasCachedFirstFrame:true,state:'prewarmed'}:value;
+  m.states.set(o.sessionId,v);return v;
+ })};};
+ const pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();
+ const active=pool.prepare(source(1),options(1)).result;await m.advance(400);await active;
+ const warming=pool.prewarm(source(2),options(2),'next');await m.advance(400);const cached=await warming;
+ expect(cached.hasRenderedFirstFrame).toBe(false);expect(cached.hasCachedFirstFrame).toBe(true);
+ expect(pool.selectStandby('2')).toBe(true);await pool.transition(.5,'up',options(2).bounds);
+ const promotion=pool.prepare(source(2),options(2));await m.advance(50);
+ expect(await promotion.result).toMatchObject({hasRenderedFirstFrame:false,hasCachedFirstFrame:true});
+ await pool.releaseAll();
+});

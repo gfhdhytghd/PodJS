@@ -211,7 +211,7 @@ export class VideoSessionPool<Source extends {key:string}> {
       const value=await operation.result;
       if(!valid())throw new Error('stale video session prewarm');
       while(true){const loop=this.loop;await this.port.setLoop(target.id,loop);if(!valid())throw new Error('stale video session prewarm');
-        if(loop===this.loop){target.ready=value.hasRenderedFirstFrame;if(target.ready)benchmark.mark('prewarm_ready',seq,{generation:own,direction,...(value.bufferedMs===undefined?{}:{buffered_ms:value.bufferedMs})});return state(value);}}
+        if(loop===this.loop){target.ready=value.hasRenderedFirstFrame||value.hasCachedFirstFrame===true;if(target.ready)benchmark.mark('prewarm_ready',seq,{generation:own,direction,...(value.bufferedMs===undefined?{}:{buffered_ms:value.bufferedMs})});return state(value);}}
     }catch(error){if(valid()){const code=String((error as {code?:unknown})?.code??'');this.evict(target,code==='timeout'?'timeout':/resource|decoder.*limit/.test(code)?'capacity':'failure');}throw error;}finally{if(target.operation===operation){target.operation=undefined;target.pending=undefined;}}})();
     target.pending=pending;return pending;
   }
@@ -272,7 +272,16 @@ export class VideoSessionPool<Source extends {key:string}> {
     const usable=this.slots.slice(0,this.capacity-1);
     // Frame-zero readback is opportunistic. Never evict either live neighbour
     // to decode a more distant image on a three-decoder host.
-    const slot=usable.find(s=>!s.source&&!s.operation);
+    let slot=usable.find(s=>!s.source&&!s.operation);
+    // A retired page may lend its codec only after native confirms retained
+    // decoded pixels. A missing readback never sacrifices either live neighbour.
+    if(!slot){
+      const retired=usable.find(s=>s.recentlyActive&&s.ready&&s!==this.selected);
+      if(retired){const revision=retired.revision,value=await this.port.state(retired.id);
+        if(!current())return;
+        if(retired.revision===revision&&value.keyframeAvailable)slot=retired;
+      }
+    }
     if(!slot)return;
     await this.evict(slot,'capacity');
     if(!current())return;
@@ -288,6 +297,8 @@ export class VideoSessionPool<Source extends {key:string}> {
   invalidateStandby(key:string){const slot=this.slots.find(s=>s.source?.key===key);if(slot)this.evict(slot,'stale');}
   hasStandby(key?:string):boolean{return !!key&&this.slots.some(s=>s.ready&&s.source?.key===key);}
   selectStandby(key:string):boolean{this.cancelNeighbourhood();if(this.promoting)return false;const slot=this.slots.find(s=>s.ready&&s.source?.key===key);if(!slot)return false;this.selected=slot;return true;}
+  /** Authorized metadata may be adopted while decode is still pending. */
+  preparingSourceFor(key:string|undefined):Source|undefined{return key?this.slots.find(s=>(s.ready||s.operation)&&s.source?.key===key)?.source:undefined;}
   sourceFor(key:string|undefined):Source|undefined{return key?this.slots.find(s=>s.ready&&s.source?.key===key)?.source:undefined;}
   standbySource():Source|undefined{return (this.selected??this.slots.find(s=>s.ready))?.source;}
   /** Opt in only after the gesture recognizer selects a physical pan. */
