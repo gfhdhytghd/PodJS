@@ -1,5 +1,5 @@
 import {benchmark,type VideoBenchmarkAction} from './benchmark.ts';
-import {videoSessions,hostOperation,delay,type HostOperation,type VideoBounds,type VideoFrameCapture,type VideoFrame,type VideoPrepare,type VideoSessionCapabilities,type VideoSessionState,type VideoSessionTransitionState,type VideoState} from './services.ts';
+import {videoSessions,hostOperation,delay,type HostOperation,type VideoBounds,type VideoTransform,type VideoFrameCapture,type VideoFrame,type VideoPrepare,type VideoSessionCapabilities,type VideoSessionState,type VideoSessionTransitionState,type VideoState} from './services.ts';
 import type {VideoPagerDirection} from './video-paging.ts';
 type VideoDecoderProfile=Pick<VideoPrepare,'videoMime'|'videoWidth'|'videoHeight'>;
 
@@ -55,6 +55,7 @@ export class VideoSessionPool<Source extends {key:string}> {
   traceSelection(key:string|undefined,action?:VideoBenchmarkAction){if(action)benchmark.mark('pool_stage',action.seq,{pool_stage:'select',source_ordinal:key?this.ordinal(key):0,generation:action.generation,pool_generation:this.generation});}
   traceNeighbour(key:string,index:number,anchor:number){benchmark.begin('pool_stage',{pool_stage:'neighbour',source_ordinal:this.ordinal(key),queue_index:index,anchor_index:anchor,pool_generation:this.generation});}
   private loop=false;
+  private transform:VideoTransform={};
   private activeId:string;
   private activeKey:string|undefined;
   private activeSource:Source|undefined;
@@ -108,6 +109,8 @@ export class VideoSessionPool<Source extends {key:string}> {
   }
   retainNeighbours(keys:readonly string[]){for(const slot of this.slots)if(slot.source&&!keys.includes(slot.source.key))this.evict(slot,'stale');}
   prepare(source:Source,options:VideoPrepare):HostOperation<VideoState>{
+    this.transform={...(options.transform??this.transform)};
+    options={...options,transform:this.transform};
     this.cancelNeighbourhood();
     this.traceSelection(source.key,options.benchmark);
     const initial=this.initialPreparation;this.initialPreparation=undefined;
@@ -117,6 +120,7 @@ export class VideoSessionPool<Source extends {key:string}> {
       const current=()=>!cancelled&&own===this.generation;
       const result=initial.operation.result.then(async()=>{
         if(!current())throw Error('stale initial video preparation');
+        if(Object.keys(this.transform).length)await this.port.setTransform(this.activeId,this.transform);
         await this.port.setBounds(this.activeId,options.bounds);
         if(!current())throw Error('stale initial video preparation');
         let value=await this.syncLoop(this.activeId);
@@ -165,7 +169,7 @@ export class VideoSessionPool<Source extends {key:string}> {
     const result=(async()=>{
       const loop=this.loop;
       let promoted:VideoSessionState;
-      try{promoted=await this.port.promote(id,{replaceSessionId:replacedId,bounds:options.bounds,autoplay:options.autoplay===true,loop,adoptPreparing:true,...(options.benchmark?{benchmark:options.benchmark}:{})});}
+      try{if(Object.keys(this.transform).length)await this.port.setTransform(id,this.transform);promoted=await this.port.promote(id,{replaceSessionId:replacedId,bounds:options.bounds,autoplay:options.autoplay===true,loop,adoptPreparing:true,...(options.benchmark?{benchmark:options.benchmark}:{})});}
       catch(error){
         const failure=error as {code?:string;message?:string};
         // Native expiry can win between guest selection and host promotion.
@@ -212,7 +216,7 @@ export class VideoSessionPool<Source extends {key:string}> {
       if(released)await released;
       if(!valid())throw new Error('stale video session prewarm reservation');
       let preparedLoop=this.loop;
-      operation=this.port.prepare({...foreground,loop:preparedLoop,sessionId:target.id,sourceOrdinal:this.ordinal(source.key),slotOrdinal:this.slotOrdinal(target.id),prepareSeq:seq,prewarm:true,autoplay:false,muted:false});
+      operation=this.port.prepare({...foreground,transform:this.transform,loop:preparedLoop,sessionId:target.id,sourceOrdinal:this.ordinal(source.key),slotOrdinal:this.slotOrdinal(target.id),prepareSeq:seq,prewarm:true,autoplay:false,muted:false});
       target.operation=operation;
       const value=await operation.result;
       if(!valid())throw new Error('stale video session prewarm');
@@ -366,7 +370,17 @@ export class VideoSessionPool<Source extends {key:string}> {
   // receipt without ending the recognizer's still-active physical gesture.
   setBounds(bounds:VideoBounds):Promise<VideoState>{this.invalidateNativeDrag();return this.port.setBounds(this.activeId,bounds).then(state);}
   state():Promise<VideoState>{return this.port.state(this.activeId).then(state);}
-  setTransform(transform:{rotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}):Promise<VideoState>{return this.port.setTransform(this.activeId,transform).then(state);}
+  async setTransform(transform:VideoTransform):Promise<VideoState>{
+    this.transform={...transform};
+    // Include cached and decoding neighbours. Their pixels and native drag
+    // offsets stay in place; changing presentation must never re-prepare media.
+    const neighbours=this.slots.filter(s=>s.source&&(s.ready||s.operation));
+    const [active]=await Promise.all([this.port.setTransform(this.activeId,this.transform),...neighbours.map(s=>{
+      const revision=s.revision,id=s.id;
+      return this.port.setTransform(id,this.transform).catch(error=>{if(s.revision===revision&&s.id===id)throw error;});
+    })]);
+    return state(active);
+  }
   setMuted(muted:boolean):Promise<VideoState>{if(!this.port.setMuted)return Promise.reject(new Error("unsupported"));return this.port.setMuted(this.activeId,muted).then(state);}
   setVolume(volume:number):Promise<VideoState>{return this.port.setVolume(this.activeId,volume).then(state);}
   async releaseAll():Promise<void>{this.endDrag();this.cancelNeighbourhood();this.initialPreparation?.operation.cancel();this.initialPreparation=undefined;this.generation++;this.latestTransition=undefined;this.activeKey=undefined;this.activeSource=undefined;this.activeIdentity=undefined;await Promise.allSettled([this.port.release(this.activeId),...this.slots.map(s=>this.evict(s,'release'))]);}

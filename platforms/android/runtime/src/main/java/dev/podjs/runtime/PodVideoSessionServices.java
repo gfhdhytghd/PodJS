@@ -248,7 +248,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         if(slot==null){if(sessions.size()>=4)throw new IllegalStateException("video_session_limit");slot=new Session(id);sessions.put(id,slot);}
         if(slot.prepareCallback!=null)slot.takePrepareCallback().fail("cancelled","Video session preparation replaced");
         slot.resetPlayer();slot.generation++;slot.bounds=bounds;slot.prewarming=true;slot.presented=false;
-        slot.frameSource=new JSONObject(args.toString());slot.frameBinding=keyframeBinding(args,bounds);
+        slot.frameSource=new JSONObject(args.toString());slot.readTransform(args.optJSONObject("transform"));slot.frameBinding=keyframeBinding(args,bounds);
         slot.analytics=new PodVideoAnalytics();slot.analytics.sourceOrdinal=args.optLong("sourceOrdinal",0);
         slot.analytics.slotOrdinal=args.optLong("slotOrdinal",0);slot.analytics.preparation(args.optLong("prepareSeq",0),slot.generation,true);
         slot.state="preparing";slot.prepareCallback=callback;slot.keyframeOnly=args.optBoolean("keyframeOnly",false);
@@ -357,6 +357,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         session.benchmarkAction=PodBenchmark.videoAction(args);
         session.benchmarkFramePending=session.benchmarkAction!=null&&!prewarming;
         session.frameSource=new JSONObject(args.toString());
+        session.readTransform(args.optJSONObject("transform"));
         session.frameBinding=keyframeBinding(args,bounds);session.decoderName=null;
         session.bounds = bounds;
         session.prewarming = prewarming;session.keyframeOnly=prewarming&&args.optBoolean("keyframeOnly",false);
@@ -645,12 +646,8 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
 
     private void setTransform(JSONObject args, Callback callback) throws Exception {
         Session session = require(args);
-        String mode = args.optString("scaleMode", "standard");
-        if (!mode.equals("standard") && !mode.equals("expanded") && !mode.equals("shrunk")) throw new IllegalArgumentException("invalid_scale_mode");
-        float rotation = finite(args, "rotationDeg", 0, -100000, 100000);
-        float panX = finite(args, "panX", 0, -4096, 4096);
-        float panY = finite(args, "panY", 0, -4096, 4096);
-        session.scaleMode = mode; session.rotationDeg = Math.round(rotation * 100f) / 100f; session.panX = panX; session.panY = panY;
+        session.readTransform(args);
+        if(session.frameSource!=null)session.frameSource.put("transform",new JSONObject(args.toString()));
         session.fitVideo(); callback.complete(session.snapshot());
     }
 
@@ -856,7 +853,13 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         boolean changedPair = dragFrom != from || dragTo != to;
         dragFrom = from; dragTo = to; dragBounds = bounds; dragDirection = direction;
         if(changedPair) { showPagerBackground(bounds); hideStandbys(); }
+        // The strip uses one display transform for every page, including
+        // a retained paused texture and a cold target without decoded pixels.
+        to.scaleMode=from.scaleMode;to.rotationDeg=from.rotationDeg;to.panX=from.panX;to.panY=from.panY;
+        if(to.frameSource!=null)to.frameSource.put("transform",new JSONObject().put("scaleMode",to.scaleMode)
+                .put("rotationDeg",to.rotationDeg).put("panX",to.panX).put("panY",to.panY));
         from.bounds = bounds; to.bounds = bounds; from.applyBounds(bounds, false); to.applyBounds(bounds, false);
+        to.fitVideo();
         if(changedPair) { to.raisePresented(); from.raisePresented(); }
         from.videoView.setVisibility(View.VISIBLE); to.videoView.setVisibility(View.VISIBLE);
         // Keep the texture drawable so HWUI can latch the first decoded buffer.
@@ -1381,9 +1384,19 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             if(cachedFrame!=null){keyframes.unpin(cachedFrame);cachedFrame=null;}
         }
 
+        void readTransform(JSONObject args) throws Exception {
+            if(args==null)return;
+            String mode=args.optString("scaleMode","standard");
+            if(!mode.equals("standard")&&!mode.equals("expanded")&&!mode.equals("shrunk"))throw new IllegalArgumentException("invalid_scale_mode");
+            float rotation=finite(args,"rotationDeg",0,-100000,100000);
+            float x=finite(args,"panX",0,-4096,4096),y=finite(args,"panY",0,-4096,4096);
+            scaleMode=mode;rotationDeg=Math.round(rotation*100f)/100f;panX=x;panY=y;
+        }
+
         void fitKeyframe() {
             if(keyframeView==null||cachedFrame==null||bounds==null)return;
             android.graphics.drawable.Drawable image=keyframeView.getDrawable();
+            if(image==null)return;
             android.graphics.Matrix transform=PodVideoServices.videoTransform(bounds.widthPx,bounds.heightPx,
                     cachedFrame.pixels.getWidth()*cachedFrame.pixelAspectRatio,cachedFrame.pixels.getHeight(),
                     rotationDeg,scaleMode,Math.round(panX*density),Math.round(panY*density));
@@ -1397,6 +1410,9 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             if (size.width <= 0 || size.height <= 0 || bounds.widthPx <= 0 || bounds.heightPx <= 0) return;
             float width = size.width * size.pixelWidthHeightRatio, height = size.height;
             videoView.setTransform(PodVideoServices.videoTransform(bounds.widthPx, bounds.heightPx, width, height, rotationDeg, scaleMode, Math.round(panX * density), Math.round(panY * density)));
+            // setTransform only invalidates the parent. A paused retained page
+            // also needs its own display list rebuilt before it enters a drag.
+            videoView.invalidate();
         }
 
         JSONObject snapshot() throws Exception {
