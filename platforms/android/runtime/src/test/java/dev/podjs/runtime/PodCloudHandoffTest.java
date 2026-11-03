@@ -44,4 +44,22 @@ public class PodCloudHandoffTest {
   }
  }
 
+ @Test public void cpuDebtPersistsAndStopsGuestAdmissionUntilProgress()throws Exception {
+  try {
+   PodCloudWork.chargeCpu(context,10000,false);long due=PodCloudWork.cpuNotBefore(context);
+   assertTrue(due-System.currentTimeMillis()>=199000);
+   Method method=PodCloudWork.class.getDeclaredMethod("manualWork",WindowedWorkQueue.Job.class,long.class);method.setAccessible(true);
+   WindowedWorkQueue.Job job=new WindowedWorkQueue.Job("cpu",java.util.UUID.randomUUID().toString(),null,0,System.currentTimeMillis(),false,false);
+   OneTimeWorkRequest request=(OneTimeWorkRequest)method.invoke(null,job,due);
+   assertTrue(request.getWorkSpec().initialDelay>=199000);
+   PodCloudWorker worker=TestWorkerBuilder.from(context,PodCloudWorker.class,new SynchronousExecutor()).build();
+   assertEquals(ListenableWorker.Result.retry().getClass(),worker.doWork().getClass());
+   // A rejected enqueue cannot reset persisted debt.
+   try{PodCloudWork.enqueue(context,"bad token");fail();}catch(IllegalArgumentException expected){}
+   assertEquals(due,PodCloudWork.cpuNotBefore(context));
+   PodCloudWork.chargeCpuFor(context,"stale",0,true);assertEquals(due,PodCloudWork.cpuNotBefore(context));
+   PodCloudWork.chargeCpu(context,0,true);assertEquals(0,PodCloudWork.cpuNotBefore(context));
+  }finally{PodCloudWork.chargeCpu(context,0,true);}
+ }
+
 }

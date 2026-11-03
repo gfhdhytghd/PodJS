@@ -64,19 +64,23 @@ public final class PodCloudWorker extends Worker {
     @Override public Result doWork(){
         Context context=getApplicationContext();String manualToken=getInputData().getString("manualToken"),queuedToken=null,requestId=getId().toString();
         long began=android.os.SystemClock.elapsedRealtime(),lastReport=began,lastStageReport=began;
+        long cpuBegan=android.os.Process.getElapsedCpuTime();
         Map<String,Integer> calls=new TreeMap<>();String status="failed",outcomeCode="worker_started",stage="host";
         ExecutorService executor=null;
-        ScheduledExecutorService heartbeat=Executors.newSingleThreadScheduledExecutor();
-        heartbeat.scheduleAtFixedRate(()->{try{PodBenchmark.begin("restore_state",new JSONObject().put("state",HostWorkPriority.DEVICE.mediaActive()?"paused":"running"));}catch(Exception ignored){}},0,1,TimeUnit.SECONDS);
+        ScheduledExecutorService heartbeat=null;
         try{
-            while(HostWorkPriority.DEVICE.mediaActive()) { if(isStopped())return Result.retry(); Thread.sleep(250); }
+            // Do not construct/compile a guest while playback or idle CPU debt
+            // prevents useful work. WorkManager owns the retry timer.
+            if(HostWorkPriority.DEVICE.mediaActive()||System.currentTimeMillis()<PodCloudWork.cpuNotBefore(context)){status="backoff";outcomeCode="admission_deferred";return Result.retry();}
             if(manualToken!=null&&!manualToken.matches("[a-zA-Z0-9_-]{1,96}")){outcomeCode="invalid_manual_token";return Result.failure();}
             queuedToken=manualToken!=null?manualToken:PodCloudWork.pendingToken(context);
             if(PodCloudWork.held(context)){PodCloudWork.deferHeld(context,queuedToken);status="yielded";outcomeCode="local_transfer_held";return Result.success();}
             if(manualToken==null&&PodCloudWork.manualRunning(context)){status="yielded";outcomeCode="active_writer";return Result.success();}
             if(manualToken!=null&&!PodCloudWork.start(context,manualToken,requestId)){status="yielded";outcomeCode="stale_request";return Result.success();}
             if(!PodTakeover.ready(context)){outcomeCode="takeover_pending";if(queuedToken!=null){PodCloudWork.next(context,queuedToken,requestId,false,manualToken==null);status="backoff";return Result.success();}return getRunAttemptCount()<3?Result.retry():Result.failure();}
-            executor=Executors.newSingleThreadExecutor();
+            heartbeat=Executors.newSingleThreadScheduledExecutor(r->new Thread(r,"PodCloudHeartbeat"));
+            heartbeat.scheduleAtFixedRate(()->{try{PodBenchmark.begin("restore_state",new JSONObject().put("state",HostWorkPriority.DEVICE.mediaActive()?"paused":"running"));}catch(Exception ignored){}},0,1,TimeUnit.SECONDS);
+            executor=Executors.newSingleThreadExecutor(r->new Thread(()->{android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);r.run();},"PodCloudGuest"));
             PodBackgroundPackage approved=PodCloudWork.installed(context);
             String route=approved.cloudHostMethod(PodCloudWork.debug(context));
             String source=approved.cloudSource(PodCloudWork.debug(context));
@@ -105,7 +109,7 @@ public final class PodCloudWorker extends Worker {
                         calls.merge(method,1,Integer::sum);
                         if("log.append".equals(method))phaseDiagnostic(args.getJSONObject("args"));
                         String nextStage=CloudWorkerOutcome.stage(method);
-                        if(!"log.append".equals(method)&&!method.endsWith(".release")){stage=nextStage;long stageNow=android.os.SystemClock.elapsedRealtime();if(stageNow-lastStageReport>=5000){android.util.Log.i("PodJSCloudWorker","stage="+stage+" elapsedMs="+(stageNow-began));lastStageReport=stageNow;}}
+                        if(!"log.append".equals(method)&&!method.endsWith(".release")){stage=nextStage;long stageNow=android.os.SystemClock.elapsedRealtime();if(stageNow-lastStageReport>=5000){android.util.Log.i("PodJSCloudWorker","stage="+stage+" workerElapsedMs="+(stageNow-began));lastStageReport=stageNow;}}
                         long now=android.os.SystemClock.elapsedRealtime();
                         if(now-lastReport>=30000){android.util.Log.i("PodJSCloudWorker","progress elapsedMs="+(now-began)+" stage="+stage+" calls="+calls);lastReport=now;}
                         host.dispatch(new JSONObject().put("t","service.request").put("version",1).put("id",request.getInt("id")).put("method",method).put("args",args.getJSONObject("args")));
@@ -113,26 +117,28 @@ public final class PodCloudWorker extends Worker {
                     JSONObject outcome=result.get(10,TimeUnit.SECONDS);
                     if(isStopped()){status="stopped";outcomeCode="stopped";if(queuedToken!=null){PodCloudWork.next(context,queuedToken,requestId,false,manualToken==null);return Result.success();}return getRunAttemptCount()<3?Result.retry():Result.failure();}
                     String code=outcome.optString("code"),guestStatus=outcome.optString("status");outcomeCode=CloudWorkerOutcome.code(code);
-                    if(CloudWorkerOutcome.benign(code)){status="yielded";if(manualToken!=null)PodCloudWork.yielded(context,manualToken,requestId);return Result.success();}
+                    if(CloudWorkerOutcome.benign(code)){status="yielded";PodCloudWork.chargeCpuFor(context,queuedToken,android.os.Process.getElapsedCpuTime()-cpuBegan,false);if(manualToken!=null)PodCloudWork.yielded(context,manualToken,requestId);return Result.success();}
                     status="deadline_exceeded".equals(code)?"deadline_exceeded":"completed".equals(code)&&"success".equals(guestStatus)?"success":"completed".equals(code)&&"retry".equals(guestStatus)?"retry":"guest_failed";
                     if(("deadline_exceeded".equals(code)||"completed".equals(code)&&"retry".equals(guestStatus))&&queuedToken!=null){
                         boolean progress="completed".equals(code)&&outcome.optBoolean("progress",false);
                         boolean bounded="completed".equals(code)&&"bounded".equals(outcome.optString("retryClass"));
+                        PodCloudWork.chargeCpuFor(context,queuedToken,android.os.Process.getElapsedCpuTime()-cpuBegan,progress);
                         // APPEND_OR_REPLACE attaches the fresh request to this
                         // one. Success releases it; REPLACE here would cancel us.
                         PodCloudWork.next(context,queuedToken,requestId,progress,manualToken==null,bounded);
                         status=progress?"continued":"backoff";return Result.success();
                     }
                     Result mapped=resultFor(outcome,getRunAttemptCount());
+                    if(mapped instanceof Result.Retry)PodCloudWork.chargeCpuFor(context,queuedToken,android.os.Process.getElapsedCpuTime()-cpuBegan,false);
                     if(!(mapped instanceof Result.Retry))PodCloudWork.finished(context,manualToken,requestId);
                     return mapped;
                 }finally{services=null;active=null;}
             }
         }catch(Exception error){
-            outcomeCode="host_exception";try{if(queuedToken!=null){if(!PodCloudWork.next(context,queuedToken,requestId,false,manualToken==null))PodCloudWork.resumeHeld(context);status="backoff";return Result.success();}}catch(Exception schedulingFailed){status="queue_failed";outcomeCode="queue_failed";return getRunAttemptCount()<3?Result.retry():Result.failure();}
+            outcomeCode="host_exception";try{PodCloudWork.chargeCpuFor(context,queuedToken,android.os.Process.getElapsedCpuTime()-cpuBegan,false);if(queuedToken!=null){if(!PodCloudWork.next(context,queuedToken,requestId,false,manualToken==null))PodCloudWork.resumeHeld(context);status="backoff";return Result.success();}}catch(Exception schedulingFailed){status="queue_failed";outcomeCode="queue_failed";return getRunAttemptCount()<3?Result.retry():Result.failure();}
             return getRunAttemptCount()<3?Result.retry():Result.failure();
         }
-        finally{heartbeat.shutdownNow();try{PodBenchmark.begin("restore_state",new JSONObject().put("state","unknown"));}catch(Exception ignored){}if(executor!=null)executor.shutdownNow();android.util.Log.i("PodJSCloudWorker","finished status="+status+" code="+outcomeCode+" stage="+stage+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-began)+" calls="+calls);}
+        finally{if(heartbeat!=null){heartbeat.shutdownNow();try{PodBenchmark.begin("restore_state",new JSONObject().put("state","unknown"));}catch(Exception ignored){}}if(executor!=null)executor.shutdownNow();android.util.Log.i("PodJSCloudWorker","finished status="+status+" code="+outcomeCode+" stage="+stage+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-began)+" calls="+calls);}
     }
     @Override public void onStopped(){PodBackgroundRun run=active;if(run!=null)run.cancel();PodServices host=services;if(host!=null)host.close();}
 }

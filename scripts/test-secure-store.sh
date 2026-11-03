@@ -11,6 +11,8 @@ secure_json=${JSON_JAR:-$(find "$HOME/.gradle/caches/modules-2/files-2.1/org.jso
 secure_classes=platforms/android/runtime/build/intermediates/javac/release/compileReleaseJavaWithJavac/classes
 secure_cp="$secure_work:$secure_json:$secure_classes:$secure_sdk/platforms/android-36/android.jar"
 javac -cp "$secure_cp" -d "$secure_work" tests/java/dev/podjs/runtime/{SecureDecodeTraceTest,SecureStoreCapacityTest}.java
+javac -cp "$secure_cp" -d "$secure_work" tests/java/dev/podjs/runtime/SecureProcessCacheTest.java
+java -Xmx64m -ea -cp "$secure_cp" dev.podjs.runtime.SecureProcessCacheTest "$secure_work/process-store"
 java -Xmx64m -ea -cp "$secure_cp" dev.podjs.runtime.SecureDecodeTraceTest
 java -Xmx64m -ea -cp "$secure_cp" dev.podjs.runtime.SecureStoreCapacityTest
 

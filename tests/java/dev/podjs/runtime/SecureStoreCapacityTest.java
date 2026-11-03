@@ -64,7 +64,8 @@ public final class SecureStoreCapacityTest {
     public static void main(String[] args) throws Exception {
         if (args.length != 0) { verifyRestart(Path.of(args[0])); return; }
         check(PodDeviceServices.MAX_CHUNK_BYTES == 256 * 1024, "per-operation chunk limit changed");
-        Path directory = Files.createTempDirectory("podjs-secure-capacity-");
+        Path suite = Files.createTempDirectory("podjs-secure-capacity-");
+        Path directory = Files.createDirectories(suite.resolve("restart"));
         Path file = directory.resolve("secure.store");
         try {
             try (PodDeviceServices first = host(directory)) {
@@ -80,6 +81,9 @@ public final class SecureStoreCapacityTest {
             check(Arrays.equals(beforeRead, Files.readAllBytes(file)), "restart rewrote ciphertext");
 
             // Reproduce the recorded file size, without reading real ciphertext/key.
+            // Each cold-load fixture has its own store: ordinary service close
+            // deliberately retains the process cache under the new contract.
+            directory=Files.createDirectories(suite.resolve("legacy"));file=directory.resolve("secure.store");
             JSONObject legacy = new JSONObject().put("fixture", "");
             legacy.put("fixture", "x".repeat(262255 - 28 - legacy.toString().getBytes(StandardCharsets.UTF_8).length));
             byte[] old = SecureDecodeTraceTest.encrypt(legacy.toString(), KEY);
@@ -95,6 +99,7 @@ public final class SecureStoreCapacityTest {
             full.put("padding", "x".repeat(SecureStoreLimits.MAX_PLAIN_BYTES - full.toString().getBytes(StandardCharsets.UTF_8).length));
             check(full.toString().getBytes(StandardCharsets.UTF_8).length == SecureStoreLimits.MAX_PLAIN_BYTES, "exact boundary fixture");
             // Every entry is below the existing 256 KiB chunk size.
+            directory=Files.createDirectories(suite.resolve("full"));file=directory.resolve("secure.store");
             Files.write(file, SecureDecodeTraceTest.encrypt("{}", KEY));
             try (PodDeviceServices writer = host(directory)) {
                 writer.execute("secure.update", new JSONObject().put("values", full));
@@ -129,7 +134,8 @@ public final class SecureStoreCapacityTest {
             catch (SecureStoreLimits.Failure expected) { check(expected.code.equals("secure_store_too_large"), "decode size confused with auth"); }
             try { PodDeviceServices.readSecureFile(directory.resolve("missing").toFile(), KEY); throw new AssertionError("missing read accepted"); }
             catch (SecureStoreLimits.Failure expected) { check(expected.code.equals("secure_read_failed"), "read IO code"); }
-            Files.delete(file); Files.createDirectory(file);
+            directory=Files.createDirectories(suite.resolve("io-failure"));file=directory.resolve("secure.store");
+            Files.createDirectory(file);
             try (PodDeviceServices next = host(directory)) {
                 for (String method : new String[] {"secure.get", "secure.set"}) {
                     try { next.execute(method, new JSONObject().put("key", "identity").put("value", "replacement")); throw new AssertionError("IO failure treated as empty store"); }
@@ -140,7 +146,7 @@ public final class SecureStoreCapacityTest {
             migrationQuota(directory);
             System.out.println("SecureStoreCapacity PASS: multi-entry >256KiB, fresh JVM restart, 262255B legacy, exact 2MiB boundary, set/update/prefix/CAS rejection preserves ciphertext/cache, deletion, UTF-8, migration rejects without empty rewrite, bounded/failed reads; -Xmx64m synthetic key.");
         } finally {
-            try (var paths = Files.walk(directory)) {
+            try (var paths = Files.walk(suite)) {
                 for (Path path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) Files.delete(path);
             }
         }

@@ -3,9 +3,19 @@ import {cpuWork,cpuJsonParse,cpuJsonStringify,cpuSort,cpuWorkAsync} from './cpu-
  * need to pass through JS Number or JSON.stringify when patching known fields. */
 export interface RawJsonProperty {key:string;start:number;value:RawJsonNode}
 export interface RawJsonNode {source:string;start:number;end:number;kind:'object'|'array'|'scalar';properties?:RawJsonProperty[];items?:RawJsonNode[]}
-export interface RawJsonOptions {maxDepth?:number;maxBytes?:number}
+export interface RawJsonOptions {maxDepth?:number;maxBytes?:number;native?:boolean}
 export class RawJsonError extends Error {constructor(public code:'syntax'|'duplicate-key'|'unicode'|'depth'|'size'){super('raw_json_'+code);}}
 export function jsonUtf8Bytes(text:string):number {
+ const root=globalThis as {pod?:{strictUtf8ByteLength?:Function};__podByteCodecs?:{strictUtf8ByteLength?:Function}};
+ const native=(root.pod??root.__podByteCodecs)?.strictUtf8ByteLength;
+ if(native&&text.length>=64){
+  let bytes=0;for(let at=0;at<text.length;){let end=Math.min(text.length,at+65536);const last=text.charCodeAt(end-1);if(end<text.length&&last>=0xd800&&last<=0xdbff)end++;
+   const part=text.slice(at,end),n=native(part);bytes+=typeof n==='number'?n:portableUtf8Bytes(part);at=end;
+  }return bytes;
+ }
+ return portableUtf8Bytes(text);
+}
+function portableUtf8Bytes(text:string):number {
  let bytes=0;for(let i=0;i<text.length;i++){const n=text.charCodeAt(i);if(n>=0xd800&&n<=0xdbff){const next=text.charCodeAt(++i);if(!(next>=0xdc00&&next<=0xdfff))throw new RawJsonError('unicode');bytes+=4;}else if(n>=0xdc00&&n<=0xdfff)throw new RawJsonError('unicode');else bytes+=n<128?1:n<2048?2:3;}return bytes;
 }
 function* parseRawJsonSteps(source:string,options:RawJsonOptions={}):Generator<void,RawJsonNode> {
@@ -31,7 +41,15 @@ function* parseRawJsonSteps(source:string,options:RawJsonOptions={}):Generator<v
  const root=yield* value(1);yield* ws();if(at!==source.length)fail();return root;
 }
 export function parseRawJson(source:string,options:RawJsonOptions={}):RawJsonNode {return cpuWork('json-scan','chars',source.length,()=>parseRawJsonSync(source,options));}
-function parseRawJsonSync(source:string,options:RawJsonOptions={}):RawJsonNode {const steps=parseRawJsonSteps(source,options);for(;;){const next=steps.next();if(next.done)return next.value;}}
+function nativeScan(source:string,options:RawJsonOptions):RawJsonNode|undefined {
+ // One embedded Rust call per bounded document; no Java/JNI service per item.
+ // Large documents retain the cancellable scanner. native:false is the fallback switch.
+ if(options.native===false||source.length<64||source.length>256*1024)return;
+ const root=globalThis as {pod?:{rawJsonScan?:Function};__podByteCodecs?:{rawJsonScan?:Function}};
+ const host=root.pod??root.__podByteCodecs;
+ return host?.rawJsonScan?.(source,options.maxDepth??32,options.maxBytes??16*1024*1024)??undefined;
+}
+function parseRawJsonSync(source:string,options:RawJsonOptions={}):RawJsonNode {const native=nativeScan(source,options);if(native)return native;const steps=parseRawJsonSteps(source,options);for(;;){const next=steps.next();if(next.done)return next.value;}}
 /** Yields after bounded scanning/projection work. The immutable source and byte
  * cap remain owned by the caller; cancellation is checked at every boundary. */
 export function parseRawJsonAsync(source:string,options:RawJsonOptions&{yield?:()=>Promise<void>;check?:()=>void}={}):Promise<RawJsonNode> {return cpuWorkAsync('json-scan','chars',source.length,()=>parseRawJsonAsyncSteps(source,options));}
@@ -69,7 +87,7 @@ export function canonicalIntegerJson(source:string,options:RawJsonOptions={}):st
  };
  return emit(root);
 });}
-export function rawJsonProperty(node:RawJsonNode,key:string){return node.properties?.find(p=>p.key===key)?.value;}
+export function rawJsonProperty(node:RawJsonNode,key:string){for(const property of node.properties??[])if(property.key===key)return property.value;}
 export function rawJsonValue<T=unknown>(node:RawJsonNode):T{return cpuJsonParse(rawJsonText(node)) as T;}
 /** Values in edits are already complete JSON tokens. Only named properties are
  * changed; every untouched key-through-value span is copied byte for byte.

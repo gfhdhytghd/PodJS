@@ -57,12 +57,13 @@ public final class PodDeviceServices implements AutoCloseable {
     @FunctionalInterface interface SecureKeySource { SecretKey get() throws Exception; }
     private final SecureKeySource secureKey;
     private final PodSecureLease secureLeases;
-    private final SecureReadCache secureReadCache = new SecureReadCache();
+    private final SecureStoreMemory.State secureMemory;
     private final SecureRandom random = new SecureRandom();
     private boolean closed;
     private final java.util.Map<String,SealedGzipSession> sealedGzip = new java.util.HashMap<>();
     private DeviceServiceTrace secureTrace=new DeviceServiceTrace(false,line->{});
     synchronized void enableServiceTrace(boolean enabled){secureTrace=new DeviceServiceTrace(enabled,line->android.util.Log.i("PodJSService",line));}
+    boolean hasWarmSecureStore(){return secureMemory.snapshot!=null;}
     private long nextTextReader;
     private final java.util.Map<String,java.io.BufferedReader> textReaders = new java.util.HashMap<>();
     private final java.util.Set<File> temporaryFiles = new java.util.HashSet<>();
@@ -81,6 +82,7 @@ public final class PodDeviceServices implements AutoCloseable {
         try { root = files.getCanonicalFile(); secureFile = new File(root.getParentFile(), SECURE_FILE); }
         catch (IOException e) { throw new IllegalStateException("service_root_unavailable", e); }
         secureLeases = new PodSecureLease(secureFile.getParentFile());
+        secureMemory = SecureStoreMemory.at(secureFile);
         secureKey = key == null ? () -> getKey(SECURE_ALIAS) : key;
     }
 
@@ -137,7 +139,7 @@ public final class PodDeviceServices implements AutoCloseable {
     @Override public synchronized void close() {
         for(SealedGzipSession stream:sealedGzip.values())try{stream.close();}catch(IOException ignored){}
         sealedGzip.clear();
-        secureReadCache.clear();
+        // Secrets belong to the process, not to a foreground view/worker window.
         closed = true;
         secureLeases.close();
         for (File file : temporaryFiles) file.delete();
@@ -156,14 +158,17 @@ public final class PodDeviceServices implements AutoCloseable {
         } catch (Exception ignored) { }
     }
 
-    // Foreground and background own separate service instances. Reload/update
-    // the encrypted map under an OS lock so unrelated keys cannot be lost.
+    // Foreground/background share committed process memory. Persist mutations
+    // atomically under the existing OS lease; publish memory only after success.
     private JSONObject secureOperation(String method,JSONObject args) throws Exception {
         // Internal software private keys never cross the JavaScript secure-storage API.
         if ("secure.update".equals(method)) {
             java.util.Iterator<String> names=args.getJSONObject("values").keys();
             while(names.hasNext()) checkPublicSecureKey(names.next());
         } else checkPublicSecureKey(required(args,"key"));
+        // An immutable committed snapshot lets foreground reads bypass even an
+        // in-flight background KeyStore write. It linearizes before that write.
+        if("secure.get".equals(method)&&secureMemory.snapshot!=null)return secureGet(args);
         long total=secureTrace.begin(),waiting=total;int id=args.optInt("requestId",-1);
         try{synchronized(SECURE_LOCK){
             try(java.io.RandomAccessFile file=new java.io.RandomAccessFile(new File(secureFile.getParentFile(),"secure.store.lock"),"rw");
@@ -240,14 +245,16 @@ public final class PodDeviceServices implements AutoCloseable {
         return mergeSecure(next,updates);
     }
     private JSONObject secureGet(JSONObject a) throws Exception {
-        JSONObject values = readSecure(a.optInt("requestId",-1)); String key = required(a, "key");
+        JSONObject values = readSecureValues(a.optInt("requestId",-1)); String key = required(a, "key");
         JSONObject out = new JSONObject(); out.put("exists", values.has(key));
         if (values.has(key)) out.put("value", values.getString(key));
         return out;
     }
     private JSONObject secureSet(JSONObject a) throws Exception {
         String key = required(a, "key"); String value = required(a, "value");
-        JSONObject values = readSecure(a.optInt("requestId",-1)); values.put(key, value); writeSecure(values);
+        JSONObject current=readSecureValues(a.optInt("requestId",-1));
+        if(value.equals(current.opt(key)))return new JSONObject().put("ok",true);
+        JSONObject values = new JSONObject(current.toString()); values.put(key, value); writeSecure(values);
         return new JSONObject().put("ok", true);
     }
     private JSONObject secureDelete(JSONObject a) throws Exception {
@@ -257,21 +264,37 @@ public final class PodDeviceServices implements AutoCloseable {
         return new JSONObject().put("deleted", removed);
     }
     private JSONObject readSecure(int id) throws Exception {
+        // Mutations own a deep copy. A quota/fsync failure cannot alter a cached read.
+        return new JSONObject(readSecureValues(id).toString());
+    }
+    private SecretKey secureKey() throws Exception {
+        if(secureMemory.key==null)secureMemory.key=secureKey.get();
+        return secureMemory.key;
+    }
+    private JSONObject readSecureValues(int id) throws Exception {
+        SecureStoreMemory.Snapshot cached=secureMemory.snapshot;
+        if(cached!=null)return cached.values;
+        if(secureMemory.loadFailure!=null&&System.nanoTime()<secureMemory.retryAfterNanos)throw secureMemory.loadFailure;
+        try{return loadSecureValues(id);}
+        catch(Exception error){secureMemory.loadFailure=error;secureMemory.retryAfterNanos=System.nanoTime()+30_000_000_000L;throw error;}
+    }
+    private JSONObject loadSecureValues(int id) throws Exception {
         try {
             if (!Files.readAttributes(secureFile.toPath(),java.nio.file.attribute.BasicFileAttributes.class).isRegularFile())
                 throw SecureStoreLimits.readFailed();
-        } catch (java.nio.file.NoSuchFileException absent) { secureReadCache.clear(); return new JSONObject(); }
+        } catch (java.nio.file.NoSuchFileException absent) {
+            secureMemory.snapshot=new SecureStoreMemory.Snapshot(new JSONObject());
+            return secureMemory.snapshot.values;
+        }
         catch (IOException failure) { throw SecureStoreLimits.readFailed(); }
-        // Read and compare ciphertext under SECURE_LOCK + the OS file lease.
-        // Separate foreground/background instances and processes remain coherent.
+        // One cold load per process/store. No timestamp checks or ciphertext IO
+        // on the hot read path. Startup decode still authenticates the whole map.
         byte[] bytes = readSecureBytes(secureFile);
-        String json = secureReadCache.read(bytes, encoded -> {
-            long began=secureTrace.begin();SecretKey key;
-            try{key=secureKey.get();}finally{secureTrace.end("secure.key",began,id);}
-            return decodeSecureBytes(encoded,key,secureTrace,id).toString();
-        });
-        // Writers receive a fresh map. Failed writes cannot mutate the cache.
-        return new JSONObject(json);
+        long began=secureTrace.begin();SecretKey key;
+        try{key=secureKey();}finally{secureTrace.end("secure.key",began,id);}
+        secureMemory.snapshot=new SecureStoreMemory.Snapshot(decodeSecureBytes(bytes,key,secureTrace,id));
+        secureMemory.loadFailure=null;
+        return secureMemory.snapshot.values;
     }
     /** Shared production decoder for private candidate verification; does not open/create aliases. */
     static JSONObject readSecureFile(File file, SecretKey key) throws Exception {
@@ -295,8 +318,15 @@ public final class PodDeviceServices implements AutoCloseable {
         finally{Arrays.fill(plain,(byte)0);trace.end("secure.json",began,id);}
     }
     private void writeSecure(JSONObject values) throws Exception {
+        String json=values.toString();
+        if(secureMemory.snapshot!=null&&json.equals(secureMemory.snapshot.json))return;
         byte[] plain=SecureStoreLimits.encode(values);
-        try { atomicWrite(secureFile,encryptWithKey(secureKey.get(),plain)); secureReadCache.clear(); }
+        SecureStoreMemory.Snapshot next=new SecureStoreMemory.Snapshot(values);
+        try {
+            byte[] encoded=encryptWithKey(secureKey(),plain);
+            atomicWrite(secureFile,encoded);
+            secureMemory.snapshot=next;
+        }
         finally { Arrays.fill(plain,(byte)0); }
     }
     private static byte[] readSecureBytes(File file) throws IOException {
@@ -323,6 +353,12 @@ public final class PodDeviceServices implements AutoCloseable {
         return ecdhPairAlias(ecdhAlias(args),create);
     }
     private java.security.KeyPair ecdhPairAlias(String alias,boolean create) throws Exception {
+        java.security.KeyPair cached=secureMemory.identityKeys.get(alias);
+        if(cached!=null)return cached;
+        java.security.KeyPair pair=loadEcdhPairAlias(alias,create);
+        secureMemory.identityKeys.put(alias,pair);return pair;
+    }
+    private java.security.KeyPair loadEcdhPairAlias(String alias,boolean create) throws Exception {
         String softwareKey=ECDH_PRIVATE_PREFIX+alias;
         JSONObject values=readSecure(-1);
         KeyStore store=ecdhStore();
@@ -805,7 +841,14 @@ public final class PodDeviceServices implements AutoCloseable {
     private static byte[] decodeInput(JSONObject a) { return a.has("dataBase64") ? decode(a, "dataBase64") : required(a, "data").getBytes(StandardCharsets.UTF_8); }
     private static byte[] decode(JSONObject a, String k) { try { byte[] b = Base64.decode(required(a, k), Base64.DEFAULT); if (b.length > MAX_CHUNK_BYTES) throw new IllegalArgumentException("chunk_too_large"); return b; } catch (IllegalArgumentException e) { throw new IllegalArgumentException("invalid_base64", e); } }
     private static String enc(byte[] b) { return Base64.encodeToString(b, Base64.NO_WRAP); }
-    private SecretKey getKey(String alias) throws Exception { KeyStore ks = KeyStore.getInstance(KEYSTORE); ks.load(null); if (!ks.containsAlias(alias)) { KeyGenerator kg = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, KEYSTORE); kg.init(new KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT).setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build()); kg.generateKey(); } return ((KeyStore.SecretKeyEntry) ks.getEntry(alias, null)).getSecretKey(); }
+    private SecretKey getKey(String alias) throws Exception {
+        synchronized(SECURE_LOCK){
+            SecretKey cached=secureMemory.aliasKeys.get(alias);if(cached!=null)return cached;
+            KeyStore ks=KeyStore.getInstance(KEYSTORE);ks.load(null);
+            if(!ks.containsAlias(alias)){KeyGenerator kg=KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES,KEYSTORE);kg.init(new KeyGenParameterSpec.Builder(alias,KeyProperties.PURPOSE_ENCRYPT|KeyProperties.PURPOSE_DECRYPT).setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build());kg.generateKey();}
+            SecretKey key=((KeyStore.SecretKeyEntry)ks.getEntry(alias,null)).getSecretKey();secureMemory.aliasKeys.put(alias,key);return key;
+        }
+    }
     private byte[] encryptWithKey(SecretKey key, byte[] input) throws Exception { Cipher c = Cipher.getInstance("AES/GCM/NoPadding"); c.init(Cipher.ENCRYPT_MODE, key); c.updateAAD(AAD); byte[] body = c.doFinal(input); byte[] nonce = c.getIV(); if (nonce == null || nonce.length != 12) throw new IOException("invalid_keystore_iv"); byte[] all = new byte[nonce.length + body.length]; System.arraycopy(nonce, 0, all, 0, nonce.length); System.arraycopy(body, 0, all, nonce.length, body.length); return all; }
     private static byte[] decryptWithKey(SecretKey key, byte[] all) throws Exception { Cipher c = Cipher.getInstance("AES/GCM/NoPadding"); c.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(128, Arrays.copyOf(all, 12))); c.updateAAD(AAD); return c.doFinal(Arrays.copyOfRange(all, 12, all.length)); }
     private static byte[] readAll(File f, int limit) throws IOException { try (FileInputStream in = new FileInputStream(f); ByteArrayOutputStream out = new ByteArrayOutputStream()) { byte[] b = new byte[8192]; int n, total = 0; while ((n = in.read(b)) >= 0) { total += n; if (total > limit) throw new IOException("secure_store_too_large"); out.write(b, 0, n); } return out.toByteArray(); } }

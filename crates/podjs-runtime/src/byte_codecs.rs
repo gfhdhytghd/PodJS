@@ -167,6 +167,8 @@ pub fn mount<'js>(ctx: Ctx<'js>, pod: &Object<'js>) -> rquickjs::Result<()> {
         "encodeBase64Chunk",
         Function::new(ctx.clone(), encode_base64)?,
     )?;
+    pod.set("rawJsonScan", Function::new(ctx.clone(), crate::raw_json::scan)?)?;
+    pod.set("strictUtf8ByteLength", Function::new(ctx.clone(), crate::raw_json::utf8_length)?)?;
     pod.set("decodeBase64Chunk", Function::new(ctx, decode_base64)?)?;
     Ok(())
 }

@@ -89,16 +89,21 @@ final class PodServices implements Closeable {
     private PaintAwaiter paintAwaiter;
     void attachPaintAwaiter(PaintAwaiter awaiter){paintAwaiter=awaiter;}
     private final PodParagraphLayout.Cache paragraphLayouts=new PodParagraphLayout.Cache();
-    private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final ServiceWorkStats workStats=new ServiceWorkStats();
+    private ExecutorService serviceExecutor(String lane){return Executors.newSingleThreadExecutor(r->new Thread(()->{
+        if(headlessWork)android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
+        android.util.Log.i("PodJSService","executor="+lane+" lane="+(headlessWork?"background":"foreground")+" tid="+android.os.Process.myTid());r.run();
+    },"Pod"+lane+(headlessWork?"BG":"FG")));}
+    private final ExecutorService worker = serviceExecutor("Device");
     // Secure UI actions bypass this guest's file/cache queue as well as headless work.
-    private final ExecutorService secureWorker = Executors.newSingleThreadExecutor();
-    private boolean headlessWork;
+    private final ExecutorService secureWorker = serviceExecutor("Secure");
+    private volatile boolean headlessWork;
     void headlessWork() { headlessWork = true; }
     /** SQLite owns one connection and must stay serial, but must not queue behind file IO,
      * log writes or cache scans on `worker`; text layout/raster likewise gets its own lane so
      * reader pagination never blocks (or is blocked by) storage. Per-lane order is preserved. */
-    private final ExecutorService sqlWorker = Executors.newSingleThreadExecutor();
-    private final ExecutorService textWorker = Executors.newSingleThreadExecutor();
+    private final ExecutorService sqlWorker = serviceExecutor("SQL");
+    private final ExecutorService textWorker = serviceExecutor("Text");
     private final ConcurrentHashMap<Integer, Request> requests = new ConcurrentHashMap<>();
     private final PodDeviceServices device;
     void enableDeviceServiceTrace(boolean enabled){device.enableServiceTrace(enabled);}
@@ -633,9 +638,11 @@ final class PodServices implements Closeable {
         args.put("requestId", id);
         // Only shared device/secure work uses this gate. Network transfers and
         // main-thread dialogs never hold an admission ticket while awaiting IO.
-        if (!method.endsWith(".release") && (method.startsWith("secure.") || method.startsWith("crypto.") || method.startsWith("file.") || "log.append".equals(method) || "uri.parse".equals(method)))
+        if (!("secure.get".equals(method)&&!headlessWork&&device.hasWarmSecureStore()) && !method.endsWith(".release") && (method.startsWith("secure.") || method.startsWith("crypto.") || method.startsWith("file.") || "log.append".equals(method) || "uri.parse".equals(method)))
             request.priority = HostWorkPriority.DEVICE.reserve(headlessWork);
+        final long queuedAt=System.nanoTime();
         try { request.future = (method.startsWith("provision.") || method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.") || method.startsWith("discovery.") ? streamWorkers : method.startsWith("http.") ? transfers : method.startsWith("sql.") ? sqlWorker : method.startsWith("text.") ? textWorker : method.startsWith("secure.") ? secureWorker : worker).submit(() -> {
+            long workAt=0,cpuAt=android.os.Debug.threadCpuTimeNanos();boolean workSuccess=false;
             try {
                 if (request.priority != null) request.priority.enter();
                 else if(method.startsWith("http.")&&args.optBoolean("background",false)){
@@ -643,6 +650,7 @@ final class PodServices implements Closeable {
                 }
                 else if(headlessWork&&!method.endsWith(".release"))HostWorkPriority.DEVICE.awaitBackground();
                 request.cancellation.throwIfCanceled();
+                workAt=System.nanoTime();
                 Object value;
                 if (method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.")) {
                     value=method.startsWith("websocket.")?webSockets.execute(method,args,request.cancellation):byteStreams.execute(method,args,request.cancellation);
@@ -678,6 +686,7 @@ final class PodServices implements Closeable {
                     if (background==null) throw new SecurityException("Background scheduling is not authorized");
                     value=background.execute(method,args);
                 } else value = method.startsWith("sql.") ? sql(method, args, request.cancellation) : method.startsWith("http.") ? http.execute(method,args) : device.execute(method, args);
+                workSuccess=true;
                 if (requests.remove(id, request)) reply(id, true, value, null, null);
                 else if ("provision.start".equals(method) && value instanceof JSONObject) provisioning.cancel(((JSONObject)value).optString("sessionId"));
                 else if ("discovery.networkSubscribe".equals(method)) networks.discard(args.getString("subscriptionId"));
@@ -691,7 +700,15 @@ final class PodServices implements Closeable {
                 if (requests.remove(id, request)) failure(id,
                     error instanceof SecureStoreLimits.Failure ? ((SecureStoreLimits.Failure)error).code : error instanceof SecurityException ? "permission_denied" : error instanceof ProvisioningSession.Failure ? "provision_"+((ProvisioningSession.Failure)error).reason : error instanceof UnsupportedOperationException ? "unsupported" : error instanceof IllegalArgumentException ? "invalid_argument" : "host_error",
                     error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage());
-            } finally { if (request.priority != null) request.priority.close(); }
+            } finally {
+                if (request.priority != null) request.priority.close();
+                long ended=System.nanoTime(),chars=0;
+                if(workAt==0)workAt=ended;
+                for(String field:new String[]{"dataBase64","ciphertextBase64","value"}){Object v=args.opt(field);if(v instanceof String)chars+=((String)v).length();}
+                JSONArray statements=args.optJSONArray("statements");
+                workStats.add(method,workAt-queuedAt,ended-workAt,android.os.Debug.threadCpuTimeNanos()-cpuAt,chars,statements==null?1:statements.length(),workSuccess);
+                workStats.emit(ended,closed,headlessWork,line->android.util.Log.i("PodJSService",line));
+            }
         }); } catch (java.util.concurrent.RejectedExecutionException closedWorker) {
             if (request.priority != null) request.priority.cancel();
             if (requests.remove(id,request)) failure(id,"service_closed","Host service worker is closed");
@@ -956,6 +973,7 @@ final class PodServices implements Closeable {
             sync=null;
             if(installedSync!=null) try { installedSync.close(); } catch(Exception error) {android.util.Log.e("PodJS","Sync owner close failed",error);}
             if(cloudWork!=null)cloudWork.close(); if(background!=null) background.close(); if(notifications!=null)notifications.close(); device.close();
+            workStats.emit(System.nanoTime(),true,headlessWork,line->android.util.Log.i("PodJSService",line));
         });
         secureWorker.shutdown();
         worker.shutdown();
