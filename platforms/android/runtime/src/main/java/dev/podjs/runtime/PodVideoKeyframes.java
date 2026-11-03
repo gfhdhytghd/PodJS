@@ -16,6 +16,7 @@ final class PodVideoKeyframes implements AutoCloseable {
     static final long MAX_BYTES = (long) MAX_EDGE * MAX_EDGE * 4 * MAX_ENTRIES;
     static final class Frame {
         final Bitmap pixels;
+        long entry;
         int pins;
         float pixelAspectRatio=1f;
         Frame(Bitmap pixels) { this.pixels = pixels; }
@@ -25,18 +26,23 @@ final class PodVideoKeyframes implements AutoCloseable {
     private java.util.Set<String> window;
     private volatile java.util.function.BiConsumer<String,Frame> stored;
     void onStored(java.util.function.BiConsumer<String,Frame> listener){stored=listener;}
-    synchronized void pin(Frame frame){frame.pins++;}
+    // Closed lifecycle stages: 1 stored, 2 outside window, 3 byte/count eviction,
+    // 4 explicit trim, 5 pin, 6 unpin. Entry is a process-local cache ordinal.
+    private void trace(Frame frame,int stage){
+        if(frame.entry>0)android.util.Log.i("PodMediaCache","frame_lifecycle entry="+frame.entry+" stage="+stage+" pins="+frame.pins+" bytes="+frame.pixels.getAllocationByteCount()+" total_bytes="+bytes+" entries="+frames.size()+" mono_ms="+android.os.SystemClock.uptimeMillis());
+    }
+    synchronized void pin(Frame frame){frame.pins++;trace(frame,5);}
     synchronized void unpin(Frame frame){
         if(frame.pins<=0)throw new IllegalStateException("keyframe_pin_underflow");
-        frame.pins--;trimOutsideWindow();
+        frame.pins--;trace(frame,6);trimOutsideWindow();
     }
-    synchronized Frame acquire(String binding){Frame frame=frames.get(binding);if(frame!=null)frame.pins++;return frame;}
+    synchronized Frame acquire(String binding){Frame frame=frames.get(binding);if(frame!=null){frame.pins++;trace(frame,5);}return frame;}
     synchronized void retainWindow(java.util.Set<String> wanted){window=new java.util.LinkedHashSet<>(wanted);trimOutsideWindow();}
     private void trimOutsideWindow(){
         Iterator<Map.Entry<String,Frame>> it=frames.entrySet().iterator();
         while(it.hasNext()){
             Map.Entry<String,Frame> entry=it.next();Frame frame=entry.getValue();
-            if(frame.pins==0&&(closed||window!=null&&!window.contains(entry.getKey()))){bytes-=frame.pixels.getAllocationByteCount();it.remove();frame.pixels.recycle();}
+            if(frame.pins==0&&(closed||window!=null&&!window.contains(entry.getKey()))){bytes-=frame.pixels.getAllocationByteCount();it.remove();trace(frame,2);frame.pixels.recycle();}
         }
     }
     synchronized Frame get(String binding) { return frames.get(binding); }
@@ -88,10 +94,13 @@ final class PodVideoKeyframes implements AutoCloseable {
     }
     synchronized Frame put(String binding, Bitmap pixels) {return put(binding,pixels,true);}
     synchronized Frame put(String binding, Bitmap pixels,boolean persist) {
+        return put(binding,pixels,persist,0);
+    }
+    synchronized Frame put(String binding, Bitmap pixels,boolean persist,long cacheOrdinal) {
         long size = pixels.getAllocationByteCount();
         if (closed || window!=null&&!window.contains(binding) || pixels.getWidth() > MAX_EDGE || pixels.getHeight() > MAX_EDGE || size > MAX_BYTES) { pixels.recycle(); return null; }
         Frame old = frames.get(binding);
-        if (old != null) { pixels.recycle(); return old; }
+        if (old != null) { if(cacheOrdinal>0)old.entry=cacheOrdinal;pixels.recycle(); return old; }
         while (frames.size() >= MAX_ENTRIES || bytes + size > MAX_BYTES) {
             String victim=null;int worst=-1;
             for(Map.Entry<String,Frame> entry:frames.entrySet()){
@@ -102,11 +111,11 @@ final class PodVideoKeyframes implements AutoCloseable {
             // The window orders the current and recently passed sources before
             // far speculation. A late far frame cannot evict those neighbours.
             if(victim==null||window!=null&&worst<priority(binding))break;
-            Frame removed=frames.remove(victim);bytes-=removed.pixels.getAllocationByteCount();removed.pixels.recycle();
+            Frame removed=frames.remove(victim);bytes-=removed.pixels.getAllocationByteCount();trace(removed,3);removed.pixels.recycle();
         }
         if (frames.size() >= MAX_ENTRIES || bytes + size > MAX_BYTES) { pixels.recycle(); return null; }
         pixels.prepareToDraw();
-        Frame frame = new Frame(pixels); frames.put(binding, frame); bytes += size;
+        Frame frame = new Frame(pixels);frame.entry=cacheOrdinal;frames.put(binding, frame);bytes += size;trace(frame,1);
         if(persist&&stored!=null)stored.accept(binding,frame);return frame;
     }
     private int priority(String binding){
@@ -116,7 +125,7 @@ final class PodVideoKeyframes implements AutoCloseable {
     }
     synchronized void trim() {
         Iterator<Frame> iterator = frames.values().iterator();
-        while (iterator.hasNext()) { Frame frame = iterator.next(); if (frame.pins == 0) { bytes -= frame.pixels.getAllocationByteCount(); iterator.remove(); frame.pixels.recycle(); } }
+        while (iterator.hasNext()) { Frame frame = iterator.next(); if (frame.pins == 0) { bytes -= frame.pixels.getAllocationByteCount(); iterator.remove();trace(frame,4);frame.pixels.recycle(); } }
     }
     @Override public void close() { closed=true; trim(); }
 }

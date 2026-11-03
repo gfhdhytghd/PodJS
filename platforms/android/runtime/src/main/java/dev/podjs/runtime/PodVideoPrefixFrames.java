@@ -68,6 +68,11 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
     }
     @Override public synchronized void window(List<PodMediaPrefixCache.Entry> entries){
         if(closed)return;
+        if(!new java.util.ArrayList<>(wanted.keySet()).equals(entries)){
+            long at=SystemClock.uptimeMillis();int rank=0;
+            for(PodMediaPrefixCache.Entry entry:entries)android.util.Log.i("PodMediaCache","frame_window entry="+entry.ordinal+" rank="+(rank++)+" count="+entries.size()+" mono_ms="+at);
+            if(entries.isEmpty())android.util.Log.i("PodMediaCache","frame_window entry=0 rank=0 count=0 mono_ms="+at);
+        }
         LinkedHashMap<PodMediaPrefixCache.Entry,Long> next=new LinkedHashMap<>();
         for(PodMediaPrefixCache.Entry entry:entries)next.put(entry,wanted.getOrDefault(entry,SystemClock.uptimeMillis()));
         wanted.clear();wanted.putAll(next);signal();
@@ -134,7 +139,7 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
                     try{
                         if(!current(entry)){if(pixels!=null)pixels.recycle();trace(entry,5,requested,started,ended,available);}
                         else {
-                            if(pixels!=null){PodVideoKeyframes.Frame frame=frames.put(key,pixels,outcome!=6);if(frame!=null)ready.accept(key);}
+                            if(pixels!=null){PodVideoKeyframes.Frame frame=frames.put(key,pixels,outcome!=6,entry.ordinal);if(frame!=null)ready.accept(key);}
                             trace(entry,outcome,requested,started,ended,available);
                         }
                     }finally{

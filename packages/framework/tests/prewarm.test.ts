@@ -462,3 +462,26 @@ test('DYFAST2 decoded neighbour is ready without a redundant loop host round tri
  expect(pool.hasStandby('2')).toBe(true);expect((await pending).hasRenderedFirstFrame).toBe(true);
  await pool.releaseAll();
 });
+
+test('DYMEM3 an authorized pending pixel standby can track a drag before its ready receipt',async()=>{
+ const m=new Model();m.port.capabilities=async()=>({...await new Model().port.capabilities(),decoderLimit:3,maxSessions:4,keyframeCache:true,independentKeyframes:true});
+ const pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();
+ const active=pool.prepare(source(10),options(10)).result;await m.advance(400);await active;
+ const warming=pool.prewarm(source(9),options(9),'prev');
+ expect(pool.hasStandby('9')).toBe(false);expect(pool.selectStandby('9')).toBe(false);
+ expect(pool.selectStandby('9',true)).toBe(true);pool.beginDrag();
+ let transition:any;m.port.transition=async value=>{transition=value;return {...value,composited:true,nativeTracking:true};};
+ const before=m.prepareCount;await pool.transition(.25,'down',options(10).bounds);
+ expect(transition).toMatchObject({direction:'down',trackPointer:true});
+ expect(pool.hasStandby('9')).toBe(false);expect(m.prepareCount).toBe(before);expect(m.cancelCount).toBe(0);
+ await m.advance(400);await warming;expect(pool.hasStandby('9')).toBe(true);
+ await pool.releaseAll();expect(pool.selectStandby('9',true)).toBe(false);
+});
+
+test('DYMEM3 a host without independent cached pages still requires decoded readiness for dragging',async()=>{
+ const m=new Model(),pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();
+ const active=pool.prepare(source(10),options(10)).result;await m.advance(400);await active;
+ const warming=pool.prewarm(source(9),options(9),'prev');
+ expect(pool.selectStandby('9',true)).toBe(false);await expect(pool.transition(.2,'down',options(10).bounds)).rejects.toThrow('not prewarmed');
+ await m.advance(400);await warming;await pool.releaseAll();
+});

@@ -305,7 +305,7 @@ export class VideoSessionPool<Source extends {key:string}> {
   captureFrame(options:VideoFrameCapture){if(!this.port.captureFrame)return Promise.reject(Error('frame_capture_unavailable'));return this.port.captureFrame(this.activeId,options);}
   invalidateStandby(key:string){const slot=this.slots.find(s=>s.source?.key===key);if(slot)this.evict(slot,'stale');}
   hasStandby(key?:string):boolean{return !!key&&this.slots.some(s=>s.ready&&s.source?.key===key);}
-  selectStandby(key:string):boolean{this.cancelNeighbourhood();if(this.promoting)return false;const slot=this.slots.find(s=>s.ready&&s.source?.key===key);if(!slot)return false;this.selected=slot;return true;}
+  selectStandby(key:string,allowPreparing=false):boolean{this.cancelNeighbourhood();if(this.promoting)return false;const slot=this.slots.find(s=>(s.ready||allowPreparing&&this.independentKeyframes&&!!s.operation)&&s.source?.key===key);if(!slot)return false;this.selected=slot;return true;}
   /** Authorized metadata may be adopted while decode is still pending. */
   preparingSourceFor(key:string|undefined):Source|undefined{return key?this.slots.find(s=>(s.ready||s.operation)&&s.source?.key===key)?.source:undefined;}
   sourceFor(key:string|undefined):Source|undefined{return key?this.slots.find(s=>s.ready&&s.source?.key===key)?.source:undefined;}
@@ -317,7 +317,7 @@ export class VideoSessionPool<Source extends {key:string}> {
   private invalidateNativeDrag(){this.dragEpoch++;this.nativeDragKey=undefined;this.latestTransition=undefined;}
   async transition(progress:number,direction:VideoPagerDirection,bounds:VideoBounds,benchmark?:VideoBenchmarkAction):Promise<void>{
     if(this.promoting)throw Error('stale video session transition during promotion');
-    const slot=this.selected??this.slots.find(s=>s.ready);if(!slot?.ready||!slot.source)throw new Error('video session target is not prewarmed');
+    const slot=this.selected??this.slots.find(s=>s.ready);if(!slot?.source||!(slot.ready||this.independentKeyframes&&slot.operation))throw new Error('video session target is not prewarmed');
     const key=JSON.stringify([this.generation,slot.revision,this.activeId,slot.id,direction,bounds]);
     if(!benchmark&&this.nativeDragKey===key)return;
     this.selected=slot;this.latestTransition={slot,trackPointer:this.dragTracksPointer,dragEpoch:this.dragEpoch,key,epoch:this.generation,revision:slot.revision,fromId:this.activeId,toId:slot.id,progress:Math.max(0,Math.min(1,progress)),direction,bounds,...(benchmark?{benchmark}:{})};
@@ -338,7 +338,9 @@ export class VideoSessionPool<Source extends {key:string}> {
     if(this.transitionRunning)await this.transitionRunning;
     const own=this.generation,id=slot.id,identity=slot.identity,prepareSeq=slot.prepareSeq;
     const loop=this.loop;
-    const promoted=await this.port.promote(id,{replaceSessionId:this.activeId,bounds,autoplay,loop,...(benchmark?{benchmark}:{})});
+    // The ready receipt can outlive its cached pixels. A committed selection
+    // still owns this authorized source and may finish preparing on black.
+    const promoted=await this.port.promote(id,{replaceSessionId:this.activeId,bounds,autoplay,loop,adoptPreparing:true,...(benchmark?{benchmark}:{})});
     // A fast swipe can retire the initial active before it decoded anything.
     // Retain its source, but never label that surface ready without host proof.
     const retired=typeof promoted.replacedHasRenderedFirstFrame==='boolean'?{hasRenderedFirstFrame:promoted.replacedHasRenderedFirstFrame,state:'prewarmed'}:await this.port.state(this.activeId).catch(()=>undefined);
