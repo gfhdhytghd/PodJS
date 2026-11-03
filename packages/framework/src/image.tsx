@@ -241,7 +241,7 @@ export function RemoteImage<S extends ImageSource>(props: RemoteImageProps<S>) {
   let node: NodeMirror | undefined;
   const [size,setSize]=createSignal({width:props.width,height:props.height});
   createEffect(() => {
-    if (!node || !props.source.url) return;
+    if (!node || (!props.source.url && !props.source.filePath)) return;
     const release = props.loader.bind(props, node,(width,height)=>{setSize({width,height});props.onSize?.(width,height);});
     onCleanup(release);
   });

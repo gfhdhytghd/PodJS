@@ -44,7 +44,7 @@ mock.module("../src/services.ts", () => ({
   },
 }));
 
-const {createImageLoader}=await import("../src/image.tsx");
+const {createImageLoader,RemoteImage}=await import("../src/image.tsx");
 const leases:string[]=[];
 const provider={acquire(source:import("../src/image.tsx").ImageSource) {
   let resolve!:(value:{path:string;release():void})=>void, reject!:(error:Error)=>void;
@@ -224,4 +224,12 @@ test("onSize remount receives intrinsic dimensions once without a second live-ma
  await tick();await tick();expect(firstCalls).toBe(1);expect(replacementCalls).toBe(1);
  expect(calls.filter(c=>c[0]==="uploadTexture")).toHaveLength(1);expect(calls.filter(c=>c[0]==="freeTexture")).toHaveLength(0);
  endReplacement();loader.releaseRetained();expect(calls.filter(c=>c[0]==="freeTexture")).toHaveLength(1);
+});
+
+test("file-only component displays a local decoded frame without a download",async()=>{
+ const {createRoot}=await import('solid-js');
+ let dispose!:()=>void;
+ try{createRoot(stop=>{dispose=stop;RemoteImage({source:{url:'',filePath:'local-media-frames/first.jpg'},loader,width:2,height:1});});
+  await tick();await tick();expect(imageFiles).toContain('local-media-frames/first.jpg');expect(pendingDownloads.size).toBe(0);expect(calls.some(c=>c[0]==='setImage'&&c[2]===41)).toBe(true);
+ }finally{dispose?.();}
 });

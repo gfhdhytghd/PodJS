@@ -82,6 +82,7 @@ const methods: Record<string, PodCapabilityId> = {
   "audio.volumeState": "media.audio", "audio.setVolumeIndex": "media.audio",
   "tts.spectrum": "media.tts.spectrum",
   "tts.init": "media.tts", "tts.speak": "media.tts", "tts.stop": "media.tts", "tts.state": "media.tts",
+  "video.cache.local.present":"media.video","video.cache.local.hide":"media.video","video.cache.local.configure":"media.video","video.cache.local.prepare":"media.video","video.cache.local.list":"media.video","video.cache.local.lookup":"media.video","video.cache.local.watched":"media.video","video.cache.local.cancel":"media.video","video.cache.local.clear":"media.video","video.cache.stopTraffic":"media.video",
   "video.cache.prepare":"media.video", "video.cache.inspect":"media.video", "video.cache.remove":"media.video", "video.cache.register":"media.video", "video.cache.window":"media.video", "video.cache.stats":"media.video", "video.cache.clear":"media.video",
   "video.prepare": "media.video", "video.play": "media.video", "video.retire": "media.video", "video.pause": "media.video", "video.seek": "media.video", "video.stop": "media.video", "video.setBounds": "media.video", "video.state": "media.video",
   "video.frame.clear":"media.video", "video.frame.capture":"media.video", "video.frame.restore":"media.video", "video.captureBackdrop": "media.video", "video.setTransform": "media.video", "video.setVolume": "media.video", "video.setLoop": "media.video",

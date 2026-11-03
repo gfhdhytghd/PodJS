@@ -51,6 +51,7 @@ public final class PodSplash {
         if(closed){removeOnce();return;}
         view.bringToFront();android.util.Log.i("PodSplash","visible");exitIfReady();
     }
+    boolean obscuring(){return keeping()||providerView!=null&&!removed;}
     public boolean keeping(){return !done&&!closed;}
     public void hold(String owner){if(keeping()){if(holds.size()>=32&&!holds.contains(owner))throw new IllegalStateException("splash holds full");holds.add(owner);}}
     public void release(String owner){if(holds.remove(owner))texture=false;check();}

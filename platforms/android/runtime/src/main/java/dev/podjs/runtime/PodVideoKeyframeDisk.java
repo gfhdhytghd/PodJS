@@ -14,11 +14,13 @@ import java.util.regex.Pattern;
  * pixels, never playback authorization. No source URL or headers reach disk. */
 final class PodVideoKeyframeDisk {
     static final int MAX_ENTRIES=128,MAX_FILE_BYTES=512*1024;
-    static final long MAX_BYTES=16L*1024*1024;
+    static final long MAX_BYTES=10L*1024*1024;
     private static final Pattern KEY=Pattern.compile("[a-f0-9]{64}");
     private static final Pattern IMAGE=Pattern.compile("[a-f0-9]{64}\\.jpg");
-    private final File root;
-    PodVideoKeyframeDisk(File root){this.root=root;}
+    private final File root;private long maxBytes=MAX_BYTES;
+    synchronized void budget(long bytes){maxBytes=Math.min(MAX_BYTES,Math.max(128*1024,bytes));trim();}
+    PodVideoKeyframeDisk(File root){this.root=root;File[] parts=root.listFiles((d,n)->n.startsWith("keyframe-")&&n.endsWith(".tmp"));if(parts!=null)for(File part:parts)part.delete();}
+    synchronized boolean contains(String key){File f=file(key);return f.isFile()&&f.length()>0&&f.length()<=MAX_FILE_BYTES;}
     private static void worker(){if(Looper.myLooper()==Looper.getMainLooper())throw new IllegalStateException("keyframe_disk_on_main");}
     private File file(String key){if(key==null||!KEY.matcher(key).matches())throw new IllegalArgumentException("invalid_frame_binding");return new File(root,key+".jpg");}
     synchronized Bitmap load(String key){
@@ -51,6 +53,6 @@ final class PodVideoKeyframeDisk {
         File[] files=root.listFiles((dir,name)->IMAGE.matcher(name).matches());if(files==null)return;
         Arrays.sort(files,Comparator.comparingLong(File::lastModified).reversed());
         long bytes=0;int count=0;
-        for(File image:files){long size=image.length();if(count<MAX_ENTRIES&&bytes+size<=MAX_BYTES){bytes+=size;count++;}else image.delete();}
+        for(File image:files){long size=image.length();if(count<MAX_ENTRIES&&bytes+size<=maxBytes){bytes+=size;count++;}else image.delete();}
     }
 }

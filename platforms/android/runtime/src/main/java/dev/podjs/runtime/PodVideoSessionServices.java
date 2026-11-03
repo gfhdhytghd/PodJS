@@ -56,6 +56,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     private void mediaGate(boolean active) {
         boolean before=HostWorkPriority.DEVICE.mediaActive();
         HostWorkPriority.DEVICE.foregroundMedia(this,active);
+        if(mediaPrefixCache!=null){boolean busy=false,found=false;for(Session s:sessions.values())if(!s.prewarming&&s.player!=null){found=true;busy|=!s.hasRenderedFirstFrame||s.player.getPlaybackState()==Player.STATE_BUFFERING;}mediaPrefixCache.foregroundBusy(this,active&&(!found||busy));}
         boolean after=HostWorkPriority.DEVICE.mediaActive();
         if(before!=after)try{PodBenchmark.begin("background_gate",new JSONObject().put("state",after?"paused":"running").put("reason",after?"foreground_media":"media_stopped"));}catch(Exception ignored){}
     }
@@ -450,6 +451,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             }
 
             @Override public void onPlaybackStateChanged(int playbackState) {
+                if(own.matches(player,generation)&&!own.prewarming&&mediaPrefixCache!=null)mediaPrefixCache.foregroundBusy(PodVideoSessionServices.this,playbackState==Player.STATE_BUFFERING||!own.hasRenderedFirstFrame);
                 if(own.matches(player,generation)&&!own.prewarming&&playbackState==Player.STATE_BUFFERING)
                     for(Session worker:new java.util.ArrayList<>(sessions.values()))if(worker.keyframeOnly)cancel(worker.id);
                 if (!own.matches(player, generation)) return;
@@ -912,7 +914,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             String uri=args.optString("url","");
             if(mediaPrefixCache!=null&&mediaPrefixCache.owns(uri)){
                 PodMediaPrefixCache.Entry entry=mediaPrefixCache.target(uri);
-                String prefix=PodVideoFrameCache.binding(new JSONObject().put("url",uri),mediaPrefixCache);
+                String prefix=PodVideoFrameCache.binding(new JSONObject().put("url",uri).put("audioUrl",entry.frameAudioUrl),mediaPrefixCache);
                 android.util.Log.i("PodMediaCache","frame_lookup entry="+entry.ordinal+" source_ordinal="+Math.max(0,args.optLong("sourceOrdinal",0))+" hit="+(keyframes.get(binding)!=null?1:0)+" prefix_hit="+(keyframes.get(prefix)!=null?1:0)+" binding_match="+(binding.equals(prefix)?1:0)+" mono_ms="+android.os.SystemClock.uptimeMillis());
             }
             return binding;
@@ -990,7 +992,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     }
 
     private String sourceValue(String value) throws Exception {
-        if(mediaPrefixCache!=null&&mediaPrefixCache.owns(value))return value;
+        if(mediaPrefixCache!=null&&(mediaPrefixCache.owns(value)||mediaPrefixCache.ownsLocal(value)))return value;
         if (value.startsWith("http://") || value.startsWith("https://")) {
             Uri uri = Uri.parse(value);
             if (uri.getHost() == null) throw new IllegalArgumentException("invalid_url");
@@ -1083,6 +1085,8 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                     long updatedGeneration=generation;
                     main.post(()->{
                     if(disposed||generation!=updatedGeneration)return;
+                    if(mediaPrefixCache!=null&&mediaPrefixCache.startupPreview!=null&&frameSource!=null)
+                        mediaPrefixCache.startupPreview.handoff(frameSource.optString("url"),videoView,()->!disposed&&generation==updatedGeneration&&presented&&!prewarming&&hasRenderedFirstFrame&&bounds!=null&&bounds.visible);
                     if(hasRenderedFirstFrame&&(prewarming||hasCachedFrame()||lastFrame.present()))finishDecodedFrame();
                     if(benchmarkAction!=null&&!swapTextureLogged){swapTextureLogged=true;PodBenchmark.swapStage(benchmarkAction,"texture_updated",generation);}
                     if(benchmarkFramePending&&benchmarkAction!=null&&!prewarming&&presented&&hasRenderedFirstFrame&&bounds!=null&&bounds.visible&&videoView.getAlpha()>0){
@@ -1122,6 +1126,8 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
 
         void renderedFrame(Callback callback) {
             hasRenderedFirstFrame=true;
+            if(!prewarming){PodMediaStartupPreview.mark("videoFirstFrame");android.util.Log.i("PodMediaCache","playback_tracks audio="+(player!=null&&player.getAudioFormat()!=null?1:0)+" video="+(player!=null&&player.getVideoFormat()!=null?1:0)+" local="+(frameSource!=null&&frameSource.optString("url").startsWith("file:")?1:0));}
+            if(!prewarming&&mediaPrefixCache!=null)mediaPrefixCache.foregroundBusy(PodVideoSessionServices.this,false);
             PodBenchmark.swapStage(benchmarkAction,"rendered_first_frame",generation);
             if(!prewarming&&mediaPrefixCache!=null)mediaPrefixCache.logPlaybackStats();
             if(!hasCachedFrame())try{callback.firstFrame(snapshot());}catch(Exception ignored){}
@@ -1286,6 +1292,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             if(presented&&!(hasRenderedFirstFrame&&hasUpdatedFrame)&&!hasCachedFrame())lastFrame.raise();
             if(keyframeView!=null)parent.bringChildToFront(keyframeView);
             if(runtime!=null)parent.bringChildToFront(runtime);
+            if(mediaPrefixCache!=null&&mediaPrefixCache.startupPreview!=null)mediaPrefixCache.startupPreview.raise();
         }
 
         void hideOffscreen() {

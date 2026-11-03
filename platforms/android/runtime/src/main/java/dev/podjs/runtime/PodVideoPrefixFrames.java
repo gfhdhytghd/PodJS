@@ -88,6 +88,7 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
     private void pump(){
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
         for(;;){
+            disk.budget(cache.frameDiskBytes);
             LinkedHashMap<PodMediaPrefixCache.Entry,Long> snapshot;
             synchronized(this){
                 if(closed||!dirty){scheduled=false;return;}
@@ -97,7 +98,7 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
             java.util.Set<String> retained=new java.util.LinkedHashSet<>();
             for(PodMediaPrefixCache.Entry entry:snapshot.keySet())try{
                 String binding=bindings.get(entry);
-                if(binding==null){binding=PodVideoFrameCache.binding(new JSONObject().put("url",PodMediaPrefixCache.SCHEME+"://play/"+entry.token+".mp4"),cache);bindings.put(entry,binding);}
+                if(binding==null){binding=PodVideoFrameCache.binding(new JSONObject().put("url",PodMediaPrefixCache.SCHEME+"://play/"+entry.token+".mp4").put("audioUrl",entry.frameAudioUrl),cache);bindings.put(entry,binding);}
                 retained.add(binding);
             }catch(Exception unavailable){}
             if(!snapshot.isEmpty())hasWindow=true;
@@ -111,10 +112,13 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
                 long available=entry.file.length()+entry.tail().length();
                 String binding=bindings.get(entry);
                 if(binding==null)try{
-                    binding=PodVideoFrameCache.binding(new JSONObject().put("url",PodMediaPrefixCache.SCHEME+"://play/"+entry.token+".mp4"),cache);
+                    binding=PodVideoFrameCache.binding(new JSONObject().put("url",PodMediaPrefixCache.SCHEME+"://play/"+entry.token+".mp4").put("audioUrl",entry.frameAudioUrl),cache);
                     bindings.put(entry,binding);
                 }catch(Exception unavailable){continue;}
-                if(frames.contains(binding)||!frames.canAccept(binding))continue;
+                if(frames.contains(binding))continue;
+                boolean diskOnly=!frames.canAccept(binding);
+                if(diskOnly&&disk.contains(binding))continue;
+                if(diskOnly&&!cache.preStoreAllowed())continue;
                 long requested=item.getValue(),started=SystemClock.uptimeMillis();
                 Bitmap result=null;int status=6;
                 try{result=disk.load(binding);}catch(RuntimeException unavailable){/* Invalid compressed data falls through to cached source decode. */}
@@ -129,6 +133,7 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
                     }catch(Exception unavailable){status=4;}
                     finally{android.os.Trace.endSection();}
                 }
+                if(diskOnly&&result!=null){try{disk.save(binding,result);android.util.Log.i("PodMediaCache","frame_disk_only entry="+entry.ordinal);}catch(Exception ignored){}finally{result.recycle();}continue;}
                 final Bitmap pixels=result;final int outcome=status;final String key=binding;
                 long ended=SystemClock.uptimeMillis();
                 final long staged=pixels==null?0:pixels.getAllocationByteCount();

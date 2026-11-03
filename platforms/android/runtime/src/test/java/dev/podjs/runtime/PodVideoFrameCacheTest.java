@@ -59,4 +59,14 @@ public class PodVideoFrameCacheTest {
   }
  }
 
+ @org.junit.Test public void dashPrefixPixelsBindTheCompanionWithoutReadingIt()throws Exception {
+  try(PodMediaPrefixCache cache=new PodMediaPrefixCache(root())){
+   org.json.JSONObject args=new org.json.JSONObject().put("key","dash").put("url","https://fixture/video").put("audioUrl","https://fixture/audio").put("headers",new org.json.JSONObject());
+   String uri=cache.execute("video.cache.register",args).getString("uri");PodMediaPrefixCache.Entry entry=cache.target(uri);
+   assertEquals("https://fixture/audio",entry.frameAudioUrl);
+   assertEquals(PodVideoFrameCache.binding(new org.json.JSONObject().put("url",uri).put("audioUrl",entry.frameAudioUrl),cache),PodVideoFrameCache.binding(args,cache));
+   assertNotEquals(uri,cache.execute("video.cache.register",new org.json.JSONObject(args.toString()).put("audioUrl","https://fixture/other-audio")).getString("uri"));
+   assertEquals(0,cache.stats().getLong("networkReadBytes"));
+  }
+ }
 }
