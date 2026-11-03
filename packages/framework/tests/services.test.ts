@@ -799,3 +799,20 @@ test('auth action metadata crosses browser and native credential-delete boundari
  const deleted=secureStorage.delete('fixture',{seq:102});const clear=emitted.at(-1)!;expect(clear).toMatchObject({method:'secure.delete',args:{key:'fixture',benchmark:{seq:102}}});
  expect(JSON.stringify(clear.args)).not.toContain('mono_ms');events.push({t:'service.result',id:clear.id,ok:true,value:{deleted:true}});api.__pumpPodEvents();await deleted;
 });
+
+test('silent video opt-in and explicit crown intent reach both native backends',async()=>{
+ host.capabilities=()=>JSON.stringify(['media.video','media.video.sessions']);
+ const {video,videoSessions}=await import('../src/services.ts');
+ for(const backend of [video,videoSessions]){
+  const session=backend===videoSessions;
+  const options={bounds:{x:0,y:0,width:100,height:100},respectSilentMode:true};
+  const op=session?videoSessions.prepare({...options,sessionId:'active'}):video.prepare(options);
+  let request=emitted.at(-1)!;expect(request.args).toMatchObject({respectSilentMode:true});
+  events.push({t:'service.result',id:request.id,ok:true,value:{ok:true}});api.__pumpPodEvents();await op.result;
+  for(const direction of [1,-1] as const){
+   const task=session?videoSessions.setVolume('active',.5,direction):video.setVolume(.5,direction);
+   request=emitted.at(-1)!;expect(request.args).toMatchObject({volume:.5,crownDirection:direction});
+   events.push({t:'service.result',id:request.id,ok:true,value:{ok:true}});api.__pumpPodEvents();await task;
+  }
+ }
+});

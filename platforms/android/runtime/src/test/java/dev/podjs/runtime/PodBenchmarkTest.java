@@ -68,6 +68,12 @@ public class PodBenchmarkTest {
   long at=SystemClock.uptimeMillis();long mute=PodBenchmark.begin("mute_changed",new JSONObject().put("kind","on").put("muted",true),at);assertTrue(mute>second);assertTrue(ShadowLog.getLogsForTag("DYBENCH").get(count).msg.contains("mono_ms="+at));
  }
 
+ @Test public void ringerVisibilityFieldsRejectUnknownValues()throws Exception{
+  for(String mode:new String[]{"normal","vibrate","silent","unknown"})assertTrue(PodBenchmark.begin("player_visible",new JSONObject().put("ringer_mode",mode).put("silenced",true))>0);
+  assertEquals(0,PodBenchmark.begin("player_visible",new JSONObject().put("ringer_mode","PRIVATE")));
+  assertEquals(0,PodBenchmark.begin("player_visible",new JSONObject().put("silenced",1)));
+  assertEquals(0,PodBenchmark.begin("entry_start",new JSONObject().put("ringer_mode","normal")));
+ }
  @Test public void visibilityExplainsNativeFocusGuardWithoutForgingVideoProof()throws Exception{
   ShadowLog.clear();PodBenchmark.attach(null);
   JSONObject row=new JSONObject().put("code","player_visible").put("state","present").put("visibility_reason","ready").put("player_state","playing").put("has_frame",true).put("offset_abs_milli",0);

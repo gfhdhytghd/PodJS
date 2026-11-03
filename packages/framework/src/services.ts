@@ -336,12 +336,12 @@ export function onVideoFirstFrame(listener:(state:VideoState & {sessionId?:strin
 }
 export interface VideoBounds { benchmark?:VideoBenchmarkAction; x:number; y:number; width:number; height:number; translateX?:number; translateY?:number; visible?:boolean; roundClip?:{cx:number;cy:number;radius:number} }
 export interface VideoTransform {rotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}
-export interface VideoPrepare {transform?:VideoTransform;sourceOrdinal?:number;slotOrdinal?:number; startupSeq?:number; benchmark?:VideoBenchmarkAction; url?:string; videoUrl?:string; audioUrl?:string; type?:string; videoMime?:string; videoWidth?:number; videoHeight?:number; headers?:Record<string,string>; bounds:VideoBounds; autoplay?:boolean; muted?:boolean; loop?:boolean; backgroundPlayback?:boolean }
+export interface VideoPrepare {/** Apply system ringer/zen silence to player gain. Override is process-local. */ respectSilentMode?:boolean;transform?:VideoTransform;sourceOrdinal?:number;slotOrdinal?:number; startupSeq?:number; benchmark?:VideoBenchmarkAction; url?:string; videoUrl?:string; audioUrl?:string; type?:string; videoMime?:string; videoWidth?:number; videoHeight?:number; headers?:Record<string,string>; bounds:VideoBounds; autoplay?:boolean; muted?:boolean; loop?:boolean; backgroundPlayback?:boolean }
 export interface VideoFrameSource {url?:string;videoUrl?:string;audioUrl?:string;headers?:Record<string,string>}
 export interface VideoFrame {available:true;kind:"actual_frame";path:string;width:number;height:number;positionMs:number;capturedAt:number;capturedGeneration:number}
 export interface VideoFrameCapture {key:string;source:VideoFrameSource;sourceGeneration:number}
 export interface VideoPlaybackMetrics { bytesLoaded:number; droppedFrames:number; rebufferCount:number; rebufferMs:number; firstByteMs?:number; firstFrameMs?:number; throughputBps?:number; [key:string]:number|undefined }
-export interface VideoState { volumeIndex?:number; muted?:boolean; appliedVolume?:number; audioTrackSelected?:boolean; bufferedMs?:number; networkStalled?:boolean; presented?:boolean; metrics?:VideoPlaybackMetrics; sourceGeneration?:number; /** Completed native repeats since prepare; seeks do not increment it. */ completedLoops?:number; loop?:boolean; hasCachedFirstFrame?:boolean; hasRenderedFirstFrame?:boolean; errorCode?:string; ok:boolean; state:string; positionMs:number; durationMs:number; width:number; height:number; volume:number; volumeMax:number }
+export interface VideoState { ringerMode?:"normal"|"vibrate"|"silent"|"unknown";silenced?:boolean; volumeIndex?:number; muted?:boolean; appliedVolume?:number; audioTrackSelected?:boolean; bufferedMs?:number; networkStalled?:boolean; presented?:boolean; metrics?:VideoPlaybackMetrics; sourceGeneration?:number; /** Completed native repeats since prepare; seeks do not increment it. */ completedLoops?:number; loop?:boolean; hasCachedFirstFrame?:boolean; hasRenderedFirstFrame?:boolean; errorCode?:string; ok:boolean; state:string; positionMs:number; durationMs:number; width:number; height:number; volume:number; volumeMax:number }
 export const video = {
   /** Capture only a rendered frame from the exact still-current source generation. */
   clearFrames():Promise<{removedFiles:number}> {return hostOperation<{removedFiles:number}>("video.frame.clear",{}).result;},
@@ -361,7 +361,7 @@ export const video = {
   /** Change repeat mode on the current player without preparing or seeking. */
   setLoop(loop:boolean): Promise<VideoState> { return hostOperation<VideoState>("video.setLoop", {loop}).result; },
   setMuted(muted:boolean):Promise<VideoState> { return hostOperation<VideoState>("video.setVolume",{muted}).result; },
-  setVolume(volume:number): Promise<VideoState> { return hostOperation<VideoState>("video.setVolume", {volume}).result; },
+  setVolume(volume:number,crownDirection?:-1|1): Promise<VideoState> { return hostOperation<VideoState>("video.setVolume", {volume,...(crownDirection?{crownDirection}:{})}).result; },
 };
 
 export interface VideoSessionCapabilities {
@@ -381,6 +381,7 @@ export interface VideoSessionPrepare extends Omit<VideoPrepare,"backgroundPlayba
   keyframeOnly?:boolean;
 }
 export interface VideoSessionState {
+  ringerMode?:VideoState["ringerMode"];silenced?:boolean;
   volumeIndex?:number; volumeMax?:number;
   appliedVolume?:number; audioTrackSelected?:boolean;
   bufferedMs?:number; networkStalled?:boolean;
@@ -423,7 +424,7 @@ export const videoSessions = {
   setTransform(sessionId:string,transform:{rotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setTransform",{sessionId,...transform}).result; },
   setLoop(sessionId:string,loop:boolean):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setLoop",{sessionId,loop}).result; },
   setMuted(sessionId:string,muted:boolean):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setVolume",{sessionId,muted}).result; },
-  setVolume(sessionId:string,volume:number):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setVolume",{sessionId,volume}).result; },
+  setVolume(sessionId:string,volume:number,crownDirection?:-1|1):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setVolume",{sessionId,volume,...(crownDirection?{crownDirection}:{})}).result; },
   /** Reveals the retained target first frame before hiding the replaced session. */
   promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean;loop?:boolean;adoptPreparing?:boolean;benchmark?:VideoBenchmarkAction}={}):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.promote",{sessionId,...options}).result; },
   /** Atomically translates both native surfaces. Call promote after progress reaches one. */

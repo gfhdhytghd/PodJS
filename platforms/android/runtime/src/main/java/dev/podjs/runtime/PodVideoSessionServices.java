@@ -386,6 +386,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             session.player = player;
             PodBenchmark.startup(analytics.startupSeq,"player_constructed");
             session.audioPolicy = new PodMediaAudioPolicy(context, player);
+            session.audioPolicy.respectSilentMode(args.optBoolean("respectSilentMode",false));
             final Session audioOwner=session;
             session.audioPolicy.observeVolume(()->{if(!audioOwner.prewarming&&!audioOwner.disposed)try{callback.volumeChanged(audioOwner.snapshot());}catch(Exception ignored){}});
             session.audioPolicy.observeMuteChanges(player::isPlaying, player::getVolume, new PodVideoMuteTelemetry());
@@ -1425,7 +1426,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
 
         JSONObject snapshot() throws Exception {
             return PodVideoSystemAudio.snapshot(context,new JSONObject()
-                    .put("appliedVolume",player==null?null:player.getVolume()).put("audioTrackSelected",player!=null&&player.getAudioFormat()!=null).put("metrics",analytics==null?null:analytics.snapshot()).put("ok", true).put("sessionId", id).put("state", state).put("errorCode", "error".equals(state) ? errorCode : null)
+                    .put("silenced",audioPolicy!=null&&audioPolicy.silenced()).put("appliedVolume",player==null?null:player.getVolume()).put("audioTrackSelected",player!=null&&player.getAudioFormat()!=null).put("metrics",analytics==null?null:analytics.snapshot()).put("ok", true).put("sessionId", id).put("state", state).put("errorCode", "error".equals(state) ? errorCode : null)
                     .put("positionMs", player == null ? 0 : player.getCurrentPosition())
                     .put("bufferedMs",player==null?0:Math.max(0,player.getBufferedPosition()-player.getCurrentPosition()))
                     .put("networkStalled",analytics!=null&&analytics.networkStalled())

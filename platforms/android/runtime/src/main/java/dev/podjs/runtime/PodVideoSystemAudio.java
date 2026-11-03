@@ -10,11 +10,15 @@ final class PodVideoSystemAudio {
     static JSONObject snapshot(Context context, JSONObject state) throws Exception {
         AudioManager audio=audio(context);
         int max=audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC),index=audio.getStreamVolume(AudioManager.STREAM_MUSIC);
+        int mode=audio.getRingerMode();
+        state.put("ringerMode",mode==0?"silent":mode==1?"vibrate":mode==2?"normal":"unknown").put("silenced",state.optBoolean("silenced",false));
         return state.put("volume",index/(double)Math.max(1,max)).put("volumeIndex",index).put("volumeMax",max)
                 .put("muted",audio.isStreamMute(AudioManager.STREAM_MUSIC)||index==0);
     }
     static void update(Context context, JSONObject args) throws Exception {
         AudioManager audio=audio(context);
+        int crown=args.optInt("crownDirection",0);
+        if(args.has("crownDirection") && (!(args.get("crownDirection") instanceof Number) || (args.getDouble("crownDirection")!=1 && args.getDouble("crownDirection")!=-1)))throw new IllegalArgumentException("invalid_crown_direction");
         if(args.has("muted")) {
             if(!(args.get("muted") instanceof Boolean)||args.has("volume"))throw new IllegalArgumentException("invalid_volume");
             boolean muted=args.getBoolean("muted");
@@ -30,5 +34,10 @@ final class PodVideoSystemAudio {
             int target=Math.round(audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)*(float)value);
             if(!audio.isVolumeFixed()&&target!=audio.getStreamVolume(AudioManager.STREAM_MUSIC))audio.setStreamVolume(AudioManager.STREAM_MUSIC,target,0);
         }
+        // Explicit user volume-up also unmutes at a capped/unchanged index.
+        // Automatic ringer/zen observations never reach this write path.
+        if(crown>0 && audio.getStreamVolume(AudioManager.STREAM_MUSIC)>0 && audio.isStreamMute(AudioManager.STREAM_MUSIC))
+            audio.adjustStreamVolume(AudioManager.STREAM_MUSIC,AudioManager.ADJUST_UNMUTE,0);
+        if(crown!=0)PodMediaAudioPolicy.crownIntent(crown,audio.getStreamVolume(AudioManager.STREAM_MUSIC));
     }
 }

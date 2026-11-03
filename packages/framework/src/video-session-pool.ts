@@ -16,7 +16,7 @@ export interface VideoSessionPort {
   setBounds(sessionId:string,bounds:VideoBounds):Promise<VideoSessionState>;
   state(sessionId:string):Promise<VideoSessionState>;
   setTransform(sessionId:string,transform:{rotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}):Promise<VideoSessionState>;
-  setVolume(sessionId:string,volume:number):Promise<VideoSessionState>;
+  setVolume(sessionId:string,volume:number,crownDirection?:-1|1):Promise<VideoSessionState>;
   setMuted?(sessionId:string,muted:boolean):Promise<VideoSessionState>;
   setLoop(sessionId:string,loop:boolean):Promise<VideoSessionState>;
   promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean;loop?:boolean;adoptPreparing?:boolean;benchmark?:VideoBenchmarkAction}):Promise<VideoSessionState>;
@@ -386,6 +386,6 @@ export class VideoSessionPool<Source extends {key:string}> {
     return state(active);
   }
   setMuted(muted:boolean):Promise<VideoState>{if(!this.port.setMuted)return Promise.reject(new Error("unsupported"));return this.port.setMuted(this.activeId,muted).then(state);}
-  setVolume(volume:number):Promise<VideoState>{return this.port.setVolume(this.activeId,volume).then(state);}
+  setVolume(volume:number,crownDirection?:-1|1):Promise<VideoState>{return this.port.setVolume(this.activeId,volume,crownDirection).then(state);}
   async releaseAll():Promise<void>{this.endDrag();this.cancelNeighbourhood();this.initialPreparation?.operation.cancel();this.initialPreparation=undefined;this.generation++;this.latestTransition=undefined;this.activeKey=undefined;this.activeSource=undefined;this.activeIdentity=undefined;await Promise.allSettled([this.port.release(this.activeId),...this.slots.map(s=>this.evict(s,'release'))]);}
 }

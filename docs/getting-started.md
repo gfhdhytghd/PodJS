@@ -430,3 +430,19 @@ that final reply and a durable caller receipt publish the actual length. Hosts
 without this optional mode must not be used for bounded-length streaming.
 
 Video paging keeps an incoming decoded frame attached through promotion. `video.retire()` and `videoSessions.retire(id)` atomically pause, mute and hide the outgoing player without changing system volume. Android playback controls run in the current foreground main turn, independently of file/crypto/secure IO workers. Eight reserved promise slots keep playback controls admissible under a full 64-request IO window. `onVideoFirstFrame` reports native decoded frames with source generation and optional session ID; READY alone does not prove a rendered frame. `VideoFirstFrameWait` delays a spinner until 400 ms without a decoded frame. Native host rebuild is required for retirement and frame events.
+
+Applications can opt every `video.prepare` / `videoSessions.prepare` generation
+(including neighbours and local completed sources) into `respectSilentMode: true`.
+Android then applies zero player gain in SILENT/VIBRATE and in DND modes that
+suppress media; it observes broadcasts/settings without a polling timer. It never
+changes STREAM_MUSIC for these transitions. DND alarms-only allows media.
+`VideoState` and `VideoSessionState` expose `ringerMode` and `silenced` separately
+from system `muted`, `volumeIndex` and actual `appliedVolume`.
+
+A crown-originated `setVolume` can pass `crownDirection: -1 | 1` through its
+optional final argument. Raising to an audible system index overrides switch
+silence for this process lifetime, across prewarm/promote/recreated players.
+Lowering to zero revokes the override. No override is persisted across process
+death. Speculative audio-track holds still apply. Player gain/track readback is
+not a physical mixer or speaker measurement. Other applications retain the
+default system-media-volume behavior until they opt in.

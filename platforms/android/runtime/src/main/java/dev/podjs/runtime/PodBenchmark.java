@@ -110,6 +110,8 @@ final class PodBenchmark {
                 else if(key.equals("visibility_reason")){if(!code.equals("player_visible")||!Arrays.asList("ready","inactive","route_offset","lifecycle","player_error","network_prompt","native_hidden","native_unfocused").contains(value))return false;}
                 else if(key.equals("player_state")){if(!code.equals("player_visible")||!Arrays.asList("idle","preparing","buffering","ready","playing","paused","ended","stopped","error","unknown").contains(value))return false;}
                 else if(key.equals("system_index")||key.equals("system_max")){if(!code.equals("player_visible")||integer(args,key)>1024)return false;}
+                else if(key.equals("ringer_mode")){if(!code.equals("player_visible")||!Set.of("normal","vibrate","silent","unknown").contains(value))return false;}
+                else if(key.equals("silenced")){if(!code.equals("player_visible")||!(value instanceof Boolean))return false;}
                 else if(key.equals("system_muted")){if(!code.equals("player_visible")||!(value instanceof Boolean))return false;}
                 else if(key.equals("audio_gain_milli")){if(!code.equals("player_visible")||integer(args,key)>1000)return false;}
                 else if(key.equals("audio_track")){if(!code.equals("player_visible")||!(value instanceof Boolean))return false;}

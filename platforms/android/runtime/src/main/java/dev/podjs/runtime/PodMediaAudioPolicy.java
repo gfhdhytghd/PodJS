@@ -1,5 +1,6 @@
 package dev.podjs.runtime;
 
+import android.app.NotificationManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -15,7 +16,7 @@ import java.util.function.Consumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
-/** Main-thread STREAM_MUSIC observer. Never owns a user volume or mute setting.
+/** Main-thread system audio observer. Never owns a user volume or mute setting.
  * The player owner must close this before releasing its output (including background playback).
  */
 final class PodMediaAudioPolicy implements AutoCloseable {
@@ -29,7 +30,35 @@ final class PodMediaAudioPolicy implements AutoCloseable {
     private Consumer<Float> unityOutput;
     private Consumer<Boolean> audioEnabled;
     private Runnable volumeChanged=()->{};
-    private boolean systemVideo;
+    private boolean systemVideo, respectSilentMode;
+    // Process lifetime only: shared by foreground, neighbours and replacement players.
+    private static boolean crownOverride;
+    private static final java.util.Set<PodMediaAudioPolicy> policies = new java.util.HashSet<>();
+    private String lastRinger;
+    private Boolean lastSilenced;
+    void respectSilentMode(boolean enabled) { respectSilentMode=enabled; refresh(); }
+    static void crownIntent(int direction, int index) {
+        if(direction>0 && index>0)crownOverride=true;
+        else if(direction<0 && index==0)crownOverride=false;
+        for(PodMediaAudioPolicy policy:new java.util.ArrayList<>(policies))policy.refresh();
+    }
+    static boolean zenSilencesMedia(int filter,int categories) {
+        return filter==NotificationManager.INTERRUPTION_FILTER_NONE ||
+            filter==NotificationManager.INTERRUPTION_FILTER_PRIORITY && (categories & NotificationManager.Policy.PRIORITY_CATEGORY_MEDIA)==0;
+    }
+    boolean silenced() {
+        if(!respectSilentMode)return false;
+        if(audio.isStreamMute(AudioManager.STREAM_MUSIC)||audio.getStreamVolume(AudioManager.STREAM_MUSIC)==0)return true;
+        if(crownOverride)return false;
+        if(audio.getRingerMode()!=AudioManager.RINGER_MODE_NORMAL)return true;
+        NotificationManager notifications=(NotificationManager)context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if(notifications==null)return false;
+        int filter=notifications.getCurrentInterruptionFilter();
+        NotificationManager.Policy policy=filter==NotificationManager.INTERRUPTION_FILTER_PRIORITY?notifications.getConsolidatedNotificationPolicy():null;
+        return zenSilencesMedia(filter,policy==null?0:policy.priorityCategories);
+    }
+    String ringerMode() { int mode=audio.getRingerMode();return mode==0?"silent":mode==1?"vibrate":mode==2?"normal":"unknown"; }
+
     private Integer lastIndex,lastMax;
     private Boolean lastMute;
     private boolean prewarming, closed;
@@ -46,21 +75,6 @@ final class PodMediaAudioPolicy implements AutoCloseable {
         this.playing = playing;
         this.muteObserver = observer;
     }
-    // OEM volume broadcasts can arrive late. Only the active policy checks
-    // system truth; speculative/retired slots never run this fallback.
-    private final Runnable systemCheck = new Runnable() {
-        @Override public void run() {
-            if(closed||prewarming)return;
-            int index=audio.getStreamVolume(AudioManager.STREAM_MUSIC);
-            boolean muted=audio.isStreamMute(AudioManager.STREAM_MUSIC)||index==0;
-            if(lastIndex==null||lastIndex!=index||lastMute==null||lastMute!=muted)refresh();
-            if(!closed&&!prewarming)main.postDelayed(this,50);
-        }
-    };
-    private void scheduleSystemCheck() {
-        main.removeCallbacks(systemCheck);
-        if(!closed&&!prewarming)main.postDelayed(systemCheck,50);
-    }
     private final BroadcastReceiver receiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) { refresh(); }
     };
@@ -76,6 +90,9 @@ final class PodMediaAudioPolicy implements AutoCloseable {
         output.accept(1f);
         IntentFilter filter = new IntentFilter(AudioManager.RINGER_MODE_CHANGED_ACTION);
         filter.addAction(VOLUME_CHANGED);
+        filter.addAction(NotificationManager.ACTION_INTERRUPTION_FILTER_CHANGED);
+        filter.addAction(NotificationManager.ACTION_NOTIFICATION_POLICY_CHANGED);
+        filter.addAction(NotificationManager.ACTION_CONSOLIDATED_NOTIFICATION_POLICY_CHANGED);
         filter.addAction(STREAM_MUTE_CHANGED);
         if (Build.VERSION.SDK_INT >= 33) this.context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
         else this.context.registerReceiver(receiver, filter);
@@ -89,23 +106,23 @@ final class PodMediaAudioPolicy implements AutoCloseable {
         }
     }
 
-    /** Video always uses unity gain. Speculative slots disable their audio track. */
+    /** Video uses unity gain unless opted in to the silent switch. Speculative slots disable their audio track. */
     PodMediaAudioPolicy(Context context, androidx.media3.exoplayer.ExoPlayer player) {
         this(context, ignored -> {});
         systemVideo=true;unityOutput=player::setVolume;
         audioEnabled=enabled->player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon()
                 .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_AUDIO,!enabled).build());
         player.setVolume(1f);
+        policies.add(this);
     }
-    void observeVolume(Runnable changed) { volumeChanged=changed;refresh();scheduleSystemCheck(); }
+    void observeVolume(Runnable changed) { volumeChanged=changed;refresh(); }
 
     void setVolume(float requestedVolume, boolean prewarming) {
         if (closed) return;
-        // Historical prepare gain is ignored. Only the speculative lifecycle hold remains.
+        // Historical private gain is ignored. The silent policy and lifecycle hold are independent.
         this.prewarming = prewarming;
         // Read synchronously at activation too: a system notification may still be queued.
         refresh();
-        scheduleSystemCheck();
     }
 
     /** Retirement/prewarm hold; never changes the system mute or index. */
@@ -113,7 +130,6 @@ final class PodMediaAudioPolicy implements AutoCloseable {
         if (closed) return;
         prewarming = held;
         refresh();
-        scheduleSystemCheck();
     }
 
     void refresh() {
@@ -121,11 +137,14 @@ final class PodMediaAudioPolicy implements AutoCloseable {
         if (closed) return;
         int index=audio.getStreamVolume(AudioManager.STREAM_MUSIC),max=audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
         boolean muted=audio.isStreamMute(AudioManager.STREAM_MUSIC)||index==0;
-        boolean changed=lastIndex==null||lastIndex!=index||lastMax!=max||lastMute!=muted;
+        boolean silenced=silenced();String ringer=ringerMode();
+        boolean policyChanged=lastSilenced==null||lastSilenced!=silenced||!ringer.equals(lastRinger);
+        lastSilenced=silenced;lastRinger=ringer;
+        boolean changed=policyChanged||lastIndex==null||lastIndex!=index||lastMax!=max||lastMute!=muted;
         boolean muteChanged=lastMute!=null&&lastMute!=muted;
         lastIndex=index;lastMax=max;lastMute=muted;
-        if(systemVideo) { unityOutput.accept(1f);audioEnabled.accept(!prewarming); }
-        else output.accept(prewarming?0f:1f); // Test output, with the same lifecycle-only exception.
+        if(systemVideo) { unityOutput.accept(silenced?0f:1f);audioEnabled.accept(!prewarming); }
+        else output.accept(prewarming||silenced?0f:1f);
         if(muteChanged&&!prewarming&&playing.getAsBoolean())try{muteObserver.changed(muted,observedAt);}catch(RuntimeException ignored){}
         // System readback is never a player-gain mute receipt or audible PCM.
         if(changed)volumeChanged.run();
@@ -134,7 +153,7 @@ final class PodMediaAudioPolicy implements AutoCloseable {
     @Override public void close() {
         if (closed) return;
         closed = true;
-        main.removeCallbacks(systemCheck);
+        policies.remove(this);
         context.unregisterReceiver(receiver);
         context.getContentResolver().unregisterContentObserver(settings);
     }

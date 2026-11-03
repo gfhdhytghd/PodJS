@@ -53,11 +53,12 @@ public class PodMediaAudioPolicyTest {
   policy.setHeldMuted(true);audio.setStreamVolume(AudioManager.STREAM_MUSIC,2,0);policy.setHeldMuted(false);assertEquals(2,(int)indices.get(indices.size()-1));
   context.getContentResolver().notifyChange(Settings.System.CONTENT_URI,null);policy.close();policy.close();int count=indices.size();audio.setStreamVolume(AudioManager.STREAM_MUSIC,4,0);broadcast(PodMediaAudioPolicy.VOLUME_CHANGED);policy.refresh();policy.setVolume(0,true);assertEquals(count,indices.size());
  }
- @Test public void missedBroadcastIsObservedWithinFiftyMsAndInactivePoliciesStopPolling(){
+ @Test public void volumeNotificationsReplacePollingAndActivationReadsFreshState(){
   List<Integer> indices=new ArrayList<>();PodMediaAudioPolicy policy=new PodMediaAudioPolicy(context,player);
   policy.observeVolume(()->indices.add(audio.getStreamVolume(AudioManager.STREAM_MUSIC)));
   audio.setStreamVolume(AudioManager.STREAM_MUSIC,2,0);
-  Shadows.shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(50));assertEquals(2,(int)indices.get(indices.size()-1));
+  Shadows.shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(50));assertEquals(5,(int)indices.get(indices.size()-1));
+  broadcast(PodMediaAudioPolicy.VOLUME_CHANGED);assertEquals(2,(int)indices.get(indices.size()-1));
   policy.setHeldMuted(true);int count=indices.size();audio.setStreamVolume(AudioManager.STREAM_MUSIC,4,0);
   Shadows.shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(200));assertEquals(count,indices.size());
   policy.setHeldMuted(false);assertEquals(4,(int)indices.get(indices.size()-1));
