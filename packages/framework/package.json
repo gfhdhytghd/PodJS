@@ -93,7 +93,8 @@
     "./cpu-work": "./src/cpu-work.ts",
     "./video-session-pool": "./src/video-session-pool.ts",
     "./video-paging": "./src/video-paging.ts",
-    "./benchmark": "./src/benchmark.ts"
+    "./benchmark": "./src/benchmark.ts",
+    "./testing/solid-preload": "./testing/solid-preload.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",
