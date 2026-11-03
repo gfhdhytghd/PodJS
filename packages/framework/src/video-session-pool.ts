@@ -360,7 +360,13 @@ export class VideoSessionPool<Source extends {key:string}> {
     }finally{this.promoting=false;}
   }
   private async syncLoop(id:string):Promise<VideoSessionState>{while(true){const loop=this.loop,value=await this.port.setLoop(id,loop);if(loop===this.loop)return value;}}
-  async setLoop(loop:boolean):Promise<void>{this.loop=loop;await Promise.all([...(this.activeKey?[this.syncLoop(this.activeId)]:[]),...this.slots.filter(s=>s.ready).map(s=>this.syncLoop(s.id))]);}
+  private neighbourUpdate(slot:WarmSlot<Source>,work:Promise<unknown>){
+    const revision=slot.revision,id=slot.id;
+    // A hidden decoder cannot fail the active video. Retire only the slot
+    // whose receipt failed; a reused slot belongs to a newer request.
+    void work.catch(async()=>{if(slot.revision===revision&&slot.id===id)await this.evict(slot,'failure');}).catch(()=>{});
+  }
+  async setLoop(loop:boolean):Promise<void>{this.loop=loop;for(const slot of this.slots.filter(s=>s.ready))this.neighbourUpdate(slot,this.syncLoop(slot.id));if(this.activeKey)await this.syncLoop(this.activeId);}
   play():Promise<VideoState>{return this.port.play(this.activeId).then(state);}
   retire(handoff=false):Promise<VideoState>{this.cancelNeighbourhood();return this.port.retire(this.activeId,handoff).then(state);}
   pause(benchmark?:VideoBenchmarkAction,handoff=false):Promise<VideoState>{return this.port.pause(this.activeId,benchmark,handoff).then(state);}
@@ -375,10 +381,8 @@ export class VideoSessionPool<Source extends {key:string}> {
     // Include cached and decoding neighbours. Their pixels and native drag
     // offsets stay in place; changing presentation must never re-prepare media.
     const neighbours=this.slots.filter(s=>s.source&&(s.ready||s.operation));
-    const [active]=await Promise.all([this.port.setTransform(this.activeId,this.transform),...neighbours.map(s=>{
-      const revision=s.revision,id=s.id;
-      return this.port.setTransform(id,this.transform).catch(error=>{if(s.revision===revision&&s.id===id)throw error;});
-    })]);
+    for(const slot of neighbours)this.neighbourUpdate(slot,this.port.setTransform(slot.id,this.transform));
+    const active=await this.port.setTransform(this.activeId,this.transform);
     return state(active);
   }
   setMuted(muted:boolean):Promise<VideoState>{if(!this.port.setMuted)return Promise.reject(new Error("unsupported"));return this.port.setMuted(this.activeId,muted).then(state);}

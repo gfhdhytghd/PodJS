@@ -485,3 +485,17 @@ test('DYMEM3 a host without independent cached pages still requires decoded read
  expect(pool.selectStandby('9',true)).toBe(false);await expect(pool.transition(.2,'down',options(10).bounds)).rejects.toThrow('not prewarmed');
  await m.advance(400);await warming;await pool.releaseAll();
 });
+
+for(const method of ['setTransform','setLoop'] as const)test(`DYWAIT-B ${method} neighbour failure never rejects the active operation`,async()=>{
+ const m=new Model(),port=m.port as any;
+ port.setTransform=async(id:string)=>m.states.get(id);
+ const pool=new VideoSessionPool(port);await pool.supportsPrewarm();
+ const active=pool.prepare(source(1),options(1)).result;await m.advance(400);await active;
+ const warm=pool.prewarm(source(2),options(2));await m.advance(500);await warm;
+ const original=port[method];port[method]=async(id:string,...args:any[])=>{if(m.states.get(id)?.prewarming)throw {code:'transport'};return original(id,...args);};
+ if(method==='setTransform')expect((await pool.setTransform({scaleMode:'expanded'})).state).toBe('playing');else await pool.setLoop(true);
+ expect(await pool.state()).toMatchObject({state:'playing'});
+ port[method]=async()=>{throw {code:'decode_error'};};
+ await expect(method==='setTransform'?pool.setTransform({scaleMode:'standard'}):pool.setLoop(false)).rejects.toMatchObject({code:'decode_error'});
+ await pool.releaseAll();
+});
