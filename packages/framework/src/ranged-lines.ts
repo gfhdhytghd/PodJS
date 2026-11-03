@@ -7,7 +7,7 @@ export async function* rangedLines(read:(offset:number,max:number)=>Promise<{siz
  let offset=start,parts:Uint8Array[]=[],length=0;
  for(;offset<size;){const r=await read(offset,Math.min(65536,size-offset));
   if(r.size!==size||!r.bytes.length||r.bytes.length>Math.min(65536,size-offset))throw Error('line_source_changed');
-  let begin=0;for(let i=0;i<r.bytes.length;i++)if(r.bytes[i]===10){
+  let begin=0;for(let i=r.bytes.indexOf(10);i>=0;i=r.bytes.indexOf(10,begin)){
    const piece=r.bytes.subarray(begin,i);length+=piece.length;parts.push(piece);
    const bytes=new Uint8Array(length);let at=0;for(const p of parts){bytes.set(p,at);at+=p.length;}
    if(bytes.at(-1)===13||offset+i===length&&bytes[0]===0xef&&bytes[1]===0xbb&&bytes[2]===0xbf)throw Error('invalid_line_encoding');

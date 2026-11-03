@@ -56,6 +56,7 @@ const methods: Record<string, PodCapabilityId> = {
   // cloud.acquire accepts localTransferOwner:true only for this host's sole active
   // cloud.localTransfer pause; the process-independent writer lock still applies.
   "cloud.schedule":"host.lifecycle", "cloud.cancel":"host.lifecycle", "cloud.acquire":"host.lifecycle", "cloud.release":"host.lifecycle",
+  "sql.notify":"data.sqlite", "file.publishBytes":"data.fs",
   "secure.acquire":"data.secure", "secure.release":"data.secure",
   "debug.memoryStats": "host.lifecycle",
   "debug.performance.start": "host.lifecycle", "debug.performance.read": "host.lifecycle", "debug.performance.stop": "host.lifecycle",
@@ -895,3 +896,7 @@ export const battery = Object.freeze({percent:():Promise<number|null>=>hostOpera
 export function onVideoAudioChanged(listener:(state:VideoState & {sessionId?:string})=>void):()=>void {
  return __onHostEvent(event=>{if(event.t==='video.audioChanged'&&event.value&&typeof event.value==='object')listener(event.value as VideoState & {sessionId?:string});});
 }
+
+/** Explicit post-commit invalidation across foreground/background VMs. No timer
+ * or payload polling; reopen views from persistent storage when notified. */
+export function onSqlChanged(topic:string,listener:()=>void){return __onHostEvent(event=>{if(event.t==='sql.changed'&&event.topic===topic)listener();});}

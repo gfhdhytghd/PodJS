@@ -156,6 +156,7 @@ pub fn decode_utf8_bytes(input: TypedArray<'_, u8>) -> Option<String> {
 }
 
 pub fn mount<'js>(ctx: Ctx<'js>, pod: &Object<'js>) -> rquickjs::Result<()> {
+    crate::register_merge::mount(ctx.clone(), pod)?;
     pod.set("decodeUtf8", Function::new(ctx.clone(), decode_utf8_bytes)?)?;
     pod.set("crc32Bytes", Function::new(ctx.clone(), crc32_bytes)?)?;
     pod.set("gunzipBytes", Function::new(ctx.clone(), gunzip_bytes)?)?;
@@ -167,6 +168,7 @@ pub fn mount<'js>(ctx: Ctx<'js>, pod: &Object<'js>) -> rquickjs::Result<()> {
         "encodeBase64Chunk",
         Function::new(ctx.clone(), encode_base64)?,
     )?;
+    pod.set("patchRawJsonObject", Function::new(ctx.clone(), crate::raw_json::patch)?)?;
     pod.set("rawJsonScan", Function::new(ctx.clone(), crate::raw_json::scan)?)?;
     pod.set("strictUtf8ByteLength", Function::new(ctx.clone(), crate::raw_json::utf8_length)?)?;
     pod.set("decodeBase64Chunk", Function::new(ctx, decode_base64)?)?;

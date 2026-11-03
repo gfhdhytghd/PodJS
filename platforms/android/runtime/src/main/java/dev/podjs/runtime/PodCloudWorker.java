@@ -13,10 +13,10 @@ public final class PodCloudWorker extends Worker {
     private volatile PodServices services;
     static final Set<String> METHODS=Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
         "app.buildInfo","cloud.acquire","cloud.release","discovery.networkSnapshot","runtime.delay",
-        "sql.query","sql.execute","sql.transaction","secure.get","secure.set","secure.delete","secure.update","secure.compareAndSet","secure.acquire","secure.release",
+        "sql.query","sql.execute","sql.transaction","sql.notify","secure.get","secure.set","secure.delete","secure.update","secure.compareAndSet","secure.acquire","secure.release",
         "crypto.random","crypto.hash","crypto.hmacSha256","crypto.verifyP256","crypto.ecdhPublicKey","crypto.ecdhUnwrap","crypto.hkdfSha256",
         "crypto.aesGcmEncrypt","crypto.aesGcmDecrypt","crypto.largeAesGcmEncrypt","crypto.gunzipSealedParts","crypto.closeSealedGzip","crypto.openSealedParts","crypto.largeAesGcmDecrypt","crypto.gzip","crypto.gunzip",
-        "log.append","http.download","uri.parse","file.list","file.createTemp","file.read","file.write","file.stat","file.hash","file.commit","file.compose","file.delete",
+        "log.append","http.download","uri.parse","file.list","file.createTemp","file.read","file.write","file.publishBytes","file.stat","file.hash","file.commit","file.compose","file.delete",
         "file.gzip","file.gunzip","file.htmlText","file.openText","file.readTextChunk","file.closeText"
     )));
     public PodCloudWorker(Context context,WorkerParameters params){super(context,params);}
@@ -99,8 +99,8 @@ public final class PodCloudWorker extends Worker {
                         if(PodCloudWork.held(context)){PodCloudWork.deferHeld(context,queuedToken);run.cancel();result.get(10,TimeUnit.SECONDS);status="yielded";outcomeCode="local_transfer_held";return Result.success();}
                         if(isStopped()){run.cancel();break;}
                         if(HostWorkPriority.DEVICE.mediaActive()){Thread.sleep(250);continue;}
-                        JSONObject request=run.pollRequest();
-                        if(request==null){Thread.sleep(2);continue;}
+                        JSONObject request=run.waitRequest(50);
+                        if(request==null)continue;
                         JSONObject args=request.optJSONObject("args");String method=args==null?"":args.optString("method");
                         if(!route.equals(request.optString("method"))||!METHODS.contains(method)){
                             calls.merge("permission_denied",1,Integer::sum);

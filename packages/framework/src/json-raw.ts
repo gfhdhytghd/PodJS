@@ -67,6 +67,13 @@ export const rawJsonText=(node:RawJsonNode)=>node.source.slice(node.start,node.e
  * and underflow before Number.isSafeInteger can reject them. Unknown extension
  * data must use raw spans instead; this function deliberately canonicalizes. */
 export function canonicalIntegerJson(source:string,options:RawJsonOptions={}):string {return cpuWork('canonical-json','chars',source.length,()=>{
+ // The common scalar needs no syntax tree or generator. Keep the same limits
+ // and exact-token rule; fractions, exponents and unsafe integers use the reader.
+ if(/^(?:0|[1-9][0-9]{0,15})$/.test(source)&&Number.isSafeInteger(Number(source))){
+  const depth=options.maxDepth??32,bytes=options.maxBytes??16*1024*1024;
+  if(!Number.isInteger(depth)||depth<1||!Number.isSafeInteger(bytes)||bytes<source.length)throw new RawJsonError('size');
+  return source;
+ }
  const root=parseRawJson(source,options);
  const integer=(token:string)=>{
   const m=/^(-?)([0-9]+)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?$/.exec(token);
@@ -94,6 +101,8 @@ export function rawJsonValue<T=unknown>(node:RawJsonNode):T{return cpuJsonParse(
  * undefined explicitly removes a property. No mutation or whole-document parse. */
 export function patchRawJsonObject(node:RawJsonNode,edits:ReadonlyMap<string,string|undefined>|Record<string,string|undefined>):string {
  if(node.kind!=='object')throw new RawJsonError('syntax');const changes=edits instanceof Map?edits:new Map(Object.entries(edits));
+ const root=globalThis as {pod?:{patchRawJsonObject?:Function};__podByteCodecs?:{patchRawJsonObject?:Function}};
+ const native=(root.pod??root.__podByteCodecs)?.patchRawJsonObject?.(rawJsonText(node),JSON.stringify([...changes].map(([k,v])=>[k,v??null])));if(typeof native==='string')return native;
  const fields:string[]=[],seen=new Set<string>();
  for(const p of node.properties??[]){seen.add(p.key);if(changes.has(p.key)){const next=changes.get(p.key);if(next!==undefined){parseRawJson(next);fields.push(node.source.slice(p.start,p.value.start)+next);}}else fields.push(node.source.slice(p.start,p.value.end));}
  for(const [key,next]of changes)if(!seen.has(key)&&next!==undefined){jsonUtf8Bytes(key);parseRawJson(next);fields.push(cpuJsonStringify(key)+':'+next);}

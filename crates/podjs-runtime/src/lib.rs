@@ -23,6 +23,7 @@ pub mod accessibility_ffi;
 pub mod render_snapshot;
 pub mod byte_codecs;
 mod raw_json;
+mod register_merge;
 mod cpu_trace;
 pub mod html;
 pub mod html_preview;

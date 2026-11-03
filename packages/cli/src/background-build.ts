@@ -9,13 +9,13 @@ export async function buildBackground(entries: Record<string, string>, output: s
   for (const [id, entry] of Object.entries(entries)) {
     if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(id) || !isAbsolute(entry)) throw new Error("Invalid background build entry");
     const result = await Bun.build({
-      entrypoints: ["pod-background:entry"], format: "iife", target: "browser", splitting: false, minify: false,
+      entrypoints: ["pod-background:entry"], format: "iife", target: "browser", splitting: false, minify: { whitespace: true, syntax: false, identifiers: false },
       plugins: [{ name: "pod-headless-entry", setup(build) {
         build.onResolve({ filter: /.*/ }, args => {
           if (args.path === "pod-background:entry") return { path: "entry", namespace: "pod-background" };
           if (args.kind === "dynamic-import") throw new Error("Background bundles cannot dynamically import code");
           // These helpers are query-port/algorithm-only: no UI, services or host bootstrap.
-          if (["@podjs/framework/background-handler", "@podjs/framework/host-callsite", "@podjs/framework/cpu-work", "@podjs/framework/work-window", "@podjs/framework/read-batch", "@podjs/framework/sealed-gzip", "@podjs/framework/checkpointed-file", "@podjs/framework/sha256-stream", "@podjs/framework/bytes", "@podjs/framework/html", "@podjs/framework/digest-cache", "@podjs/framework/work-receipts", "@podjs/framework/json-delta-journal", "@podjs/framework/crypto", "@podjs/framework/frame-stream", "@podjs/framework/sql", "@podjs/framework/sql-changes", "@podjs/framework/regexp", "@podjs/framework/json-numbers", "@podjs/framework/json-string", "@podjs/framework/json-raw", "@podjs/framework/record-tuples", "@podjs/framework/build-gate", "@podjs/framework/text-compat", "@podjs/framework/async"].includes(args.path)) return undefined;
+          if (["@podjs/framework/background-handler", "@podjs/framework/host-callsite", "@podjs/framework/cpu-work", "@podjs/framework/work-window", "@podjs/framework/read-batch", "@podjs/framework/sealed-gzip", "@podjs/framework/checkpointed-file", "@podjs/framework/sha256-stream", "@podjs/framework/bytes", "@podjs/framework/html", "@podjs/framework/digest-cache", "@podjs/framework/work-receipts", "@podjs/framework/json-delta-journal", "@podjs/framework/crypto", "@podjs/framework/frame-stream", "@podjs/framework/sql", "@podjs/framework/sql-changes", "@podjs/framework/regexp", "@podjs/framework/json-numbers", "@podjs/framework/json-string", "@podjs/framework/json-raw", "@podjs/framework/record-tuples", "@podjs/framework/register-merge", "@podjs/framework/build-gate", "@podjs/framework/text-compat", "@podjs/framework/async"].includes(args.path)) return undefined;
           if (/^(node:|bun:|solid-js(?:\/|$)|react(?:\/|$)|@pocketjs\/framework(?:\/|$)|@podjs\/framework(?:\/|$))/.test(args.path)) {
             throw new Error(`Background entry cannot import UI or unrestricted host module: ${args.path}`);
           }

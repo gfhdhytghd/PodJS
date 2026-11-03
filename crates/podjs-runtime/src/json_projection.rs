@@ -13,7 +13,7 @@ use std::{
     rc::Rc,
 };
 const LIMIT: usize = 8 * 1024 * 1024;
-struct Fields<'a>(Vec<(String, &'a RawValue)>);
+pub(crate) struct Fields<'a>(pub(crate) Vec<(String, &'a RawValue)>);
 impl<'de> Deserialize<'de> for Fields<'de> {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         struct V;

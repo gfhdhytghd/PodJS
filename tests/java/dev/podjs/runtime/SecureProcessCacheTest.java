@@ -14,6 +14,11 @@ public final class SecureProcessCacheTest {
     static String get(PodDeviceServices h)throws Exception{return h.execute("secure.get",new JSONObject().put("key","identity")).optString("value",null);}
     static void set(PodDeviceServices h,String value)throws Exception{h.execute("secure.set",new JSONObject().put("key","identity").put("value",value));}
     public static void main(String[] args)throws Exception {
+        JSONObject nested=new JSONObject().put("value","old"),original=new JSONObject().put("nested",nested).put("flat","secret");
+        SecureStoreMemory.Snapshot immutable=new SecureStoreMemory.Snapshot(original);
+        JSONObject copy=SecureStoreMemory.copy(immutable.values);copy.getJSONObject("nested").put("value","edited");copy.put("flat","edited");nested.put("value","external");
+        check(immutable.values.getJSONObject("nested").getString("value").equals("old"),"nested snapshot alias");
+        check(immutable.values.getString("flat").equals("secret"),"flat snapshot alias");
         Path dir=Paths.get(args[0]);Files.createDirectories(dir);AtomicInteger keys=new AtomicInteger();
         PodDeviceServices.SecureKeySource key=()->{keys.incrementAndGet();return KEY;};
         try(PodDeviceServices first=new PodDeviceServices(dir.resolve("files").toFile(),key);

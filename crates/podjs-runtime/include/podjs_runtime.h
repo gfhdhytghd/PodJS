@@ -47,6 +47,7 @@ void pod_background_cancel(const PodBackgroundRun *handle);
  * means no request. Envelope: id/appId/taskId/method/args/remainingMs.
  * Dispatch only authorized bounded IO; remainingMs is a budget, not wall time. */
 const char *pod_background_poll(const PodBackgroundRun *handle);
+const char *pod_background_wait(const PodBackgroundRun *handle, uint32_t timeout_ms);
 /* Reply JSON {id,ok:true,value} or {id,ok:false,code}, max 70 KiB envelope.
  * Returns 0 accepted, -1 invalid, -2 unknown/finished. Never retry an accepted
  * response. Host must cancel IO on execution exit; committed writes remain. */

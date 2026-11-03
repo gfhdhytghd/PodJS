@@ -15,7 +15,20 @@ final class SecureStoreMemory {
     static final class Snapshot {
         final JSONObject values;
         final String json;
-        Snapshot(JSONObject value)throws Exception {json=value.toString();values=new JSONObject(json);}
+        Snapshot(JSONObject value)throws Exception {this(value,value.toString());}
+        Snapshot(JSONObject value,String encoded)throws Exception {json=encoded;values=copy(value);}
+    }
+    /** Secure API values are strings. Copy those by reference; retain isolation
+     * for legacy nested JSON without reparsing every unchanged secret. */
+    static JSONObject copy(JSONObject value)throws Exception {
+        JSONObject result=new JSONObject();
+        for(java.util.Iterator<String> keys=value.keys();keys.hasNext();){
+            String key=keys.next();Object item=value.get(key);
+            if(item instanceof JSONObject)item=new JSONObject(item.toString());
+            else if(item instanceof org.json.JSONArray)item=new org.json.JSONArray(item.toString());
+            result.put(key,item);
+        }
+        return result;
     }
     static final class State {
         volatile Snapshot snapshot;

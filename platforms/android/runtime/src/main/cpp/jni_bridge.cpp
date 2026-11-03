@@ -185,6 +185,14 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_dev_podjs_runtime_PodBackgroundRun_
   if (result) env->SetByteArrayRegion(result,0,length,reinterpret_cast<const jbyte*>(request));
   return result;
 }
+extern "C" JNIEXPORT jbyteArray JNICALL Java_dev_podjs_runtime_PodBackgroundRun_nativeWait(
+    JNIEnv* env,jclass,jlong handle,jint timeout) {
+  const char* request=pod_background_wait(reinterpret_cast<PodBackgroundRun*>(handle),static_cast<uint32_t>(timeout));
+  if(!request)return nullptr;
+  auto length=static_cast<jsize>(std::strlen(request));auto result=env->NewByteArray(length);
+  if(result)env->SetByteArrayRegion(result,0,length,reinterpret_cast<const jbyte*>(request));
+  return result;
+}
 extern "C" JNIEXPORT jint JNICALL Java_dev_podjs_runtime_PodBackgroundRun_nativeReply(
     JNIEnv* env, jclass, jlong handle, jbyteArray response) {
   if (!handle || !response) return -1;

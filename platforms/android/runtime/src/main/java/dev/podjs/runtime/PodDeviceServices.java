@@ -116,6 +116,7 @@ public final class PodDeviceServices implements AutoCloseable {
             case "file.read": return fileRead(args);
             case "log.append": return new JSONObject().put("bytes",PodAppendLog.append(safeFile(required(args,"path")),required(args,"text"),args.optInt("maxBytes",5*1024*1024)));
             case "file.write": return fileWrite(args);
+            case "file.publishBytes": return filePublishBytes(args);
             case "file.hash": return fileHash(args);
             case "uri.parse": return uriParse(args);
             case "file.htmlText": return fileHtmlText(args);
@@ -178,12 +179,12 @@ public final class PodDeviceServices implements AutoCloseable {
                 if("secure.set".equals(method))return secureSet(args);
                 if("secure.compareAndSet".equals(method)){
                     String key=required(args,"key");
-                    JSONObject next=conditionalSecure(readSecure(id),new JSONObject().put(key,args.get("expected")),new JSONObject().put(key,args.get("value")),null);
+                    JSONObject next=conditionalSecure(readSecureValues(id),new JSONObject().put(key,args.get("expected")),new JSONObject().put(key,args.get("value")),null);
                     if(next==null)return new JSONObject().put("updated",false);
                     writeSecure(next);return new JSONObject().put("updated",true);
                 }
                 if("secure.update".equals(method)){
-                    writeSecure(mergeSecure(readSecure(id),args.getJSONObject("values"),args.optJSONArray("removePrefixes")));
+                    writeSecure(mergeSecure(readSecureValues(id),args.getJSONObject("values"),args.optJSONArray("removePrefixes")));
                     return new JSONObject().put("ok",true);
                 }
                 return secureDelete(args);
@@ -214,7 +215,10 @@ public final class PodDeviceServices implements AutoCloseable {
     /** Validate the whole batch on a copy before the single encrypted atomic publication. */
     static JSONObject mergeSecure(JSONObject current,JSONObject updates)throws Exception {
         if(updates.length()>128)throw new IllegalArgumentException("secure_batch_limit");
-        JSONObject next=new JSONObject(current.toString());
+        return applySecureUpdates(SecureStoreMemory.copy(current),updates);
+    }
+    private static JSONObject applySecureUpdates(JSONObject next,JSONObject updates)throws Exception {
+        if(updates.length()>128)throw new IllegalArgumentException("secure_batch_limit");
         for(java.util.Iterator<String> keys=updates.keys();keys.hasNext();){
             String key=keys.next();checkPublicSecureKey(key);Object value=updates.get(key);
             if(key.isEmpty()||key.length()>1024)throw new IllegalArgumentException("secure_key_invalid");
@@ -227,7 +231,7 @@ public final class PodDeviceServices implements AutoCloseable {
     }
     /** Prefix removal and explicit values publish together under the secure-store lock. */
     static JSONObject mergeSecure(JSONObject current,JSONObject updates,org.json.JSONArray prefixes)throws Exception {
-        JSONObject next=new JSONObject(current.toString());
+        JSONObject next=SecureStoreMemory.copy(current);
         if(prefixes!=null){
             if(prefixes.length()>16)throw new IllegalArgumentException("secure_batch_limit");
             for(int i=0;i<prefixes.length();i++){
@@ -242,7 +246,7 @@ public final class PodDeviceServices implements AutoCloseable {
                 for(String name:removed)next.remove(name);
             }
         }
-        return mergeSecure(next,updates);
+        return applySecureUpdates(next,updates);
     }
     private JSONObject secureGet(JSONObject a) throws Exception {
         JSONObject values = readSecureValues(a.optInt("requestId",-1)); String key = required(a, "key");
@@ -254,7 +258,7 @@ public final class PodDeviceServices implements AutoCloseable {
         String key = required(a, "key"); String value = required(a, "value");
         JSONObject current=readSecureValues(a.optInt("requestId",-1));
         if(value.equals(current.opt(key)))return new JSONObject().put("ok",true);
-        JSONObject values = new JSONObject(current.toString()); values.put(key, value); writeSecure(values);
+        JSONObject values = SecureStoreMemory.copy(current); values.put(key, value); writeSecure(values);
         return new JSONObject().put("ok", true);
     }
     private JSONObject secureDelete(JSONObject a) throws Exception {
@@ -265,7 +269,7 @@ public final class PodDeviceServices implements AutoCloseable {
     }
     private JSONObject readSecure(int id) throws Exception {
         // Mutations own a deep copy. A quota/fsync failure cannot alter a cached read.
-        return new JSONObject(readSecureValues(id).toString());
+        return SecureStoreMemory.copy(readSecureValues(id));
     }
     private SecretKey secureKey() throws Exception {
         if(secureMemory.key==null)secureMemory.key=secureKey.get();
@@ -318,10 +322,10 @@ public final class PodDeviceServices implements AutoCloseable {
         finally{Arrays.fill(plain,(byte)0);trace.end("secure.json",began,id);}
     }
     private void writeSecure(JSONObject values) throws Exception {
-        String json=values.toString();
-        if(secureMemory.snapshot!=null&&json.equals(secureMemory.snapshot.json))return;
         byte[] plain=SecureStoreLimits.encode(values);
-        SecureStoreMemory.Snapshot next=new SecureStoreMemory.Snapshot(values);
+        String json=new String(plain,StandardCharsets.UTF_8);
+        if(secureMemory.snapshot!=null&&json.equals(secureMemory.snapshot.json)){Arrays.fill(plain,(byte)0);return;}
+        SecureStoreMemory.Snapshot next=new SecureStoreMemory.Snapshot(values,json);
         try {
             byte[] encoded=encryptWithKey(secureKey(),plain);
             atomicWrite(secureFile,encoded);
@@ -729,9 +733,7 @@ public final class PodDeviceServices implements AutoCloseable {
         try (FileInputStream input = new FileInputStream(source)) {
             int count; while ((count = input.read(chunk)) != -1) { digest.update(chunk, 0, count); size += count; }
         }
-        StringBuilder hash = new StringBuilder(64);
-        for (byte value : digest.digest()) hash.append(String.format(java.util.Locale.ROOT, "%02x", value & 255));
-        return new JSONObject().put("size", size).put("sha256", hash.toString());
+        return new JSONObject().put("size", size).put("sha256", hexDigest(digest.digest()));
     }
     /** Assemble immutable pieces without guest plaintext transfer. Verify every
      * piece while copying, then use the normal fsync + atomic publication path.
@@ -752,7 +754,7 @@ public final class PodDeviceServices implements AutoCloseable {
                     if(source.equals(target)||size<1||size>MAX_CHUNK_BYTES||size>expected-total||!source.isFile()||source.length()!=size)throw new IOException("invalid_file_part");
                     MessageDigest digest=MessageDigest.getInstance("SHA-256");long copied=0;
                     try(FileInputStream in=new FileInputStream(source)){int n;while((n=in.read(buffer))!=-1){if(n>size-copied)throw new IOException("invalid_file_part");out.write(buffer,0,n);digest.update(buffer,0,n);copied+=n;}}
-                    StringBuilder hex=new StringBuilder(64);for(byte value:digest.digest())hex.append(String.format(java.util.Locale.ROOT,"%02x",value&255));
+                    String hex=hexDigest(digest.digest());
                     if(copied!=size||!hex.toString().equals(required(part,"sha256")))throw new IOException("file_part_checksum_mismatch");total+=copied;
                 }
             }finally{Arrays.fill(buffer,(byte)0);}
@@ -760,6 +762,24 @@ public final class PodDeviceServices implements AutoCloseable {
             return fileCommit(new JSONObject().put("path",temp.getString("path")).put("target",a.getString("target")).put("expectedSize",expected).put("expectedSha256",expectedHash));
         }finally{discardTemporary(temp);}
     }
+    /** One bounded transfer, verified before atomic publication. Safe to retry
+     * after a lost reply: an existing target must match the requested digest. */
+    private JSONObject filePublishBytes(JSONObject a)throws Exception {
+        if(Thread.currentThread().isInterrupted()||a.has("deadlineMs")&&System.currentTimeMillis()>=a.getLong("deadlineMs"))throw new IOException("cloud_sync_deadline_exceeded");
+        File target=safeFile(required(a,"target"));long size=exactFileSize(a,"expectedSize");
+        String digest=required(a,"expectedSha256");
+        if(size>MAX_CHUNK_BYTES||!digest.matches("[a-f0-9]{64}"))throw new IllegalArgumentException("invalid_file_publication");
+        byte[] bytes=decode(a,"dataBase64");
+        if(bytes.length!=size||!hexDigest(MessageDigest.getInstance("SHA-256").digest(bytes)).equals(digest))throw new IOException("commit_checksum_mismatch");
+        boolean reused=target.isFile()&&target.length()==size&&hashFile(target).getString("sha256").equals(digest);
+        if(reused)return new JSONObject().put("path",a.getString("target")).put("size",size).put("sha256",digest).put("reused",true);
+        String directory=root.toPath().relativize(target.getParentFile().toPath()).toString();
+        JSONObject temp=fileCreateTemp(new JSONObject().put("directory",directory.isEmpty()?"publish":directory));
+        try{try(FileOutputStream out=new FileOutputStream(safeFile(temp.getString("path")))){out.write(bytes);}
+            return fileCommit(new JSONObject().put("path",temp.getString("path")).put("target",a.getString("target")).put("expectedSize",size).put("expectedSha256",digest));
+        }finally{discardTemporary(temp);}
+    }
+    private static String hexDigest(byte[] bytes){char[] out=new char[bytes.length*2];String alphabet="0123456789abcdef";for(int i=0;i<bytes.length;i++){out[i*2]=alphabet.charAt((bytes[i]&255)>>>4);out[i*2+1]=alphabet.charAt(bytes[i]&15);}return new String(out);}
     /** Verify the complete staged file before atomically publishing its final path. */
     private JSONObject fileCommit(JSONObject a) throws Exception {
         File source = safeFile(required(a, "path")), target = safeFile(required(a, "target"));

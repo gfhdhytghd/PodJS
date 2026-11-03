@@ -226,6 +226,34 @@ impl Scan<'_> {
         Some(n)
     }
 }
+pub(crate) fn valid(source: &str, depth: usize) -> bool {
+    let mut scan=Scan{s:source,at:0,utf16:0,depth,nodes:0};
+    if scan.value(1).is_none(){return false;}scan.ws();scan.at==source.len()
+}
+/// Patch already scanned object spans without projecting/revalidating every
+/// replacement through guest objects. None preserves the portable error path.
+pub fn patch(source: String, edits: String) -> Option<String> {
+    if source.len()>MAX_BYTES||edits.len()>MAX_BYTES||!valid(&source,32){return None;}
+    let changes:Vec<(String,Option<String>)>=serde_json::from_str(&edits).ok()?;
+    if changes.len()>128{return None;}
+    for (_,text) in &changes {if let Some(text)=text {if !valid(text,32){return None;}}}
+    patch_tokens(&source,&changes)
+}
+pub(crate) fn patch_tokens(source:&str,changes:&[(String,Option<String>)])->Option<String>{
+    let crate::json_projection::Fields(fields)=serde_json::from_str(source).ok()?;
+    let mut out=String::from("{");let mut first=true;let mut seen=HashSet::new();let mut cursor=source.find('{')?+1;
+    for (key,value) in fields {
+        let at=value.get().as_ptr() as usize-source.as_ptr() as usize;
+        let start=cursor+source.get(cursor..at)?.find('"')?;
+        cursor=at+value.get().len();seen.insert(key.clone());
+        let token=match changes.iter().find(|(k,_)|k==&key){Some((_,None))=>continue,Some((_,Some(v)))=>v.as_str(),None=>value.get()};
+        if !first{out.push(',');}first=false;out.push_str(source.get(start..at)?);out.push_str(token);
+    }
+    for (key,token) in changes {if seen.contains(key){continue;}if let Some(token)=token {
+        if !first{out.push(',');}first=false;out.push_str(&serde_json::to_string(key).ok()?);out.push(':');out.push_str(&token);
+    }}
+    out.push('}');Some(out)
+}
 fn project<'js>(ctx: Ctx<'js>, source: &JsString<'js>, n: Node) -> rquickjs::Result<Object<'js>> {
     let out = Object::new(ctx.clone())?;
     out.set("source", source.clone())?;
@@ -311,5 +339,17 @@ mod tests {
               return true;
             })()"#).unwrap();assert!(ok);
         });
+    }
+}
+
+#[cfg(test)]
+mod patch_tests {
+    use super::*;
+    #[test] fn raw_object_edits_preserve_lexical_tokens_and_fail_closed(){
+        let source=r#" { "x" : 1e9999 , "nested":{"😀":"\u4e2d"}, "gone":-0 } "#;
+        let result=patch(source.into(),r#"[["gone",null],["new","9007199254740993"]]"#.into()).unwrap();
+        assert_eq!(result,r#"{"x" : 1e9999,"nested":{"😀":"\u4e2d"},"new":9007199254740993}"#);
+        for input in [r#"{"a":1,"\u0061":2}"#,r#"{"bad":"\ud800"}"#,r#"[1]"#] {assert!(patch(input.into(),"[]".into()).is_none());}
+        for edit in [r#"[["a","01"]]"#,r#"[["a","\"\\ud800\""]]"#] {assert!(patch("{}".into(),edit.into()).is_none());}
     }
 }

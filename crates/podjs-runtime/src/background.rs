@@ -17,7 +17,7 @@ pub struct Services {
     pub allowed_methods: HashSet<String>,
     pub dispatch: Arc<dyn Fn(ServiceRequest) -> Receiver<ServiceReply> + Send + Sync>,
 }
-struct Pending<'js> { response: Receiver<ServiceReply>, resolve: Function<'js>, reject: Function<'js> }
+struct Pending<'js> { ready: Option<ServiceReply>, response: Receiver<ServiceReply>, resolve: Function<'js>, reject: Function<'js> }
 struct ClearPending<'js>(Rc<RefCell<Vec<Pending<'js>>>>);
 impl Drop for ClearPending<'_> { fn drop(&mut self) { self.0.borrow_mut().clear(); } }
 struct CancelServices(Cancellation);
@@ -41,7 +41,7 @@ fn attach_services<'js>(ctx: Ctx<'js>, job: &Object<'js>, waiting: Rc<RefCell<Ve
         }
         *calls.borrow_mut()+=1;
         let response=(services.dispatch)(ServiceRequest {app_id:app.clone(),task_id:task.clone(),method,args_json:encoded,deadline,cancellation:service_cancel.clone()});
-        waiting.borrow_mut().push(Pending{response,resolve,reject});
+        waiting.borrow_mut().push(Pending{ready:None,response,resolve,reject});
         Ok(promise)
     })?)?;
     Ok(())
@@ -149,7 +149,7 @@ pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellatio
                 let mut replies=Vec::new();
                 let mut index=0;
                 while index<waiting.len() {
-                    let reply=match waiting[index].response.try_recv() {
+                    let reply=match waiting[index].ready.take().map(Ok).unwrap_or_else(||waiting[index].response.try_recv()) {
                         Ok(reply)=>reply,
                         Err(TryRecvError::Empty)=>{index+=1;continue;},
                         Err(TryRecvError::Disconnected)=>Err("service_disconnected".into()),
@@ -171,7 +171,17 @@ pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellatio
                 let inflight=!pending.borrow().is_empty();
                 if !ctx.execute_pending_job() && !resolved {
                     if !inflight { return Err("unresolved_handler"); }
-                    std::thread::sleep(Duration::from_millis(2).min(deadline.saturating_duration_since(Instant::now())));
+                    let timeout=Duration::from_millis(2).min(deadline.saturating_duration_since(Instant::now()));
+                    // Sequential host calls dominate storage. Wait on their reply
+                    // channel, not a fixed timer that delays an already ready reply.
+                    let mut waiting=pending.borrow_mut();
+                    if waiting.len()==1 {
+                        match waiting[0].response.recv_timeout(timeout){
+                            Ok(reply)=>waiting[0].ready=Some(reply),
+                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)=>waiting[0].ready=Some(Err("service_disconnected".into())),
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout)=>{},
+                        }
+                    }else{drop(waiting);std::thread::sleep(timeout);}
                 }
             }
         }

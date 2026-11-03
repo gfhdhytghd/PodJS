@@ -1,7 +1,7 @@
 //! One-shot host handle; poll/reply/cancel may race execute, close may not.
 use crate::background::{self, Cancellation, Options};
 use serde::Deserialize;
-use std::{collections::{HashMap, VecDeque}, ffi::{CString, c_char}, sync::{mpsc::{self, Sender}, Arc, Mutex, atomic::{AtomicBool, Ordering}}};
+use std::{collections::{HashMap, VecDeque}, ffi::{CString, c_char}, sync::{mpsc::{self, Sender}, Arc, Mutex, Condvar, atomic::{AtomicBool, Ordering}}};
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config { app_id: String, task_id: String, source: String, budget_ms: u64, memory_bytes: usize, #[serde(default)] payload: serde_json::Value, #[serde(default)] allowed_methods: Vec<String>, kv_root:Option<String> }
@@ -13,6 +13,7 @@ pub struct PodBackgroundRun {
     started: AtomicBool,
     response: Mutex<CString>,
     requests: Arc<Mutex<Requests>>,
+    wake: Arc<Condvar>,
     polled: Mutex<CString>,
 }
 /// # Safety
@@ -23,7 +24,7 @@ pub unsafe extern "C" fn pod_background_open(bytes: *const u8, length: usize) ->
     if bytes.is_null() || length == 0 || length > 2*1024*1024 { return std::ptr::null_mut(); }
     let config = serde_json::from_slice::<Config>(unsafe { std::slice::from_raw_parts(bytes,length) });
     match config {
-        Ok(config) if config.allowed_methods.len()<=32 && config.allowed_methods.iter().all(|method| !method.is_empty() && method.len()<=128 && method.bytes().all(|c| c.is_ascii_alphanumeric() || b"._".contains(&c))) => Box::into_raw(Box::new(PodBackgroundRun { config, cancellation:Cancellation::default(), started:AtomicBool::new(false), response:Mutex::new(CString::default()), requests:Arc::new(Mutex::new(Requests::default())), polled:Mutex::new(CString::default()) })),
+        Ok(config) if config.allowed_methods.len()<=32 && config.allowed_methods.iter().all(|method| !method.is_empty() && method.len()<=128 && method.bytes().all(|c| c.is_ascii_alphanumeric() || b"._".contains(&c))) => Box::into_raw(Box::new(PodBackgroundRun { config, cancellation:Cancellation::default(), started:AtomicBool::new(false), response:Mutex::new(CString::default()), requests:Arc::new(Mutex::new(Requests::default())), wake:Arc::new(Condvar::new()), polled:Mutex::new(CString::default()) })),
         Ok(_) => { crate::set_error("invalid background method allowlist"); std::ptr::null_mut() },
         Err(error) => { crate::set_error(error.to_string()); std::ptr::null_mut() }
     }
@@ -37,7 +38,7 @@ pub unsafe extern "C" fn pod_background_execute(handle: *const PodBackgroundRun)
     if handle.started.swap(true,Ordering::AcqRel) { crate::set_error("background handle is one-shot"); return std::ptr::null(); }
     let config = &handle.config;
     let payload_json = config.payload.to_string();
-    let queue=handle.requests.clone();
+    let queue=handle.requests.clone();let wake=handle.wake.clone();
     let kv_services=if let Some(root)=&config.kv_root {
         let methods=config.allowed_methods.iter().filter(|m| m.starts_with("kv.")).cloned().collect();
         match crate::kv::background_services(root.into(),methods) {
@@ -56,14 +57,14 @@ pub unsafe extern "C" fn pod_background_execute(handle: *const PodBackgroundRun)
                     let args:serde_json::Value=serde_json::from_str(&request.args_json).expect("runtime serialized args");
                     let line=serde_json::json!({"id":id,"appId":request.app_id,"taskId":request.task_id,"method":request.method,"args":args,
                         "remainingMs":request.deadline.saturating_duration_since(std::time::Instant::now()).as_millis() as u64}).to_string();
-                    queue.ready.push_back((id,line)); queue.replies.insert(id,send);
+                    queue.ready.push_back((id,line)); queue.replies.insert(id,send);wake.notify_one();
                 }
             }
             receive
         }),
     })};
     let result = background::run_with_services(&config.source,Options { app_id:&config.app_id, task_id:&config.task_id, budget_ms:config.budget_ms, memory_bytes:config.memory_bytes, payload_json:&payload_json },handle.cancellation.clone(),services);
-    if let Ok(mut queue)=handle.requests.lock() {queue.finished=true;queue.ready.clear();queue.replies.clear();}
+    if let Ok(mut queue)=handle.requests.lock() {queue.finished=true;queue.ready.clear();queue.replies.clear();handle.wake.notify_all();}
     let Ok(mut response) = handle.response.lock() else { return std::ptr::null(); };
     *response = CString::new(serde_json::to_string(&result).expect("serializable run result")).expect("JSON escapes NUL");
     response.as_ptr()
@@ -74,7 +75,7 @@ pub unsafe extern "C" fn pod_background_execute(handle: *const PodBackgroundRun)
 pub unsafe extern "C" fn pod_background_cancel(handle: *const PodBackgroundRun) {
     if let Some(handle) = unsafe { handle.as_ref() } {
         handle.cancellation.cancel();
-        if let Ok(mut queue)=handle.requests.lock() {queue.finished=true;queue.ready.clear();queue.replies.clear();}
+        if let Ok(mut queue)=handle.requests.lock() {queue.finished=true;queue.ready.clear();queue.replies.clear();handle.wake.notify_all();}
     }
 }
 /// # Safety
@@ -87,6 +88,17 @@ pub unsafe extern "C" fn pod_background_poll(handle: *const PodBackgroundRun) ->
     let Some((_,line))=queue.ready.pop_front() else {return std::ptr::null();};
     let Ok(mut polled)=handle.polled.lock() else {return std::ptr::null();};
     *polled=CString::new(line).expect("JSON escapes NUL"); polled.as_ptr()
+}
+/// # Safety
+/// Same ownership as poll. One consumer; cancellation/finish wakes it promptly.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pod_background_wait(handle:*const PodBackgroundRun,timeout_ms:u32)->*const c_char {
+    let Some(handle)=(unsafe {handle.as_ref()}) else{return std::ptr::null();};
+    let Ok(queue)=handle.requests.lock() else{return std::ptr::null();};
+    let Ok((mut queue,_))=handle.wake.wait_timeout_while(queue,std::time::Duration::from_millis(timeout_ms.min(100) as u64),|q|q.ready.is_empty()&&!q.finished&&!handle.cancellation.is_cancelled()) else{return std::ptr::null();};
+    let Some((_,line))=queue.ready.pop_front() else{return std::ptr::null();};
+    let Ok(mut polled)=handle.polled.lock() else{return std::ptr::null();};
+    *polled=CString::new(line).expect("JSON escapes NUL");polled.as_ptr()
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -127,7 +139,7 @@ mod tests {
         });
         let deadline=std::time::Instant::now()+std::time::Duration::from_secs(2);
         let request=loop {
-            let line=pod_background_poll(handle);
+            let line=pod_background_wait(handle,100);
             if !line.is_null() {break serde_json::from_str::<serde_json::Value>(std::ffi::CStr::from_ptr(line).to_str().unwrap()).unwrap();}
             assert!(std::time::Instant::now()<deadline);std::thread::yield_now();
         };
@@ -140,6 +152,14 @@ mod tests {
         let result:serde_json::Value=serde_json::from_str(&worker.join().unwrap()).unwrap();
         assert_eq!(result["status"],"success");assert!(pod_background_poll(handle).is_null());
         pod_background_close(handle);
+    }}
+    #[test] fn wait_wakes_for_cancel_and_completed_runs() { unsafe {
+        let bytes=br#"{"app_id":"wait","task_id":"task","source":"globalThis.backgroundHandler=async()=> 'success'","budget_ms":1000,"memory_bytes":8388608}"#;
+        let handle=pod_background_open(bytes.as_ptr(),bytes.len());assert!(!handle.is_null());let address=handle as usize;
+        let cancel=std::thread::spawn(move || {std::thread::sleep(std::time::Duration::from_millis(5));pod_background_cancel(address as *const PodBackgroundRun);});
+        assert!(pod_background_wait(handle,100).is_null());cancel.join().unwrap();
+        assert!(pod_background_wait(handle,100).is_null());pod_background_close(handle);
+        let handle=pod_background_open(bytes.as_ptr(),bytes.len());assert!(!pod_background_execute(handle).is_null());assert!(pod_background_wait(handle,100).is_null());pod_background_close(handle);
     }}
     #[test] fn cloud_host_replies_and_private_kv_share_one_bounded_guest() { unsafe {
         let root=std::env::temp_dir().join(format!("pod-cloud-kv-{}",std::process::id()));std::fs::create_dir_all(&root).unwrap();

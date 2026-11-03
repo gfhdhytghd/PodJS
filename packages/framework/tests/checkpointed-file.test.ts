@@ -29,3 +29,11 @@ test('failed temporary write cannot publish a receipt; empty input uses verified
  const f=fixture(),body=new Uint8Array(1);f.checkpoint.check=async()=>{throw Error('cancelled');};await expect(f.run(body)).rejects.toThrow('cancelled');expect(f.receipts.size).toBe(0);expect(f.files.size).toBe(0);
  const empty=fixture(),result=await empty.run(new Uint8Array());expect(result.size).toBe(0);expect(empty.receipts.size).toBe(1);
 });
+test('bounded atomic host path adopts publication after a lost receipt and rejects forged replies',async()=>{
+ const body=new Uint8Array(65536).fill(71),digest=await hash(body);let commits=0,calls=0,fail=true,forged=false;
+ const request=async<T>(method:string,args:any):Promise<T>=>{expect(method).toBe('file.publishBytes');calls++;expect(new Uint8Array(Buffer.from(args.dataBase64,'base64'))).toEqual(body);return {path:args.target,size:body.length,sha256:forged?'f'.repeat(64):digest} as T;};
+ const checkpoint={scope:async()=>'scope',has:()=>commits>0,check:async()=>{},commit:async()=>{if(fail){fail=false;throw Error('lost reply');}commits++;}};
+ const run=()=>checkpointedFile(request,body,{checkpoint,hash,directory:'private',identity:'a',target:()=> 'private/final'});
+ await expect(run()).rejects.toThrow('lost reply');expect(commits).toBe(0);expect((await run()).sha256).toBe(digest);expect(commits).toBe(1);expect(calls).toBe(2);
+ forged=true;await expect(run()).rejects.toThrow('file_publication_invalid');expect(commits).toBe(1);
+});

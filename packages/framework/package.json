@@ -31,6 +31,7 @@
     "./xml": "./src/xml.ts",
     "./json": "./src/json.ts",
     "./json-raw": "./src/json-raw.ts",
+    "./register-merge": "./src/register-merge.ts",
     "./record-tuples": "./src/record-tuples.ts",
     "./json-string": "./src/json-string.ts",
     "./text-compat": "./src/text-compat.ts",

@@ -11,6 +11,7 @@ public final class PodBackgroundRun implements AutoCloseable {
     static { System.loadLibrary("podjs_android"); }
     private long handle;
     private boolean running, started, closed;
+    private int waiters;
     public PodBackgroundRun(String appId, String taskId, String verifiedSource, long budgetMs, int memoryBytes) throws org.json.JSONException {
         this(appId,taskId,verifiedSource,budgetMs,memoryBytes,JSONObject.NULL);
     }
@@ -41,7 +42,7 @@ public final class PodBackgroundRun implements AutoCloseable {
         }
         try { return new JSONObject(nativeExecute(current)); }
         finally {
-            synchronized (this) { running = false; if (closed) destroy(); }
+            synchronized (this) { running = false; if (closed && waiters==0) destroy(); }
         }
     }
     public synchronized void cancel() { if (handle != 0) nativeCancel(handle); }
@@ -49,8 +50,18 @@ public final class PodBackgroundRun implements AutoCloseable {
     /** Nonblocking; call from a host IO consumer, not the executing thread. */
     public synchronized JSONObject pollRequest() throws org.json.JSONException {
         if (closed || handle==0) return null;
+        if(waiters!=0)throw new IllegalStateException("background_single_consumer");
         byte[] bytes=nativePoll(handle);
         return bytes==null ? null : new JSONObject(new String(bytes,StandardCharsets.UTF_8));
+    }
+    /** One host consumer. Never hold the monitor while waiting: reply/cancel
+     * must wake this wait, and close defers destruction until it has returned. */
+    public JSONObject waitRequest(int timeoutMillis) throws org.json.JSONException {
+        if(timeoutMillis<0||timeoutMillis>100)throw new IllegalArgumentException("invalid_wait_timeout");
+        final long current;
+        synchronized(this){if(closed||handle==0)return null;if(waiters!=0)throw new IllegalStateException("background_single_consumer");current=handle;waiters++;}
+        try{byte[] bytes=nativeWait(current,timeoutMillis);return bytes==null?null:new JSONObject(new String(bytes,StandardCharsets.UTF_8));}
+        finally{synchronized(this){waiters--;if(closed&&!running&&waiters==0)destroy();}}
     }
     /** Returns false for late/duplicate replies or after close. */
     public synchronized boolean reply(JSONObject response) {
@@ -64,13 +75,14 @@ public final class PodBackgroundRun implements AutoCloseable {
     @Override public synchronized void close() {
         if (closed) return; closed = true;
         if (handle != 0) nativeCancel(handle);
-        if (!running) destroy();
+        if (!running && waiters==0) destroy();
     }
     private void destroy() { if (handle != 0) { nativeClose(handle); handle = 0; } }
     private static native long nativeOpen(byte[] config);
     private static native String nativeExecute(long handle);
     private static native void nativeCancel(long handle);
     private static native byte[] nativePoll(long handle);
+    private static native byte[] nativeWait(long handle,int timeoutMillis);
     private static native int nativeReply(long handle, byte[] response);
     private static native void nativeClose(long handle);
 }
