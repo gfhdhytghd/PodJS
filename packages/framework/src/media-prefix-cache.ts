@@ -17,7 +17,7 @@ export const mediaPrefixCache={
  clear(){return hostOperation<{removedBytes:number}>('video.cache.clear',{revision:++revision});},
 };
 
-export interface LocalMediaItem {audioTracks:number;videoTracks:number;key:string;metadata:Record<string,unknown>;uri:string;bytes:number;sha256:string;storedAt:number;watched:boolean;frame:import('./services.ts').VideoFrame}
+export interface LocalMediaItem {audioTracks:number;videoTracks:number;key:string;metadata:Record<string,unknown>;uri:string;bytes:number;/** Combined video/audio input bytes; older manifests omit this field. */inputBytes?:number;sha256:string;storedAt:number;watched:boolean;frame:import('./services.ts').VideoFrame}
 export interface LocalMediaConfig {enabled?:boolean;count?:number;entryBytes?:number;totalBytes?:number;headBytes?:number;frameBytes?:number;bytesPerSecond?:number;minBattery?:number;minFreeBytes?:number}
 /** Verified whole files and frame-zero pixels. Lookup/list perform no network IO. */
 export const localMediaStore={

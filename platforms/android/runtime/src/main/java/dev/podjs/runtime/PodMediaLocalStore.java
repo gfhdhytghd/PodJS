@@ -14,12 +14,12 @@ import java.util.*;
 /** Generic verified complete media, with manifest-last publication. Network IO
  * belongs to the prefix pump; this store never opens an upstream of its own. */
 final class PodMediaLocalStore {
-    static final long ENTRY_LIMIT=8L<<20,TOTAL_LIMIT=40L<<20;
+    static final long ENTRY_LIMIT=32L<<20,TOTAL_LIMIT=128L<<20;
     final File root;
     File frame(String token){return new File(new File(cache.frameRoot,"local-media-frames"),token+".jpg");}
     final PodMediaPrefixCache cache;
     volatile int count=3,rate=256*1024,minBattery=20;
-    volatile long entryLimit=ENTRY_LIMIT,totalLimit=TOTAL_LIMIT,minFree=96L<<20;
+    volatile long entryLimit=ENTRY_LIMIT,totalLimit=TOTAL_LIMIT,minFree=512L<<20;
     volatile boolean enabled=true;
     PodMediaLocalStore(PodMediaPrefixCache cache){this.cache=cache;root=new File(cache.root,"complete-media");recover();}
     static String digest(File file)throws Exception {
@@ -47,7 +47,7 @@ final class PodMediaLocalStore {
     synchronized JSONObject manifest(String token)throws Exception {
         File meta=file(token,".json");if(!meta.isFile()||meta.length()>32768)return null;
         try{JSONObject value=new JSONObject(new String(Files.readAllBytes(meta.toPath()),java.nio.charset.StandardCharsets.UTF_8));
-            long size=value.getLong("bytes");if((value.getInt("version")!=1&&value.getInt("version")!=2)||size<1||size>entryLimit||!value.getString("sha256").matches("[a-f0-9]{64}"))return null;
+            long size=value.getLong("bytes"),input=value.optLong("inputBytes",size);if((value.getInt("version")!=1&&value.getInt("version")!=2)||size<1||size>entryLimit||input<1||input>entryLimit||!value.getString("sha256").matches("[a-f0-9]{64}"))return null;
             return value;
         }catch(Exception invalid){return null;}
     }
@@ -73,6 +73,7 @@ final class PodMediaLocalStore {
     }
     synchronized void watched(String key)throws Exception {String token=token(key);JSONObject value=manifest(token);if(value!=null){value.put("watched",true);writeManifest(token,value);}}
     synchronized void remove(String token){cache.revokeLocal(Uri.fromFile(file(token,".mp4")).toString());file(token,".json").delete();file(token,".mp4").delete();frame(token).delete();}
+    void removePartials(String token){file(token,".part").delete();file(token,".audio.part").delete();file(token,".mux.part").delete();}
     synchronized void clear(){for(File f:root.listFiles()==null?new File[0]:root.listFiles())if(f.getName().matches("[a-f0-9]{64}\\.mp4"))cache.revokeLocal(Uri.fromFile(f).toString());File frames=new File(cache.frameRoot,"local-media-frames");for(File f:frames.listFiles()==null?new File[0]:frames.listFiles())if(f.getName().matches("[a-f0-9]{64}\\.(jpg|part)"))f.delete();for(File f:root.listFiles()==null?new File[0]:root.listFiles())if(f.getName().matches("[a-f0-9]{64}\\.(json|mp4|part|tmp)"))f.delete();}
     private void writeManifest(String token,JSONObject value)throws Exception {
         File part=file(token,".tmp");try{try(FileOutputStream out=new FileOutputStream(part)){out.write(value.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));out.getFD().sync();}
@@ -88,17 +89,45 @@ final class PodMediaLocalStore {
     /** One pump turn transfers at most 64 KiB. Partial files are never playable. */
     void step(PodMediaPrefixCache.Job job)throws Exception {
         PodMediaPrefixCache.backgroundTurn(job);
-        File part=file(job.localToken,".part");long position=part.length();
-        if(job.entry.length<0){byte[] first=cache.loadRange(job,0,1);if(job.entry.length<=0||job.entry.length>entryLimit||job.entry.length>totalLimit)throw new IOException("complete_size_unavailable_or_over_budget");
-            synchronized(this){if(!trim(job.localToken,job.entry.length+400*1024))throw new IOException("complete_store_pinned");}
-            try(FileOutputStream out=new FileOutputStream(part)){out.write(first);}position=1;}
-        if(job.entry.length>entryLimit||job.entry.length>totalLimit)throw new IOException("complete_over_budget");
-        if(position==0)synchronized(this){if(!trim(job.localToken,job.entry.length+400*1024))throw new IOException("complete_store_pinned");}
-        int n=(int)Math.min(PodMediaPrefixCache.CHUNK,job.entry.length-position);
-        if(n>0){byte[] bytes=cache.loadRange(job,position,n);PodMediaPrefixCache.backgroundTurn(job);try(FileOutputStream out=new FileOutputStream(part,true)){out.write(bytes);}position+=n;}
-        if(position==job.entry.length){
-            PodMediaPrefixCache.backgroundTurn(job);publish(job,part);job.done=true;
+        File part=file(job.localToken,".part"),audio=file(job.localToken,".audio.part");
+        probe(job,job.entry,part);
+        if(job.localAudio!=null)probe(job,job.localAudio,audio);
+        long input=checkedInputBytes(job.entry.length,job.localAudio==null?0:job.localAudio.length);
+        if(!job.localReserved){synchronized(this){if(!trim(job.localToken,input+400*1024))throw new IOException("complete_store_pinned");}job.localReserved=true;}
+        PodMediaPrefixCache.Entry next=job.entry;File target=part;
+        if(part.length()==job.entry.length&&job.localAudio!=null){next=job.localAudio;target=audio;}
+        int n=(int)Math.min(PodMediaPrefixCache.CHUNK,next.length-target.length());
+        if(n>0){byte[] bytes=cache.loadRange(job,next,target.length(),n);PodMediaPrefixCache.backgroundTurn(job);try(FileOutputStream out=new FileOutputStream(target,true)){out.write(bytes);}}
+        if(part.length()==job.entry.length&&(job.localAudio==null||audio.length()==job.localAudio.length)){
+            PodMediaPrefixCache.backgroundTurn(job);
+            if(job.localAudio==null)publish(job,part,input);
+            else {File mux=file(job.localToken,".mux.part");try{PodMediaLocalMuxer.combine(job,part,audio,mux);checkedInputBytes(mux.length(),0);publish(job,mux,input);}finally{mux.delete();}}
+            job.done=true;
         }else job.deferredUntil=android.os.SystemClock.uptimeMillis()+Math.max(1,n*1000L/rate);
+    }
+    private void probe(PodMediaPrefixCache.Job job,PodMediaPrefixCache.Entry entry,File part)throws Exception {
+        if(entry.length<0){byte[] first=cache.loadRange(job,entry,0,1);checkedInputBytes(entry.length,0);try(FileOutputStream out=new FileOutputStream(part)){out.write(first);}}
+        checkedInputBytes(entry.length,0);
+    }
+    long checkedInputBytes(long video,long audio)throws IOException {
+        if(video<=0||audio<0)throw new IOException("complete_size_unknown");
+        if(video>entryLimit||audio>entryLimit||video>entryLimit-audio||video>totalLimit-audio)throw new IOException("complete_over_budget");
+        return video+audio;
+    }
+    static String failureReason(Exception error){
+        int status=PodMediaPrefixCache.httpStatus(error);if(status==403)return "http_403";if(status>=500)return "http_5xx";if(status>=400)return "http_4xx";
+        String reason=error.getMessage();if(reason==null)return "io";
+        switch(reason){
+            case "complete_size_unknown":return "size_unknown";
+            case "complete_over_budget":case "complete_frame_over_budget":return "over_budget";
+            case "complete_cancelled":case "preparation_cancelled":return "cancelled";
+            case "complete_store_pinned":return "pinned";
+            case "complete_track_missing":case "complete_video_track_missing":case "complete_audio_track_missing":return "track_missing";
+            case "complete_frame_missing":case "complete_frame_encode":return "frame";
+            case "invalid_media_range":case "missing_media_range":case "conflicting_media_range":case "media_length_changed":return "range";
+            case "complete_sample_over_budget":case "complete_mux_failed":return "mux";
+            default:return "io";
+        }
     }
     static int[] tracks(File file)throws Exception {
         MediaExtractor extractor=new MediaExtractor();int audio=0,video=0;
@@ -106,8 +135,8 @@ final class PodMediaLocalStore {
         if(video==0)throw new IOException("complete_video_track_missing");return new int[]{audio,video};
     }
     static void requireTracks(int audio,int video,boolean requireAudio)throws IOException {if(video<1||requireAudio&&audio<1)throw new IOException("complete_track_missing");}
-    private void publish(PodMediaPrefixCache.Job job,File part)throws Exception {
-        if(!job.current()||part.length()!=job.entry.length)throw new IOException("complete_cancelled");
+    private void publish(PodMediaPrefixCache.Job job,File part,long inputBytes)throws Exception {
+        if(!job.current()||part.length()<1)throw new IOException("complete_cancelled");checkedInputBytes(part.length(),0);
         int[] tracks=tracks(part);requireTracks(tracks[0],tracks[1],job.requireAudio);
         File media=file(job.localToken,".mp4");String hash=digest(part);
         try(RandomAccessFile synced=new RandomAccessFile(part,"rw")){synced.getFD().sync();}
@@ -125,7 +154,7 @@ final class PodMediaLocalStore {
                     Files.move(imagePart.toPath(),image.toPath(),StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);
                 }finally{imagePart.delete();}
                 JSONObject frame=new JSONObject().put("available",true).put("kind","actual_frame").put("path","local-media-frames/"+job.localToken+".jpg").put("width",pixels.getWidth()).put("height",pixels.getHeight()).put("capturedGeneration",0).put("capturedAt",System.currentTimeMillis()).put("positionMs",0);
-                JSONObject value=new JSONObject().put("version",2).put("audioTracks",tracks[0]).put("videoTracks",tracks[1]).put("key",job.localKey).put("metadata",job.localMetadata).put("bytes",media.length()).put("sha256",hash)
+                JSONObject value=new JSONObject().put("version",2).put("audioTracks",tracks[0]).put("videoTracks",tracks[1]).put("key",job.localKey).put("metadata",job.localMetadata).put("bytes",media.length()).put("inputBytes",inputBytes).put("sha256",hash)
                     .put("storedAt",System.currentTimeMillis()).put("watched",false).put("frame",frame).put("frameSha256",digest(image));
                 writeManifest(job.localToken,value);android.util.Log.i("PodMediaCache","complete_store phase=ready entry="+job.entry.ordinal+" bytes="+media.length()+" audioTracks="+tracks[0]+" videoTracks="+tracks[1]);
             }

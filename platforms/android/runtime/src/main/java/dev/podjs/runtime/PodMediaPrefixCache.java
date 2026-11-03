@@ -69,7 +69,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
         Entry(String token,String remote,Map<String,String> headers,File file,boolean persistent){this.token=token;this.remote=remote;this.selectedRemote=remote;this.headers=headers;this.file=file;this.persistent=persistent;}
     }
     final class Job {
-        final Entry entry;final int budget;final long epoch;volatile String itemToken;volatile long sourceGeneration;boolean background,preparing,done,preStore,requireAudio;String localToken,localKey;JSONObject localMetadata;volatile boolean fetching;long deferredUntil;int stage;volatile boolean active=true;volatile DataSource source;Exception failure;
+        final Entry entry;final int budget;final long epoch;volatile String itemToken;volatile long sourceGeneration;boolean background,preparing,done,preStore,requireAudio,localReserved;Entry localAudio;String localToken,localKey;JSONObject localMetadata;volatile boolean fetching;long deferredUntil;int stage;volatile boolean active=true;volatile DataSource source;Exception failure;
         Job(Entry e,int budget,String itemToken,long sourceGeneration){entry=e;this.budget=budget;epoch=generation;this.itemToken=itemToken;this.sourceGeneration=sourceGeneration;}
         PodMediaPrefixCache owner(){return PodMediaPrefixCache.this;}
         void cancel(){active=false;DataSource s=source;if(s!=null&&!cancellations.isShutdown())cancellations.execute(()->{try{s.close();}catch(Exception ignored){}});}
@@ -153,10 +153,12 @@ final class PodMediaPrefixCache implements AutoCloseable {
         JSONObject known=localStore.lookupToken(token);if(known!=null){PodMediaLocalStore.requireTracks(known.optInt("audioTracks"),known.optInt("videoTracks"),args.optBoolean("requireAudio"));return new JSONObject().put("ready",true).put("item",known);}
         Job job;
         synchronized(this){Entry entry=target(args.getString("uri"));checkNetwork(entry);Job old=jobs.get(entry.token);if(old!=null)old.cancel();
-            localStore.root.mkdirs();job=new Job(entry,0,"",0);job.stage=2;job.preStore=true;job.localToken=token;job.localKey=key;job.localMetadata=metadata;job.requireAudio=args.optBoolean("requireAudio");jobs.put(entry.token,job);localStore.file(token,".part").delete();}
+            localStore.root.mkdirs();job=new Job(entry,0,"",0);job.stage=2;job.preStore=true;job.localToken=token;job.localKey=key;job.localMetadata=metadata;job.requireAudio=args.optBoolean("requireAudio");
+            if(!entry.frameAudioUrl.isEmpty()){String audio=register("local-audio:"+digest(key),entry.frameAudioUrl,entry.headers,entry.persistent);job.localAudio=target(audio);job.localAudio.expiresAt=Math.min(job.localAudio.expiresAt,entry.expiresAt);}
+            jobs.put(entry.token,job);localStore.removePartials(token);}
         try{prefetch(job);if(job.failure!=null)throw job.failure;if(!job.current())throw new IOException("complete_cancelled");
             JSONObject value=localStore.lookupToken(token);return new JSONObject().put("ready",value!=null).put("item",value==null?JSONObject.NULL:value);
-        }finally{synchronized(this){if(jobs.get(job.entry.token)==job)jobs.remove(job.entry.token);job.cancel();}localStore.file(token,".part").delete();if(!job.done||job.failure!=null)localStore.remove(token);}
+        }finally{synchronized(this){if(jobs.get(job.entry.token)==job)jobs.remove(job.entry.token);job.cancel();}localStore.removePartials(token);if(!job.done||job.failure!=null)localStore.remove(token);}
     }
     /** Transfer callbacks include HTTP 200 range-skip bytes consumed during open().
      * Sources without callbacks still account each byte returned by read(). */
@@ -208,7 +210,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
         public void close()throws IOException{int status=Math.max(0,responseCode());try{delegate.close();}finally{if(!logged&&opened>=0){logged=true;android.util.Log.i("PodMediaCache","range_transfer entry="+ordinal+" request="+request+" position="+rangePosition+" requested_bytes="+Math.max(0,requested)+" network_bytes="+transferred+" ttfb_ms="+(first<0?0:Math.max(0,first-opened))+" read_ms="+(first<0?0:Math.max(0,last-first))+" status="+status);}}}
     }
     private void fetchStep(Job job){
-        if(job.localToken!=null){try{localStore.step(job);}catch(BackgroundDeferred paused){job.deferredUntil=android.os.SystemClock.uptimeMillis()+100;}catch(Exception error){job.failure=error;job.done=true;String reason=error.getMessage();android.util.Log.i("PodMediaCache","complete_store phase=failed reason="+(reason!=null&&reason.matches("[a-z_]{1,64}")?reason:"io")+" status="+httpStatus(error));if(httpStatus(error)==403)stopTraffic();}finally{synchronized(this){job.fetching=false;notifyAll();}}return;}
+        if(job.localToken!=null){try{localStore.step(job);}catch(BackgroundDeferred paused){job.deferredUntil=android.os.SystemClock.uptimeMillis()+100;}catch(Exception error){job.failure=error;job.done=true;android.util.Log.i("PodMediaCache","complete_store phase=failed reason="+PodMediaLocalStore.failureReason(error)+" status="+httpStatus(error));if(httpStatus(error)==403)stopTraffic();}finally{synchronized(this){job.fetching=false;notifyAll();}}return;}
         boolean succeeded=false;int status=0;boolean failed=false;
         job.fetching=true;
         try{
@@ -267,17 +269,20 @@ final class PodMediaPrefixCache implements AutoCloseable {
     }
     /** Exact range reads account bytes even if cancellation or a short body prevents publication. */
     byte[] loadRange(Job job,long position,int count)throws Exception {
+        return loadRange(job,job.entry,position,count);
+    }
+    byte[] loadRange(Job job,Entry entry,long position,int count)throws Exception {
         byte[] bytes=new byte[count];int used=0,requests=0;
         while(used<count){
             if(++requests>64)throw new IOException("too_many_media_ranges");
-            if(job.background||job.preStore)backgroundTurn(job);else if(!job.current())throw new IOException("preparation_cancelled");DataSource source=observedSource(job.entry);job.source=source;int before=used;
+            if(job.background||job.preStore)backgroundTurn(job);else if(!job.current())throw new IOException("preparation_cancelled");DataSource source=observedSource(entry);job.source=source;int before=used;
             try{
-                long remaining=source.open(new DataSpec.Builder().setUri(job.entry.selectedRemote).setPosition(position+used).setLength(count-used).setHttpRequestHeaders(job.entry.headers).build());
-                long responseEnd=metadata(job.entry,source,position+used,remaining,false);
+                long remaining=source.open(new DataSpec.Builder().setUri(entry.selectedRemote).setPosition(position+used).setLength(count-used).setHttpRequestHeaders(entry.headers).build());
+                long responseEnd=metadata(entry,source,position+used,remaining,false);
                 while(used<count){
-                    if(job.background||job.preStore)backgroundTurn(job);int wanted=Math.min(CHUNK,count-used);if(!throttle(job,wanted))throw new IOException("preparation_cancelled");int n=source.read(bytes,used,wanted);
+                    if(job.background||job.preStore)backgroundTurn(job);int wanted=Math.min(CHUNK,count-used);int n=source.read(bytes,used,wanted);
                     if(n<0){if(responseEnd<0||position+used<responseEnd)throw new EOFException("short_media_range");break;}
-                    if(n>0){if(responseEnd>=0&&n>responseEnd-position-used)throw new IOException("oversized_media_range");used+=n;}
+                    if(n>0){if(!throttle(job,n))throw new IOException("preparation_cancelled");if(responseEnd>=0&&n>responseEnd-position-used)throw new IOException("oversized_media_range");used+=n;}
                 }
             }finally{try{source.close();}finally{if(job.source==source)job.source=null;}}
             if(used==before)throw new EOFException("empty_media_range");
@@ -349,16 +354,23 @@ final class PodMediaPrefixCache implements AutoCloseable {
         long total=-1,end=remaining>=0?position+remaining:-1;boolean rangeSeen=false;
         for(Map.Entry<String,List<String>> h:source.getResponseHeaders().entrySet())if(h.getKey()!=null&&h.getKey().equalsIgnoreCase("Content-Range"))for(String value:h.getValue()){
             rangeSeen=true;
-            java.util.regex.Matcher range=java.util.regex.Pattern.compile("bytes ([0-9]+)-([0-9]+)/([0-9]+)").matcher(value);
+            java.util.regex.Matcher range=java.util.regex.Pattern.compile("bytes\\s+([0-9]+)-([0-9]+)/([0-9]+|\\*)",java.util.regex.Pattern.CASE_INSENSITIVE).matcher(value.trim());
             if(!range.matches())throw new IOException("invalid_media_range");
             try{
-                long start=Long.parseLong(range.group(1)),last=Long.parseLong(range.group(2)),length=Long.parseLong(range.group(3));
-                if(start!=position||last<start||last>=length)throw new IOException("invalid_media_range");
+                long start=Long.parseLong(range.group(1)),last=Long.parseLong(range.group(2)),length=range.group(3).equals("*")?-1:Long.parseLong(range.group(3));
+                if(start!=position||last<start||last==Long.MAX_VALUE||length>=0&&last>=length)throw new IOException("invalid_media_range");
                 if(total>=0&&(total!=length||end!=last+1))throw new IOException("conflicting_media_range");
                 total=length;end=last+1;
             }catch(NumberFormatException invalid){throw new IOException("invalid_media_range");}
         }
         if(!rangeSeen&&source instanceof ObservedSource&&((ObservedSource)source).responseCode()==206)throw new IOException("missing_media_range");
+        // open() may return the one requested byte even when a server ignores
+        // Range. Only an HTTP 200 Content-Length denotes the complete object.
+        if(!rangeSeen&&source instanceof ObservedSource&&((ObservedSource)source).responseCode()==200){
+            for(Map.Entry<String,List<String>> h:source.getResponseHeaders().entrySet())if(h.getKey()!=null&&h.getKey().equalsIgnoreCase("Content-Length"))for(String value:h.getValue())try{
+                long length=Long.parseLong(value.trim());if(length<0||total>=0&&total!=length)throw new IOException("invalid_media_range");total=length;
+            }catch(NumberFormatException invalid){throw new IOException("invalid_media_range");}
+        }
         if(total<0&&remaining>=0&&unbounded)total=position+remaining;
         if(total>=0){if(e.length>=0&&e.length!=total)throw new IOException("media_length_changed");e.length=total;}
         persistLength(e);
