@@ -892,6 +892,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     private MediaSource mediaSource(JSONObject args,PodVideoAnalytics analytics) throws Exception {
         String videoUrl = args.optString("videoUrl", "");
         String audioUrl = args.optString("audioUrl", "");
+        if(videoUrl.isEmpty()&&!audioUrl.isEmpty())videoUrl=args.optString("url", "");
         String url = videoUrl.isEmpty() || audioUrl.isEmpty() ? source(args, "url") : sourceValue(videoUrl);
         if (!audioUrl.isEmpty()) audioUrl = sourceValue(audioUrl);
         if (!videoUrl.isEmpty()) videoUrl = sourceValue(videoUrl);

@@ -181,6 +181,7 @@ public final class PodVideoServices implements AutoCloseable {
         firstRevealLogged=false;prepareSequence++;android.util.Log.i("PodVideoTiming","prepareBegin seq="+prepareSequence);hasRenderedFirstFrame=false;observedTextureFrames=0; prepareStartedMs=android.os.SystemClock.elapsedRealtime(); playbackErrorCode=null;
         if(videoView==null || parent==null) throw new IllegalStateException("video_surface_unavailable");
         String videoUrl = a.optString("videoUrl", ""); String audioUrl = a.optString("audioUrl", "");
+        if(videoUrl.isEmpty()&&!audioUrl.isEmpty())videoUrl=a.optString("url", "");
         String url = videoUrl.isEmpty() || audioUrl.isEmpty() ? source(a, "url") : sourceValue(videoUrl);
         if (!audioUrl.isEmpty()) audioUrl = sourceValue(audioUrl);
         if (!videoUrl.isEmpty()) videoUrl = sourceValue(videoUrl);
