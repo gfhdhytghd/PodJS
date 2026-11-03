@@ -256,6 +256,8 @@ export const location = {
   current(): HostOperation<LocationFix | null> { return hostOperation("location.current", {}); },
 };
 
+// Optional code-owned provenance only. Native diagnostics clamp this to 0..31.
+function secureSite(site?:number):{secureSite?:number} { return site===undefined?{}:{secureSite:Number.isInteger(site)&&site>=0&&site<=31?site:0}; }
 export const secureStorage = {
   /** Android app-private cross-guest/process try-lease; release only after acquired=true.
    * The host also releases all owned leases when this guest closes. */
@@ -267,9 +269,9 @@ export const secureStorage = {
     const result=await hostOperation<{updated:boolean}>("secure.compareAndSet",{key,expected:expected??null,value:value??null}).result;
     if(typeof result.updated!=='boolean')throw Error('secure_compare_unavailable');return result.updated;
   },
-  async get(key: string): Promise<string | undefined> { const value = await hostOperation<{exists:boolean;value?:string}>("secure.get",{key}).result; return value.exists ? value.value : undefined; },
-  async set(key: string,value: string): Promise<void> { await hostOperation("secure.set",{key,value}).result; },
-  async delete(key: string, benchmark?:{seq:number;attempt?:number}): Promise<void> { await hostOperation("secure.delete",{key,...(benchmark?{benchmark}:{})}).result; },
+  async get(key: string, site?:number): Promise<string | undefined> { const value = await hostOperation<{exists:boolean;value?:string}>("secure.get",{key,...secureSite(site)}).result; return value.exists ? value.value : undefined; },
+  async set(key: string,value: string,site?:number): Promise<void> { await hostOperation("secure.set",{key,value,...secureSite(site)}).result; },
+  async delete(key: string, benchmark?:{seq:number;attempt?:number},site?:number): Promise<void> { await hostOperation("secure.delete",{key,...(benchmark?{benchmark}:{}),...secureSite(site)}).result; },
 };
 /** Android STREAM_MUSIC indices, shared by audio, video and speech playback. */
 export interface MediaVolumeState { ok:boolean; min:number; max:number; current:number; fixed:boolean }

@@ -20,7 +20,7 @@ public final class PodStoreCryptoTest {
     @Test public void readsAndroidXFixturesWithoutRepairAndUsesProductionSecureReader()throws Exception{
         Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
         String id="pod-takeover-test-"+UUID.randomUUID(),master=id+"-master",target=id+"-target";
-        File source=new File(context.getApplicationInfo().dataDir,"shared_prefs/"+id+".xml");
+        File source=new File(context.getApplicationInfo().dataDir,"shared_prefs/"+id+".xml").getCanonicalFile();
         try {
             MasterKey fixtureMaster=new MasterKey.Builder(context,master).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build();
             SharedPreferences fixture=EncryptedSharedPreferences.create(context,id,fixtureMaster,EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM);

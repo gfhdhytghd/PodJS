@@ -41,7 +41,13 @@ public class PodSyncPairingStoreTest {
         try (PodSyncPairingStore reopened = new PodSyncPairingStore(context,app)) {
             assertArrayEquals(key,reopened.load("phone","watch"));
             encrypted[encrypted.length-1] ^= 1; Files.write(credential.toPath(),encrypted);
-            try { reopened.load("phone","watch"); fail("Tampered credential accepted"); }
+            // User-approved process snapshots ignore external edits until restart.
+            assertArrayEquals(key,reopened.load("phone","watch"));
+            byte[] caller=reopened.load("phone","watch");caller[0]^=1;assertArrayEquals(key,reopened.load("phone","watch"));
+            // Drop only this synthetic fixture's cache to exercise a cold read.
+            java.lang.reflect.Field cache=PodSyncPairingStore.class.getDeclaredField("CACHED");cache.setAccessible(true);
+            ((java.util.Map<?,?>)cache.get(null)).remove(root);
+            try { reopened.load("phone","watch"); fail("Tampered cold credential accepted"); }
             catch (java.security.GeneralSecurityException expected) { }
             reopened.revoke("phone","watch"); assertNull(reopened.load("phone","watch"));
             reopened.importAuthorized("phone","watch",key);

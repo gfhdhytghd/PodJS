@@ -31,7 +31,7 @@ final class PodStoreAndroidCrypto implements PodStoreConverter.Crypto {
     private void unlocked()throws PodStoreConverter.Locked {
         if(context!=null){android.os.UserManager user=(android.os.UserManager)context.getSystemService(android.content.Context.USER_SERVICE);if(user!=null&&!user.isUserUnlocked())throw new PodStoreConverter.Locked();}
     }
-    private KeyStore store()throws Exception{KeyStore ks=KeyStore.getInstance("AndroidKeyStore");ks.load(null);return ks;}
+    private KeyStore store()throws Exception{return ProcessKeyStore.get();}
     private SecretKey existing(String alias)throws Exception{KeyStore ks=store();if(!ks.containsAlias(alias))throw new IOException("key_absent");return (SecretKey)ks.getKey(alias,null);}
     private static byte[] decrypt(SecretKey k,byte[] all,byte[] aad)throws Exception{if(all.length<28)throw new IOException("ciphertext_invalid");Cipher c=Cipher.getInstance("AES/GCM/NoPadding");c.init(Cipher.DECRYPT_MODE,k,new GCMParameterSpec(128,Arrays.copyOf(all,12)));c.updateAAD(aad);return c.doFinal(Arrays.copyOfRange(all,12,all.length));}
     private static byte[] unhex(String s)throws Exception{if(s.length()%2!=0)throw new IOException("keyset_invalid");byte[] b=new byte[s.length()/2];for(int i=0;i<b.length;i++){int a=Character.digit(s.charAt(i*2),16),c=Character.digit(s.charAt(i*2+1),16);if(a<0||c<0)throw new IOException("keyset_invalid");b[i]=(byte)(a*16+c);}return b;}

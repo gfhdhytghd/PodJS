@@ -52,6 +52,11 @@ public final class SecureProcessCacheTest {
             for(int i=0;i<100;i++){boolean failed=false;try{get(cold);}catch(Exception expected){failed=true;}check(failed,"cold tamper accepted");}
         }
         check(keys.get()==beforeFailure+1,"cold failure busy-retried KeyStore");
+        java.util.concurrent.atomic.AtomicInteger writeAttempts=new java.util.concurrent.atomic.AtomicInteger();
+        try(PodDeviceServices failing=new PodDeviceServices(dir.resolve("write-backoff/files").toFile(),()->{writeAttempts.incrementAndGet();throw new java.security.GeneralSecurityException("synthetic_unavailable");})){
+            for(int i=0;i<100;i++){boolean rejected=false;try{set(failing,"pending"+i);}catch(Exception expected){rejected=true;}check(rejected,"failed write accepted");}
+        }
+        check(writeAttempts.get()==1,"failed writes busy-retried key source");
         System.out.println("SECURE_PROCESS_CACHE_PASS");
     }
 }

@@ -9,8 +9,8 @@ import org.json.JSONObject;
 /** Aggregate encrypted-map budget, independent of the bridge's 256 KiB chunks. */
 final class SecureStoreLimits {
     static final int MAX_PLAIN_BYTES = 2 * 1024 * 1024;
-    // Existing format: 12-byte nonce followed by AES/GCM ciphertext + 16-byte tag.
-    static final int MAX_FILE_BYTES = MAX_PLAIN_BYTES + 28;
+    // v2 adds a version and wrapped data key; the plaintext quota is unchanged.
+    static final int MAX_FILE_BYTES = MAX_PLAIN_BYTES + SecureStoreCipher.HEADER_BYTES + 28;
 
     /** Closed codes only. Never include keys, values, paths or exception text. */
     static final class Failure extends IOException {

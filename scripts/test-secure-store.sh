@@ -24,3 +24,6 @@ java -Xmx128m -ea -cp "$secure_cp" dev.podjs.runtime.SealedGzipServiceTest
 
 javac -cp "$secure_cp" -d "$secure_work" tests/java/dev/podjs/runtime/FileComposeServiceTest.java
 java -Xmx128m -ea -cp "$secure_cp" dev.podjs.runtime.FileComposeServiceTest
+
+javac -cp "$secure_cp" -d "$secure_work" tests/java/dev/podjs/runtime/SecureStoreCipherTest.java
+java -Xmx64m -ea -cp "$secure_cp" dev.podjs.runtime.SecureStoreCipherTest

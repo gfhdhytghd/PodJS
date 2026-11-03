@@ -30,12 +30,23 @@ final class SecureStoreMemory {
         }
         return result;
     }
+    static boolean same(JSONObject left,JSONObject right)throws Exception {
+        if(left.length()!=right.length())return false;
+        for(java.util.Iterator<String> keys=left.keys();keys.hasNext();){String key=keys.next();if(!right.has(key))return false;Object a=left.get(key),b=right.get(key);
+            if(a==b||a.equals(b))continue;
+            if((a instanceof JSONObject&&b instanceof JSONObject||a instanceof org.json.JSONArray&&b instanceof org.json.JSONArray)&&a.toString().equals(b.toString()))continue;
+            return false;
+        }return true;
+    }
     static final class State {
         volatile Snapshot snapshot;
         SecretKey key;
+        SecureStoreCipher.Material cipherMaterial;
+        final FailureBackoff writeFailure=new FailureBackoff();
+        final java.util.Map<String,FailureBackoff> identityFailures=new java.util.HashMap<>();
+        final java.util.Map<String,FailureBackoff> aliasFailures=new java.util.HashMap<>();
         final java.util.Map<String,SecretKey> aliasKeys=new java.util.HashMap<>();
         final java.util.Map<String,java.security.KeyPair> identityKeys=new java.util.HashMap<>();
-        Exception loadFailure;
-        long retryAfterNanos;
+        final FailureBackoff readFailure=new FailureBackoff();
     }
 }

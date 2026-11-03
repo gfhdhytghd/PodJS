@@ -34,17 +34,21 @@ public final class PodCloudCrypto {
         return aes(false,key,Arrays.copyOfRange(sealed,0,12),Arrays.copyOfRange(sealed,12,sealed.length),aad);
     }
     public static byte[] unwrap(PrivateKey privateKey, byte[] publicSpki, byte[] salt, byte[] info, byte[] nonce, byte[] ciphertext, byte[] aad) throws Exception {
+        PublicKey peer=p256Peer(publicSpki);
+        KeyAgreement agreement = KeyAgreement.getInstance("ECDH");
+        agreement.init(privateKey); agreement.doPhase(peer,true);
+        byte[] secret = agreement.generateSecret(), key = null;
+        try { key = hkdf(secret,salt,info); return aes(false,key,nonce,ciphertext,aad); }
+        finally { Arrays.fill(secret,(byte)0); if(key != null) Arrays.fill(key,(byte)0); }
+    }
+    static PublicKey p256Peer(byte[] publicSpki)throws Exception {
         ECPublicKey peer = (ECPublicKey)KeyFactory.getInstance("EC").generatePublic(new X509EncodedKeySpec(publicSpki));
         AlgorithmParameters parameters = AlgorithmParameters.getInstance("EC");
         parameters.init(new ECGenParameterSpec("secp256r1"));
         ECParameterSpec expected = parameters.getParameterSpec(ECParameterSpec.class), actual = peer.getParams();
         if (!expected.getCurve().equals(actual.getCurve()) || !expected.getGenerator().equals(actual.getGenerator()) || !expected.getOrder().equals(actual.getOrder()) || expected.getCofactor() != actual.getCofactor())
             throw new IllegalArgumentException("p256_required");
-        KeyAgreement agreement = KeyAgreement.getInstance("ECDH");
-        agreement.init(privateKey); agreement.doPhase(peer,true);
-        byte[] secret = agreement.generateSecret(), key = null;
-        try { key = hkdf(secret,salt,info); return aes(false,key,nonce,ciphertext,aad); }
-        finally { Arrays.fill(secret,(byte)0); if(key != null) Arrays.fill(key,(byte)0); }
+        return peer;
     }
     /** Prove possession by MACing an authenticated challenge with its unwrapped
      * one-time secret. Neither secret nor raw ECDH output leaves this method. */
