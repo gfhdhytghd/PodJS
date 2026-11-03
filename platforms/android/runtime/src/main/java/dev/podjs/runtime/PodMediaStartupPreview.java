@@ -7,7 +7,6 @@ import android.net.Uri;
 import android.os.Handler;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.FrameLayout;
 import android.widget.ImageView;
 import org.json.JSONObject;
 import java.io.File;
@@ -42,17 +41,22 @@ final class PodMediaStartupPreview {
             float density=context.getResources().getDisplayMetrics().density;
             int width=Math.max(1,Math.round((float)bounds.optDouble("width")*density)),height=Math.max(1,Math.round((float)bounds.optDouble("height")*density));
             image=new ImageView(context);image.setClickable(false);image.setFocusable(false);image.setBackgroundColor(android.graphics.Color.BLACK);image.setScaleType(ImageView.ScaleType.MATRIX);image.setImageBitmap(pixels);
-            FrameLayout.LayoutParams layout=new FrameLayout.LayoutParams(width,height);layout.leftMargin=Math.round((float)bounds.optDouble("x")*density);layout.topMargin=Math.round((float)bounds.optDouble("y")*density);parent.addView(image,layout);
+            // Overlay bounds are native pixels. No guest commit or parent measure
+            // is needed, and later JS/video children cannot cover the preview.
+            int left=Math.round((float)bounds.optDouble("x")*density),top=Math.round((float)bounds.optDouble("y")*density);
+            image.layout(left,top,left+width,top+height);parent.getOverlay().add(image);
             android.graphics.Matrix transform=PodVideoServices.videoTransform(width,height,pixels.getWidth(),pixels.getHeight(),0,"standard",0,0);
             transform.preScale(width/(float)image.getDrawable().getIntrinsicWidth(),height/(float)image.getDrawable().getIntrinsicHeight());image.setImageMatrix(transform);
-            PodSplash splash=PodSplash.of(context);if(splash!=null)splash.texturePresented();
+            PodSplash splash=PodSplash.of(context);if(splash!=null)splash.previewPresented();
             mark("storedImageInstalled");
             final long deadline=android.os.SystemClock.uptimeMillis()+2000;
             Runnable wait=new Runnable(){public void run(){
                 if(own!=generation)return;
                 if(!active.getAsBoolean()){hide(own);return;}
                 if(splash!=null&&splash.obscuring()&&android.os.SystemClock.uptimeMillis()<deadline){main.postDelayed(this,16);return;}
-                cancelPaint=PodAfterPaint.await(image,main,1,(frame,at)->{},committed->{
+                // An overlay owns no independent window observer. Its host's
+                // hardware frame commit is the receipt for these overlay pixels.
+                cancelPaint=PodAfterPaint.await(parent,main,1,(frame,at)->{},committed->{
                     if(own!=generation)return;
                     boolean visible=committed&&(splash==null||!splash.obscuring())&&active.getAsBoolean();
                     if(visible){mark("storedImageVisible");pending=null;reply(done,true,own);}else hide(own);
@@ -60,7 +64,7 @@ final class PodMediaStartupPreview {
             }};wait.run();
         });
     }
-    void raise(){if(image!=null&&parent!=null)parent.bringChildToFront(image);}
+    void raise(){/* The native overlay is always above the guest/video children. */}
     /** Texture update + matching source + window commit, not decoder readiness. */
     void handoff(String source,View texture,BooleanSupplier current){
         if(image==null||handingOff||!uri.equals(source)||!current.getAsBoolean())return;
@@ -73,7 +77,7 @@ final class PodMediaStartupPreview {
     }
     static void reply(Consumer<JSONObject> done,boolean visible,long token){try{done.accept(new JSONObject().put("presented",visible).put("token",token));}catch(Exception ignored){}}
     void hide(long token){if(token!=0&&token!=generation)return;long previous=generation;Consumer<JSONObject> waiting=pending;pending=null;generation++;cancelPaint.run();cancelPaint=()->{};handingOff=false;uri=null;
-        if(image!=null){image.setImageDrawable(null);if(image.getParent() instanceof ViewGroup)((ViewGroup)image.getParent()).removeView(image);image=null;}
+        if(image!=null){image.setImageDrawable(null);if(parent!=null)parent.getOverlay().remove(image);image=null;}
         if(bitmap!=null){bitmap.recycle();bitmap=null;}
         if(waiting!=null)reply(waiting,false,previous);
     }

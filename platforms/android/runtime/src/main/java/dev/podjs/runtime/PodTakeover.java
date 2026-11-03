@@ -140,39 +140,74 @@ public final class PodTakeover {
         Thread thread=new Thread(r,"podjs-package-takeover");thread.setDaemon(true);return thread;
     });
 
-    /** Native fallback is necessary because ordinary guest JS must not run before admission.
-     * Cold-process admission always runs on the dedicated takeover thread; onCreate only builds
-     * this native view and returns. */
+    /** Admission runs before the runtime. A native splash already covers CHECKING;
+     * do not inflate/measure a recovery page that a healthy boot never displays. */
     public static boolean showRecoveryIfNeeded(android.app.Activity activity,Runnable admitted) {
         PodTakeoverAdmission cached=admissions.get(activity.getApplicationInfo().dataDir);
         if(cached!=null&&cached.admitted()!=null&&PodWorkManagerTakeover.completedInProcess(activity,cached.admitted().data)) {
             android.util.Log.i("PodJSPerf","startup stage=admission cached=true");
             return false;
         }
-        RecoveryView view=new RecoveryView(activity);
-        activity.setContentView(view);
-        new RecoveryController(activity,view,admitted).start();
+        PodSplash splash=PodSplash.of(activity);
+        RecoveryController controller=new RecoveryController(activity,admitted);
+        // Hosts without a splash keep their existing immediate checking page.
+        if(splash==null||!splash.keeping())controller.show(new JSONObject());
+        controller.start();
         return true;
     }
     /** Compatibility entry point: successful background admission recreates the Activity. */
     public static boolean showRecoveryIfNeeded(android.app.Activity activity) {
         return showRecoveryIfNeeded(activity,activity::recreate);
     }
-    private static final class RecoveryController {
-        final WeakReference<android.app.Activity> activity;final RecoveryView view;final Runnable admitted;
+    static final class RecoveryController {
+        final WeakReference<android.app.Activity> activity;final Runnable admitted;
+        // Admission is independent of drawing. Deliver it before a queued first
+        // traversal's sync barrier, rather than drawing the checking tree first.
+        final android.os.Handler main=android.os.Handler.createAsync(android.os.Looper.getMainLooper());
         final AtomicBoolean running=new AtomicBoolean();
-        RecoveryController(android.app.Activity activity,RecoveryView view,Runnable admitted){
-            this.activity=new WeakReference<>(activity);this.view=view;this.admitted=admitted;view.retry.setOnClickListener(v->start());
+        RecoveryView view;boolean finished;
+        final Runnable checking=()->{if(!finished&&running.get())show(new JSONObject());};
+        RecoveryController(android.app.Activity activity,Runnable admitted){
+            this.activity=new WeakReference<>(activity);this.admitted=admitted;
+        }
+        boolean alive(){android.app.Activity owner=activity.get();return owner!=null&&!owner.isFinishing()&&!owner.isDestroyed();}
+        void show(JSONObject state){
+            if(finished||!alive())return;
+            android.app.Activity owner=activity.get();
+            if(view==null){
+                long began=PodStartupTrace.now();view=new RecoveryView(owner);
+                view.retry.setOnClickListener(v->start());
+                PodStartupTrace.stage("recoveryViewCreate",began);
+                began=PodStartupTrace.now();owner.setContentView(view);
+                PodStartupTrace.stage("recoverySetContent",began);
+            }
+            view.render(state,running.get());
         }
         void update(JSONObject state) {
-            android.app.Activity owner=activity.get();if(owner==null)return;
-            owner.runOnUiThread(()->{if(!owner.isFinishing()&&!owner.isDestroyed()){view.render(state,running.get());PodSplash splash=PodSplash.of(owner);if(splash!=null)splash.recoveryStatus(state);}});
+            main.post(()->{
+                if(finished||!alive())return;
+                PodSplash splash=PodSplash.of(activity.get());
+                boolean recovery=PodSplash.isRecoveryState(state);
+                if(view!=null||recovery)show(state);
+                if(splash!=null)splash.recoveryStatus(state);
+            });
+        }
+        void finish(boolean ready,long posted){
+            PodStartupTrace.stage("admissionMainQueueWait",posted);
+            main.removeCallbacks(checking);
+            if(finished||!alive())return;
+            if(ready){finished=true;admitted.run();}
+            else {
+                show(status(activity.get()));
+                PodSplash splash=PodSplash.of(activity.get());if(splash!=null)splash.recovery();
+            }
         }
         void start() {
-            if(!running.compareAndSet(false,true))return;
-            view.render(new JSONObject(),true);
-            android.app.Activity owner=activity.get();if(owner==null){running.set(false);return;}
-            Context context=owner.getApplicationContext();
+            if(finished||!alive()||!running.compareAndSet(false,true))return;
+            if(view!=null)view.render(new JSONObject(),true);
+            // Retain a bounded checking fallback for unusually slow admission.
+            main.postDelayed(checking,120);
+            Context context=activity.get().getApplicationContext();
             long queued=PodStartupTrace.now();
             takeoverExecutor.execute(()->{
                 PodStartupTrace.stage("admissionQueueWait",queued);
@@ -181,15 +216,9 @@ public final class PodTakeover {
                 try {paths(context,reporter);ready=true;}
                 catch(Exception failure){PodTakeoverDiagnostics.warn("ADMISSION",failure);}
                 PodStartupTrace.stage("admissionWorker",began);
-                running.set(false);update(status(context));
-                if(ready) {
-                    android.app.Activity current=activity.get();
-                    long posted=PodStartupTrace.now();
-                    if(current!=null)current.runOnUiThread(()->{
-                        PodStartupTrace.stage("admissionMainQueueWait",posted);
-                        if(!current.isFinishing()&&!current.isDestroyed())admitted.run();
-                    });
-                }
+                running.set(false);
+                boolean result=ready;long posted=PodStartupTrace.now();
+                main.post(()->finish(result,posted));
             });
         }
     }

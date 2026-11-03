@@ -31,4 +31,18 @@ public class PodSplashTest {
  @Test public void destroyedActivityRemovesProviderWithoutWaitingForTimeout(){
   PodSplash splash=new PodSplash(false,1f,80,8000);AtomicInteger removed=new AtomicInteger();splash.attach(new View(ApplicationProvider.getApplicationContext()),removed::incrementAndGet);splash.close(null);Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(9));assertEquals(1,removed.get());assertFalse(splash.keeping());
  }
+ @Test public void nativePreviewRevealsWithoutWaitingForTheIconAnimation(){
+  PodSplash splash=new PodSplash(true,1.12f,80,8000);AtomicInteger removed=new AtomicInteger();
+  splash.attach(new View(ApplicationProvider.getApplicationContext()),removed::incrementAndGet);
+  splash.texturePresented(); // The runtime can start the ordinary exit before decoding completes.
+  splash.previewPresented();assertFalse(splash.obscuring());assertEquals(1,removed.get());
+  splash.previewPresented();Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1));assertEquals(1,removed.get());splash.close(null);
+ }
+ @Test public void nativePreviewHonorsHoldsAndLateProviderOwnership(){
+  PodSplash splash=new PodSplash(true,1.12f,80,8000);AtomicInteger removed=new AtomicInteger();
+  splash.hold("data");splash.previewPresented();assertTrue(splash.keeping());
+  splash.release("data");assertTrue(splash.keeping());splash.texturePresented();assertFalse(splash.keeping());
+  splash.attach(new View(ApplicationProvider.getApplicationContext()),removed::incrementAndGet);
+  assertEquals(1,removed.get());assertFalse(splash.obscuring());splash.close(null);
+ }
 }

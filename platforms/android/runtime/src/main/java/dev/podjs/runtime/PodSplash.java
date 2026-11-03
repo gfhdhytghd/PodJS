@@ -18,7 +18,7 @@ public final class PodSplash {
     private final boolean fade;
     private final float scale;
     private final int duration;
-    private boolean texture,done,closed,exitStarted,removed;
+    private boolean texture,done,closed,exitStarted,removed,nativePreview;
     private View providerView;
     private Runnable removeProvider;
     private final Runnable timeout=()->finish("timeout");
@@ -56,17 +56,28 @@ public final class PodSplash {
     public void hold(String owner){if(keeping()){if(holds.size()>=32&&!holds.contains(owner))throw new IllegalStateException("splash holds full");holds.add(owner);}}
     public void release(String owner){if(holds.remove(owner))texture=false;check();}
     public void texturePresented(){texture=true;check();}
+    /** A verified bitmap is already in the native window tree. Reveal it in the
+     * next traversal, without an icon animation or a guest/layout round trip. */
+    void previewPresented(){
+        if(closed)return;
+        nativePreview=true;
+        texturePresented();
+        if(done)exitIfReady();
+    }
     private void check(){if(texture&&holds.isEmpty())finish("content");}
     public void recovery(){finish("recovery");}
     void recoveryStatus(org.json.JSONObject state){
-        String durable=state.optString("phase","NONE"),progress=state.optString("progressPhase","CHECKING");
         // Routine ACTIVE/no-source CHECKING also mounts RecoveryView. Keep its
         // admission inspection hidden, but expose actual migration or failure.
-        if(migrationPhase(durable)||migrationPhase(progress))recovery();
+        if(isRecoveryState(state))recovery();
     }
+    static boolean isRecoveryState(org.json.JSONObject state){return migrationPhase(state.optString("phase","NONE"))||migrationPhase(state.optString("progressPhase","CHECKING"));}
     private static boolean migrationPhase(String phase){return java.util.Arrays.asList("DETECTED","SNAPSHOTTED","COPYING","VERIFYING","READY","ACTIVATING","PAUSED","BLOCKED").contains(phase);}
     private void finish(String reason){if(done||closed)return;done=true;holds.clear();main.removeCallbacks(timeout);android.util.Log.i("PodSplash","release reason="+reason);exitIfReady();}
     private void exitIfReady(){
+        if(done&&providerView!=null&&nativePreview&&!closed){
+            providerView.animate().cancel();removeOnce();return;
+        }
         if(!done||providerView==null||exitStarted||closed)return;
         exitStarted=true;android.util.Log.i("PodSplash","exit durationMs="+duration+" scale="+scale);
         providerView.animate().alpha(fade?0f:1f).scaleX(scale).scaleY(scale).setDuration(duration).withEndAction(this::removeOnce).start();

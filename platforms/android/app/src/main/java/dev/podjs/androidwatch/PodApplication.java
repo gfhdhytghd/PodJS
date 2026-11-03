@@ -12,6 +12,7 @@ public final class PodApplication extends Application implements Configuration.P
     @Override public void onCreate() {
         long began = PodStartupTrace.now();
         super.onCreate();
+        PodStartupTrace.traceMainQueue(this);
         android.util.Log.i("PodJSPerf", "startup stage=application processToOnCreateMs="
             + (android.os.SystemClock.elapsedRealtime() - android.os.Process.getStartElapsedRealtime())+" processStartMs="+android.os.Process.getStartElapsedRealtime()+" atMs="+android.os.SystemClock.elapsedRealtime()+" epochMs="+System.currentTimeMillis());
         PodStartupTrace.stage("applicationOnCreate", began);
