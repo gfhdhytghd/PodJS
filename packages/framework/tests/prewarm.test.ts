@@ -423,3 +423,42 @@ test('DYNEXT a native cached frame is a drag target while live playback is still
  expect(await promotion.result).toMatchObject({hasRenderedFirstFrame:false,hasCachedFirstFrame:true});
  await pool.releaseAll();
 });
+
+test('independent cached pages retain +2 without claiming an extra live decoder in the guest',async()=>{
+ const m=new Model();
+ m.port.capabilities=async()=>({...await new Model().port.capabilities(),decoderLimit:3,maxSessions:4,keyframeCache:true,independentKeyframes:true});
+ const pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();expect(pool.neighbourCapacity).toBe(3);
+ const active=pool.prepare(source(10),options(10)).result;await m.advance(400);await active;
+ const pending=[pool.prewarm(source(11),options(11),'next'),pool.prewarm(source(12),options(12),'next'),pool.prewarm(source(9),options(9),'prev')];
+ await m.advance(500);await Promise.all(pending);
+ const before=m.prepareCount;
+ await pool.warmNeighbourhood([async()=>{throw Error('independent host must not recycle a live slot for pixel extraction');}]);
+ expect(m.prepareCount).toBe(before);expect(pool.hasStandby('12')).toBe(true);expect(pool.hasStandby('9')).toBe(true);
+ const promoted=pool.promote('up',options(11).bounds,true,undefined,['12']);await m.advance(20);await promoted;
+ expect(pool.hasStandby('12')).toBe(true);await pool.releaseAll();
+});
+
+
+test('DYFAST reserves distinct slots while two native releases are delayed',async()=>{
+ const m=new Model(),pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();
+ const active=pool.prepare(source(10),options(10)).result;await m.advance(400);await active;
+ const a=pool.prewarm(source(11),options(11)),b=pool.prewarm(source(9),options(9));await m.advance(500);await Promise.all([a,b]);
+ const release=m.port.release,waiters:Array<()=>void>=[];
+ m.port.release=(id:string)=>new Promise(resolve=>waiters.push(()=>{void release(id).then(resolve);}));
+ const next=pool.prewarm(source(12),options(12)),prev=pool.prewarm(source(8),options(8));
+ expect(waiters).toHaveLength(2);
+ const outcomes=Promise.allSettled([next,prev]);
+ for(const resolve of waiters)resolve();await m.advance(500);
+ expect((await outcomes).map(x=>x.status)).toEqual(['fulfilled','fulfilled']);
+ expect(pool.hasStandby('12')).toBe(true);expect(pool.hasStandby('8')).toBe(true);
+ expect(m.states.size).toBe(3);m.port.release=release;await pool.releaseAll();
+});
+
+
+test('DYFAST2 decoded neighbour is ready without a redundant loop host round trip',async()=>{
+ const m=new Model(),pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();
+ m.port.setLoop=()=>new Promise(()=>{});
+ const pending=pool.prewarm(source(2),options(2),'next');await m.advance(400);
+ expect(pool.hasStandby('2')).toBe(true);expect((await pending).hasRenderedFirstFrame).toBe(true);
+ await pool.releaseAll();
+});

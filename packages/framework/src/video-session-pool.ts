@@ -63,6 +63,7 @@ export class VideoSessionPool<Source extends {key:string}> {
   private slots:WarmSlot<Source>[];
   private capacity=2;
   private keyframeCache=false;
+  private independentKeyframes=false;
   private neighbourhoodRevision=0;
   private neighbourhoodSlot?:WarmSlot<Source>;
   private neighbourhoodWait?:HostOperation<void>;
@@ -87,7 +88,8 @@ export class VideoSessionPool<Source extends {key:string}> {
   }
   async supportsPrewarm(profile:VideoDecoderProfile={}):Promise<boolean>{
     const c=await this.port.capabilities(profile);
-    this.capacity=Math.max(1,Math.min(8,c.decoderLimit,c.maxSessions??2));
+    this.independentKeyframes=c.independentKeyframes===true;
+    this.capacity=Math.max(1,Math.min(8,this.independentKeyframes?4:c.decoderLimit,c.maxSessions??2));
     this.keyframeCache=c.keyframeCache===true;
     this.slots.sort((a,b)=>Number(b===this.selected)-Number(a===this.selected)||Number(b.direction==='next')-Number(a.direction==='next'));
     await Promise.all(this.slots.slice(this.capacity-1).filter(s=>s.source||s.operation).map(s=>this.evict(s,'capacity')));
@@ -96,6 +98,7 @@ export class VideoSessionPool<Source extends {key:string}> {
     return supported;
   }
   get supportsKeyframes(){return this.keyframeCache;}
+  get supportsIndependentKeyframes(){return this.independentKeyframes;}
   get neighbourCapacity(){return this.capacity-1;}
   private evict(slot:WarmSlot<Source>,reason:'stale'|'capacity'|'release'|'failure'|'timeout'){
     if(slot.source){const fields={reason,direction:slot.direction,generation:slot.revision,source_ordinal:this.ordinal(slot.source.key),slot_ordinal:this.slotOrdinal(slot.id),pool_generation:this.generation};if(slot.prepareSeq)benchmark.mark('prewarm_evicted',slot.prepareSeq,fields);else benchmark.begin('prewarm_evicted',fields);}
@@ -180,7 +183,7 @@ export class VideoSessionPool<Source extends {key:string}> {
       // Older hosts retain the diagnostic fallback. Neither path reparses media.
       const retired=typeof promoted.replacedHasRenderedFirstFrame==='boolean'?{hasRenderedFirstFrame:promoted.replacedHasRenderedFirstFrame,state:'prewarmed'}:await this.port.state(replacedId).catch(()=>undefined);
       if(cancelled||own!==this.generation)throw Error('stale video session adoption');
-      slot.ready=!!previousSource&&retired?.hasRenderedFirstFrame===true&&retired.state!=='error';
+      slot.ready=!!previousSource&&(retired?.hasRenderedFirstFrame===true||promoted.replacedHasCachedFirstFrame===true)&&retired?.state!=='error';
       if(typeof promoted.replacedHasRenderedFirstFrame!=='boolean'||loop!==this.loop)await this.syncLoop(id);
       if(cancelled||own!==this.generation)throw Error('stale video session adoption');
       return state(promoted);
@@ -193,26 +196,32 @@ export class VideoSessionPool<Source extends {key:string}> {
     if(slot?.ready&&slot.identity===this.prepareIdentity(options))return this.port.state(slot.id).then(state);
     if(slot?.pending&&slot.identity===this.prepareIdentity(options))return slot.pending;
     if(!background)this.cancelNeighbourhood();
-    if(slot&&(slot.operation||slot.ready))await this.evict(slot,'stale');
+    let released:Promise<unknown>|undefined;
+    if(slot&&(slot.operation||slot.ready||slot.pending))released=this.evict(slot,'stale');
     slot??=this.slots.slice(0,this.capacity-1).find(s=>!s.source);
-    if(!slot){const usable=this.slots.slice(0,this.capacity-1);slot=usable.find(s=>s!==this.selected&&!s.recentlyActive)??usable.find(s=>s!==this.selected)??usable[0];if(!slot)throw Error('video_decoder_limit');await this.evict(slot,'capacity');}
+    if(!slot){const usable=this.slots.slice(0,this.capacity-1);slot=usable.find(s=>s!==this.selected&&!s.recentlyActive&&!s.pending)??usable.find(s=>s!==this.selected&&!s.recentlyActive)??usable.find(s=>s!==this.selected)??usable[0];if(!slot)throw Error('video_decoder_limit');released=this.evict(slot,'capacity');}
     const target=slot,own=++target.revision;
-    // A live standby can become the next foreground while still preparing.
-    // Only pixel-only workers belong to the cancellable neighbourhood task.
+    // Reserve before waiting for native release. Concurrent neighbours must not
+    // claim the same temporarily empty slot while its old codec is closing.
     target.recentlyActive=false;target.source=source;target.identity=this.prepareIdentity(options);target.ready=false;target.direction=direction;
     const seq=benchmark.begin('prewarm_requested',{generation:own,direction,source_ordinal:this.ordinal(source.key),slot_ordinal:this.slotOrdinal(target.id),pool_generation:this.generation});target.prepareSeq=seq;
     const {backgroundPlayback,...foreground}=options;
-    const operation=this.port.prepare({...foreground,loop:this.loop,sessionId:target.id,sourceOrdinal:this.ordinal(source.key),slotOrdinal:this.slotOrdinal(target.id),prepareSeq:seq,prewarm:true,autoplay:false,muted:false});
-    target.operation=operation;
-    // Slot revisions fence evictions. A promotion can explicitly retain an
-    // in-flight following neighbour while the pool generation advances.
+    let operation:HostOperation<VideoSessionState>|undefined;
     const valid=()=>own===target.revision&&target.source?.key===source.key;
     const pending=(async()=>{try{
+      if(released)await released;
+      if(!valid())throw new Error('stale video session prewarm reservation');
+      let preparedLoop=this.loop;
+      operation=this.port.prepare({...foreground,loop:preparedLoop,sessionId:target.id,sourceOrdinal:this.ordinal(source.key),slotOrdinal:this.slotOrdinal(target.id),prepareSeq:seq,prewarm:true,autoplay:false,muted:false});
+      target.operation=operation;
       const value=await operation.result;
       if(!valid())throw new Error('stale video session prewarm');
-      while(true){const loop=this.loop;await this.port.setLoop(target.id,loop);if(!valid())throw new Error('stale video session prewarm');
-        if(loop===this.loop){target.ready=value.hasRenderedFirstFrame||value.hasCachedFirstFrame===true;if(target.ready)benchmark.mark('prewarm_ready',seq,{generation:own,direction,...(value.bufferedMs===undefined?{}:{buffered_ms:value.bufferedMs})});return state(value);}}
-    }catch(error){if(valid()){const code=String((error as {code?:unknown})?.code??'');this.evict(target,code==='timeout'?'timeout':/resource|decoder.*limit/.test(code)?'capacity':'failure');}throw error;}finally{if(target.operation===operation){target.operation=undefined;target.pending=undefined;}}})();
+      // Prepare already applied this loop value. A redundant host round trip
+      // must not hold decoded pixels behind unrelated native commands.
+      while(preparedLoop!==this.loop){preparedLoop=this.loop;await this.port.setLoop(target.id,preparedLoop);if(!valid())throw new Error('stale video session prewarm');}
+      target.ready=value.hasRenderedFirstFrame||value.hasCachedFirstFrame===true;
+      if(target.ready)benchmark.mark('prewarm_ready',seq,{generation:own,direction,...(value.bufferedMs===undefined?{}:{buffered_ms:value.bufferedMs})});return state(value);
+    }catch(error){if(valid()){const code=String((error as {code?:unknown})?.code??'');this.evict(target,code==='timeout'?'timeout':/resource|decoder.*limit/.test(code)?'capacity':'failure');}throw error;}finally{if(valid()&&target.operation===operation){target.operation=undefined;target.pending=undefined;}}})();
     target.pending=pending;return pending;
   }
   cancelNeighbourhood(){
@@ -224,7 +233,7 @@ export class VideoSessionPool<Source extends {key:string}> {
    * Loaders run serially and must use already-authorized media (no detail fetch).
    * The nearest two live standbys are restored last on small codec budgets. */
   async warmNeighbourhood(loaders:readonly (()=>Promise<{source:Source;options:VideoPrepare;direction:'next'|'prev'}|undefined>)[]):Promise<void>{
-    if(!this.keyframeCache||this.capacity<2)return;
+    if(this.independentKeyframes||!this.keyframeCache||this.capacity<2)return;
     this.cancelNeighbourhood();const revision=this.neighbourhoodRevision,generation=this.generation;
     const current=()=>revision===this.neighbourhoodRevision&&generation===this.generation;
     const nearest:{source:Source;options:VideoPrepare;direction:'next'|'prev'}[]=[];
@@ -338,7 +347,7 @@ export class VideoSessionPool<Source extends {key:string}> {
     this.generation++;
     for(const other of this.slots)other.recentlyActive=false;
     slot.prepareSeq=this.activePrepareSeq;this.activePrepareSeq=prepareSeq;
-    slot.recentlyActive=true;slot.id=this.activeId;slot.direction=direction==='up'?'prev':'next';slot.source=this.activeSource;slot.identity=this.activeIdentity;slot.ready=!!this.activeSource&&retired?.hasRenderedFirstFrame===true&&retired.state!=='error';slot.revision++;
+    slot.recentlyActive=true;slot.id=this.activeId;slot.direction=direction==='up'?'prev':'next';slot.source=this.activeSource;slot.identity=this.activeIdentity;slot.ready=!!this.activeSource&&(retired?.hasRenderedFirstFrame===true||promoted.replacedHasCachedFirstFrame===true)&&retired?.state!=='error';slot.revision++;
     this.activeId=id;this.activeKey=target.key;this.activeSource=target;this.activeIdentity=identity;this.selected=undefined;
     for(const other of this.slots)if(other!==slot&&!retainKeys.includes(other.source?.key??''))this.evict(other,'stale');
     return {source:target,state:state(promoted)};

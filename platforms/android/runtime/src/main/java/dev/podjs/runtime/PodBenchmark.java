@@ -15,13 +15,18 @@ import java.util.function.BooleanSupplier;
 final class PodBenchmark {
     private static final long MAX=9_007_199_254_740_991L;
     private static long sequence;
+    private static java.util.function.LongUnaryOperator videoReleaseSource=seq->0;
+    private static final LinkedHashMap<Long,Long> releaseSources=new LinkedHashMap<>();
+    static synchronized void videoReleaseSource(java.util.function.LongUnaryOperator source){videoReleaseSource=source==null?seq->0:source;releaseSources.clear();}
     private static WeakReference<View> surface=new WeakReference<>(null);
-    private static final Set<String> CODES=new HashSet<>(Arrays.asList(("release_frame decoder_admission pool_stage swap_stage media_variant prepare_stage startup_stage home_first_frame douyin_request entry_start home_entry first_card refresh_start refresh_done player_visible gesture_down gesture_release player_paused previous_audio_stopped incoming_first_frame spinner_shown snap_back fling_done mute_changed player_audio_applied mixer_match login_entry login_tap qr_ready scan_accepted auth_persisted logout_start logout_feedback auth_cleared auth_state needs_login refreshing restore_state renderer_process prewarm_requested prewarm_ready prewarm_evicted prewarm_policy background_gate error_page error").split(" ")));
+    private static final Set<String> CODES=new HashSet<>(Arrays.asList(("release_frame decoder_admission pool_stage swap_stage media_variant prepare_stage startup_stage home_first_frame douyin_request entry_start home_entry first_card refresh_start refresh_done player_visible gesture_down gesture_release player_paused previous_audio_absent previous_audio_stopped incoming_first_frame spinner_shown snap_back fling_done mute_changed player_audio_applied mixer_match login_entry login_tap qr_ready scan_accepted auth_persisted logout_start logout_feedback auth_cleared auth_state needs_login refreshing restore_state renderer_process prewarm_requested prewarm_ready prewarm_evicted prewarm_policy background_gate error_page error").split(" ")));
     private static final Set<String> NUMBERS=new HashSet<>(Arrays.asList("seq","attempt","delta","generation","source_generation","pid","active_tracks","buffered_ms","slots","http_status","retry_after_ms"));
     private static final Set<String> AUTH=new HashSet<>(Arrays.asList("login_entry","login_tap","qr_ready","scan_accepted","auth_persisted","renderer_process"));
     private static final Set<String> PRESENTED=new HashSet<>(Arrays.asList("home_first_frame","first_card","refresh_done","qr_ready","logout_feedback","needs_login","refreshing","spinner_shown"));
-    private static final Set<String> PROOF=new HashSet<>(Arrays.asList("release_frame","incoming_first_frame","snap_back","previous_audio_stopped","player_paused","player_audio_applied","mixer_match","fling_done"));
+    private static final Set<String> PROOF=new HashSet<>(Arrays.asList("release_frame","incoming_first_frame","snap_back","previous_audio_stopped","previous_audio_absent","player_paused","player_audio_applied","mixer_match","fling_done"));
     private static final LinkedHashMap<Long,Set<String>> actions=new LinkedHashMap<>();
+    private static final Map<Long,Long> actionTimes=new HashMap<>();
+    static synchronized long actionTime(long seq){return actionTimes.getOrDefault(seq,Long.MAX_VALUE);}
     private static java.util.function.LongConsumer firstCardStats=seq->{};
     private static long startupSequence;
     static void attach(View view){attach(view,seq->{});}
@@ -33,7 +38,7 @@ final class PodBenchmark {
     static synchronized long begin(String code,JSONObject fields,long now){
         if(now<0||now>SystemClock.uptimeMillis())return 0;sequence=Math.max(sequence+1,now*1024);
         if(sequence<1||sequence>MAX)return 0;
-        try {JSONObject args=new JSONObject(fields==null?"{}":fields.toString()).put("code",code).put("seq",sequence);actions.put(sequence,new HashSet<>());while(actions.size()>1024){Long old=actions.keySet().iterator().next();actions.remove(old);presentationVersions.keySet().removeIf(key->key.startsWith(old+":"));videos.remove(old);confirmedVideo.remove(old);confirmedVideoTime.remove(old);}return emit(args,now)?sequence:0;}catch(Exception ignored){return 0;}
+        try {JSONObject args=new JSONObject(fields==null?"{}":fields.toString()).put("code",code).put("seq",sequence);actions.put(sequence,new HashSet<>());actionTimes.put(sequence,now);while(actions.size()>1024){Long old=actions.keySet().iterator().next();actions.remove(old);actionTimes.remove(old);presentationVersions.keySet().removeIf(key->key.startsWith(old+":"));videos.remove(old);confirmedVideo.remove(old);confirmedVideoTime.remove(old);}return emit(args,now)?sequence:0;}catch(Exception ignored){return 0;}
     }
     static long mark(String code,long seq,JSONObject fields){try{return emit(new JSONObject(fields==null?"{}":fields.toString()).put("code",code).put("seq",seq),SystemClock.uptimeMillis())?seq:0;}catch(Exception ignored){return 0;}}
     private static final Map<String,Long> presentationVersions=new HashMap<>();
@@ -46,6 +51,10 @@ final class PodBenchmark {
             String code=args.optString("code","");
             if(PROOF.contains(code)||code.equals("decoder_admission")||code.equals("swap_stage")||code.equals("prepare_stage"))return 0; // Mixer/target-surface proof cannot originate in guest state.
             if(args.optBoolean("cancel_presented",false)){args.remove("cancel_presented");if(args.length()!=2||!CODES.contains(code))return 0;long seq=integer(args,"seq");synchronized(PodBenchmark.class){String key=seq+":"+code;presentationVersions.put(key,presentationVersions.getOrDefault(key,0L)+1);}return seq;}
+            if(code.equals("gesture_release")&&args.has("seq")&&known(integer(args,"seq"))){
+                long source=videoReleaseSource.applyAsLong(integer(args,"seq"));
+                if(source>0){args.put("source_generation",source);synchronized(PodBenchmark.class){releaseSources.put(integer(args,"seq"),source);while(releaseSources.size()>128)releaseSources.remove(releaseSources.keySet().iterator().next());}}
+            }
             boolean presented=args.optBoolean("presented",false);args.remove("presented");
             if(presented&&!PRESENTED.contains(code))return 0;
             long seq;
@@ -66,9 +75,10 @@ final class PodBenchmark {
             String code=args.getString("code");if(!CODES.contains(code)||now<0)return false;
             long seq=integer(args,"seq");if(!known(seq))return false;
             if(AUTH.contains(code)&&(!args.has("attempt")||integer(args,"attempt")==0))return false;
+            if(code.equals("previous_audio_absent")&&(!"audiotrack".equals(args.optString("backend"))||!"absent".equals(args.optString("state"))||!args.has("generation")||!args.has("source_generation")))return false;
             if(code.equals("douyin_request")){
                 for(String key:Arrays.asList("category","http_status","douyin_status_code","challenge","signing_ok","cookie_present","retry_after_ms","error_code"))if(!args.has(key))return false;
-                if(args.length()!=10||integer(args,"http_status")>599)return false;
+                if(args.length()<10||args.length()>16||integer(args,"http_status")>599)return false;
             }
             if(code.equals("player_visible")&&args.optString("state").equals("present")){
                 View view=surface.get();
@@ -85,7 +95,7 @@ final class PodBenchmark {
                 else if(key.equals("variant_outlet")){if(!code.equals("media_variant")||!Arrays.asList("feed","detail","foreground").contains(value))return false;}
                 else if(key.equals("codec")){if(!code.equals("media_variant")||!Arrays.asList("h264","h265","unknown").contains(value))return false;}
                 else if(key.equals("selected")){if(!code.equals("media_variant")||!(value instanceof Boolean))return false;}
-                else if(key.equals("pool_stage")){if(!code.equals("pool_stage")||!Arrays.asList("select","neighbour").contains(value))return false;}
+                else if(key.equals("pool_stage")){if(!code.equals("pool_stage")||!Arrays.asList("select","neighbour","refill_start","refill_end").contains(value))return false;}
                 else if(Arrays.asList("source_ordinal","slot_ordinal","pool_generation","queue_index","anchor_index").contains(key)){if(!Arrays.asList("pool_stage","prewarm_requested","prewarm_evicted","prepare_stage","release_frame").contains(code)||integer(args,key)>9_007_199_254_740_991L)return false;}
                 else if(key.equals("swap_stage")){if(!code.equals("swap_stage")||!Arrays.asList("promote_enter","surface_promoted","play_command","texture_updated","rendered_first_frame","ui_confirm","observer_armed","window_commit_1","window_commit_2").contains(value))return false;}
                 else if(key.equals("prepare_stage")){if(!code.equals("prepare_stage")||!Arrays.asList("start","dispatched","network_open","network_start","network_first_byte","network_end","decoder_configured","format_ready","first_frame","timeout","cancel","adopt","retire","release").contains(value))return false;}
@@ -109,6 +119,7 @@ final class PodBenchmark {
                 else if(Arrays.asList("decoder_in_use","system_headroom_bytes","trim_level","keyframe_bytes","keyframe_entries").contains(key)){if(!code.equals("decoder_admission")||integer(args,key)>MAX)return false;}
                 else if(key.equals("is_prewarm")&&code.equals("decoder_admission")){if(!(value instanceof Boolean))return false;}
                 else if(PodVideoFailure.field(key)){if(!(code.equals("error")||code.equals("error_page")||code.equals("prepare_stage"))||!PodVideoFailure.accept(key,value))return false;}
+                else if(Arrays.asList("request_queue_ms","request_sign_ms","request_transport_ms","request_text_ms","request_status_ms","response_bytes").contains(key)){if(!code.equals("douyin_request")||integer(args,key)>(key.equals("response_bytes")?67108864L:600000L))return false;}
                 else if(key.equals("douyin_status_code")){if(!code.equals("douyin_request")||!(value instanceof Number))return false;double n=((Number)value).doubleValue();if(!Double.isFinite(n)||n!=((Number)value).longValue()||n < -1||n>Integer.MAX_VALUE)return false;}
                 else if(key.equals("category")){if(!code.equals("douyin_request")||!Arrays.asList("feed","detail","auth_probe","media").contains(value))return false;}
                 else if(key.equals("error_code")){if(!code.equals("douyin_request")||!Arrays.asList("success","forbidden","http","signing","challenge","empty","blocked","api_status","timeout","cancelled","network","cooldown","client_limit","decode").contains(value))return false;}
@@ -214,7 +225,7 @@ final class PodBenchmark {
         JSONObject event(String code){try{return new JSONObject().put("code",code).put("seq",seq).put("generation",generation).put("source_generation",sourceGeneration);}catch(Exception ignored){return new JSONObject();}}
     }
     static VideoAction videoAction(JSONObject args){
-        try{JSONObject value=args.optJSONObject("benchmark");if(value==null)return null;long seq=integer(value,"seq"),generation=integer(value,"generation"),source=integer(value,"source_generation");long delta=value.has("delta")?integer(value,"delta"):1;return known(seq)&&(delta==1||delta==2)?new VideoAction(seq,generation,source,(int)delta):null;}catch(Exception ignored){return null;}
+        try{JSONObject value=args.optJSONObject("benchmark");if(value==null)return null;long seq=integer(value,"seq"),generation=integer(value,"generation"),source=integer(value,"source_generation");synchronized(PodBenchmark.class){source=releaseSources.getOrDefault(seq,source);}long delta=value.has("delta")?integer(value,"delta"):1;return known(seq)&&(delta==1||delta==2)?new VideoAction(seq,generation,source,(int)delta):null;}catch(Exception ignored){return null;}
     }
     // PodVideoAudioStop emits AudioTrack acknowledgements. No mixer_match producer.
 }

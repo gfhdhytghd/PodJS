@@ -367,7 +367,7 @@ export interface VideoSessionCapabilities {
   prewarmMode:"hidden_first_frame"; surfacePromotion:boolean; verticalTransition:boolean;
   surfaceComposition:"android_texture_view"; backgroundPlayback:false;
   decoderMime?:string|null; decoderWidth?:number; decoderHeight?:number; decoderName?:string|null;
-  keyframeCache?:boolean; keyframeEntries?:number; keyframeBytes?:number; keyframeMaxBytes?:number; decoderPeak?:number;
+  keyframeCache?:boolean; independentKeyframes?:boolean; keyframeEntries?:number; keyframeBytes?:number; keyframeMaxBytes?:number; decoderPeak?:number;
   decoderAdvertisedInstances?:number; decoderSizeSupported?:boolean; decoderRuntimeDowngraded?:boolean;
 }
 export interface VideoSessionPrepare extends Omit<VideoPrepare,"backgroundPlayback"> {
@@ -390,7 +390,7 @@ export interface VideoSessionState {
   hasCachedFirstFrame?:boolean; keyframeAvailable?:boolean;
   presented:boolean; hasRenderedFirstFrame:boolean; targetBufferBytes:number;
   /** Atomic promotion receipt; absent on older hosts. */
-  replacedHasRenderedFirstFrame?:boolean;
+  replacedHasRenderedFirstFrame?:boolean; replacedHasCachedFirstFrame?:boolean;
 }
 export interface VideoSessionTransition {
   fromSessionId:string; toSessionId:string; progress:number; direction:"up"|"down"; bounds?:VideoBounds; benchmark?:VideoBenchmarkAction; trackPointer?:boolean;

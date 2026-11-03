@@ -1,32 +1,41 @@
 package dev.podjs.runtime;
 
 import org.json.JSONObject;
+import java.util.ArrayDeque;
 
-/** UI-thread ACTION_UP snapshot, paired once with the guest's release identity.
- * A later pause cannot replace the recorded pixels with a newly decoded frame. */
+/** ACTION_UP pixels survive a subsequent pointer down. The guest release binds
+ * the matching native snapshot once; late decode can never change its pixels. */
 final class PodVideoReleaseFrame {
-    private String owner;
-    private long oldGeneration,time,targetGeneration,ordinal;
-    private boolean visible,ready;
-    private String kind;
-    void clear(){owner=null;}
-    void record(String owner,long generation,long time,long targetGeneration,long ordinal,
-                boolean visible,boolean ready,String kind){
-        this.owner=owner;this.oldGeneration=generation;this.time=time;
-        this.targetGeneration=targetGeneration;this.ordinal=ordinal;
-        this.visible=visible;this.ready=ready;this.kind=kind;
+    private static final class Capture {
+        String owner,kind;long generation,time,target,ordinal,seq;boolean visible,ready;
     }
-    boolean emit(String owner,PodBenchmark.VideoAction action){
-        if(action==null||this.owner==null||!this.owner.equals(owner)||action.sourceGeneration!=oldGeneration)return false;
-        this.owner=null;
-        long now=android.os.SystemClock.uptimeMillis();
-        if(time>now||now-time>2000)return false;
+    private final ArrayDeque<Capture> pending=new ArrayDeque<>();
+    synchronized void clear(){pending.clear();}
+    synchronized void record(String owner,long generation,long time,long targetGeneration,long ordinal,
+                boolean visible,boolean ready,String kind){
+        Capture c=new Capture();c.owner=owner;c.generation=generation;c.time=time;c.target=targetGeneration;c.ordinal=ordinal;
+        c.visible=visible;c.ready=ready;c.kind=kind;pending.add(c);while(pending.size()>8)pending.removeFirst();
+    }
+    /** Use the original native gesture timestamp, not the sequence encoding. */
+    synchronized long bind(long seq){
+        long now=android.os.SystemClock.uptimeMillis(),down=PodBenchmark.actionTime(seq);
+        for(Capture c:pending)if(c.seq==seq)return c.generation;
+        for(Capture c:pending)if(c.seq==0&&c.time>=down&&c.time<=now&&now-c.time<=2000){c.seq=seq;return c.generation;}
+        return 0;
+    }
+    synchronized boolean emit(String owner,PodBenchmark.VideoAction action){
+        if(action==null)return false;
+        Capture found=null;
+        for(Capture c:pending)if(c.seq==action.seq&&c.owner.equals(owner)&&c.generation==action.sourceGeneration){found=c;break;}
+        if(found==null)for(Capture c:pending)if(c.seq==0&&c.time>=PodBenchmark.actionTime(action.seq)&&c.owner.equals(owner)&&c.generation==action.sourceGeneration){found=c;break;}
+        if(found==null)return false;pending.remove(found);
+        long now=android.os.SystemClock.uptimeMillis();if(found.time>now||now-found.time>2000)return false;
         try{return PodBenchmark.emit(action.event("release_frame")
-            .put("decoded_visible",action.delta==1&&visible)
-            .put("playback_ready",action.delta==1&&ready)
-            .put("frame_kind",action.delta==1?kind:"none")
-            .put("target_generation",action.delta==1?targetGeneration:0)
-            .put("source_ordinal",action.delta==1?ordinal:0),time);
+            .put("decoded_visible",action.delta==1&&found.visible)
+            .put("playback_ready",action.delta==1&&found.ready)
+            .put("frame_kind",action.delta==1?found.kind:"none")
+            .put("target_generation",action.delta==1?found.target:0)
+            .put("source_ordinal",action.delta==1?found.ordinal:0),found.time);
         }catch(Exception ignored){return false;}
     }
 }

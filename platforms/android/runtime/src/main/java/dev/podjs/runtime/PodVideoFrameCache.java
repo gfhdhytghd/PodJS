@@ -22,7 +22,12 @@ final class PodVideoFrameCache {
     static final ExecutorService IO=new java.util.concurrent.ThreadPoolExecutor(1,1,0L,java.util.concurrent.TimeUnit.MILLISECONDS,new java.util.concurrent.ArrayBlockingQueue<>(4),r->{Thread t=new Thread(r,"PodVideoFrames");t.setDaemon(true);return t;},new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
     private final File root;
     PodVideoFrameCache(File files){root=new File(files,"video-frames");}
-    static String hash(String value)throws Exception {StringBuilder out=new StringBuilder();for(byte b:MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)))out.append(String.format(Locale.ROOT,"%02x",b));return out.toString();}
+    static String hash(String value)throws Exception {
+        byte[] digest=MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
+        char[] out=new char[digest.length*2];String hex="0123456789abcdef";
+        for(int i=0;i<digest.length;i++){int v=digest[i]&255;out[i*2]=hex.charAt(v>>>4);out[i*2+1]=hex.charAt(v&15);}
+        return new String(out);
+    }
     static String key(JSONObject args)throws Exception {String key=args.getString("key");if(key.isEmpty()||key.length()>256||key.indexOf('\0')>=0)throw new IllegalArgumentException("invalid_frame_key");return key;}
     static String binding(JSONObject source,PodMediaPrefixCache cache)throws Exception {
         if(source==null)throw new IllegalArgumentException("frame_source_required");

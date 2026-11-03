@@ -38,13 +38,14 @@ final class PodServices implements Closeable {
     private final Sink sink;
     /** Logs every service request and replies over 64 KiB (tag PodJSPerf); for startup profiling. */
     private static final boolean PERF_TRACE = false;
+    private static final boolean MEMORY_TRACE = false;
     static boolean memoryEnabled(Context context) {
-        return PERF_TRACE || (context.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0;
+        return MEMORY_TRACE || PERF_TRACE || (context.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0;
     }
     /** adb shell setprop log.tag.PodJSMem DEBUG before launch opts in.
      * Release hosts still require the explicit source PERF_TRACE opt-in. */
     static boolean memoryTraceEnabled(Context context) {
-        return PERF_TRACE || (memoryEnabled(context) && android.util.Log.isLoggable("PodJSMem", android.util.Log.DEBUG));
+        return MEMORY_TRACE || PERF_TRACE || (memoryEnabled(context) && android.util.Log.isLoggable("PodJSMem", android.util.Log.DEBUG));
     }
     private final PodTextRasterServices.Stats textBitmapStats;
     private java.util.function.Supplier<JSONObject> memoryProvider;
@@ -71,6 +72,7 @@ final class PodServices implements Closeable {
                         Runtime jvm=Runtime.getRuntime();
                         value.put("nativeAtMs",nativeAt).put("textAtMs",textAt).put("nativeCollectMs",nativeCollectMs)
                             .put("sampleAtMs",android.os.SystemClock.elapsedRealtime()).put("text",text)
+                            .put("videoFrames",videoSessions.memoryStats()).put("mediaPrefix",mediaPrefixCache.memoryStats())
                             .put("java",new JSONObject().put("nativeHeapAllocatedBytes",android.os.Debug.getNativeHeapAllocatedSize())
                                 .put("nativeHeapSizeBytes",android.os.Debug.getNativeHeapSize())
                                 .put("heapUsedBytes",jvm.totalMemory()-jvm.freeMemory()).put("heapCapacityBytes",jvm.totalMemory())

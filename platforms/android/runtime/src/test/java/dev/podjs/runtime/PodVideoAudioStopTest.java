@@ -31,7 +31,7 @@ public class PodVideoAudioStopTest {
         PodVideoAudioStop observer=new PodVideoAudioStop();AudioTrack first=track(),replacement=track();ShadowLog.clear();
         try{observer.arm(action(2),2);observer.observed(first,"pause");assertEquals(0,count());
             attach(observer,first);observer.arm(action(1),2);observer.observed(first,"pause");assertEquals(0,count());
-            observer.arm(action(2),2);observer.observed(replacement,"pause");assertEquals(0,count());
+            first.play();observer.arm(action(2),2);observer.observed(replacement,"pause");assertEquals(0,count());
             observer.cancel();observer.observed(first,"pause");assertEquals(0,count());
         }finally{first.release();replacement.release();}
     }

@@ -50,9 +50,30 @@ public class PodVideoKeyframesTest {
         PodVideoKeyframes cache=new PodVideoKeyframes();
         PodVideoKeyframes.Frame pinned=cache.put("0",pixels());pinned.pins++;
         for(int i=1;i<16;i++)cache.put(String.valueOf(i),pixels());
-        assertEquals(8,cache.size());assertEquals(8L*466*466*4,cache.bytes);
+        assertEquals(10,cache.size());assertEquals(10L*466*466*4,cache.bytes);
         assertSame(pinned,cache.get("0"));assertFalse(pinned.pixels.isRecycled());assertNull(cache.get("1"));
         cache.trim();assertEquals(1,cache.size());pinned.pins--;cache.close();assertEquals(0,cache.bytes);assertTrue(pinned.pixels.isRecycled());
+    }
+    @Test public void windowEvictionDefersDisplayedPixelsUntilLastOwnerReleases(){
+        PodVideoKeyframes cache=new PodVideoKeyframes();
+        PodVideoKeyframes.Frame recent=cache.put("recent",pixels()),old=cache.put("old",pixels());
+        assertSame(old,cache.acquire("old"));cache.retainWindow(java.util.Collections.singleton("recent"));
+        assertFalse(old.pixels.isRecycled());assertFalse(recent.pixels.isRecycled());
+        cache.unpin(old);assertTrue(old.pixels.isRecycled());assertFalse(cache.contains("old"));
+        Bitmap stale=pixels();assertNull(cache.put("late-old",stale));assertTrue(stale.isRecycled());
+        cache.close();assertTrue(recent.pixels.isRecycled());assertEquals(0,cache.bytes);
+    }
+    @Test public void closingCacheWaitsForDiskOrDisplayOwnerWithoutKeepingUnpinnedCopies(){
+        PodVideoKeyframes cache=new PodVideoKeyframes();PodVideoKeyframes.Frame frame=cache.put("owned",pixels());cache.pin(frame);
+        cache.close();assertFalse(frame.pixels.isRecycled());cache.unpin(frame);assertTrue(frame.pixels.isRecycled());assertEquals(0,cache.bytes);
+    }
+    @Test public void lateFarFrameCannotEvictThreeRecentlyPassedFramesWhileOldDisplayIsPinned(){
+        PodVideoKeyframes cache=new PodVideoKeyframes();PodVideoKeyframes.Frame old=cache.put("retired",pixels());cache.pin(old);
+        java.util.LinkedHashSet<String> wanted=new java.util.LinkedHashSet<>();
+        for(String key:new String[]{"current","next","prev1","prev2","prev3","far2","far3","far4","far5","far6"})wanted.add(key);
+        cache.retainWindow(wanted);for(String key:wanted)cache.put(key,pixels());
+        assertNull(cache.get("far6"));assertFalse(cache.canAccept("far6"));for(String key:new String[]{"prev1","prev2","prev3"})assertNotNull(cache.get(key));
+        cache.unpin(old);assertTrue(cache.canAccept("far6"));assertNotNull(cache.put("far6",pixels()));assertEquals(10,cache.size());cache.close();
     }
     @Test public void changedHeadersCannotReusePixelsAndDuplicateBindingKeepsOriginal()throws Exception {
         JSONObject a=new JSONObject().put("url","https://fixture.invalid/video").put("headers",new JSONObject().put("Authorization","synthetic-a"));
@@ -78,7 +99,7 @@ public class PodVideoKeyframesTest {
             @SuppressWarnings("unchecked") Map<String,Object> sessions=(Map<String,Object>)field(PodVideoSessionServices.class,"sessions").get(service);sessions.put("worker",worker);
             JSONObject args=new JSONObject().put("sessionId","worker").put("url","https://fixture.invalid/first").put("prewarm",true).put("keyframeOnly",true).put("bounds",new JSONObject().put("width",466).put("height",466));
             // Robolectric uses density=1; actual decoder and pixel parity are separate instrumentation tests.
-            String binding=PodVideoFrameCache.binding(args,null)+":466:466";
+            String binding=PodVideoFrameCache.binding(args,null);
             PodVideoKeyframes cache=(PodVideoKeyframes)field(PodVideoSessionServices.class,"keyframes").get(service);cache.put(binding,pixels());
             for(String name:new String[]{"prewarming","keyframeOnly","decoderLease"})field(type,name).setBoolean(worker,true);
             field(type,"frameBinding").set(worker,binding);Reply reply=new Reply();field(type,"prepareCallback").set(worker,reply);budget.acquire();

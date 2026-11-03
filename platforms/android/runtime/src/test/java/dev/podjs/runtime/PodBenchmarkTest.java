@@ -26,6 +26,17 @@ public class PodBenchmarkTest {
   assertEquals(0,PodBenchmark.dispatch(new JSONObject(row.toString()).put("http_status",600).toString()));
   assertEquals(1,ShadowLog.getLogsForTag("DYBENCH").size());assertFalse(ShadowLog.getLogsForTag("DYBENCH").get(0).msg.contains("PRIVATE"));
  }
+ @Test public void requestPhaseNumbersHaveClosedBoundsAndCannotCarryText()throws Exception {
+  JSONObject row=new JSONObject().put("code","douyin_request").put("category","feed").put("http_status",200).put("douyin_status_code",0).put("challenge",false).put("signing_ok",true).put("cookie_present",true).put("retry_after_ms",0).put("error_code","success");
+  for(String key:new String[]{"request_queue_ms","request_sign_ms","request_transport_ms","request_text_ms","request_status_ms","response_bytes"}){
+   long max=key.equals("response_bytes")?67108864L:600000L;
+   assertTrue(PodBenchmark.dispatch(new JSONObject(row.toString()).put(key,max).toString())>0);
+   for(Object value:new Object[]{-1,1.5,max+1,"PRIVATE"})assertEquals(0,PodBenchmark.dispatch(new JSONObject(row.toString()).put(key,value).toString()));
+   assertEquals(0,PodBenchmark.dispatch(new JSONObject().put("code","entry_start").put(key,1).toString()));
+   row.put(key,1);
+  }
+  assertTrue(PodBenchmark.dispatch(row.toString())>0);
+ }
  @Test public void closedSchemaOwnsClockAndRejectsPrivateOrForgedProof()throws Exception {
   ShadowLog.clear();long seq=PodBenchmark.dispatch("{\"code\":\"gesture_down\",\"direction\":\"next\"}");assertTrue(seq>0);
   long now=SystemClock.uptimeMillis();assertEquals(seq,PodBenchmark.dispatch(new JSONObject().put("code","gesture_release").put("seq",seq).put("direction","next").put("prewarmed",true).put("generation",3).put("source_generation",2).toString()));

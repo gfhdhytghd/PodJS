@@ -7,11 +7,12 @@ import java.util.Iterator;
 import java.util.Map;
 
 /** Main-thread LRU of decoded frame-zero pixels, never network covers. HWUI
- * uploads these bitmaps before reveal. Eight 466x466 RGBA buffers: 6.63 MiB
- * CPU, at most another 6.63 MiB of GPU textures; one 0.83 MiB readback scratch. Displayed entries are pinned.
- * There is no disk encoding, credential persistence, or extra decoder lease. */
+ * uploads these bitmaps before reveal. Ten 466x466 RGBA buffers: 8.29 MiB
+ * CPU, at most another 8.29 MiB of GPU textures; one 0.83 MiB readback scratch. Displayed entries are pinned.
+ * Disk compression, when enabled, runs on a worker with a pinned bitmap.
+ * No credential persistence or extra decoder lease occurs here. */
 final class PodVideoKeyframes implements AutoCloseable {
-    static final int MAX_EDGE = 466, MAX_ENTRIES = 8;
+    static final int MAX_EDGE = 466, MAX_ENTRIES = 10;
     static final long MAX_BYTES = (long) MAX_EDGE * MAX_EDGE * 4 * MAX_ENTRIES;
     static final class Frame {
         final Bitmap pixels;
@@ -20,9 +21,39 @@ final class PodVideoKeyframes implements AutoCloseable {
         Frame(Bitmap pixels) { this.pixels = pixels; }
     }
     private final LinkedHashMap<String, Frame> frames = new LinkedHashMap<>(16, .75f, true);
-    long bytes;
-    Frame get(String binding) { return frames.get(binding); }
-    int size() { return frames.size(); }
+    volatile long bytes;
+    private java.util.Set<String> window;
+    private volatile java.util.function.BiConsumer<String,Frame> stored;
+    void onStored(java.util.function.BiConsumer<String,Frame> listener){stored=listener;}
+    synchronized void pin(Frame frame){frame.pins++;}
+    synchronized void unpin(Frame frame){
+        if(frame.pins<=0)throw new IllegalStateException("keyframe_pin_underflow");
+        frame.pins--;trimOutsideWindow();
+    }
+    synchronized Frame acquire(String binding){Frame frame=frames.get(binding);if(frame!=null)frame.pins++;return frame;}
+    synchronized void retainWindow(java.util.Set<String> wanted){window=new java.util.LinkedHashSet<>(wanted);trimOutsideWindow();}
+    private void trimOutsideWindow(){
+        Iterator<Map.Entry<String,Frame>> it=frames.entrySet().iterator();
+        while(it.hasNext()){
+            Map.Entry<String,Frame> entry=it.next();Frame frame=entry.getValue();
+            if(frame.pins==0&&(closed||window!=null&&!window.contains(entry.getKey()))){bytes-=frame.pixels.getAllocationByteCount();it.remove();frame.pixels.recycle();}
+        }
+    }
+    synchronized Frame get(String binding) { return frames.get(binding); }
+    synchronized boolean contains(String binding) { return frames.containsKey(binding); }
+    synchronized boolean canAccept(String binding) {
+        if(closed||window!=null&&!window.contains(binding))return false;
+        if(frames.containsKey(binding)||frames.size()<MAX_ENTRIES&&bytes+MAX_EDGE*(long)MAX_EDGE*4<=MAX_BYTES)return true;
+        for(Map.Entry<String,Frame> entry:frames.entrySet())if(entry.getValue().pins==0&&priority(entry.getKey())>=priority(binding))return true;
+        return false;
+    }
+    synchronized int size() { return frames.size(); }
+    synchronized org.json.JSONObject memoryStats()throws Exception {
+        long pinned=0;int pins=0;
+        for(Frame frame:frames.values())if(frame.pins>0){pinned+=frame.pixels.getAllocationByteCount();pins++;}
+        return new org.json.JSONObject().put("entries",frames.size()).put("bytes",bytes).put("maxBytes",MAX_BYTES)
+            .put("pinnedEntries",pins).put("pinnedBytes",pinned).put("captureQueue",captures.size()).put("copying",copying);
+    }
     private final java.util.ArrayDeque<Runnable> captures=new java.util.ArrayDeque<>();
     private boolean copying,closed;
     /** One bounded asynchronous readback. Explicit video crop excludes codec
@@ -55,22 +86,35 @@ final class PodVideoKeyframes implements AutoCloseable {
             },main);
         }catch(RuntimeException error){surface.release();pixels.recycle();complete.accept(null);}
     }
-    Frame put(String binding, Bitmap pixels) {
+    synchronized Frame put(String binding, Bitmap pixels) {return put(binding,pixels,true);}
+    synchronized Frame put(String binding, Bitmap pixels,boolean persist) {
         long size = pixels.getAllocationByteCount();
-        if (pixels.getWidth() > MAX_EDGE || pixels.getHeight() > MAX_EDGE || size > MAX_BYTES) { pixels.recycle(); return null; }
+        if (closed || window!=null&&!window.contains(binding) || pixels.getWidth() > MAX_EDGE || pixels.getHeight() > MAX_EDGE || size > MAX_BYTES) { pixels.recycle(); return null; }
         Frame old = frames.get(binding);
         if (old != null) { pixels.recycle(); return old; }
-        Iterator<Map.Entry<String, Frame>> iterator = frames.entrySet().iterator();
-        while ((frames.size() >= MAX_ENTRIES || bytes + size > MAX_BYTES) && iterator.hasNext()) {
-            Frame frame = iterator.next().getValue();
-            if (frame.pins != 0) continue;
-            bytes -= frame.pixels.getAllocationByteCount(); iterator.remove(); frame.pixels.recycle();
+        while (frames.size() >= MAX_ENTRIES || bytes + size > MAX_BYTES) {
+            String victim=null;int worst=-1;
+            for(Map.Entry<String,Frame> entry:frames.entrySet()){
+                if(entry.getValue().pins!=0)continue;
+                int rank=priority(entry.getKey());
+                if(victim==null||rank>worst){victim=entry.getKey();worst=rank;}
+            }
+            // The window orders the current and recently passed sources before
+            // far speculation. A late far frame cannot evict those neighbours.
+            if(victim==null||window!=null&&worst<priority(binding))break;
+            Frame removed=frames.remove(victim);bytes-=removed.pixels.getAllocationByteCount();removed.pixels.recycle();
         }
         if (frames.size() >= MAX_ENTRIES || bytes + size > MAX_BYTES) { pixels.recycle(); return null; }
         pixels.prepareToDraw();
-        Frame frame = new Frame(pixels); frames.put(binding, frame); bytes += size; return frame;
+        Frame frame = new Frame(pixels); frames.put(binding, frame); bytes += size;
+        if(persist&&stored!=null)stored.accept(binding,frame);return frame;
     }
-    void trim() {
+    private int priority(String binding){
+        if(window==null)return 0;int rank=0;
+        for(String key:window){if(key.equals(binding))return rank;rank++;}
+        return Integer.MAX_VALUE;
+    }
+    synchronized void trim() {
         Iterator<Frame> iterator = frames.values().iterator();
         while (iterator.hasNext()) { Frame frame = iterator.next(); if (frame.pins == 0) { bytes -= frame.pixels.getAllocationByteCount(); iterator.remove(); frame.pixels.recycle(); } }
     }

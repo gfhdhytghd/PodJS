@@ -20,6 +20,8 @@ import java.util.concurrent.*;
 final class PodMediaPrefixCache implements AutoCloseable {
     static final String SCHEME="podjs-media-cache";
     static final int CHUNK=64*1024, MAX_ENTRY=4*1024*1024, MAX_ENTRIES=16;
+    static final int MAX_REGISTRATIONS=1024;
+    static final long MAX_METADATA_BYTES=8L*1024*1024;
     final File root;
     File frameRoot;
     final long maxTotal;
@@ -38,9 +40,14 @@ final class PodMediaPrefixCache implements AutoCloseable {
     private boolean closed;private int pumps;
     private java.util.function.Consumer<JSONObject> resultSink=value->{};
     synchronized void setResultSink(java.util.function.Consumer<JSONObject> sink){resultSink=sink;}
+    interface FrameListener { void window(java.util.List<Entry> entries); void bytes(Entry entry); default void clear() {} }
+    private FrameListener frameListener;
+    synchronized void setFrameListener(FrameListener listener){frameListener=listener;if(listener!=null)publishFrameWindow();}
+    private void publishFrameWindow(){if(frameListener!=null){java.util.List<Entry> wanted=new ArrayList<>();for(String token:protectedTokens){Entry e=entries.get(token);if(e!=null)wanted.add(e);}frameListener.window(wanted);}}
+    private void frameBytes(Entry entry){if(frameListener!=null)frameListener.bytes(entry);}
     static final class Entry {
         final long ordinal=ORDINALS.incrementAndGet();final String token,remote;volatile String selectedRemote;List<String> mirrors=Collections.emptyList();boolean raced;long sampleEnd=-1,keyframeEnd=-1;final Map<String,String> headers;final File file;final boolean persistent;
-        volatile long networkBytes,rangeRequests;long length=-1;int captureBytes=MAX_ENTRY;
+        volatile long networkBytes,rangeRequests;volatile long length=-1;int captureBytes=MAX_ENTRY;
         File tail(){return new File(file.getParentFile(),token+".tail");}
         Entry(String token,String remote,Map<String,String> headers,File file,boolean persistent){this.token=token;this.remote=remote;this.selectedRemote=remote;this.headers=headers;this.file=file;this.persistent=persistent;}
     }
@@ -58,7 +65,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
         if(!root.isDirectory())root.mkdirs();
         trimFiles();trimSnapshots();for(File file:root.listFiles()==null?new File[0]:root.listFiles())if(file.getName().matches("[a-f0-9]{64}\\.length")&&!new File(root,file.getName().replace(".length",".prefix")).isFile())file.delete();
     }
-    private static String digest(String text)throws Exception {byte[] bytes=MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8));StringBuilder s=new StringBuilder();for(byte b:bytes)s.append(String.format(Locale.ROOT,"%02x",b));return s.toString();}
+    private static String digest(String text)throws Exception {return PodVideoFrameCache.hash(text);}
     synchronized String register(String key,String remote,Map<String,String> headers)throws Exception {return register(key,remote,headers,false);}
     synchronized String register(String key,String remote,Map<String,String> headers,boolean persistent)throws Exception {return register(key,remote,headers,persistent,Collections.emptyList());}
     synchronized String register(String key,String remote,Map<String,String> headers,boolean persistent,List<String> alternates)throws Exception {
@@ -71,8 +78,17 @@ final class PodMediaPrefixCache implements AutoCloseable {
         if(headers.size()>32)throw new IllegalArgumentException("too_many_headers");
         for(Map.Entry<String,String> h:headers.entrySet()){String name=h.getKey(),value=h.getValue();bytes+=name.length()+value.length();if(!name.matches("[!#$%&'*+.^_`|~0-9a-zA-Z-]+")||value.indexOf('\r')>=0||value.indexOf('\n')>=0||bytes>32768)throw new IllegalArgumentException("invalid_media_cache_headers");if(!name.equalsIgnoreCase("Range"))clean.put(name,value);}
         String token=digest(persistent?"content-v1\n"+key:key+"\n"+remote+"\n"+clean.toString()+(mirrors.size()>1?"\n"+mirrors.get(1):""));Entry e=entries.get(token);
-        if(e!=null&&(!e.remote.equals(remote)||!e.headers.equals(clean)||!e.mirrors.equals(mirrors))){Job old=jobs.remove(token);if(old!=null)old.cancel();entries.remove(token);e=null;}
-        if(e==null){e=new Entry(token,remote,Collections.unmodifiableMap(clean),new File(root,token+".prefix"),persistent);e.mirrors=Collections.unmodifiableList(mirrors);File lengthFile=new File(root,token+".length");if(lengthFile.isFile())try(DataInputStream input=new DataInputStream(new FileInputStream(lengthFile))){long length=input.readLong();if(length>=e.file.length())e.length=length;}catch(IOException ignored){}entries.put(token,e);trim();}
+        if(e==null||!e.remote.equals(remote)||!e.headers.equals(clean)||!e.mirrors.equals(mirrors)){
+            Entry next=new Entry(token,remote,Collections.unmodifiableMap(clean),new File(root,token+".prefix"),persistent);next.mirrors=Collections.unmodifiableList(mirrors);
+            // A returned URI is a process-local capability, not an evictable
+            // bitmap. Reject new registrations at the byte limit without
+            // invalidating addresses still held by players or the guest.
+            if(entries.size()+(e==null?1:0)>MAX_REGISTRATIONS||metadataBytes()-(e==null?0:metadataBytes(e))+metadataBytes(next)>MAX_METADATA_BYTES)
+                throw new IOException("media_cache_metadata_budget");
+            if(e!=null){Job old=jobs.remove(token);if(old!=null)old.cancel();}
+            e=next;File lengthFile=new File(root,token+".length");if(lengthFile.isFile())try(DataInputStream input=new DataInputStream(new FileInputStream(lengthFile))){long length=input.readLong();if(length>=e.file.length())e.length=length;}catch(IOException ignored){}
+            entries.put(token,e);trim();
+        }
         return SCHEME+"://play/"+token+".mp4";
     }
     private String token(String uri){Uri u=Uri.parse(uri);if(!SCHEME.equals(u.getScheme())||!"play".equals(u.getHost()))return null;String p=u.getLastPathSegment();return p!=null&&p.matches("[a-f0-9]{64}\\.mp4")?p.substring(0,64):null;}
@@ -97,7 +113,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
                     if(budget>0){existing.background=false;existing.deferredUntil=0;}
                 }}
             for(Iterator<Map.Entry<String,Job>> it=jobs.entrySet().iterator();it.hasNext();){Map.Entry<String,Job> j=it.next();if(!wanted.contains(j.getKey())){j.getValue().cancel();it.remove();}}
-            schedule();trim();return stats();
+            publishFrameWindow();schedule();trim();return stats();
         }
         throw new IllegalArgumentException("unsupported_cache_method");
         }
@@ -195,6 +211,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
             }
             if(job.current()&&job.stage==0){
                 PodMediaPrefixMp4.cacheMetadata(this,job,true);job.stage=1;
+                synchronized(this){frameBytes(job.entry);}
                 android.util.Log.i("PodMediaCache","keyframe_prefix entry="+job.entry.ordinal+" planned="+(job.entry.keyframeEnd>=0)+" keyframe_end="+Math.max(0,job.entry.keyframeEnd)+" network_bytes="+job.entry.networkBytes+" prefix_bytes="+job.entry.file.length()+" tail_bytes="+job.entry.tail().length());
                 return;
             }
@@ -306,7 +323,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
     private void persistLength(Entry e){if(e.length>=0&&!closed&&entries.get(e.token)==e&&e.file.isFile())try(DataOutputStream output=new DataOutputStream(new FileOutputStream(new File(root,e.token+".length")))){output.writeLong(e.length);}catch(IOException ignored){}}
     private synchronized void append(Entry e,long position,byte[] buffer,int offset,int n,long epoch)throws IOException {
         if(closed||epoch!=generation||entries.get(e.token)!=e||position!=e.file.length()||position>=Math.min(e.captureBytes,MAX_ENTRY-e.tail().length()))return;
-        int count=(int)Math.min(n,Math.min(e.captureBytes,MAX_ENTRY-e.tail().length())-position);if(!root.isDirectory())root.mkdirs();try(RandomAccessFile f=new RandomAccessFile(e.file,"rw")){f.seek(position);f.write(buffer,offset,count);}if(!new File(root,e.token+".length").isFile())persistLength(e);e.file.setLastModified(System.currentTimeMillis());trim();
+        int count=(int)Math.min(n,Math.min(e.captureBytes,MAX_ENTRY-e.tail().length())-position);if(!root.isDirectory())root.mkdirs();try(RandomAccessFile f=new RandomAccessFile(e.file,"rw")){f.seek(position);f.write(buffer,offset,count);}if(!new File(root,e.token+".length").isFile())persistLength(e);e.file.setLastModified(System.currentTimeMillis());trim();frameBytes(e);
     }
     synchronized int read(Entry e,long position,byte[] bytes,int offset,int size)throws IOException {
         if(position<0||entries.get(e.token)!=e)return 0;
@@ -317,7 +334,8 @@ final class PodMediaPrefixCache implements AutoCloseable {
         }
         int n;try(RandomAccessFile f=new RandomAccessFile(e.file,"r")){f.seek(position);n=f.read(bytes,offset,(int)Math.min(size,e.file.length()-position));}if(n>0){cacheReadBytes+=n;e.file.setLastModified(System.currentTimeMillis());}return Math.max(0,n);
     }
-    private File[] files(){File[] f=root.listFiles((dir,name)->name.matches("[a-f0-9]{64}\\.prefix"));return f==null?new File[0]:f;}
+    private static final java.util.regex.Pattern PREFIX_NAME=java.util.regex.Pattern.compile("[a-f0-9]{64}\\.prefix");
+    private File[] files(){File[] f=root.listFiles((dir,name)->PREFIX_NAME.matcher(name).matches());return f==null?new File[0]:f;}
     private long fileBytes(){long n=0;for(File f:files())n+=f.length()+new File(root,f.getName().replace(".prefix",".tail")).length();return n;}
     private void trimFiles(){
         File[] fs=files();Arrays.sort(fs,Comparator.comparingLong(File::lastModified));long bytes=fileBytes();int count=fs.length;
@@ -330,7 +348,15 @@ final class PodMediaPrefixCache implements AutoCloseable {
             bytes-=f.length()+new File(root,t+".tail").length();count--;f.delete();new File(root,t+".tail").delete();new File(root,t+".length").delete();
         }
     }
-    private void trim(){while(entries.size()>MAX_ENTRIES){String remove=null;for(String k:entries.keySet())if(!protectedTokens.contains(k)){remove=k;break;}if(remove==null)break;Entry e=entries.remove(remove);Job j=jobs.remove(remove);if(j!=null)j.cancel();e.file.delete();e.tail().delete();new File(root,e.token+".length").delete();}trimFiles();}
+    private static long metadataBytes(Entry entry){
+        int selectedMax=entry.remote.length();for(String mirror:entry.mirrors)selectedMax=Math.max(selectedMax,mirror.length());
+        long bytes=256+2L*(entry.token.length()+entry.remote.length()+selectedMax);
+        for(String mirror:entry.mirrors)bytes+=32+2L*mirror.length();
+        for(Map.Entry<String,String> header:entry.headers.entrySet())bytes+=64+2L*(header.getKey().length()+header.getValue().length());
+        return bytes;
+    }
+    private long metadataBytes(){long bytes=0;for(Entry entry:entries.values())bytes+=metadataBytes(entry);return bytes;}
+    private void trim(){trimFiles();}
     private void trimSnapshots(){File[] fs=files();Arrays.sort(fs,Comparator.comparingLong(File::lastModified).reversed());for(int i=6;i<fs.length;i++){fs[i].delete();new File(root,fs[i].getName().replace(".prefix",".tail")).delete();new File(root,fs[i].getName().replace(".prefix",".length")).delete();}}
     /** One closed counter snapshot at a real foreground decoded first frame. */
     synchronized void logPlaybackStats(){
@@ -340,7 +366,12 @@ final class PodMediaPrefixCache implements AutoCloseable {
         android.util.Log.i("PodMediaCache","cache_first_card seq="+seq+" mono_ms="+android.os.SystemClock.uptimeMillis()+" files="+files().length+" bytes="+fileBytes()+" downloadedBytes="+downloadedBytes+" cacheReadBytes="+cacheReadBytes+" networkReadBytes="+networkReadBytes+" maxBytes="+maxTotal);
     }
     synchronized JSONObject stats()throws Exception {return new JSONObject().put("files",files().length).put("bytes",fileBytes()).put("maxBytes",maxTotal).put("maxEntries",MAX_ENTRIES).put("activePrefetches",jobs.size()).put("downloadedBytes",downloadedBytes).put("networkReadBytes",networkReadBytes).put("cacheReadBytes",cacheReadBytes).put("failures",failures).put("bandwidthBytesPerSecond",totalBandwidth);}
-    private void clear(){generation++;for(Job j:jobs.values())j.cancel();jobs.clear();entries.clear();protectedTokens.clear();for(File f:root.listFiles()==null?new File[0]:root.listFiles())if(f.getName().matches("[a-f0-9]{64}\\.(prefix|length|tail)"))f.delete();}
+    synchronized JSONObject memoryStats()throws Exception {
+        return new JSONObject().put("entries",entries.size()).put("metadataUtf16BytesUpperBound",metadataBytes())
+            .put("metadataMaxBytes",MAX_METADATA_BYTES).put("registrationMaxEntries",MAX_REGISTRATIONS)
+            .put("jobs",jobs.size()).put("protectedEntries",protectedTokens.size()).put("activePumps",pumps).put("diskMaxBytes",maxTotal);
+    }
+    private void clear(){if(frameListener!=null)frameListener.clear();generation++;for(Job j:jobs.values())j.cancel();jobs.clear();entries.clear();protectedTokens.clear();for(File f:root.listFiles()==null?new File[0]:root.listFiles())if(f.getName().matches("[a-f0-9]{64}\\.(prefix|length|tail)"))f.delete();}
     @Override public synchronized void close(){closed=true;generation++;for(Job j:jobs.values())j.cancel();jobs.clear();protectedTokens.clear();trimSnapshots();entries.clear();workers.shutdownNow();cancellations.shutdown();if(upstream instanceof PodMediaHttp)((PodMediaHttp)upstream).close();notifyAll();}
     DataSource.Factory factory(DataSource.Factory fallback){return ()->new PrefixDataSource(fallback);}
     private final class PrefixDataSource implements DataSource {

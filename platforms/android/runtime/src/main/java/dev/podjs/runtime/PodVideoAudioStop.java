@@ -26,6 +26,11 @@ final class PodVideoAudioStop {
         AudioTrack current=track;
         if(action!=null)android.util.Log.i("PodMediaCache","audio_stop_arm seq="+action.seq+" track_present="+(current==null?0:1)+" generation_match="+(action.sourceGeneration==generation?1:0));
         pending.set(action!=null&&action.sourceGeneration==generation&&current!=null?new Pending(action,current):null);
+        if(current==null)absent(args,generation);else observed(current,"pause");
+    }
+    static void absent(JSONObject args,long generation){
+        PodBenchmark.VideoAction action=PodBenchmark.videoAction(args);
+        if(action!=null&&action.sourceGeneration==generation)try{PodBenchmark.emit(action.event("previous_audio_absent").put("backend","audiotrack").put("state","absent"),SystemClock.uptimeMillis());}catch(Exception ignored){}
     }
     void cancel(){pending.set(null);}
     void observed(AudioTrack current,String ack) {

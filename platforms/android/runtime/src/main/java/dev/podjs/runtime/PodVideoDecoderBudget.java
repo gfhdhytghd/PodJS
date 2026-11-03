@@ -6,6 +6,9 @@ final class PodVideoDecoderBudget {
     private int limit;
     private int leases;
     private int peak;
+    private boolean spare, spareCancelled;
+    private int foregroundWaiters;
+    private final java.util.List<Runnable> spareReleased=new java.util.ArrayList<>();
 
     PodVideoDecoderBudget(int limit) {
         if (limit < 1) throw new IllegalArgumentException("invalid_decoder_limit");
@@ -19,6 +22,25 @@ final class PodVideoDecoderBudget {
         peak = Math.max(peak, leases);
         trace();
         return true;
+    }
+
+    /** Borrow the last free lease; foreground can cancel the short-lived owner. */
+    synchronized boolean acquireSpare() {
+        if(limit<2||spare||foregroundWaiters>0||!acquire())return false;
+        spare=true;spareCancelled=false;return true;
+    }
+    synchronized boolean spareInUse(){return spare;}
+    synchronized boolean spareCancelled(){return spareCancelled;}
+    void preemptSpare(Runnable ready){
+        boolean now;
+        synchronized(this){foregroundWaiters++;spareCancelled=true;now=!spare;if(!now)spareReleased.add(ready);}
+        if(now)ready.run();
+    }
+    synchronized void foregroundAdmitted(){if(foregroundWaiters<=0)throw new IllegalStateException("foreground_waiter_underflow");foregroundWaiters--;}
+    void releaseSpare(){
+        java.util.List<Runnable> ready;
+        synchronized(this){if(!spare)throw new IllegalStateException("spare_lease_underflow");spare=false;release();ready=new java.util.ArrayList<>(spareReleased);spareReleased.clear();}
+        for(Runnable callback:ready)callback.run();
     }
 
     synchronized void release() {
