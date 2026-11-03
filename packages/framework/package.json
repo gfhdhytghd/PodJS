@@ -94,7 +94,8 @@
     "./video-session-pool": "./src/video-session-pool.ts",
     "./video-paging": "./src/video-paging.ts",
     "./benchmark": "./src/benchmark.ts",
-    "./testing/solid-preload": "./testing/solid-preload.ts"
+    "./testing/solid-preload": "./testing/solid-preload.ts",
+    "./p256": "./src/p256.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",
