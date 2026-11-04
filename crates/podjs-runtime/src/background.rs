@@ -101,7 +101,8 @@ pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellatio
     let interrupt_cancel = cancel.clone();let interrupt_trace=trace.clone();
     runtime.set_interrupt_handler(Some(Box::new(move || {if let Some(trace)=&interrupt_trace{trace.sample();}stop_code(&interrupt_cancel,deadline).is_some()})));
     let Ok(context) = Context::full(&runtime) else { return finish(Status::Failure,"context_unavailable"); };
-    let evaluated: Result<(Status,Option<bool>,Option<&'static str>), &'static str> = context.with(|ctx| {
+    let collection_limit = pocket_mod::CollectionLimit::new(options.memory_bytes);
+    let evaluated: Result<(Status,Option<bool>,Option<&'static str>), &'static str> = context.with(|ctx| collection_limit.run_turn(&ctx, || {
         let pending: Rc<RefCell<Vec<Pending<'_>>>> = Rc::new(RefCell::new(Vec::new()));
         let _clear_pending=ClearPending(pending.clone());
         // Remove all dynamic-code constructors before untrusted bundle evaluation.
@@ -137,9 +138,9 @@ pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellatio
         // Freeze using the original built-in before guest code can replace it.
         let freeze: Function = ctx.eval("Object.freeze").map_err(|_| "sandbox_setup_failed")?;
         freeze.call::<_,()>((job.clone(),)).map_err(|_| "sandbox_setup_failed")?;
-        ctx.eval::<(),_>(source).map_err(|_| "bundle_exception")?;
+        collection_limit.run_turn(&ctx, || ctx.eval::<(),_>(source)).map_err(|_| "bundle_exception")?;
         let handler: Function = ctx.globals().get("backgroundHandler").map_err(|_| "handler_missing")?;
-        let mut value: Value = handler.call((job,)).map_err(|_| "handler_exception")?;
+        let mut value: Value = collection_limit.run_turn(&ctx, || handler.call((job,))).map_err(|_| "handler_exception")?;
         if let Some(promise) = value.as_promise() {
             loop {
                 if let Some(code) = stop_code(&cancel,deadline) { return Err(code); }
@@ -169,7 +170,7 @@ pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellatio
                     }
                 }
                 let inflight=!pending.borrow().is_empty();
-                if !ctx.execute_pending_job() && !resolved {
+                if !collection_limit.run_turn(&ctx, || ctx.execute_pending_job()) && !resolved {
                     if !inflight { return Err("unresolved_handler"); }
                     let timeout=Duration::from_millis(2).min(deadline.saturating_duration_since(Instant::now()));
                     // Sequential host calls dominate storage. Wait on their reply
@@ -203,7 +204,7 @@ pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellatio
         }
         let result = value.as_string().ok_or("invalid_result")?.to_string().map_err(|_| "invalid_result")?;
         match result.as_str() { "busy" => return Err("yielded"), "success" => Ok((Status::Success,None,None)), "retry" => Ok((Status::Retry,None,None)), "failure" => Ok((Status::Failure,None,None)), _ => Err("invalid_result") }
-    });
+    }));
     if let Some(code) = stop_code(&cancel,deadline) { return finish(Status::Failure,code); }
     match evaluated { Ok((status,progress,retry_class)) => {let mut result=finish(status,"completed");result.progress=progress;result.retry_class=retry_class;result}, Err("yielded") => finish(Status::Success,"yielded"), Err(code) => finish(Status::Failure,code) }
 }
@@ -212,6 +213,37 @@ pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellatio
 mod tests {
     use super::*;
     fn options(app: &str) -> Options<'_> { Options { app_id:app,task_id:"refresh",budget_ms:100,memory_bytes:8*1024*1024,payload_json:"null" } }
+    #[test]
+    fn gc_limit_collects_cycles_between_successful_and_rejected_promise_jobs() {
+        // The retained heap exceeds two thirds of the cap. Each awaited
+        // iteration allocates cycles; rejected iterations recover in the guest.
+        let source = r#"globalThis.keep=[];for(let i=0;i<10500;i++)keep.push('k'.repeat(1000)+i);
+            globalThis.backgroundHandler=async()=>{
+              for(let turn=0;turn<40;turn++){
+                try {await Promise.resolve().then(()=>{
+                  for(let i=0;i<3000;i++){const a={pad:'g'.repeat(200)+i};a.self=a;}
+                  if(turn%2)throw Error('recoverable');
+                });}catch(e){if(e.message!=='recoverable')return 'failure';}
+              }
+              return keep.length===10500?'success':'failure';};"#;
+        let result=run(source,Options{app_id:"gc-cycles",budget_ms:5000,memory_bytes:16<<20,..options("gc-cycles")},Cancellation::default());
+        assert_eq!(result.status,Status::Success,"{}",result.code);
+        assert_eq!(result.code,"completed");
+    }
+
+    #[test]
+    fn gc_limit_preserves_bundle_handler_and_promise_errors() {
+        for (app,source,code) in [
+            ("gc-bundle-error","throw Error('bundle');","bundle_exception"),
+            ("gc-handler-error","globalThis.backgroundHandler=()=>{throw Error('handler')};","handler_exception"),
+            ("gc-promise-error","globalThis.backgroundHandler=async()=>{await Promise.resolve();throw Error('promise')};","handler_rejected"),
+        ] {
+            let result=run(source,options(app),Cancellation::default());
+            assert_eq!(result.status,Status::Failure);
+            assert_eq!(result.code,code);
+        }
+    }
+
     #[test] fn headless_byte_codecs_are_bounded_and_do_not_mount_host_or_ui() {
         let source=r#"globalThis.backgroundHandler=()=>{
           if(typeof pod!=='undefined'||typeof frame!=='undefined'||__podByteCodecs.request!==undefined)return 'failure';
