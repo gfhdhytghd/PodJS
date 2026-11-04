@@ -98,7 +98,7 @@ public final class PodDeviceServices implements AutoCloseable {
         switch (method) {
             case "secure.acquire": return new JSONObject().put("acquired",secureLeases.acquire(required(args,"key")));
             case "secure.release": secureLeases.release(required(args,"key")); return new JSONObject().put("ok",true);
-            case "secure.get": case "secure.set": case "secure.delete": case "secure.update": case "secure.compareAndSet": return secureOperation(method,args);
+            case "secure.keys": case "secure.get": case "secure.set": case "secure.delete": case "secure.update": case "secure.compareAndSet": return secureOperation(method,args);
             case "crypto.verifyP256": return new JSONObject().put("valid",PodCloudCrypto.verifyP256(decode(args,"publicKeySpki"),decode(args,"dataBase64"),decode(args,"signatureBase64")));
             case "crypto.ecdhPublicKey": return ecdhPublicKey(args);
             case "crypto.ecdhPossessionProof": return ecdhPossessionProof(args);
@@ -168,6 +168,14 @@ public final class PodDeviceServices implements AutoCloseable {
     // Foreground/background share committed process memory. Persist mutations
     // atomically under the existing OS lease; publish memory only after success.
     private JSONObject secureOperation(String method,JSONObject args) throws Exception {
+        if("secure.keys".equals(method)){
+            org.json.JSONArray prefixes=args.getJSONArray("prefixes");if(prefixes.length()>8)throw new IllegalArgumentException("secure_batch_limit");
+            String after=args.optString("after","");java.util.List<String> names=new java.util.ArrayList<>();
+            JSONObject values; synchronized(SECURE_LOCK){values=readSecureValues(args.optInt("requestId",-1));}
+            for(java.util.Iterator<String> keys=values.keys();keys.hasNext();){String key=keys.next();if(key.startsWith(ECDH_PRIVATE_PREFIX)||key.compareTo(after)<=0)continue;for(int i=0;i<prefixes.length();i++)if(key.startsWith(prefixes.getString(i))){names.add(key);break;}}
+            java.util.Collections.sort(names);org.json.JSONArray page=new org.json.JSONArray();for(int i=0;i<Math.min(128,names.size());i++)page.put(names.get(i));
+            return new JSONObject().put("keys",page).put("hasMore",names.size()>128);
+        }
         // Internal software private keys never cross the JavaScript secure-storage API.
         if ("secure.update".equals(method)) {
             java.util.Iterator<String> names=args.getJSONObject("values").keys();
@@ -257,7 +265,16 @@ public final class PodDeviceServices implements AutoCloseable {
     private JSONObject secureGet(JSONObject a) throws Exception {
         JSONObject values = readSecureValues(a.optInt("requestId",-1)); String key = required(a, "key");
         JSONObject out = new JSONObject(); out.put("exists", values.has(key));
-        if (values.has(key)) out.put("value", values.getString(key));
+        if (values.has(key)) {
+            String value=values.getString(key);
+            if(a.has("maxChars")){
+                int maximum=a.getInt("maxChars"),offset=a.optInt("offset",0);if(maximum<1||maximum>32768||offset<0||offset>value.length())throw new IllegalArgumentException("secure_read_range_invalid");
+                if(offset>0&&offset<value.length()&&Character.isLowSurrogate(value.charAt(offset))&&Character.isHighSurrogate(value.charAt(offset-1)))throw new IllegalArgumentException("secure_read_range_invalid");
+                int end=Math.min(value.length(),offset+maximum);if(end<value.length()&&end>offset&&Character.isHighSurrogate(value.charAt(end-1))&&Character.isLowSurrogate(value.charAt(end)))end--;
+                if(end==offset&&offset<value.length())throw new IllegalArgumentException("secure_read_range_invalid");
+                out.put("value",value.substring(offset,end)).put("offset",offset).put("totalChars",value.length()).put("version",System.identityHashCode(values));
+            }else out.put("value",value);
+        }
         return out;
     }
     private JSONObject secureSet(JSONObject a) throws Exception {
@@ -486,7 +503,7 @@ public final class PodDeviceServices implements AutoCloseable {
                     JSONObject part=parts.getJSONObject(i);int size=part.getInt("bytes");if(size<0||size>256*1024||total>length-size)throw new IllegalArgumentException("invalid_sealed_parts");
                     byte[] plain;
                     try{File source=safeFile(required(part,"path"));if(!source.isFile()||source.length()!=size+28)throw new IOException("invalid_part");
-                        plain=PodCloudCrypto.openSealedPart(key,decode(part,"aadBase64"),readAll(source,256*1024+28),size);
+                        plain=LocalPlaintextPart.read(source,decode(part,"aadBase64"),size,key,args.optBoolean("plaintext",false));
                     }catch(Exception invalid){throw new IOException("sealed_part_invalid_"+i);}
                     try{output.write(plain);total+=plain.length;}finally{Arrays.fill(plain,(byte)0);}
                 }
@@ -506,7 +523,7 @@ public final class PodDeviceServices implements AutoCloseable {
         org.json.JSONArray parts=args.getJSONArray("parts");if(parts.length()<1||parts.length()>2048)throw new IllegalArgumentException("invalid_sealed_gzip");
         byte[] key=decode(args,"keyBase64");if(key.length!=32)throw new IllegalArgumentException("invalid_aes_key");
         long deadline=args.optLong("deadlineMs",System.currentTimeMillis()+120000);
-        String binding=enc(MessageDigest.getInstance("SHA-256").digest((parts.toString()+":"+enc(key)+":"+aadPrefix+":"+maximum+":"+length+":"+allowShortOutput).getBytes(StandardCharsets.UTF_8)));
+        String binding=enc(MessageDigest.getInstance("SHA-256").digest((parts.toString()+":"+enc(key)+":"+aadPrefix+":"+maximum+":"+length+":"+allowShortOutput+":"+args.optBoolean("plaintext",false)).getBytes(StandardCharsets.UTF_8)));
         try{
             SealedGzipSession stream=sealedGzip.get(prefix);
             if(stream==null||!stream.binding.equals(binding)){
@@ -520,7 +537,7 @@ public final class PodDeviceServices implements AutoCloseable {
                     inputs.add(new SealedGzipSession.Part(file,decode(part,"aadBase64"),n));total+=n;
                 }
                 if(total!=length)throw new IllegalArgumentException("invalid_sealed_gzip");
-                stream=new SealedGzipSession(binding,inputs,key,aadPrefix,maximum,deadline,allowShortOutput);sealedGzip.put(prefix,stream);
+                stream=new SealedGzipSession(binding,inputs,key,aadPrefix,maximum,deadline,allowShortOutput,args.optBoolean("plaintext",false));sealedGzip.put(prefix,stream);
             }
             SealedGzipSession.Step step=stream.next(offset,deadline,(at,bytes)->{
                 File target=safeFile(prefix+at+".bin");File parent=target.getParentFile();if(!parent.isDirectory()&&!parent.mkdirs())throw new IOException("parent_unavailable");
@@ -907,7 +924,7 @@ public final class PodDeviceServices implements AutoCloseable {
     private static byte[] decryptWithKey(SecretKey key, byte[] all) throws Exception { Cipher c = Cipher.getInstance("AES/GCM/NoPadding"); keyOp(key,"cipherInit");c.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(128, Arrays.copyOf(all, 12))); keyOp(key,"cipherAad");c.updateAAD(AAD);keyOp(key,"cipherFinal"); return c.doFinal(Arrays.copyOfRange(all, 12, all.length)); }
     private static byte[] readAll(File f, int limit) throws IOException { try (FileInputStream in = new FileInputStream(f); ByteArrayOutputStream out = new ByteArrayOutputStream()) { byte[] b = new byte[8192]; int n, total = 0; while ((n = in.read(b)) >= 0) { total += n; if (total > limit) throw new IOException("secure_store_too_large"); out.write(b, 0, n); } return out.toByteArray(); } }
     @FunctionalInterface interface AtomicWriteOutputFactory { FileOutputStream open(File temporary) throws IOException; }
-    private static void atomicWrite(File target, byte[] data) throws IOException { atomicWrite(target,data,FileOutputStream::new); }
+    static void atomicWrite(File target, byte[] data) throws IOException { atomicWrite(target,data,FileOutputStream::new); }
     static void atomicWrite(File target,byte[] data,AtomicWriteOutputFactory outputFactory)throws IOException {
         java.nio.file.Path temporary=Files.createTempFile(target.getParentFile().toPath(),".tmp-",".pod-write");
         Throwable failure=null;

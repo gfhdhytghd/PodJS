@@ -23,14 +23,17 @@ final class SealedGzipSession implements AutoCloseable {
     }
     final String binding;
     private final byte[] key; private final String aadPrefix;
-    private final boolean allowShortOutput; private final int expected; private final GZIPInputStream gzip; private final InputStream source;
+    private final boolean plaintext;private final boolean allowShortOutput; private final int expected; private final GZIPInputStream gzip; private final InputStream source;
     private final MessageDigest digest; private final java.security.SecureRandom random=new java.security.SecureRandom();
     private long position,deadline; private boolean closed;
     SealedGzipSession(String binding,List<Part> parts,byte[] key,String aadPrefix,int expected,long deadline) throws Exception {
         this(binding,parts,key,aadPrefix,expected,deadline,false);
     }
     SealedGzipSession(String binding,List<Part> parts,byte[] key,String aadPrefix,int expected,long deadline,boolean allowShortOutput) throws Exception {
-        this.allowShortOutput=allowShortOutput;this.binding=binding;this.key=key.clone();this.aadPrefix=aadPrefix;this.expected=expected;this.deadline=deadline;
+        this(binding,parts,key,aadPrefix,expected,deadline,allowShortOutput,false);
+    }
+    SealedGzipSession(String binding,List<Part> parts,byte[] key,String aadPrefix,int expected,long deadline,boolean allowShortOutput,boolean plaintext)throws Exception {
+        this.plaintext=plaintext;this.allowShortOutput=allowShortOutput;this.binding=binding;this.key=key.clone();this.aadPrefix=aadPrefix;this.expected=expected;this.deadline=deadline;
         digest=MessageDigest.getInstance("SHA-256");
         source=new InputStream(){
             int index,at;byte[] plain=new byte[0];
@@ -39,10 +42,7 @@ final class SealedGzipSession implements AutoCloseable {
                 check();if(count==0)return 0;
                 if(at==plain.length){Arrays.fill(plain,(byte)0);plain=new byte[0];if(index==parts.size())return -1;
                     int i=index++;Part p=parts.get(i);
-                    try{if(!p.file.isFile()||p.file.length()!=p.length+28)throw new IOException();
-                        byte[] sealed=new byte[p.length+28];
-                        try(FileInputStream input=new FileInputStream(p.file)){int at=0;while(at<sealed.length){int n=input.read(sealed,at,sealed.length-at);if(n<1)throw new IOException();at+=n;}if(input.read()!=-1)throw new IOException();}
-                        try{plain=PodCloudCrypto.openSealedPart(SealedGzipSession.this.key,p.aad,sealed,p.length);}finally{Arrays.fill(sealed,(byte)0);}
+                    try{plain=LocalPlaintextPart.read(p.file,p.aad,p.length,SealedGzipSession.this.key,plaintext);
                     }catch(Exception error){throw new IOException("sealed_part_invalid_"+i);}
                     at=0;
                 }
@@ -70,7 +70,7 @@ final class SealedGzipSession implements AutoCloseable {
             if(done){check();if(gzip.read()!=-1)throw new IOException("invalid_gzip_length");
                 StringBuilder h=new StringBuilder();for(byte b:digest.digest())h.append(String.format(Locale.ROOT,"%02x",b&255));hash=h.toString();}
             if(count>0||expected==0){check();byte[] nonce=new byte[12];random.nextBytes(nonce);byte[] plain=Arrays.copyOf(buffer,count),sealed=null;
-                try{byte[] cipher=PodCloudCrypto.aes(true,key,nonce,plain,(aadPrefix+offset).getBytes(StandardCharsets.UTF_8));sealed=new byte[12+cipher.length];System.arraycopy(nonce,0,sealed,0,12);System.arraycopy(cipher,0,sealed,12,cipher.length);publish.write(offset,sealed);}finally{Arrays.fill(plain,(byte)0);if(sealed!=null)Arrays.fill(sealed,(byte)0);}
+                try{if(plaintext)sealed=LocalPlaintextPart.seal((aadPrefix+offset).getBytes(StandardCharsets.UTF_8),plain);else{byte[] cipher=PodCloudCrypto.aes(true,key,nonce,plain,(aadPrefix+offset).getBytes(StandardCharsets.UTF_8));sealed=new byte[12+cipher.length];System.arraycopy(nonce,0,sealed,0,12);System.arraycopy(cipher,0,sealed,12,cipher.length);}publish.write(offset,sealed);}finally{Arrays.fill(plain,(byte)0);if(sealed!=null)Arrays.fill(sealed,(byte)0);}
             }
             return new Step(offset,count,done,hash);
         }finally{Arrays.fill(buffer,(byte)0);}

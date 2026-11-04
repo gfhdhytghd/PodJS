@@ -6,7 +6,7 @@ import java.util.function.Consumer;
 
 /** Process counters with code-owned labels only. Never log aliases or arguments. */
 final class SecureOperationStats {
-    static final String[] METHODS={"secure.get","secure.set","secure.update","secure.delete","secure.compareAndSet","secure.acquire","secure.release","crypto.ecdhPublicKey","crypto.ecdhUnwrap","crypto.ecdhPossessionProof","crypto.encrypt","crypto.decrypt","crypto.hmacSha256","crypto.hkdfSha256","pairing.load","pairing.import","pairing.revoke"};
+    static final String[] METHODS={"secure.keys","secure.get","secure.set","secure.update","secure.delete","secure.compareAndSet","secure.acquire","secure.release","crypto.ecdhPublicKey","crypto.ecdhUnwrap","crypto.ecdhPossessionProof","crypto.encrypt","crypto.decrypt","crypto.hmacSha256","crypto.hkdfSha256","pairing.load","pairing.import","pairing.revoke"};
     static final String[] OPS={"load","containsAlias","getEntry","getKey","getCertificate","generate","deleteEntry","cipherInit","cipherAad","cipherFinal","agreement"};
     static final SecureOperationStats PROCESS=new SecureOperationStats();
     private final Map<String,long[]> rows=new LinkedHashMap<>();

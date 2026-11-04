@@ -3,7 +3,7 @@
  * A fresh host replays inflate up to offset; it never rewrites receipted output.
  */
 export interface SealedPart {path:string;aadBase64:string;bytes:number;}
-export interface SealedGzipInput {keyBase64:string;parts:SealedPart[];length:number;outputPrefix:string;aadPrefix:string;maxOutputBytes:number;allowShortOutput?:boolean;}
+export interface SealedGzipInput {plaintext?:boolean;keyBase64:string;parts:SealedPart[];length:number;outputPrefix:string;aadPrefix:string;maxOutputBytes:number;allowShortOutput?:boolean;}
 export interface SealedGzipStep {offset:number;bytes:number;done:boolean;sha256?:string;}
 export async function sealedGzip(request:<T>(method:string,args:Record<string,unknown>)=>Promise<T>,input:SealedGzipInput,offset:number,receipt:(step:SealedGzipStep)=>Promise<void>){
  try{
