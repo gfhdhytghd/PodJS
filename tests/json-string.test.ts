@@ -25,3 +25,18 @@ test('optional native quote sizing is bounded, preserves surrogate pairs and fal
   root.pod={androidJsonQuotedByteLength:()=>NaN};expect(()=>androidJsonQuotedByteLength('a')).toThrow('Invalid native JSON');
  }finally{root.pod=old;}
 });
+
+
+test('native well-formed checks avoid the surrogate regex for large bodies and preserve the legacy fallback',()=>{
+ const prototype=String.prototype as string&{isWellFormed?:()=>boolean};
+ const descriptor=Object.getOwnPropertyDescriptor(String.prototype,'isWellFormed'),testRegex=RegExp.prototype.test;
+ const text='正文/🙂'.repeat(100000),expected=referenceQuote(text);
+ try{
+  // The installed QuickJS and current Bun both provide the native scalar scan.
+  expect(typeof prototype.isWellFormed).toBe('function');
+  RegExp.prototype.test=function(){throw Error('surrogate regex must stay unused');};
+  expect(quoteAndroidJsonString(text)).toBe(expected);expect(quoteAndroidJsonString('x\ud800/')).toBe(referenceQuote('x\ud800/'));
+  RegExp.prototype.test=testRegex;Object.defineProperty(String.prototype,'isWellFormed',{value:undefined,configurable:true});
+  for(const value of ['plain/中🙂','x\ud800/','\udc00🙂'])expect(quoteAndroidJsonString(value)).toBe(referenceQuote(value));
+ }finally{RegExp.prototype.test=testRegex;if(descriptor)Object.defineProperty(String.prototype,'isWellFormed',descriptor);else delete prototype.isWellFormed;}
+});

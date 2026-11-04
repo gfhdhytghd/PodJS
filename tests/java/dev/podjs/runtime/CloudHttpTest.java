@@ -17,7 +17,10 @@ public final class CloudHttpTest {
         File input=new File(root,"input");Files.write(input.toPath(),payload);
         HttpServer server=HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(),0),0);
         ExecutorService executor=Executors.newCachedThreadPool();server.setExecutor(executor);
-        server.createContext("/upload",exchange->{byte[] received=exchange.getRequestBody().readAllBytes();if(!Arrays.equals(received,payload))throw new AssertionError("body mismatch");byte[] body="ok".getBytes();exchange.sendResponseHeaders(200,body.length);exchange.getResponseBody().write(body);exchange.close();});
+        java.util.concurrent.atomic.AtomicReference<String> receivedMethod=new java.util.concurrent.atomic.AtomicReference<>(),receivedEpoch=new java.util.concurrent.atomic.AtomicReference<>();
+        server.createContext("/upload",exchange->{receivedMethod.set(exchange.getRequestMethod());receivedEpoch.set(exchange.getRequestHeaders().getFirst("x-watchrss-library-epoch"));byte[] received=exchange.getRequestBody().readAllBytes();if(!Arrays.equals(received,payload))throw new AssertionError("body mismatch");byte[] body="ok".getBytes();exchange.sendResponseHeaders(200,body.length);exchange.getResponseBody().write(body);exchange.close();});
+        server.createContext("/small-put",exchange->{byte[] received=exchange.getRequestBody().readAllBytes();if(!"PUT".equals(exchange.getRequestMethod())||!Arrays.equals(received,new byte[]{1,2,3}))throw new AssertionError("small PUT mismatch");exchange.sendResponseHeaders(200,-1);exchange.close();});
+        server.createContext("/empty-put",exchange->{if(!"PUT".equals(exchange.getRequestMethod())||exchange.getRequestBody().readAllBytes().length!=0)throw new AssertionError("empty PUT mismatch");exchange.sendResponseHeaders(200,-1);exchange.close();});
         server.createContext("/large",exchange->{byte[] body=new byte[2048];exchange.sendResponseHeaders(200,body.length);exchange.getResponseBody().write(body);exchange.close();});
         server.createContext("/redirect",exchange->{exchange.getResponseHeaders().add("Location","http://127.0.0.1:1/never");exchange.sendResponseHeaders(302,-1);exchange.close();});
         java.util.concurrent.atomic.AtomicReference<String> forwarded=new java.util.concurrent.atomic.AtomicReference<>();
@@ -30,6 +33,14 @@ public final class CloudHttpTest {
         try {
         try(PodHttpServices http=new PodHttpServices(new android.content.Context())){
             JSONObject out=http.execute("http.download",new JSONObject().put("url",base+"/upload").put("path","response").put("temporary",true).put("method","POST").put("bodyPath","input").put("maxBytes",100));
+            if(!"POST".equals(receivedMethod.get()))throw new AssertionError("POST method changed");
+            JSONObject put=http.execute("http.download",new JSONObject().put("url",base+"/upload").put("path","put-response").put("temporary",true).put("method","PUT").put("bodyPath","input").put("maxBytes",100).put("headers",new JSONObject().put("x-watchrss-library-epoch","synthetic-epoch")));
+            if(put.getInt("status")!=200||put.getLong("size")!=2||!"PUT".equals(receivedMethod.get())||!"synthetic-epoch".equals(receivedEpoch.get()))throw new AssertionError("PUT body/method/epoch changed");
+            http.execute("http.download",new JSONObject().put("url",base+"/small-put").put("path","small-put-response").put("method","PUT").put("bodyBase64","AQID"));
+            http.execute("http.download",new JSONObject().put("url",base+"/empty-put").put("path","empty-put-response").put("method","PUT"));
+            expectFailure(http,new JSONObject().put("url",base+"/upload").put("path","put-escape").put("method","PUT").put("bodyPath","../secret"),"path_outside_root");
+            expectFailure(http,new JSONObject().put("url",base+"/foreign-redirect").put("path","put-redirect").put("method","PUT").put("bodyPath","input"),"cross_origin_post_redirect");
+            expectFailure(http,new JSONObject().put("url",base+"/upload").put("path","get-body").put("method","GET").put("bodyPath","input"),"unexpected_request_body");
             JSONObject text=http.execute("http.download",new JSONObject().put("url",base+"/text").put("path","text").put("text",true));if(!Files.readString(new File(root,"text").toPath()).equals("正文"))throw new AssertionError("text charset changed");
             if(out.getInt("status")!=200||out.getLong("size")!=2)throw new AssertionError("bad result");
             expectFailure(http,new JSONObject().put("url",base+"/large").put("path","oversize").put("maxBytes",100),"download_too_large");
@@ -47,7 +58,7 @@ public final class CloudHttpTest {
         closeOffCallerThread(root,base);
         dualStackFallback(root,server.getAddress().getPort());
         }finally{server.stop(0);executor.shutdownNow();for(File file:root.listFiles())file.delete();root.delete();}
-        System.out.println("PASS: file POST 4 MiB, bounded response, redirect refusal, path confinement, call deadline, charset, temporary cleanup, off-caller idle socket close, dual-stack fallback (loopback only)");
+        System.out.println("PASS: file POST/PUT 4 MiB, PUT base64/empty/epoch, PUT redirect refusal and path confinement, bounded response, redirect refusal, path confinement, call deadline, charset, temporary cleanup, off-caller idle socket close, dual-stack fallback (loopback only)");
     }
     private static void closeOffCallerThread(File root,String base)throws Exception{
         Thread caller=Thread.currentThread();

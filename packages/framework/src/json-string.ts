@@ -4,7 +4,11 @@ import {encodeUtf8} from './byte-codecs.ts';
 export function quoteAndroidJsonString(value:string):string {
  // The engine handles large well-formed bodies in native code. JSON.stringify
  // escapes lone surrogates, unlike JSONObject; preserve the old dialect there.
- if(!/[\ud800-\udbff](?![\udc00-\udfff])|(^|[^\ud800-\udbff])[\udc00-\udfff]/.test(value))return cpuJsonStringify(value).replace(/\//g,'\\/');
+ // QuickJS has a native scalar scan. A surrogate RegExp repeatedly enters
+ // the regex VM for large UTF-16 bodies, even when they contain no surrogates.
+ const nativeWellFormed=(value as string&{isWellFormed?:()=>boolean}).isWellFormed;
+ const wellFormed=typeof nativeWellFormed==='function'?nativeWellFormed.call(value):!/[\ud800-\udbff](?![\udc00-\udfff])|(^|[^\ud800-\udbff])[\udc00-\udfff]/.test(value);
+ if(wellFormed)return cpuJsonStringify(value).replace(/\//g,'\\/');
  const pieces:string[]=['"'];let start=0;
  const escapes:Record<string,string>={'"':'\\"','\\':'\\\\','/':'\\/','\b':'\\b','\f':'\\f','\n':'\\n','\r':'\\r','\t':'\\t'};
  for(let i=0;i<value.length;i++){

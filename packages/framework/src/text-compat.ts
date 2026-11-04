@@ -31,8 +31,19 @@
 
 /** Kotlin/JVM Char.isWhitespace = Character.isWhitespace || isSpaceChar.
  * Includes U+001C..U+001F, excludes U+0085, U+180E and U+FEFF. */
+function kotlinWhitespace(code:number):boolean {
+  return code>=0x09&&code<=0x0d||code>=0x1c&&code<=0x20||code===0xa0||code===0x1680||code>=0x2000&&code<=0x200a||code===0x2028||code===0x2029||code===0x202f||code===0x205f||code===0x3000;
+}
 export function kotlinTrim(value: string): string {
-  return value.replace(/^[\u0009-\u000d\u001c-\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+|[\u0009-\u000d\u001c-\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/g, "");
+  let start=0,end=value.length;
+  while(start<end&&kotlinWhitespace(value.charCodeAt(start)))start++;
+  while(end>start&&kotlinWhitespace(value.charCodeAt(end-1)))end--;
+  return start===0&&end===value.length?value:value.slice(start,end);
+}
+/** A blank check can stop at the first non-space without copying a long body. */
+export function kotlinIsBlank(value:string):boolean {
+  for(let i=0;i<value.length;i++)if(!kotlinWhitespace(value.charCodeAt(i)))return false;
+  return true;
 }
 
 const f32 = Math.fround;

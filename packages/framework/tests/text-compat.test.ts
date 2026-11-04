@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import {
-  composeDpToSp, composeLineHeightPx, composeSpToPx, createComposeFontScale,
+  kotlinTrim, kotlinIsBlank, composeDpToSp, composeLineHeightPx, composeSpToPx, createComposeFontScale,
 } from "../src/text-compat.ts";
 
 /** Fixed oracle from executing the real AndroidX Compose 1.7.1 AARs on a JVM.
@@ -169,4 +169,22 @@ test("application exports match the AAR without depending on shared cache histor
   expect(bits(fontPx)).toBe("422a1999");
   expect(bits(composeDpToSp(Math.fround(fontPx / 1.75), 1.3))).toBe("41a7ffff");
   expect(bits(composeLineHeightPx(26, fontPx, 1.75, 1.3))).toBe("4252999b");
+});
+
+
+test("Kotlin whitespace helpers match the legacy UTF-16 dialect and bound nonblank body work",()=>{
+ const reference=(value:string)=>value.replace(/^[\u0009-\u000d\u001c-\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+|[\u0009-\u000d\u001c-\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/g,"");
+ for(let code=0;code<=0xffff;code++){
+  const char=String.fromCharCode(code);
+  for(const value of [char,char+'x', 'x'+char,char+'x'+char])expect(kotlinTrim(value)).toBe(reference(value));
+  expect(kotlinIsBlank(char)).toBe(reference(char)==='');
+ }
+ for(const value of ['', '\ud800 \udc00','\u001c\u00a0x\u2007\u3000','\ufeff x \ufeff','\u0085 x \u0085',' '.repeat(10000)]){
+  expect(kotlinTrim(value)).toBe(reference(value));expect(kotlinIsBlank(value)).toBe(reference(value)==='');
+ }
+ const body='x正文 '.repeat(500000)+'x',get=String.prototype.charCodeAt;let inspected=0;
+ try{
+  String.prototype.charCodeAt=function(index:number){inspected++;return get.call(this,index);};
+  expect(kotlinIsBlank(body)).toBe(false);expect(kotlinTrim(body)).toBe(body);expect(inspected).toBeLessThan(10);
+ }finally{String.prototype.charCodeAt=get;}
 });

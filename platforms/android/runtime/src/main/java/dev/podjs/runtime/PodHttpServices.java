@@ -108,14 +108,14 @@ public final class PodHttpServices implements AutoCloseable {
 
     private JSONObject download(JSONObject args, AtomicBoolean cancelled) throws Exception {
         String method = args.optString("method", "GET").toUpperCase(Locale.US);
-        if (!"GET".equals(method) && !"HEAD".equals(method) && !"POST".equals(method) && !"PATCH".equals(method)) throw new IllegalArgumentException("unsupported_download_method");
+        if (!"GET".equals(method) && !"HEAD".equals(method) && !"POST".equals(method) && !"PUT".equals(method) && !"PATCH".equals(method)) throw new IllegalArgumentException("unsupported_download_method");
         String encodedBody=args.optString("bodyBase64", "");
         if(encodedBody.length()>1_400_000)throw new IllegalArgumentException("request_body_too_large");
         byte[] requestBody=android.util.Base64.decode(encodedBody,android.util.Base64.DEFAULT);
         if(requestBody.length>1024*1024)throw new IllegalArgumentException("request_body_too_large");
         File bodyFile=args.has("bodyPath")&&!args.isNull("bodyPath")?safeFile(required(args,"bodyPath")):null;
         if(bodyFile!=null&&(!encodedBody.isEmpty()||!bodyFile.isFile()||bodyFile.length()>8L*1024*1024))throw new IllegalArgumentException("invalid_request_body_file");
-        if(bodyFile!=null&&!("POST".equals(method)||"PATCH".equals(method)))throw new IllegalArgumentException("unexpected_request_body");
+        if(bodyFile!=null&&!("POST".equals(method)||"PUT".equals(method)||"PATCH".equals(method)))throw new IllegalArgumentException("unexpected_request_body");
         String rawUrl = required(args, "url");
         File target = safeFile(required(args, "path"));
         long maxBytes = args.has("maxBytes") ? args.getLong("maxBytes") : DEFAULT_MAX_BYTES;
@@ -136,7 +136,7 @@ public final class PodHttpServices implements AutoCloseable {
                 if (closed || cancelled.get()) throw new IOException("download_cancelled");
                 final File uploadFile=bodyFile;final byte[] uploadBytes=requestBody;
                 RequestBody body=null;
-                if("POST".equals(method)||"PATCH".equals(method))body=new RequestBody(){
+                if("POST".equals(method)||"PUT".equals(method)||"PATCH".equals(method))body=new RequestBody(){
                     public MediaType contentType(){return null;}
                     public long contentLength(){return uploadFile==null?uploadBytes.length:uploadFile.length();}
                     public boolean isOneShot(){return true;}
@@ -194,7 +194,7 @@ public final class PodHttpServices implements AutoCloseable {
                 if (location == null || ++redirects > MAX_REDIRECTS) throw new IOException("redirect_limit");
                 URL next = checkedUrl(current.toURI().resolve(location).toURL().toString());
                 if (!origin(current).equals(origin(next))) {
-                    if("POST".equals(method)||"PATCH".equals(method))throw new IOException("cross_origin_post_redirect");
+                    if("POST".equals(method)||"PUT".equals(method)||"PATCH".equals(method))throw new IOException("cross_origin_post_redirect");
                     headers.remove("authorization"); headers.remove("cookie"); headers.remove("proxy-authorization"); headers.remove("x-watchrss-device-authorization"); headers.remove("x-signature"); headers.remove("apikey");
                 }
                 if("POST".equals(method)&&(status==301||status==302||status==303)){method="GET";requestBody=new byte[0];bodyFile=null;headers.remove("content-type");}
