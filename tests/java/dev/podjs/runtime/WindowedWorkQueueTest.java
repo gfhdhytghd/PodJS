@@ -116,7 +116,7 @@ public final class WindowedWorkQueueTest {
 
         check(CloudWorkerOutcome.decide("completed","retry",100)==CloudWorkerOutcome.Decision.RETRY,"cooperative stalled retry became terminal");
         check(CloudWorkerOutcome.guestCode("cloud_snapshot_progress_stalled").equals("cloud_snapshot_progress_stalled"),"closed stalled code missing");
-        for(String code:new String[]{"cloud_snapshot_object_missing","cloud_snapshot_object_unauthorized","cloud_snapshot_object_timeout","cloud_snapshot_object_rate_limited","cloud_snapshot_object_redirect","cloud_snapshot_object_integrity","cloud_snapshot_download_failed","cloud_snapshot_work_timeout"}){
+        for(String code:new String[]{"request_too_large","cloud_snapshot_object_missing","cloud_snapshot_object_unauthorized","cloud_snapshot_object_timeout","cloud_snapshot_object_rate_limited","cloud_snapshot_object_redirect","cloud_snapshot_object_integrity","cloud_snapshot_download_failed","cloud_snapshot_work_timeout"}){
             check(code.equals(CloudWorkerOutcome.guestCode(code)),"closed snapshot deferral code lost");
             check(CloudWorkerOutcome.guestCode(code+" private token")==null,"private suffix leaked");
         }

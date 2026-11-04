@@ -13,6 +13,8 @@ secure_cp="$secure_work:$secure_json:$secure_classes:$secure_sdk/platforms/andro
 javac -cp "$secure_cp" -d "$secure_work" tests/java/dev/podjs/runtime/{SecureDecodeTraceTest,SecureStoreCapacityTest}.java
 javac -cp "$secure_cp" -d "$secure_work" tests/java/dev/podjs/runtime/SecureProcessCacheTest.java
 java -Xmx64m -ea -cp "$secure_cp" dev.podjs.runtime.SecureProcessCacheTest "$secure_work/process-store"
+javac -cp "$secure_cp" -d "$secure_work" tests/java/dev/podjs/runtime/SecurePagedReadTest.java
+java -Xmx64m -ea -cp "$secure_cp" dev.podjs.runtime.SecurePagedReadTest "$secure_work/paged-store"
 java -Xmx64m -ea -cp "$secure_cp" dev.podjs.runtime.SecureDecodeTraceTest
 java -Xmx64m -ea -cp "$secure_cp" dev.podjs.runtime.SecureStoreCapacityTest
 

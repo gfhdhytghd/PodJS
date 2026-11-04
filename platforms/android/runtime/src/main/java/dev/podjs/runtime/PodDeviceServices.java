@@ -268,11 +268,15 @@ public final class PodDeviceServices implements AutoCloseable {
         if (values.has(key)) {
             String value=values.getString(key);
             if(a.has("maxChars")){
+                // Snapshot copies retain the immutable string by reference. Writes to
+                // another key must not invalidate every page of a large read.
+                int version=System.identityHashCode(value);
+                if(a.has("version")&&a.getInt("version")!=version)return out.put("changed",true);
                 int maximum=a.getInt("maxChars"),offset=a.optInt("offset",0);if(maximum<1||maximum>32768||offset<0||offset>value.length())throw new IllegalArgumentException("secure_read_range_invalid");
                 if(offset>0&&offset<value.length()&&Character.isLowSurrogate(value.charAt(offset))&&Character.isHighSurrogate(value.charAt(offset-1)))throw new IllegalArgumentException("secure_read_range_invalid");
                 int end=Math.min(value.length(),offset+maximum);if(end<value.length()&&end>offset&&Character.isHighSurrogate(value.charAt(end-1))&&Character.isLowSurrogate(value.charAt(end)))end--;
                 if(end==offset&&offset<value.length())throw new IllegalArgumentException("secure_read_range_invalid");
-                out.put("value",value.substring(offset,end)).put("offset",offset).put("totalChars",value.length()).put("version",System.identityHashCode(values));
+                out.put("value",value.substring(offset,end)).put("offset",offset).put("totalChars",value.length()).put("version",version);
             }else out.put("value",value);
         }
         return out;

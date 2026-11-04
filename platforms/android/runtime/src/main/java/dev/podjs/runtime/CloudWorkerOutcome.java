@@ -13,7 +13,7 @@ final class CloudWorkerOutcome {
         "checkpoint-read","checkpoint-write","checkpoint-range-piece","checkpoint-invalid","download","chunk","object","overlay","inventory","manifest","source-hash","inflate","plan","export","apply"
     )));
     static final Set<String> GUEST_CODES=Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
-        "cloud_sync_deadline_exceeded","cloud_sync_suspended","cloud_operation_superseded","cloud_snapshot_progress_stalled","cloud_host_capability_unavailable",
+        "request_too_large","cloud_sync_deadline_exceeded","cloud_sync_suspended","cloud_operation_superseded","cloud_snapshot_progress_stalled","cloud_host_capability_unavailable",
         "cloud_snapshot_object_missing","cloud_snapshot_object_unauthorized","cloud_snapshot_object_timeout","cloud_snapshot_object_rate_limited",
         "cloud_snapshot_object_redirect","cloud_snapshot_object_integrity","cloud_snapshot_download_failed","cloud_snapshot_work_timeout"
     )));
