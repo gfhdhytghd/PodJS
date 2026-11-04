@@ -30,7 +30,9 @@ export interface TextLayoutSliceOptions {
  */
 export function prepareTextLayout<Row,Layout,Entry,Key>(steps:Iterator<Row,Layout>,
  callbacks:{key:(row:Row)=>Key;entry:(row:Row)=>Entry;publish:(snapshot:TextLayoutSnapshot<Layout,Entry,Key>)=>void;
-  preview?:{rows:number;publish:(snapshot:Pick<TextLayoutSnapshot<Layout,Entry,Key>,"entries"|"indices">)=>void}},
+  preview?:{rows:number;publish:(snapshot:Pick<TextLayoutSnapshot<Layout,Entry,Key>,"entries"|"indices">)=>void};
+  /** Optional immutable cumulative prefixes; final geometry still publishes once. */
+  progress?:{rows:number;publish:(snapshot:Pick<TextLayoutSnapshot<Layout,Entry,Key>,"entries"|"indices">)=>void}},
  options:TextLayoutSliceOptions={}) {
  // Android runtime.timer accepts 1..120000ms; zero is a rejected request,
  // so every default slice must use the minimum valid host timer.
@@ -38,11 +40,12 @@ export function prepareTextLayout<Row,Layout,Entry,Key>(steps:Iterator<Row,Layou
  // 64 cheap steps avoid a host roundtrip for every 16 scan/row operations.
  // The 1ms wall limit still applies to expensive steps and coarse host clocks.
  const budget=options.budgetMs??1,limit=options.rowLimit??64;
- const preview=callbacks.preview;
+ const preview=callbacks.preview,progress=callbacks.progress;
  if(preview&&(!Number.isSafeInteger(preview.rows)||preview.rows<1))throw new RangeError('Invalid text layout preview size');
+ if(progress&&(!Number.isSafeInteger(progress.rows)||progress.rows<1))throw new RangeError('Invalid text layout progress size');
  if(!Number.isFinite(budget)||budget<=0||!Number.isSafeInteger(limit)||limit<1)throw new RangeError('Invalid text layout slice budget');
  const entries:Entry[]=[],indices=new Map<Key,number>(),stats:TextLayoutSliceStats={turns:0,maxMs:0,rows:0};
- let previewed=false,cancelled=false,closed=false,pending:HostOperation<unknown>|undefined;
+ let progressAt=0,previewed=false,cancelled=false,closed=false,pending:HostOperation<unknown>|undefined;
  const close=()=>{if(!closed){closed=true;steps.return?.();}};
  const done=(async()=>{
   try{
@@ -63,7 +66,11 @@ export function prepareTextLayout<Row,Layout,Entry,Key>(steps:Iterator<Row,Layou
     const elapsed=clock()-began;stats.turns++;stats.maxMs=Math.max(stats.maxMs,elapsed);options.onSlice?.(elapsed,count);
     if(cancelled)return;
     if(!finished?.done&&preview&&!previewed&&entries.length>=preview.rows){
-     previewed=true;preview.publish({entries:entries.slice(),indices:new Map(indices)});
+     previewed=true;progressAt=entries.length;preview.publish({entries:entries.slice(),indices:new Map(indices)});
+    }
+    if(cancelled)return;
+    if(!finished?.done&&progress&&entries.length-progressAt>=progress.rows){
+     progressAt=entries.length;progress.publish({entries:entries.slice(),indices:new Map(indices)});
     }
     if(cancelled)return;
     if(finished?.done){callbacks.publish({layout:finished.value,entries,indices});return;}

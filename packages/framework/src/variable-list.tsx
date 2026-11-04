@@ -12,12 +12,12 @@ import { createScroller, bindDpadScroll, type Scroller } from "@pocketjs/framewo
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import { pressNode, hitNode } from "@pocketjs/framework/input";
 
-export interface ScrollEntry { height: number; render: (current?:()=>ScrollEntry) => JSX.Element; retain?:boolean; key?:unknown; data?:unknown; /** Legacy visible content bounds relative to the row's padded left/top. */ bounds?:QrRect; /** Preferred explicit visible bounds; overrides bounds. */ visibleBounds?:QrRect; /** Existing child hit targets: may extend outside the circle, but must fit the viewport/screen. */ interactionBounds?:QrRect }
+export interface ScrollEntry { height: number; onPress?:()=>void; render: (current?:()=>ScrollEntry) => JSX.Element; retain?:boolean; key?:unknown; data?:unknown; /** Legacy visible content bounds relative to the row's padded left/top. */ bounds?:QrRect; /** Preferred explicit visible bounds; overrides bounds. */ visibleBounds?:QrRect; /** Existing child hit targets: may extend outside the circle, but must fit the viewport/screen. */ interactionBounds?:QrRect }
 export interface PositionedScrollEntry extends ScrollEntry {top:number}
 export type IndexedScrollEntries=IndexedWindowEntries<PositionedScrollEntry,unknown>;
 export interface VariableListHandle {scroller:Scroller;/** Additional layout whitespace, for caller-owned hit tests and overlays. */ roundInsets:()=>{start:number;end:number};/** Round-list touch rectangle in display coordinates at the current offset; independent of visible bounds. */ interactionBounds:(index:number)=>QrRect|undefined}
 /** Variable-height, windowed column; the clipping viewport never translates. */
-export function VariableList(props: { height: number; round?:RoundListOptions|null; entries: ScrollEntry[]; indexedEntries?:IndexedScrollEntries; footerEntries?:ScrollEntry[]; gap?: number; padding?: number; verticalPadding?: number; retainRows?:number; fixed?: boolean; controller?: Scroller; inputActive?: () => boolean; accessibilityLabel?:string; onRefresh?: () => void; onManualScroll?:()=>void; onTap?:(contact:GestureContact)=>boolean|void; onLongPress?: (contact: GestureContact) => void; onScrollStateChange?:(scrolling:boolean)=>void; onOffsetChange?:(previous:number,current:number)=>void; onSettledRange?:(first:number,last:number)=>void; settleKey?:unknown; restorationOwner?:()=>ListRestorationOwner|undefined; overscan?:number;refreshDistance?:number; ref?: (handle: VariableListHandle) => void }) {
+export function VariableList(props: { height: number; round?:RoundListOptions|null; entries: ScrollEntry[]; indexedEntries?:IndexedScrollEntries; footerEntries?:ScrollEntry[]; gap?: number; padding?: number; verticalPadding?: number; retainRows?:number; minRows?:number; recycleKey?:(row:PositionedScrollEntry)=>unknown; /** Equality for immutable keyed row revisions; the original keyed renderer remains mounted. */ entryEquals?:(a:PositionedScrollEntry,b:PositionedScrollEntry)=>boolean; fixed?: boolean; controller?: Scroller; inputActive?: () => boolean; accessibilityLabel?:string; onRefresh?: () => void; onManualScroll?:()=>void; onTap?:(contact:GestureContact)=>boolean|void; onLongPress?: (contact: GestureContact) => void; onScrollStateChange?:(scrolling:boolean)=>void; onOffsetChange?:(previous:number,current:number)=>void; onSettledRange?:(first:number,last:number)=>void; settleKey?:unknown; restorationOwner?:()=>ListRestorationOwner|undefined; overscan?:number;refreshDistance?:number; ref?: (handle: VariableListHandle) => void }) {
   let viewport: NodeMirror | undefined;
   const rawRows = createMemo(() => {
     if(props.indexedEntries)return createIndexedWindowSource(props.indexedEntries,props.entries,props.footerEntries??[],{padding:props.verticalPadding??props.padding??0,gap:props.gap??0});
@@ -55,7 +55,7 @@ export function VariableList(props: { height: number; round?:RoundListOptions|nu
   const checkpoint=()=>{if(scrollKey)memory!.saved[scrollKey]=restoration.snapshot(scroller.offset(),rows());};
   if(memory){activity!.checkpoints.add(checkpoint);onCleanup(()=>{checkpoint();activity!.checkpoints.delete(checkpoint);activity!.scrollSlots.delete(scrollSlot);});}
   const takeScroll=()=>restoration.cancel();
-  const visible=createWindowedList({source:rows,lower:()=>scroller.offset()-(props.overscan??60),upper:()=>scroller.offset()+props.height+(props.overscan??60),retainRows:props.retainRows});
+  const visible=createWindowedList({source:rows,lower:()=>scroller.offset()-(props.overscan??60),upper:()=>scroller.offset()+props.height+(props.overscan??60),retainRows:props.retainRows,minRows:props.minRows,recycleKey:props.recycleKey,equals:props.entryEquals});
   const active=()=>props.inputActive?.()??true;
   let refreshEligible=false,pullDistance=0;
   createGesture({ region: {node: () => viewport}, axis: "y",
@@ -102,7 +102,7 @@ export function VariableList(props: { height: number; round?:RoundListOptions|nu
       takeScroll();props.onManualScroll?.();scroller.scrollBy((event.actionName==="increment"?1:-1)*Math.max(1,props.height*.8),{durMs:120});
     }:undefined}>
     <View class="absolute left-[0] right-[0] top-[0]" style={{height:total(), translateY:props.fixed?0:-scroller.offset()}}>
-      <For each={visible()}>{item => {const render=untrack(()=>item.value().render);return <View class="absolute" style={{insetL:props.padding ?? 0,insetR:props.padding ?? 0,insetT:item.value().top,height:item.value().height}}>{render(item.value)}</View>;}}</For>
+      <For each={visible()}>{item => {const render=untrack(()=>item.value().render);return <View onPress={item.value().onPress} class="absolute" style={{insetL:props.padding ?? 0,insetR:props.padding ?? 0,insetT:item.value().top,height:item.value().height}}>{render(item.value)}</View>;}}</For>
     </View>
   </View>;
 }

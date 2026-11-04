@@ -8,6 +8,7 @@ const events:unknown[]=[],emitted:any[]=[],freed:number[]=[];
 };
 // Replace only the native host/rendering boundary. Use the production service
 // promise table, event fanout, text cache and zero-argument API call below.
+mock.module("@pocketjs/framework/renderer",()=>Object.fromEntries(["createElement","insertNode","insert","setProp"].map(name=>[name,()=>{throw Error("unexpected component renderer call: "+name);}])));
 mock.module('@pocketjs/framework/components',()=>({View(){},Image(){}}));
 mock.module('@pocketjs/framework/host',()=>({getOps:()=>({setImage(){},freeTexture:(id:number)=>freed.push(id)})}));
 mock.module('@pocketjs/framework/gesture',()=>({cancelActiveTouches(){}}));

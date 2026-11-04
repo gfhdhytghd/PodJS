@@ -1,7 +1,7 @@
 import {createTextureUploader} from './texture-upload.ts';
 export {prepareTextLayout,type TextLayoutSnapshot,type TextLayoutSliceOptions,type TextLayoutSliceStats} from "./text-layout.ts";
-import {createEffect,createSignal,onCleanup,type JSX} from "solid-js";
-import {View,Image,type NodeMirror} from "@pocketjs/framework/components";
+import {createEffect,createRenderEffect,createMemo,createSignal,onCleanup,untrack,type JSX} from "solid-js";
+import {createElement,insertNode,insert,setProp,type NodeMirror} from "@pocketjs/framework/renderer";
 import {getOps} from "@pocketjs/framework/host";
 import {textRaster,fileChunks,base64ToBytes,hasTextureFileUpload,uploadTextureFile,type TextParagraphLine,type TextFontOptions} from "./services.ts";
 
@@ -19,7 +19,30 @@ interface Listener {
 interface Entry {
  id:number;key:string;options:SystemTextLineOptions;refs:number;cancelled:boolean;started:boolean;
  handle:number;path?:string;width:number;height:number;carets:number[];listeners:Set<Listener>;
+ cache?:TextCacheState;
  stage:LoadStage;loadFailure?:SystemTextFailureStage;succeeded:boolean;
+}
+export interface SystemTextCache {close():void;stats():{retained:number;retainedBytes:number;entries:number}}
+interface TextCacheState {id:number;closed:boolean;maxEntries:number;maxBytes:number;members:Set<Entry>;idle:Set<Entry>}
+const textCaches=new WeakMap<SystemTextCache,TextCacheState>();let nextCacheId=1;
+/** A component-scoped bitmap history; active owners keep their ordinary leases. */
+export function createSystemTextCache(options:{maxEntries?:number;maxBytes?:number}={}):SystemTextCache {
+ const maxEntries=options.maxEntries??24,maxBytes=options.maxBytes??8*1024*1024;
+ if(!Number.isSafeInteger(maxEntries)||maxEntries<0||!Number.isSafeInteger(maxBytes)||maxBytes<0)throw new RangeError("Invalid system text cache bounds");
+ const state:TextCacheState={id:nextCacheId++,closed:false,maxEntries,maxBytes,members:new Set(),idle:new Set()};
+ const cache:SystemTextCache={close(){if(state.closed)return;state.closed=true;for(const entry of [...state.idle])discard(entry);},stats(){return {retained:state.idle.size,retainedBytes:[...state.idle].reduce((sum,e)=>sum+e.width*e.height*4,0),entries:state.members.size};}};
+ textCaches.set(cache,state);return cache;
+}
+function discard(entry:Entry):void {
+ if(entries.get(entry.key)===entry)entries.delete(entry.key);entry.cache?.idle.delete(entry);entry.cache?.members.delete(entry);entry.cancelled=true;
+ if(entry.handle>=0){const handle=entry.handle;entry.handle=-1;try{textures.release(handle);}catch{console.warn("SystemTextLine","free failed");}}
+}
+function retain(entry:Entry):boolean {
+ const cache=entry.cache;if(!cache||cache.closed||entry.handle<0||!entry.succeeded||cache.maxEntries===0)return false;
+ cache.idle.delete(entry);cache.idle.add(entry);
+ let bytes=[...cache.idle].reduce((sum,e)=>sum+e.width*e.height*4,0);
+ while(cache.idle.size>cache.maxEntries||bytes>cache.maxBytes){const oldest=cache.idle.values().next().value!;bytes-=oldest.width*oldest.height*4;discard(oldest);}
+ return !entry.cancelled;
 }
 const entries=new Map<string,Entry>(),queue:Entry[]=[];let active=0,nextEntryId=1;
 let succeededTotal=0,failedTotal=0,deliveredTotal=0;
@@ -95,10 +118,15 @@ async function load(entry:Entry){
  finally{await remove(entry.path);entry.path=undefined;}
 }
 function pump(){while(active<2&&queue.length){const entry=queue.shift()!;if(entry.cancelled)continue;entry.started=true;entry.stage="raster";active++;void load(entry).finally(()=>{active--;pump();});}}
-export function bindSystemTextLine(options:SystemTextLineOptions,node:NodeMirror,ready:(value:{width:number;height:number;carets:number[]})=>void):()=>void{
- const key=JSON.stringify(options);let entry=entries.get(key);
- if(!entry){entry={id:nextEntryId++,key,options,refs:0,cancelled:false,started:false,handle:-1,width:0,height:0,carets:[],listeners:new Set(),stage:"queued",succeeded:false};entries.set(key,entry);queue.push(entry);}
- entry.refs++;
+export function bindSystemTextLine(options:SystemTextLineOptions,node:NodeMirror,ready:(value:{width:number;height:number;carets:number[]})=>void,cache?:SystemTextCache):()=>void{
+ return bindSystemTextLineKey(options,node,ready,JSON.stringify(options),cache);
+}
+function bindSystemTextLineKey(options:SystemTextLineOptions,node:NodeMirror,ready:(value:{width:number;height:number;carets:number[]})=>void,key:string,owner?:SystemTextCache):()=>void{
+ const cache=owner?textCaches.get(owner):undefined;if(owner&&(!cache||cache.closed))throw new Error("System text cache is closed");
+ if(cache)key="cache:"+cache.id+":"+key;
+ let entry=entries.get(key);
+ if(!entry){entry={id:nextEntryId++,key,options,refs:0,cancelled:false,started:false,handle:-1,width:0,height:0,carets:[],listeners:new Set(),stage:"queued",succeeded:false,cache};entries.set(key,entry);cache?.members.add(entry);queue.push(entry);}
+ entry.cache?.idle.delete(entry);entry.refs++;
  const listener:Listener={node,ready,state:"pending"};entry.listeners.add(listener);
  if(entry.handle>=0)deliver(entry,listener);pump();
  let released=false;
@@ -108,25 +136,43 @@ export function bindSystemTextLine(options:SystemTextLineOptions,node:NodeMirror
   // Detach errors cannot strand a reference or turn cancellation into failure.
   try{getOps().setImage(node.id,-1);}catch{console.warn("SystemTextLine","detach failed");}
   if(--entry!.refs>0){countSuccess(entry!);return;}
-  if(entries.get(key)===entry)entries.delete(key);
-  entry!.cancelled=true;
-  if(entry!.handle>=0){const handle=entry!.handle;entry!.handle=-1;try{textures.release(handle);}catch{console.warn("SystemTextLine","free failed");}}
+  if(!retain(entry!))discard(entry!);
  };
 }
 /** System-shaped text rendered inside the application's retained scene, with a bounded texture lifecycle. */
-export function SystemTextLine(props:{options:SystemTextLineOptions;pixelScale:number;fallback?:JSX.Element;onCarets?:(carets:number[]|undefined)=>void}){
- let node:NodeMirror|undefined;
+export function SystemTextLine(props:{options:SystemTextLineOptions;pixelScale:number;top?:number;cache?:SystemTextCache;fallback?:JSX.Element;renderFallback?:(visible:()=>boolean)=>JSX.Element;onCarets?:(carets:number[]|undefined)=>void}){
+ // The line owns its clipping and optional native fallback. A specialized
+ // fallback can consume visibility directly, avoiding a redundant native View.
+ const root=createElement("view");
  const [texture,setTexture]=createSignal<{width:number;height:number}>();
+ setProp(root,"accessibilityRole","text");
+ let fallback:NodeMirror|undefined;
+ if(props.renderFallback)insert(root,()=>props.renderFallback!(()=>!texture()));
+ else {
+  fallback=createElement("view");setProp(fallback,"accessibilityHidden",true);setProp(fallback,"class","absolute inset-0");
+  insertNode(root,fallback);insert(fallback,()=>props.fallback);
+ }
+ const node=createElement("image");setProp(node,"accessibilityHidden",true);setProp(node,"class","absolute left-[0] top-[0]");insertNode(root,node);
+ const requestKey=createMemo(()=>JSON.stringify(props.options));
  createEffect(()=>{
-  const options={...props.options},scale=props.pixelScale;if(!node)return;
-  setTexture(undefined);props.onCarets?.(undefined);
-  const release=bindSystemTextLine(options,node,value=>{setTexture(value);props.onCarets?.(value.carets.map(x=>x/scale));});
-  onCleanup(()=>{release();props.onCarets?.(undefined);});
+  const key=requestKey(),scale=props.pixelScale,options=untrack(()=>({...props.options})),onCarets=props.onCarets,cache=props.cache;
+  setTexture(undefined);onCarets?.(undefined);
+  const release=bindSystemTextLineKey(options,node,value=>{setTexture(value);onCarets?.(value.carets.map(x=>x/scale));},key,cache);
+  onCleanup(()=>{release();onCarets?.(undefined);});
  });
- return <View accessibilityRole="text" accessibilityLabel={props.options.text} class="relative overflow-hidden" style={{width:props.options.widthPx/props.pixelScale,height:props.options.heightPx/props.pixelScale}}>
-  <View accessibilityHidden class="absolute inset-0" style={{opacity:texture()?0:1}}>{props.fallback}</View>
-  <Image accessibilityHidden ref={value=>{node=value;}} class="absolute left-[0] top-[0]" style={{width:(texture()?.width??props.options.widthPx)/props.pixelScale,height:(texture()?.height??props.options.heightPx)/props.pixelScale,opacity:texture()?1:0}}/>
- </View>;
+ let rootStyle:Record<string,number>|undefined,imageStyle:Record<string,number>|undefined,fallbackStyle:Record<string,number>|undefined;
+ createRenderEffect(()=>{
+  const options=props.options,scale=props.pixelScale;
+  setProp(root,"accessibilityLabel",options.text);setProp(root,"class",props.top===undefined?"relative overflow-hidden":"absolute left-[0] overflow-hidden");
+  const style={width:options.widthPx/scale,height:options.heightPx/scale,...(props.top===undefined?{}:{insetT:props.top})};setProp(root,"style",style,rootStyle);rootStyle=style;
+ });
+ createRenderEffect(()=>{
+  const value=texture(),options=props.options,scale=props.pixelScale;
+  if(fallback){const hidden={opacity:value?0:1};setProp(fallback,"style",hidden,fallbackStyle);fallbackStyle=hidden;}
+  const style={width:(value?.width??options.widthPx)/scale,height:(value?.height??options.heightPx)/scale,opacity:value?1:0};
+  setProp(node,"style",style,imageStyle);imageStyle=style;
+ });
+ return root as unknown as JSX.Element;
 }
 /** Numeric-only ownership, computed on demand without walking status listeners. */
 export function systemTextMemoryStats() {

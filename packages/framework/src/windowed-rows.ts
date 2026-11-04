@@ -4,16 +4,18 @@ const at=<T>(rows:readonly T[]|WindowRowList<T>,index:number):T=>rows.at(index)!
 /** Retain a bounded keyed history across indexed layouts of the same document.
  * Unkeyed lists retain their original source-replacement invalidation semantics.
  */
-export function createWindowRows<T extends WindowRow>(extraRows=0) {
+export function createWindowRows<T extends WindowRow>(extraRows=0,minRows=0) {
  const limit=Number.isFinite(extraRows)?Math.max(0,Math.floor(extraRows)):0;
  let source:readonly T[]|WindowRowList<T>|undefined,first=-1,end=-1,result:T[]=[];
  const recent=new Map<unknown,{row:T;index:number}>();
  return (rows:readonly T[]|WindowRowList<T>,lower:number,upper:number):T[]=>{
   let lo=0,hi=rows.length;
   while(lo<hi){const mid=(lo+hi)>>>1,row=at(rows,mid);if(row.top+row.height<lower)lo=mid+1;else hi=mid;}
-  const nextFirst=lo;hi=rows.length;
+  let nextFirst=lo;hi=rows.length;
   while(lo<hi){const mid=(lo+hi)>>>1;if(at(rows,mid).top<=upper)lo=mid+1;else hi=mid;}
-  const nextEnd=lo;
+  let nextEnd=lo;
+  const minimum=Number.isSafeInteger(minRows)?Math.max(0,minRows):0;
+  if(nextEnd-nextFirst<minimum){const after=Math.min(rows.length-nextEnd,minimum-(nextEnd-nextFirst));nextEnd+=after;nextFirst=Math.max(0,nextFirst-(minimum-(nextEnd-nextFirst)));}
   if(source===rows&&first===nextFirst&&end===nextEnd)return result;
   if(source!==rows){
    const indexed=rows as WindowRowList<T>,old=source as WindowRowList<T>|undefined;

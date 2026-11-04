@@ -14,6 +14,8 @@ const NO_END = new Set(Array.from("（〔［｛〈《「『【〘〖〝‘“｟
 const WORD = lazyRegExpTest("[\\p{L}\\p{N}\\p{M}'’\\-_.@#&=+~*$^|\\\\]",'u');
 
 function graphemes(value: string): string[] {
+  // Without joiners or extenders every code point is already a cluster.
+  if (!/[\u200d\ufe0f\u0300-\u036f]/u.test(value)) return Array.from(value);
   const out: string[] = [];
   for (const cp of Array.from(value)) {
     const code = cp.codePointAt(0)!;
@@ -41,14 +43,15 @@ export function breakUnits(paragraph: string): string[] {
   const glued: string[] = [];
   for (let i = 0; i < units.length; i++) {
     const unit = units[i];
-    const first = Array.from(unit)[0];
+    // Both punctuation sets contain BMP characters only.
+    const first = unit[0];
     if (glued.length && NO_START.has(first) && !/^\s+$/u.test(glued[glued.length - 1])) glued[glued.length - 1] += unit;
     else glued.push(unit);
   }
   const result: string[] = [];
   for (let i = 0; i < glued.length; i++) {
     let unit = glued[i];
-    while (i + 1 < glued.length && NO_END.has(Array.from(unit).at(-1)!) && !/^\s+$/u.test(glued[i + 1])) unit += glued[++i];
+    while (i + 1 < glued.length && NO_END.has(unit[unit.length - 1]) && !/^\s+$/u.test(glued[i + 1])) unit += glued[++i];
     result.push(unit);
   }
   return result;

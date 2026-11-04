@@ -22,6 +22,7 @@ let setImage: (node: number, texture: number) => void;
   capabilities: () => JSON.stringify(["text.raster", "data.files.chunks"]),
 };
 const pod = (globalThis as any).pod;
+mock.module("@pocketjs/framework/renderer",()=>Object.fromEntries(["createElement","insertNode","insert","setProp"].map(name=>[name,()=>{throw Error("unexpected component renderer call: "+name);}])));
 mock.module("@pocketjs/framework/components", () => ({View() {}, Image() {}}));
 mock.module("@pocketjs/framework/host", () => ({getOps: () => ({
   setImage(node: number, texture: number) { images.push([node, texture]); setImage(node, texture); },

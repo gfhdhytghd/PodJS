@@ -2,6 +2,7 @@ import {expect,mock,test} from 'bun:test';
 import {createRoot,createSignal,createEffect,mapArray,onCleanup} from 'solid-js';
 const events:Record<string,unknown>[]=[],emitted:{t:string;id:number;method:string;args:{milliseconds?:number}}[]=[];
 (globalThis as any).pod={takeEvents:()=>events.length?JSON.stringify(events.splice(0)):undefined,emit:(line:string)=>emitted.push(JSON.parse(line)),capabilities:()=>JSON.stringify(['runtime.timer'])};
+mock.module("@pocketjs/framework/renderer",()=>Object.fromEntries(["createElement","insertNode","insert","setProp"].map(name=>[name,()=>{throw Error("unexpected component renderer call: "+name);}])));
 mock.module('@pocketjs/framework/components',()=>({View:()=>null,Image:()=>null}));
 mock.module('@pocketjs/framework/host',()=>({getOps:()=>({})}));
 mock.module('@pocketjs/framework/gesture',()=>({cancelActiveTouches(){}}));
@@ -9,7 +10,7 @@ mock.module('@pocketjs/framework/input',()=>({dispatchAccessibilityAction(){}}))
 mock.module('@pocketjs/framework/services',()=>({registerServicePump(){}}));
 // Import public package exports, rather than an application implementation.
 const {prepareTextLayout}=await import('@podjs/framework/text');
-const {createWindowRows,createIndexedWindowSource,createWindowedList,createWindowValue,visibleWindowRange}=await import('@podjs/framework/windowed-list');
+const {createLiveWindowRows,createWindowRows,createIndexedWindowSource,createWindowedList,createWindowValue,visibleWindowRange}=await import('@podjs/framework/windowed-list');
 const {__pumpPodEvents}=await import('../src/watch.ts');
 const settle=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
 async function nextTurn(){const req=emitted.shift()!;expect(req).toMatchObject({t:'service.request',method:'runtime.delay',args:{milliseconds:1}});events.push({t:'service.result',id:req.id,ok:true,value:null});__pumpPodEvents();await settle();}
@@ -139,4 +140,31 @@ test('HTML fragments use default valid host timers and cancellation releases nat
   await nextTurn();const request=emitted.shift()!;cancelled.cancel();expect(emitted.shift()).toMatchObject({t:'service.cancel',id:request.id});
   events.push({t:'service.result',id:request.id,ok:true,value:null});__pumpPodEvents();await settle();await cancelled.done;expect(late).toBe(0);expect(releases).toBe(2);
  }finally{for(const key of ['htmlBegin','htmlAppend','htmlNext','htmlCancel'])delete pod[key];}
+});
+
+
+test('cumulative prefixes are immutable, retain prior row identities and stop on cancellation',async()=>{
+ const prefixes:any[]=[],final:any[]=[];
+ const task=prepareTextLayout(fixture(200),{...callbacks(value=>final.push(value)),progress:{rows:64,publish:value=>prefixes.push(value)}});
+ while(emitted.length)await nextTurn();await task.done;
+ expect(prefixes.map(p=>p.entries.length)).toEqual([64,128,192]);expect(final).toHaveLength(1);
+ expect(prefixes[0].entries).toHaveLength(64);expect(prefixes[0].indices.size).toBe(64);
+ expect(prefixes[1].entries[0]).toBe(prefixes[0].entries[0]);expect(final[0].entries[0]).toBe(prefixes[0].entries[0]);
+ let partials=0,complete=0;const cancelled=prepareTextLayout(fixture(200),{...callbacks(()=>complete++),progress:{rows:1,publish:()=>partials++}});
+ await nextTurn();cancelled.cancel();await cancelled.done;expect(partials).toBe(1);expect(complete).toBe(0);
+ emitted.splice(0);events.splice(0);
+});
+
+
+test('opted-in compatible rows recycle owners while required keys and document scopes stay distinct',()=>{
+ let allocations=0;const scope={};
+ type Entry={key:string;kind:string;text:string};
+ const live=createLiveWindowRows<Entry,{token:number;read:()=>Entry}>(read=>({token:++allocations,read}),(a,b)=>a.key===b.key&&a.text===b.text,row=>row.kind==='text'?'text':undefined);
+ const a={key:'a',kind:'text',text:'A'},b={key:'b',kind:'text',text:'B'},header={key:'h',kind:'header',text:'header'};
+ const first=live([a,b,header],scope),second=live([b,{key:'c',kind:'text',text:'C'},header],scope);
+ expect(second[0]).toBe(first[1]);expect(second[1]).toBe(first[0]);expect(second[1].read().key).toBe('c');expect(second[2]).toBe(first[2]);expect(allocations).toBe(3);
+ const reversed=live([a,b,header],scope);expect(reversed[0]).toBe(second[1]);expect(reversed[0].read()).toBe(a);expect(allocations).toBe(3);
+ const next=live([a,b,header],{});expect(next[0]).not.toBe(reversed[0]);expect(allocations).toBe(6);
+ const select=createWindowRows<any>(0,8),rows=Array.from({length:20},(_,i)=>({top:i*10,height:10,key:i}));
+ expect(select(rows,-5,15).length).toBe(8);const tail=select(rows,190,210);expect(tail.length).toBe(8);expect(tail.at(-1).key).toBe(19);
 });

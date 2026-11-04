@@ -1,6 +1,7 @@
 import {expect,mock,test} from 'bun:test';
 const events:any[]=[],emitted:any[]=[],uploads:any[]=[],freed:number[]=[];
 (globalThis as any).pod={takeEvents:()=>events.length?JSON.stringify(events.splice(0)):undefined,emit:(line:string)=>emitted.push(JSON.parse(line)),capabilities:()=>JSON.stringify(['text.raster','data.files.chunks'])};
+mock.module("@pocketjs/framework/renderer",()=>Object.fromEntries(["createElement","insertNode","insert","setProp"].map(name=>[name,()=>{throw Error("unexpected component renderer call: "+name);}])));
 mock.module('@pocketjs/framework/components',()=>({View:()=>null,Image:()=>null}));
 mock.module('@pocketjs/framework/host',()=>({getOps:()=>({setImage(){},uploadTexture(...args:any[]){uploads.push(args);return 7;},freeTexture(id:number){freed.push(id);}})}));
 mock.module('@pocketjs/framework/gesture',()=>({cancelActiveTouches(){}}));

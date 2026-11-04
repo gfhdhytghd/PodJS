@@ -83,3 +83,22 @@ test('production round list places different-width endpoint rows safely and keep
  expect(handle.interactionBounds(entries.length-1)).toEqual({x:18,y,width:197,height:48});
  stop();
 });
+
+
+test('keyed row equality keeps the mounted text owner across equivalent layout revisions',()=>{
+ let dispose!:()=>void,handle:any,created=0;const seen:unknown[]=[];
+ const [body,setBody]=createSignal({entries:[{key:'line',top:0,height:40,data:{text:'same'},render:(current:any)=>{created++;createRenderEffect(()=>seen.push(current().data));return null;}}],indices:new Map([['line',0]]),scope:'doc'});
+ createRoot(stop=>{dispose=stop;return VariableList({height:100,entries:[],get indexedEntries(){return body();},entryEquals:(a,b)=>a.top===b.top&&a.height===b.height&&(a.data as any).text===(b.data as any).text,ref:v=>handle=v});});
+ expect(created).toBe(1);
+ const revision=(height:number)=>({entries:[{key:'line',top:0,height,data:{text:'same'},render:()=>{created++;return null;}}],indices:new Map([['line',0]]),scope:'doc'});
+ setBody(revision(40));expect(created).toBe(1);expect(seen).toHaveLength(1);
+ setBody(revision(60));expect(created).toBe(1);expect(seen).toHaveLength(2);expect(handle.scroller.offset()).toBe(0);
+ dispose();
+});
+
+
+test('a window row can own its press action without another native wrapper',()=>{
+ let dispose!:()=>void,pressed=0;
+ const tree=createRoot(stop=>{dispose=stop;return VariableList({height:100,padding:18,entries:[{height:40,onPress:()=>pressed++,render:()=>null}]});});
+ const entry=children(tree).find(n=>n.props.style?.insetR===18)!;expect(entry).toBeDefined();entry.props.onPress();expect(pressed).toBe(1);dispose();
+});

@@ -25,9 +25,9 @@ function sameFields<T extends object>(a:T,b:T):boolean {
  * Unkeyed arrays keep source replacement invalidation and object identity.
  * The immutable source and its index must agree and keys must be unique.
  */
-export function createWindowedList<T extends WindowRow>(options:{source:Accessor<readonly T[]|WindowRowList<T>>;lower:Accessor<number>;upper:Accessor<number>;retainRows?:number;equals?:(a:T,b:T)=>boolean}):Accessor<WindowItem<T>[]> {
- const select=createWindowRows<T>(options.retainRows);
- const mount=createLiveWindowRows<T,WindowItem<T>>(read=>({key:read().key??read(),value:read}),options.equals??sameFields);
+export function createWindowedList<T extends WindowRow>(options:{source:Accessor<readonly T[]|WindowRowList<T>>;lower:Accessor<number>;upper:Accessor<number>;retainRows?:number;minRows?:number;recycleKey?:(row:T)=>unknown;equals?:(a:T,b:T)=>boolean}):Accessor<WindowItem<T>[]> {
+ const select=createWindowRows<T>(options.retainRows,options.minRows);
+ const mount=createLiveWindowRows<T,WindowItem<T>>(read=>options.recycleKey?({get key(){return read().key??read();},value:read}):({key:read().key??read(),value:read}),options.equals??sameFields,options.recycleKey);
  return createMemo(()=>{
   const source=options.source(),selected=select(source,options.lower(),options.upper());
   const scope=(source as WindowRowList<T>).indexOfKey?(source as WindowRowList<T>).scope:source;
