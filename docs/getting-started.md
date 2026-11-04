@@ -183,6 +183,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/html-slices` | Incremental/cancellable HTML fragment parsing. |
 | `@podjs/framework/xml` | Generic XML parsing and document navigation. |
 | `@podjs/framework/json-raw` | Bounded immutable JSON token spans; patch known fields retaining unknown bytes. `canonicalIntegerJson` provides RFC 8785 JCS with exact nonnegative safe integer token validation for signed protocols; never use it to rewrite unknown extensions. |
+| `@podjs/framework/lifecycle-token` | Validate reset tokens, compare numeric generations and operation IDs, and reject exhausted safe counters. Pure functions without host or UI access. |
 | `@podjs/framework/register-merge` | Pure schema-driven atomic register codec; `null` means the portable reader must validate and merge the input. No JNI, storage or service queue. |
 | `@podjs/framework/p256` | Opt-in P-256 module with no import-time IO or browser crypto globals; randomness and SHA-256 come from host ports. Keep it out of worker/headless entries that only need native `verifyP256`. |
 | `@podjs/framework/testing/solid-preload` | Bun test preload that applies the production universal Solid transform to framework TSX, so app tests load one PocketJS/Solid runtime. |
