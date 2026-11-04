@@ -469,6 +469,10 @@ extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePu
   auto* h=reinterpret_cast<Host*>(p);if(!h)return;
   if(pod_runtime_pump_jobs(h->runtime)<0)__android_log_print(ANDROID_LOG_ERROR,"PodJS","Job pump failed: %s",pod_runtime_last_error());
 }
+extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeNeedsFrame(JNIEnv*,jclass,jlong p) {
+  auto* h=reinterpret_cast<Host*>(p);
+  return h&&(pod_runtime_needs_frame(h->runtime)||h->touches.needsFrame()||h->renderCheckpointFrames>0)?JNI_TRUE:JNI_FALSE;
+}
 extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeHasPendingJobs(JNIEnv*,jclass,jlong p) {
   auto* h=reinterpret_cast<Host*>(p);return h&&pod_runtime_has_pending_jobs(h->runtime)?JNI_TRUE:JNI_FALSE;
 }

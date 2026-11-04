@@ -34,7 +34,7 @@ export function WatchProgressIndicator(props: WatchProgressIndicatorProps) {
       setElapsedMs(value => (value + delta) % WATCH_PROGRESS_CYCLE_MS);
     }
     lastFrameAt = now;
-  });
+  }, active);
   const arc = createMemo(() => watchProgressArc(elapsedMs(), strokeWidth()));
   return <View class="relative" style={{width: size(), height: size()}}
     accessibilityLabel={props.accessibilityLabel ?? "Loading"}

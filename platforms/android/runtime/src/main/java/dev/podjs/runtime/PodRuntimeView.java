@@ -86,9 +86,18 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     };
     private final ExecutorService network = Executors.newCachedThreadPool();
     private final Map<Integer, HttpURLConnection> requests = new ConcurrentHashMap<>();
+    private boolean frameScheduled;
+    private int activeTouchCount;
+    private void requestFrame() {
+        if(Looper.myLooper()!=Looper.getMainLooper()){serviceHandler.post(this::requestFrame);return;}
+        if(host==0||!active||frameScheduled)return;
+        frameScheduled=true;Choreographer.getInstance().postFrameCallback(frameCallback);
+    }
+    private long idleFramePasses;
     private final FrameTimingWindow javaFramePerf = new FrameTimingWindow();
     private final Choreographer.FrameCallback frameCallback = new Choreographer.FrameCallback() {
         @Override public void doFrame(long frameTime) {
+            frameScheduled=false;
             if (host != 0 && active) {
                 hangPhase(MainThreadWatchdog.Phase.FRAME);
                 try {
@@ -98,7 +107,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                     nativeAccessibilityEnabled(host, enabled); accessibilityEnabled = enabled;
                     if (!enabled) accessibility.clear();
                 }
-                nativeFrame(host, frameTime);
+                nativeFrame(host, frameTime);idleFramePasses++;
                 long nativeDone = android.os.SystemClock.elapsedRealtimeNanos();
                 if (enabled) {
                     byte[] semantics = nativeAccessibilitySnapshot(host, accessibilityMetadata);
@@ -136,7 +145,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                     scheduleJobContinuation(hostLifetime);
                 }
             }
-            if (active) Choreographer.getInstance().postFrameCallback(this);
+            if (active && host!=0 && (activeTouchCount>0||nativeNeedsFrame(host))) requestFrame();
         }
     };
 
@@ -173,6 +182,10 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                     if(slowServiceCallbacks.enabled&&guestCallbackLogs++<64&&("resolve".equals(callback)||"reject".equals(callback)||"status".equals(callback))&&command.optLong("elapsedMs")>50)
                         android.util.Log.w("PodJSPerf","serviceCallback service="+ServiceResultTrace.exactMethod(command.optString("service"))+" callback="+callback+" elapsedMs="+command.optLong("elapsedMs"));
                 }
+                else if ("diagnostic.idleCounters".equals(command.optString("t"))) {
+                    String counters=IdleDiagnostics.format(command,idleFramePasses);
+                    if(counters!=null){android.util.Log.i("PodJSIdle",counters);idleFramePasses=0;}
+                }
                 else if ("diagnostic.serviceWork".equals(command.optString("t"))) {
                     if(serviceResultTrace.enabled && command.optString("label").matches("[a-zA-Z][a-zA-Z0-9_.:-]{0,79}"))
                         android.util.Log.i("PodJSService", "guest label="+command.optString("label")+" ms="+command.optLong("elapsedMs")+" exclusiveMs="+command.optLong("exclusiveMs")+" beginEpochMs="+command.optLong("beginEpochMs")+" endEpochMs="+command.optLong("endEpochMs")+(command.has("units")?" units="+command.optLong("units"):""));
@@ -202,7 +215,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         if(jobContinuation!=null)serviceHandler.removeCallbacks(jobContinuation);
         queuedJobTurn=null;jobContinuation=null;effectsPending=false;
         if(hangWatchdog!=null){hangWatchdog.close();hangWatchdog=null;}
-        host = handle;
+        host = handle;activeTouchCount=0;
         if(handle!=0)services.attachBenchmark(this);
         renderCheckpoint.reset();
         serviceTraceGuestEnabled=false;
@@ -241,6 +254,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
             }finally{
                 hangPhase(MainThreadWatchdog.Phase.IDLE);
                 scheduleJobContinuation(owner);
+                requestFrame();
             }
         };
         // A real looper boundary, coalesced and never postponed by more work.
@@ -323,6 +337,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                 if(slow!=null)android.util.Log.w("PodJSPerf",slow);
                 hangPhase(MainThreadWatchdog.Phase.IDLE);
                 scheduleJobContinuation(owner);
+                requestFrame();
             }
         });
     }
@@ -387,7 +402,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
             if (lifecycleState == 0) nativePumpServiceResults(owner.handle);
             else nativePumpServices(owner.handle);
             if (ownsHost(owner)) drainHostEffects(lifecycleState == 0);
-        } finally { serviceTurnRunning = false; }
+        } finally { serviceTurnRunning = false;requestFrame(); }
     }
 
     public PodRuntimeView(Context context, String targetId) {
@@ -407,7 +422,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         slowServiceCallbacks=new SlowServiceCallbacks(SlowServiceCallbacks.enabled(
             (context.getApplicationInfo().flags&android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0,
             stackOverride,android.util.Log.isLoggable("PodJSStack",android.util.Log.DEBUG)));
-        accessibility = new PodAccessibility(this, (id, hash, action) -> host != 0 && nativeAccessibilityAction(host, id, hash, action));
+        accessibility = new PodAccessibility(this, (id, hash, action) -> {boolean result=host!=0&&nativeAccessibilityAction(host,id,hash,action);requestFrame();return result;});
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
         long servicesBegan = PodStartupTrace.now();
         services = new PodServices(context, this::receiveServiceEvent);
@@ -441,7 +456,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         if (getParent() instanceof ViewGroup) {
             services.attachVideo((ViewGroup) getParent());
             services.attachMediaSurfaces((ViewGroup)getParent(),new PodMediaSurfaceServices.TextureSink(){
-                public int write(int handle,int[] pixels,int width,int height,boolean linear){return host==0?-1:nativeMediaTexture(host,handle,pixels,width,height,linear);}
+                public int write(int handle,int[] pixels,int width,int height,boolean linear){int result=host==0?-1:nativeMediaTexture(host,handle,pixels,width,height,linear);requestFrame();return result;}
                 public void free(int handle){if(host!=0)nativeFreeMediaTexture(host,handle);}
             });
             services.attachInlineText((ViewGroup)getParent());
@@ -557,8 +572,8 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         long pumpBegan = PodStartupTrace.now();
         pumpServiceResults(hostLifetime);
         PodStartupTrace.stage("firstServiceResults", pumpBegan);
-        Choreographer.getInstance().removeFrameCallback(frameCallback);
-        if (active) Choreographer.getInstance().postFrameCallback(frameCallback);
+        Choreographer.getInstance().removeFrameCallback(frameCallback);frameScheduled=false;
+        if (active) requestFrame();
         PodStartupTrace.stage("finishBoot", began);
     }
 
@@ -590,7 +605,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     }
     @Override public void onSurfaceTextureSizeChanged(SurfaceTexture t, int w, int h) {
         Surface surface = new Surface(t);
-        try { if (host != 0) nativeResize(host, surface, w, h); } finally { surface.release(); }
+        try { if (host != 0) nativeResize(host, surface, w, h);requestFrame(); } finally { surface.release(); }
     }
     @Override public void onSurfaceTextureUpdated(SurfaceTexture texture) {
         renderCheckpoint.textureUpdated(this,texture);
@@ -617,7 +632,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         }
         detached = true;
         bootGeneration++;
-        Choreographer.getInstance().removeFrameCallback(frameCallback);
+        Choreographer.getInstance().removeFrameCallback(frameCallback);frameScheduled=false;
         accessibility.clear();
         destroyHost();
         for (HttpURLConnection connection : requests.values()) connection.disconnect();
@@ -664,7 +679,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                 xy[i * 2 + 1] = event.getY(i);
             }
         } else count = 0;
-        nativeInput(host, ids, xy, count, 0);
+        activeTouchCount=count;nativeInput(host, ids, xy, count, 0);requestFrame();
         return true;
     }
 
@@ -787,7 +802,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         rotaryRemainder += degrees * 1000f;
         int whole = (int) rotaryRemainder;
         rotaryRemainder -= whole;
-        if (whole != 0 && host != 0) nativeInput(host, new int[0], new float[0], 0, whole);
+        if (whole != 0 && host != 0) {nativeInput(host, new int[0], new float[0], 0, whole);requestFrame();}
     }
 
     @Override public void onWindowFocusChanged(boolean focused) {super.onWindowFocusChanged(focused);if(services!=null)services.acousticFocus(focused);}
@@ -805,8 +820,8 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         active = state != 2;
         if (host != 0) nativeLifecycle(host, state);
         pumpServicesWhileSuspended();
-        Choreographer.getInstance().removeFrameCallback(frameCallback);
-        if (active) Choreographer.getInstance().postFrameCallback(frameCallback);
+        Choreographer.getInstance().removeFrameCallback(frameCallback);frameScheduled=false;
+        if (active) requestFrame();
         }finally {hangPhase(MainThreadWatchdog.Phase.IDLE);}
     }
     /** Native host UI only; pairing approval is a separate prerequisite. */
@@ -826,7 +841,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         if(companionSettings!=null)companionSettings.close();
         companionSettings=new PodSyncSettingsDialog(getContext(),services);companionSettings.show();
     }
-    public boolean sendBack() { return host != 0 && nativeBack(host); }
+    public boolean sendBack() { boolean handled=host!=0&&nativeBack(host);requestFrame();return handled; }
     public void restoreModalState(String saved,String retained) { services.restoreModalState(saved,retained); }
     public String savedModalState() { flushActivityState(); return services.savedModalState(); }
     public String retainedModalState() { flushActivityState(); return services.retainedModalState(); }
@@ -873,6 +888,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private static native boolean nativeHasContent(long host);
     private static native void nativeRenderCheckpoint(long host,long sequence);
     private static native void nativeFrame(long host, long frameTimeNanos);
+    private static native boolean nativeNeedsFrame(long host);
     private static native boolean nativeBeginRendererTiming(long host,int capacity);
     private static native long[] nativeEndRendererTiming(long host);
     private static native int nativeMediaTexture(long host,int handle,int[] argb,int width,int height,boolean linear);

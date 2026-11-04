@@ -38,6 +38,8 @@ class TouchSnapshotQueue {
     return current_;
   }
 
+  bool needsFrame() const { return !pending_.empty() || !current_.empty(); }
+
   void clear() {
     pending_.clear();
     current_.clear();

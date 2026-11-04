@@ -23,9 +23,11 @@ export function pulseCpuWork(){for(const ticket of scope?.active??[])ticket.puls
 export function cpuWork<T>(stage:string,scale:CpuInputScale,size:number,run:()=>T):T {const ticket=begin(stage,scale,size);let failed=true;try{const result=run();failed=false;return result;}finally{ticket?.finish(failed);}}
 export function cpuWorkAsync<T>(stage:string,scale:CpuInputScale,size:number,run:()=>Promise<T>):Promise<T> {const ticket=begin(stage,scale,size);return ticket?observedAsync(ticket,run):run();}
 async function observedAsync<T>(ticket:Ticket,run:()=>Promise<T>):Promise<T> {let failed=true;try{try{await ticket?.ready;}catch{/* Observation failure cannot change work. */}const result=await run();failed=false;return result;}finally{ticket?.finish(failed);}}
-export function cpuJsonParse<T=any>(source:string):T{return cpuWork('json-parse','chars',source.length,()=>JSON.parse(source));}
-export function cpuJsonStringify(value:unknown):string {return cpuWork('json-stringify','items',Array.isArray(value)?value.length:0,()=>JSON.stringify(value));}
-export function cpuSort<T>(values:T[],compare?:(a:T,b:T)=>number):T[]{return cpuWork('sort','items',values.length,()=>values.sort(compare));}
+export function cpuJsonParse<T=any>(source:string):T{if(source.length<32768)return JSON.parse(source);return cpuWork('json-parse','chars',source.length,()=>JSON.parse(source));}
+// Canonical JSON invokes this for every scalar/key. Those calls never produce
+// telemetry; keep them outside the observer/closure path entirely.
+export function cpuJsonStringify(value:unknown):string {if(!Array.isArray(value)||value.length<32)return JSON.stringify(value);return cpuWork('json-stringify','items',value.length,()=>JSON.stringify(value));}
+export function cpuSort<T>(values:T[],compare?:(a:T,b:T)=>number):T[]{if(values.length<32)return values.sort(compare);return cpuWork('sort','items',values.length,()=>values.sort(compare));}
 
 /** Observe a lazy CPU traversal without buffering it or losing iterator cleanup. */
 export async function* cpuWorkAsyncIterable<T>(stage:string,scale:CpuInputScale,size:number,run:()=>AsyncIterable<T>):AsyncGenerator<T>{

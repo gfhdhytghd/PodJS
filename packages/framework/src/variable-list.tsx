@@ -87,7 +87,7 @@ export function VariableList(props: { height: number; round?:RoundListOptions|nu
     if(list===settledRows&&props.settleKey===settledKey&&range.first===settledFirst&&range.last===settledLast)return;
     settledRows=list;settledKey=props.settleKey;settledFirst=range.first;settledLast=range.last;
     props.onSettledRange(range.first,range.last);
-  });
+  }, () => scroller.state()!=="idle");
   onCleanup(() => {scroller.stop();if(wasScrolling)props.onScrollStateChange?.(false);});
   props.ref?.({scroller,roundInsets:insets,interactionBounds(index){
     const row=rows().at(index);

@@ -6,10 +6,14 @@ static std::vector<PodTouch> point(float x) { return {{0, x, 10}}; }
 
 int main() {
   TouchSnapshotQueue taps;
+  assert(!taps.needsFrame());
   taps.submit(point(20));
   taps.submit({});
+  assert(taps.needsFrame());
   assert(taps.nextFrame().size() == 1);  // DOWN survives an UP before vsync.
+  assert(taps.needsFrame());  // The queued UP still needs its own frame.
   assert(taps.nextFrame().empty());
+  assert(!taps.needsFrame());
 
   TouchSnapshotQueue drag;
   drag.submit(point(20));

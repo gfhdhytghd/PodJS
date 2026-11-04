@@ -13,3 +13,10 @@ test('interruption after compacted base publication cannot replay stale frames o
  const journal=()=>new JsonDeltaJournal({read:async p=>files.get(p),append:async(p,s,n)=>{expect(Buffer.byteLength(files.get(p)??'')).toBe(n);files.set(p,(files.get(p)??'')+s);},replace:async(p,s)=>{if(interrupt&&p.endsWith('.delta')){interrupt=false;throw Error('process stopped');}files.set(p,s);}},'state',['rows'],v=>v,v=>v,400);
  let j=journal(),v=await j.load();v.rows.a='first';await j.commit(v);v.rows.b='x'.repeat(500);interrupt=true;await expect(j.commit(v)).rejects.toThrow('process stopped');j=journal();expect((await j.load()).rows).toEqual({a:'first',b:'x'.repeat(500)});
 });
+
+test('large frames use the asynchronous host digest and retain checksum rejection after reload',async()=>{
+ const {createHash}=await import('node:crypto');const files=new Map<string,string>([['state','{"rows":{}}']]);let hashes=0,maxBytes=0;
+ const journal=()=>new JsonDeltaJournal({read:async p=>files.get(p),replace:async(p,s)=>{files.set(p,s);},append:async(p,s,n)=>{expect(Buffer.byteLength(files.get(p)??'')).toBe(n);files.set(p,(files.get(p)??'')+s);},sha256:async bytes=>{hashes++;maxBytes=Math.max(maxBytes,bytes.length);await Promise.resolve();return createHash('sha256').update(bytes).digest('hex');}},'state',['rows']);
+ const j=journal(),value=await j.load();value.rows.large='x'.repeat(1024*1024);await j.commit(value);expect(maxBytes).toBeGreaterThan(1024*1024);expect((await journal().load()).rows.large).toBe(value.rows.large);expect(hashes).toBeGreaterThanOrEqual(4);
+ const frame=JSON.parse(files.get('state.delta')!);frame.edits[0].value='tampered';files.set('state.delta',JSON.stringify(frame)+'\n');expect((await journal().load()).rows).toEqual({});
+});

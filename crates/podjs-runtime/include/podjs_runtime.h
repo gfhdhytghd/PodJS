@@ -326,6 +326,7 @@ void pod_js_stack_probe_request(const PodJsStackProbe *probe, uint32_t phase, ui
 void pod_js_stack_probe_cancel(const PodJsStackProbe *probe);
 void pod_js_stack_probe_close(PodJsStackProbe *probe);
 bool pod_runtime_has_pending_jobs(PodRuntime *runtime);
+bool pod_runtime_needs_frame(PodRuntime *runtime);
 /* Drain one budget of existing FIFO jobs only; no frame or repeated pump entry.
  * takeEvents remains service-result-only for this nonvisual continuation. */
 int32_t pod_runtime_pump_jobs(PodRuntime *runtime);

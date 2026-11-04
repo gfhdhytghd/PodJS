@@ -3,7 +3,8 @@ import {cpuWork,cpuJsonParse,cpuJsonStringify,cpuSort,cpuWorkAsync} from './cpu-
  * need to pass through JS Number or JSON.stringify when patching known fields. */
 export interface RawJsonProperty {key:string;start:number;value:RawJsonNode}
 export interface RawJsonNode {source:string;start:number;end:number;kind:'object'|'array'|'scalar';properties?:RawJsonProperty[];items?:RawJsonNode[]}
-export interface RawJsonOptions {maxDepth?:number;maxBytes?:number;native?:boolean}
+export type RawJsonOwner="cloud-manifest"|"cloud-private-overlay"|"unknown";
+export interface RawJsonOptions {owner?:RawJsonOwner;maxDepth?:number;maxBytes?:number;native?:boolean}
 export class RawJsonError extends Error {constructor(public code:'syntax'|'duplicate-key'|'unicode'|'depth'|'size'){super('raw_json_'+code);}}
 export function jsonUtf8Bytes(text:string):number {
  const root=globalThis as {pod?:{strictUtf8ByteLength?:Function};__podByteCodecs?:{strictUtf8ByteLength?:Function}};
@@ -53,9 +54,17 @@ function parseRawJsonSync(source:string,options:RawJsonOptions={}):RawJsonNode {
 /** Yields after bounded scanning/projection work. The immutable source and byte
  * cap remain owned by the caller; cancellation is checked at every boundary. */
 export function parseRawJsonAsync(source:string,options:RawJsonOptions&{yield?:()=>Promise<void>;check?:()=>void}={}):Promise<RawJsonNode> {return cpuWorkAsync('json-scan','chars',source.length,()=>parseRawJsonAsyncSteps(source,options));}
+// Keep a fixed code-owned frame around every generator resume. Async callers
+// disappear between slices; these frames preserve ownership in interrupt stacks.
+const rawJsonStepOwners={
+ cloudManifestJsonStep(steps:Generator<void,RawJsonNode>,check?:()=>void){const result=steps.next();check?.();return result;},
+ cloudPrivateOverlayJsonStep(steps:Generator<void,RawJsonNode>,check?:()=>void){const result=steps.next();check?.();return result;},
+ unknownOwnerJsonStep(steps:Generator<void,RawJsonNode>,check?:()=>void){const result=steps.next();check?.();return result;},
+};
 async function parseRawJsonAsyncSteps(source:string,options:RawJsonOptions&{yield?:()=>Promise<void>;check?:()=>void}={}):Promise<RawJsonNode> {
+ const advance=options.owner==="cloud-manifest"?rawJsonStepOwners.cloudManifestJsonStep:options.owner==="cloud-private-overlay"?rawJsonStepOwners.cloudPrivateOverlayJsonStep:rawJsonStepOwners.unknownOwnerJsonStep;
  const steps=parseRawJsonSteps(source,options),pause=options.yield??(()=>new Promise<void>(resolve=>setTimeout(resolve,0))),now=()=>globalThis.performance?.now?.()??Date.now();let count=0,started=now();
- try{for(;;){options.check?.();const next=steps.next();if(next.done)return next.value;
+ try{for(;;){options.check?.();const next=advance(steps,options.check);if(next.done)return next.value;
   // Keep bounded scanner fragments; share an IPC turn exactly as byte codecs
   // do. A headless timer roundtrip per 2 KiB token is not a CPU work budget.
   if(++count>=16||now()-started>=8){await pause();options.check?.();count=0;started=now();}

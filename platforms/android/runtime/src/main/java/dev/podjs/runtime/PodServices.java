@@ -707,6 +707,7 @@ final class PodServices implements Closeable {
                 if(workAt==0)workAt=ended;
                 for(String field:new String[]{"dataBase64","ciphertextBase64","value"}){Object v=args.opt(field);if(v instanceof String)chars+=((String)v).length();}
                 JSONArray statements=args.optJSONArray("statements");
+                if(method.startsWith("sql."))workStats.sqlSite(args.optInt("diagnosticSite",0),ended-workAt,android.os.Debug.threadCpuTimeNanos()-cpuAt,statements==null?1:statements.length());
                 workStats.add(method,workAt-queuedAt,ended-workAt,android.os.Debug.threadCpuTimeNanos()-cpuAt,chars,statements==null?1:statements.length(),workSuccess);
                 workStats.emit(ended,closed,headlessWork,line->android.util.Log.i("PodJSService",line));
             }
@@ -812,6 +813,9 @@ final class PodServices implements Closeable {
                 ? context.openOrCreateDatabase("podjs.sqlite", Context.MODE_PRIVATE, null)
                 : SQLiteDatabase.openOrCreateDatabase(path, null);
             database.setForeignKeyConstraintsEnabled(true);
+            // Sync transactions touch more than the default 25 distinct SQL
+            // shapes. Keep SQLite's bounded per-connection prepared cache warm.
+            database.setMaxSqlCacheSize(100);
         }
         return database;
     }

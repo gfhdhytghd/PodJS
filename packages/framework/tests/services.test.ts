@@ -816,3 +816,19 @@ test('silent video opt-in and explicit crown intent reach both native backends',
   }
  }
 });
+
+test('numeric idle diagnostics preserve SQL arguments and cannot change settlement',async()=>{
+ const {setServiceDiagnostics}=await import('../src/service-trace.ts');const completed:unknown[]=[];
+ const args={sql:'SELECT ?',params:['PRIVATE_BIND']};
+ try{
+  setServiceDiagnostics({request:()=>7,completed:(...value)=>{completed.push(value);throw Error('observer failure');}});
+  const op=hostOperation<Record<string,unknown>[]>('sql.query',args),request=emitted.at(-1)!;
+  expect(request.args).toEqual({...args,diagnosticSite:7});expect(args).toEqual({sql:'SELECT ?',params:['PRIVATE_BIND']});
+  events.push({t:'service.result',id:request.id,ok:true,value:[{answer:42}]});api.__pumpPodEvents();
+  expect(await op.result).toEqual([{answer:42}]);expect(completed).toEqual([['sql.query',7,true]]);
+  setServiceDiagnostics({request:()=>{throw Error('observer failure');},completed:()=>{throw Error('observer failure');}});
+  const failed=hostOperation('sql.query',args),failure=emitted.at(-1)!;expect(failure.args).toEqual(args);
+  events.push({t:'service.result',id:failure.id,ok:false,code:'original_failure',message:'original failure'});api.__pumpPodEvents();
+  await expect(failed.result).rejects.toMatchObject({code:'original_failure'});
+ }finally{setServiceDiagnostics(undefined);}
+});

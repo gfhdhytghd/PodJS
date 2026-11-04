@@ -1501,6 +1501,17 @@ pub extern "C" fn pod_runtime_frame(runtime: *mut PodRuntime, input: *const PodI
     OK
 }
 
+/// Runtime thread only. Missing/failed guest demand contracts preserve legacy ticks.
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_needs_frame(runtime: *mut PodRuntime) -> bool {
+    let Ok(runtime) = runtime_mut(runtime) else { return false; };
+    if !runtime.mounted || runtime.lifecycle != 0 { return false; }
+    runtime.surface.with_ui(|ui| ui.needs_frame()) || runtime.guest.with(|ctx| {
+        ctx.globals().get::<_, Function>("__pocketNeedsFrame")
+            .and_then(|f| f.call::<_, bool>(())).catch(&ctx).unwrap_or(true)
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn pod_runtime_snapshot(runtime: *mut PodRuntime, out: *mut PodDrawList) -> i32 {
     let Ok(runtime) = runtime_mut(runtime) else {
@@ -3578,6 +3589,34 @@ mod tests {
         );
         assert_eq!(pod_runtime_set_lifecycle(runtime, 2), 0);
         assert_eq!(pod_runtime_frame(runtime, std::ptr::null()), IDLE);
+        pod_runtime_destroy(runtime);
+    }
+
+    #[test]
+    fn idle_frame_demand_tracks_native_animation_until_completion() {
+        let mut ui=pocketjs_core::Ui::new();ui.tick();ui.draw();assert!(!ui.needs_frame());
+        let node=ui.create_node(spec::NodeType::View as u8);ui.tick();ui.draw();
+        assert!(ui.animate(node,spec::prop::TRANSLATE_X,20.0,100,spec::Easing::Linear as u8,0)>=0);
+        assert!(ui.needs_frame());
+        for _ in 0..12 {ui.tick();ui.draw();}
+        assert!(!ui.needs_frame());
+    }
+
+    #[test]
+    fn frame_demand_preserves_legacy_and_wakes_for_guest_animation() {
+        let target=CString::new("android-watch").unwrap();let caps=CString::new("[]").unwrap();
+        let runtime=pod_runtime_create(&valid_config(&target,&caps));
+        let source=br#"globalThis.frame=()=>{};"#;
+        validate(runtime,"android-watch",b"pak",source,&[]);
+        assert_eq!(pod_runtime_eval_bundle(runtime,source.as_ptr(),source.len(),std::ptr::null()),OK);
+        assert_eq!(pod_runtime_frame(runtime,std::ptr::null()),OK);
+        assert!(pod_runtime_needs_frame(runtime));
+        unsafe {&*runtime}.guest.eval("demand-test","globalThis.animation=false;globalThis.__pocketNeedsFrame=()=>animation;").unwrap();
+        assert!(!pod_runtime_needs_frame(runtime));
+        unsafe {&*runtime}.guest.eval("demand-test","animation=true;").unwrap();
+        assert!(pod_runtime_needs_frame(runtime));
+        assert_eq!(pod_runtime_set_lifecycle(runtime,2),OK);assert!(!pod_runtime_needs_frame(runtime));
+        assert_eq!(pod_runtime_set_lifecycle(runtime,0),OK);assert!(pod_runtime_needs_frame(runtime));
         pod_runtime_destroy(runtime);
     }
 

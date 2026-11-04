@@ -33,3 +33,10 @@ export function traceServiceWork<T>(label:string,work:()=>T,units?:number):T {
   }catch { /* Diagnostics cannot change the result or replace a product error. */ }
  }
 }
+
+/** Optional code-authored numeric attribution. The default path is one null check. */
+export interface ServiceDiagnostics {request(method:string,args:Record<string,unknown>):number;completed(method:string,site:number,ok:boolean):void}
+let serviceDiagnostics:ServiceDiagnostics|undefined;
+export function setServiceDiagnostics(value:ServiceDiagnostics|undefined){serviceDiagnostics=value;}
+export function serviceDiagnosticSite(method:string,args:Record<string,unknown>):number{try{const site=serviceDiagnostics?.request(method,args)??0;return Number.isInteger(site)&&site>=0&&site<64?site:0;}catch{return 0;}}
+export function serviceDiagnosticComplete(method:string,site:number,ok:boolean):void{try{serviceDiagnostics?.completed(method,site,ok);}catch{/* Diagnostics never change settlement. */}}

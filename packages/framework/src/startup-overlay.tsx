@@ -16,6 +16,6 @@ export function StartupOverlayTransition(props:StartupOverlayProps){
  const [elapsed,setElapsed]=createSignal(0),[finished,setFinished]=createSignal(false);let started:number|undefined;
  const now=props.clock??(()=>globalThis.performance?.now?.()??Date.now());
  createEffect(()=>{if(!props.exit()){started=undefined;setElapsed(0);setFinished(false);return;}if(started===undefined){props.onExitStart?.();started=now();setElapsed(0);setFinished(false);}});
- onFrame(()=>{if(started===undefined||finished())return;const value=Math.max(0,now()-started);setElapsed(value);if(value>=(props.durationMs??STARTUP_EXIT_DURATION_MS)){props.onFinished?.();setFinished(true);}});
+ onFrame(()=>{if(started===undefined||finished())return;const value=Math.max(0,now()-started);setElapsed(value);if(value>=(props.durationMs??STARTUP_EXIT_DURATION_MS)){props.onFinished?.();setFinished(true);}},()=>started!==undefined&&!finished());
  return <><Show when={props.ready()}>{props.content()}</Show><Show when={!finished()}>{props.overlay(elapsed)}</Show></>;
 }

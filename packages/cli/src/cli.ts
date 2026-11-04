@@ -79,7 +79,7 @@ function doctor(): void {
   if (revision !== expected) process.exitCode = 1;
 }
 
-async function build(target: Target, project?: ResolvedPodProject, diagnosticJsStack=false): Promise<ResolvedPodProject | undefined> {
+async function build(target: Target, project?: ResolvedPodProject, diagnosticJsStack=false, production=false): Promise<ResolvedPodProject | undefined> {
   const profile = POD_TARGETS[target];
   if(project?.config.resources?.glyphCache&&target!=="android-watch"&&target!=="wearos-watch") fail("runtime glyph pages currently require android-watch or wearos-watch");
   if (project) {
@@ -107,6 +107,7 @@ async function build(target: Target, project?: ResolvedPodProject, diagnosticJsS
     "--framework=solid", `--density=${density}`, "--hz=60",
     ...(target === "android-watch" || target === "wearos-watch" ? ["--minify"] : []),
     ...(diagnosticJsStack ? ["--diagnostic-js-stack"] : []),
+    ...(production ? ["--production"] : []),
     ...(project?.fontSlots.length ? [`--font-slots-json=${JSON.stringify(project.fontSlots)}`] : []),
     ...(glyphCache ? [`--glyph-cache-json=${JSON.stringify(glyphCache)}`] : []),
     ...(project?.extraChars ? [`--extra-chars=${project.extraChars}`] : []),
@@ -186,7 +187,7 @@ async function packageTarget(target: Target, project?: ResolvedPodProject, relea
   // Change only the resolved in-memory configuration, before generating build metadata.
   if (project && overrides.versionCode !== undefined) project.config.versionCode = overrides.versionCode;
   if (debuggable) console.warn("pod: verification-only debuggable release APK; DO NOT PUBLISH");
-  await build(target, project,diagnosticJsStack);
+  await build(target, project,diagnosticJsStack,release);
   if (target === "android-watch" || target === "wearos-watch") {
     run(["bash", "scripts/build-android-runtime.sh"]);
     const app = target === "android-watch" ? ":androidApp" : ":wearApp";
@@ -244,6 +245,7 @@ function projectOption(path?: string): ResolvedPodProject | undefined {
 
 interface TargetOptions {
   diagnosticJsStack?: boolean;
+  production?: boolean;
   target?: string;
   project?: string;
   release?: boolean;
@@ -268,11 +270,12 @@ cli
 
 cli
   .command("build [target]", "Build an app for a watch target")
+  .option("--production", "Omit devtools recording from the bundle")
   .option("--diagnostic-js-stack", "Preserve code identifiers and line maps for interrupt stack attribution")
   .option("--target <target>", "Watch target (can also be passed positionally)")
   .option("--project <path>", "Project directory or pod.config.json")
   .action(async (target: string | undefined, options: TargetOptions) => {
-    await build(targetArg(target, options.target), projectOption(options.project),options.diagnosticJsStack===true);
+    await build(targetArg(target, options.target), projectOption(options.project),options.diagnosticJsStack===true,options.production===true);
   });
 
 cli
