@@ -6,6 +6,7 @@
     <meta-data android:name="dev.podjs.takeover.sourcePackage" android:value="${podTakeoverSourcePackage}" />
     <meta-data android:name="dev.podjs.takeover.sourceVersionCode" android:value="${podTakeoverSourceVersionCode}" />
     <meta-data android:name="dev.podjs.takeover.purgeBackupAfter" android:value="${podTakeoverPurgeBackupAfter}" />
+    <meta-data android:name="dev.podjs.takeover.inactiveGenerationGc" android:value="${podTakeoverInactiveGenerationGc}" />
     <activity android:name=".MainActivity" android:screenOrientation="portrait" android:exported="true">
       <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
     </activity>

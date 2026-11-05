@@ -97,5 +97,27 @@ final class PodTakeoverBackup implements PodTakeoverCoordinator.Publisher {
             for(String retained:backup.retainedGenerations())backup.purge(retained);
             backup.purgeImportSnapshots(g.getName());
         }
+        // Opt-in host policy: "inactive", or comma-separated explicit generation IDs.
+        // Absent/empty remains disabled; no installation-specific IDs are built in.
+        String approved=config().getString("dev.podjs.takeover.inactiveGenerationGc","");
+        if(!approved.isEmpty()) {
+            java.util.List<String> policy=java.util.Arrays.asList(approved.split(",",-1));
+            // Wait for this admission lock to leave the foreground path. Revalidate
+            // pointers/recovery protection under that lock before every idle batch.
+            new Thread(()->{
+                try {
+                    for(int pass=0;pass<16;pass++) {
+                        PodInactiveGenerationCollector.Result result=PodTakeover.collectInactiveGenerations(context,policy,128);
+                        if(result.deletedEntries<128)break;
+                        Thread.sleep(25);
+                    }
+                } catch(InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                } catch(Exception failure) {
+                    // Collection must never change ACTIVE admission on failure.
+                    android.util.Log.w("PodTakeoverGc","inactive generation collection deferred");
+                }
+            },"PodTakeoverGc").start();
+        }
     }
 }

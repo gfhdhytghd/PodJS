@@ -80,6 +80,12 @@ public final class PodTakeover {
         catch(Exception failure){PodTakeoverDiagnostics.warn("ADMISSION",failure);return false;}
     }
     public static void requireReady(Context c) { requiredPaths(c); }
+    /** Owner-only bounded idle entry: singleton "inactive" or explicit IDs.
+     * No guest/JS service exposes this operation. */
+    public static PodInactiveGenerationCollector.Result collectInactiveGenerations(Context c,java.util.Collection<String> approved,int maxEntries)throws Exception {
+        File sandbox=sandbox(c);
+        return coordinator(c,sandbox).collectInactiveGenerations(approved,maxEntries);
+    }
     public static File dataRoot(Context c) { return requiredPaths(c).data; }
     public static File filesRoot(Context c) { return requiredPaths(c).files; }
     public static File database(Context c) { return requiredPaths(c).database; }

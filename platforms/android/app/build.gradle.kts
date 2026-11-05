@@ -17,6 +17,7 @@ android {
         manifestPlaceholders["podTakeoverSourcePackage"] = providers.gradleProperty("podTakeoverSourcePackage").orElse(podAppId).get()
         manifestPlaceholders["podTakeoverSourceVersionCode"] = providers.gradleProperty("podTakeoverSourceVersionCode").map(String::toInt).orElse(0).get()
         manifestPlaceholders["podTakeoverPurgeBackupAfter"] = providers.gradleProperty("podTakeoverPurgeBackupAfter").map(String::toInt).orElse(0).get()
+        manifestPlaceholders["podTakeoverInactiveGenerationGc"] = providers.gradleProperty("podTakeoverInactiveGenerationGc").orElse("").get()
     }
     buildTypes { getByName("release") { isDebuggable = providers.gradleProperty("podReleaseDebuggable").map(String::toBooleanStrict).orElse(false).get() } }
     providers.gradleProperty("podDebugExternalDir").orNull?.let { directory ->

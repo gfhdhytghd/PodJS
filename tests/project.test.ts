@@ -26,6 +26,14 @@ describe("external project config", () => {
     for(const takeover of [null,[],{sourceVersionCode:0},{sourceVersionCode:40,purgeBackupAfter:true},{sourceVersionCode:40,purgeBackupAfter:0},{sourceVersionCode:40,purgeBackupAfter:1.5},{sourceVersionCode:40,purgeBackupAfter:2147483648},{sourceVersionCode:40,purge:true}])
       expect(() => resolvePodProject(fixture({...base,android:{takeover}}), POD_TARGETS, defaults)).toThrow("android.takeover");
   });
+  test("inactive generation GC is optional and accepts only Java-compatible policies", () => {
+    const resolve = (inactiveGenerationGc: unknown) => resolvePodProject(fixture({...base,android:{takeover:{sourceVersionCode:40,inactiveGenerationGc}}}),POD_TARGETS,defaults).config.android!.takeover!;
+    expect(resolve(undefined)).toEqual({sourceVersionCode:40});
+    for (const policy of ["inactive","g-old-a","g-old-a,g-B2,g--",Array.from({length:128},(_,i)=>`g-${i}`).join(",")])
+      expect(resolve(policy).inactiveGenerationGc).toBe(policy);
+    for (const policy of [null,true,false,0,[],{},""," ","Inactive","g-","g_bad","g-a.b","g-中文","g-a/g-b","g-a, g-b","g-a,","g-a,g-a","inactive,g-a","inactive,inactive","g-a\n","g-a\r\n","g-a\ng-b",Array.from({length:129},(_,i)=>`g-${i}`).join(",")])
+      expect(()=>resolve(policy)).toThrow("android.takeover.inactiveGenerationGc");
+  });
   test("background service grants are explicit and bounded", () => {
     expect(resolvePodProject(fixture(base),POD_TARGETS,defaults).config.backgroundServices).toEqual([]);
     expect(resolvePodProject(fixture({...base,backgroundServices:["kv.get","kv.set"]}),POD_TARGETS,defaults).config.backgroundServices).toEqual(["kv.get","kv.set"]);

@@ -197,7 +197,8 @@ async function packageTarget(target: Target, project?: ResolvedPodProject, relea
       `-PpodEnableBleProvision=${project.config.android?.bleProvisioning !== false}`,
       `-PpodCleartextTraffic=${project.androidCleartextTraffic === true}`,
       `-PpodTakeoverSourceVersionCode=${project.config.android?.takeover?.sourceVersionCode ?? 0}`,
-      `-PpodTakeoverPurgeBackupAfter=${project.config.android?.takeover?.purgeBackupAfter ?? 0}`] : [];
+      `-PpodTakeoverPurgeBackupAfter=${project.config.android?.takeover?.purgeBackupAfter ?? 0}`,
+      `-PpodTakeoverInactiveGenerationGc=${project.config.android?.takeover?.inactiveGenerationGc ?? ""}`] : [];
     if(project){
       const debugDir=join(project.output,"debug-external",target);
       writeDebugExternal(debugDir,project.config.android?.debugExternal,target==="android-watch"?"dev.podjs.androidwatch.MainActivity":"dev.podjs.wear.MainActivity");

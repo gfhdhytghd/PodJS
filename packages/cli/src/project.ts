@@ -50,7 +50,7 @@ export interface PodProjectConfig {
   /** Omit duplicate function source strings, retaining error locations.
    * Opt in only if Function.toString source introspection is unused. */
   bytecode?: { stripSource: boolean };
-  android?: { splash?: AndroidSplash; workManagerTakeover?: WorkManagerTakeoverConfig; debugExternal?: DebugExternalConfig; resources?: string; theme?: string; cleartextTraffic?: boolean; bleProvisioning?: boolean; signing?: AndroidSigning; takeover?: { sourceVersionCode: number; purgeBackupAfter?: number } };
+  android?: { splash?: AndroidSplash; workManagerTakeover?: WorkManagerTakeoverConfig; debugExternal?: DebugExternalConfig; resources?: string; theme?: string; cleartextTraffic?: boolean; bleProvisioning?: boolean; signing?: AndroidSigning; takeover?: { sourceVersionCode: number; purgeBackupAfter?: number; inactiveGenerationGc?: string } };
 }
 
 export interface ResolvedPodProject {
@@ -221,10 +221,18 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
     if (candidate.takeover !== undefined) {
       const t = candidate.takeover as Record<string, unknown>;
       if (!t || typeof t !== "object" || Array.isArray(t)) invalid("android.takeover must be an object");
-      if (Object.keys(t).some(k => !["sourceVersionCode", "purgeBackupAfter"].includes(k))) invalid("unknown android.takeover option");
+      if (Object.keys(t).some(k => !["sourceVersionCode", "purgeBackupAfter", "inactiveGenerationGc"].includes(k))) invalid("unknown android.takeover option");
       if (!Number.isInteger(t.sourceVersionCode) || (t.sourceVersionCode as number) < 1 || (t.sourceVersionCode as number) > 2147483647) invalid("android.takeover.sourceVersionCode must be a positive Android version code");
       if (t.purgeBackupAfter !== undefined && (!Number.isInteger(t.purgeBackupAfter) || (t.purgeBackupAfter as number) < 1 || (t.purgeBackupAfter as number) > 2147483647)) invalid("android.takeover.purgeBackupAfter must be a positive Android version code");
-      android.takeover = { sourceVersionCode: t.sourceVersionCode as number, ...(t.purgeBackupAfter === undefined ? {} : { purgeBackupAfter: t.purgeBackupAfter as number }) };
+      if (t.inactiveGenerationGc !== undefined) {
+        const policy = t.inactiveGenerationGc;
+        if (typeof policy !== "string") invalid("android.takeover.inactiveGenerationGc must be inactive or comma-separated generation IDs");
+        const ids = policy.split(",");
+        // Match Java's full-string ID rule, count bound and duplicate rejection.
+        // Comparing the full match also rejects JS $ accepting a trailing newline.
+        if (policy !== "inactive" && (ids.length > 128 || new Set(ids).size !== ids.length || ids.some(id => id.match(/^g-[a-zA-Z0-9-]+$/)?.[0] !== id))) invalid("android.takeover.inactiveGenerationGc must be inactive or up to 128 unique generation IDs");
+      }
+      android.takeover = { sourceVersionCode: t.sourceVersionCode as number, ...(t.purgeBackupAfter === undefined ? {} : { purgeBackupAfter: t.purgeBackupAfter as number }), ...(t.inactiveGenerationGc === undefined ? {} : { inactiveGenerationGc: t.inactiveGenerationGc as string }) };
     }
     if (candidate.signing !== undefined) {
       const signing = candidate.signing as Record<string, unknown>;

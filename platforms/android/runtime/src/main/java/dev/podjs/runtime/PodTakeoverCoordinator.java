@@ -248,6 +248,23 @@ public final class PodTakeoverCoordinator {
             }
         }
     }
+    /** Explicit host idle/startup policy; never runs migration or changes admission. */
+    public PodInactiveGenerationCollector.Result collectInactiveGenerations(java.util.Collection<String> approved,int maxEntries)throws Exception {
+        synchronized(PROCESS_LOCK) {
+            if(!"package-takeover".equals(root.getName())||root.getParentFile()==null||!"files".equals(root.getParentFile().getName()))throw new IOException("generation_gc_root_invalid");
+            safeFile(root);safeFile(new File(root,"lock"));
+            File recoveryLock=new File(root.getParentFile(),".podjs-recovery-lock");safeFile(recoveryLock);
+            // Native recovery uses this separate stable lock. Share it as well as
+            // the admission lock so a recovery cannot begin between guard/unlink.
+            try(FileChannel lock=FileChannel.open(new File(root,"lock").toPath(),StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS);FileLock held=lock.lock();
+                FileChannel recovery=FileChannel.open(recoveryLock.toPath(),StandardOpenOption.CREATE,StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS);FileLock recoveryHeld=recovery.lock()) {
+                Properties p=read(new File(root,"journal"));
+                if(!"ACTIVE".equals(p.getProperty("phase")))throw new IOException("generation_gc_not_active");
+                validatePointer(p);
+                return PodInactiveGenerationCollector.collect(root.getParentFile().getParentFile(),approved,maxEntries);
+            }
+        }
+    }
     private boolean blocked(Properties p,File generation)throws Exception {
         String reason=converter.blocker(generation);
         if(reason==null)return false;

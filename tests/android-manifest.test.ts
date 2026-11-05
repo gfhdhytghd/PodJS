@@ -42,3 +42,21 @@ test('the shared runtime retains discovery/media permissions without requesting 
 test('a malformed host template fails before generating an unusable main manifest', () => {
   expect(() => writeAndroidManifest('/unused', '<manifest />', ['debug.acoustic'])).toThrow('no application');
 });
+
+test('inactive generation GC is wired from CLI through a default-off Gradle placeholder', () => {
+  const cli = readFileSync(join(root, 'packages/cli/src/cli.ts'), 'utf8');
+  const gradle = readFileSync(join(root, 'platforms/android/app/build.gradle.kts'), 'utf8');
+  expect(cli).toContain('`-PpodTakeoverInactiveGenerationGc=${project.config.android?.takeover?.inactiveGenerationGc ?? ""}`');
+  expect(gradle).toContain('manifestPlaceholders["podTakeoverInactiveGenerationGc"] = providers.gradleProperty("podTakeoverInactiveGenerationGc").orElse("").get()');
+  const template = readFileSync(join(root, 'platforms/android/app/src/main/AndroidManifest.xml'), 'utf8');
+  const metadata = '<meta-data android:name="dev.podjs.takeover.inactiveGenerationGc" android:value="${podTakeoverInactiveGenerationGc}" />';
+  expect(template.split(metadata)).toHaveLength(2);
+  const out = mkdtempSync(join(tmpdir(), 'pod-manifest-gc-'));
+  try {
+    for (const capabilities of [[], ['debug.acoustic']]) {
+      writeAndroidManifest(out, template, capabilities);
+      const xml = readFileSync(join(out, 'pod-android/AndroidManifest.xml'), 'utf8');
+      expect(xml.split(metadata)).toHaveLength(2);
+    }
+  } finally { rmSync(out, { recursive: true, force: true }); }
+});
