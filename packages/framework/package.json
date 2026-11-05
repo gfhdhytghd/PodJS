@@ -50,6 +50,8 @@
     "./regexp": "./src/regexp.ts",
     "./sql-changes": "./src/sql-changes.ts",
     "./sql": "./src/sql.ts",
+    "./sql-projection": "./src/sql-projection.ts",
+    "./radix-index": "./src/radix-index.ts",
     "./digest-cache": "./src/digest-cache.ts",
     "./frame-stream": "./src/frame-stream.ts",
     "./variable-list": "./src/variable-list.tsx",

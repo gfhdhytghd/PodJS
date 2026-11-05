@@ -831,7 +831,12 @@ final class PodServices implements Closeable {
             if (statements.length() > 2048) throw new IllegalArgumentException("Transaction too large");
             boolean reportChanges = args.optBoolean("reportChanges", false);
             JSONArray changes = new JSONArray();
-            db().beginTransaction();
+            // Android's non-exclusive transaction maps to BEGIN IMMEDIATE.
+            // Existing callers retain their original exclusive mode.
+            String mode = args.optString("mode", "exclusive");
+            if ("immediate".equals(mode)) db().beginTransactionNonExclusive();
+            else if ("exclusive".equals(mode)) db().beginTransaction();
+            else throw new IllegalArgumentException("Invalid SQL transaction mode");
             try {
                 for (int i=0;i<statements.length();i++) {
                     cancellation.throwIfCanceled();

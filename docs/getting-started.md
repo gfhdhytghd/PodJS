@@ -229,6 +229,8 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/preview-session` | Session/sequence publication, tail coalescing and expiry; caller supplies data conversion and timeout policy. |
 | `@podjs/framework/text-match` | UTF-16 match ranges and measured segment/line geometry, including wrapped matches. |
 | `@podjs/framework/round-layout` | Dependency-free round-screen geometry: QR layout, `rectInsideCircle`, `safeTopBlock`. |
+| `@podjs/framework/sql-projection` | Bounded, restartable SQL helpers: decimal D64 counters and CAS-guarded multi-statement commits; no import-time I/O. |
+| `@podjs/framework/radix-index` | Local bounded radix inventory over 64-hex keys; rebuilds only affected paths, caller commits nodes with its own CAS writer. |
 
 Additional guides: [restorable stacks and host files](restorable-stack-and-host-files.md), [gates/volume/response/preview/matching](private-response-preview.md),
 [UI/navigation](watch-ui-navigation.md),
