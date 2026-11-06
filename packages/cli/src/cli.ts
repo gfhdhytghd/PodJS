@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { createProject } from "./create.ts";
 import {writeDebugExternal} from './debug-external.ts';
-import { existsSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, copyFileSync, rmSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import {writeAndroidManifest} from './android-manifest.ts';
 import {writeAndroidSplash} from './android-splash.ts';
@@ -13,6 +13,7 @@ import { workManagerTakeoverAsset, manifestWorkManagerTakeover } from "./workman
 import { buildBackground } from "./background-build.ts";
 import { syncProjectAssets } from "./project-assets.ts";
 import { androidPackagePlan, androidPackageOptions, signAndroidApk, rotateAndroidSigning, type RotateOptions } from "./android-signing.ts";
+import { optimizePakFontSeeds } from "./pak-font-seeds.ts";
 import { buildPakIntegrity } from "./pak-integrity.ts";
 
 import { findUnknownStyleProps } from "./style-props-check.ts";
@@ -123,6 +124,15 @@ async function build(target: Target, project?: ResolvedPodProject, diagnosticJsS
     copyFileSync(js, join(out, "main.js"));
     copyFileSync(pak, join(out, "main.pak"));
   }
+  if ((target === "android-watch" || target === "wearos-watch") && project?.config.resources?.optimizeFontSeeds !== false) {
+    const original = readFileSync(pak);
+    const optimized = optimizePakFontSeeds(original);
+    if (optimized.byteLength < original.byteLength) {
+      writeFileSync(pak, optimized);
+      if (output !== "main") writeFileSync(join(out, "main.pak"), optimized);
+      console.log(`pod: lossless font seed compression saved ${original.byteLength - optimized.byteLength} bytes`);
+    }
+  }
   const bytecodePath = join(out, "main.qbc");
   const bytecodeEnabled = target === "android-watch" || target === "wearos-watch";
   if (bytecodeEnabled) {
@@ -194,6 +204,9 @@ async function packageTarget(target: Target, project?: ResolvedPodProject, relea
     const gradleArgs = project ? [`-PpodDistDir=${join(project.output, target)}`, `-PpodAppId=${project.config.appId}`, `-PpodAppName=${project.config.name}`, `-PpodVersionName=${project.config.versionName}`, `-PpodVersionCode=${project.config.versionCode}`,
       ...(project.androidResources ? [`-PpodResDir=${project.androidResources}`] : []),
       ...(project.androidTheme ? [`-PpodAppTheme=${project.androidTheme}`] : []),
+      `-PpodMinifyRelease=${project.config.android?.release?.minify ?? true}`,
+      `-PpodShrinkResources=${project.config.android?.release?.shrinkResources ?? false}`,
+      ...(project.config.android?.release?.proguardRules ? [`-PpodProguardRules=${resolve(project.root, project.config.android.release.proguardRules)}`] : []),
       `-PpodEnableBleProvision=${project.config.android?.bleProvisioning !== false}`,
       `-PpodCleartextTraffic=${project.androidCleartextTraffic === true}`,
       `-PpodTakeoverSourceVersionCode=${project.config.android?.takeover?.sourceVersionCode ?? 0}`,
@@ -213,6 +226,13 @@ async function packageTarget(target: Target, project?: ResolvedPodProject, relea
       // Keep APKs outside the directory Gradle packages as runtime assets.
       const output = join(project.output, "packages", target, "app-release.apk");
       signAndroidApk(join(ROOT, "platforms", module, "build/outputs/apk/release", `${app.slice(1)}-release-unsigned.apk`), output, project.androidSigning, overrides.debuggable);
+      const mapping = join(ROOT, "platforms", module, "build/outputs/mapping/release/mapping.txt");
+      if (project.config.android?.release?.minify !== false) {
+        if (!existsSync(mapping)) fail("R8 release mapping.txt is missing");
+        copyFileSync(mapping, join(project.output, "packages", target, "mapping.txt"));
+      } else {
+        rmSync(join(project.output, "packages", target, "mapping.txt"), { force: true });
+      }
       console.log(`pod: release APK -> ${output}`);
     }
   } else if (target === "watchos-watch") {

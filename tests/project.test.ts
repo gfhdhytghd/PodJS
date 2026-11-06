@@ -157,3 +157,13 @@ test("android host raster density matches the CLI build density", () => {
   expect(host).toBe(build);
   expect(jni).toMatch(/PODJS_RUNTIME_ABI_VERSION, kRasterDensity,/);
 });
+
+test("release shrinking options reject invalid combinations and missing application rules", () => {
+  const config = (release: unknown) => ({...base,android:{release}});
+  expect(resolvePodProject(fixture(config({minify:false})),POD_TARGETS,defaults).config.android?.release?.minify).toBe(false);
+  expect(resolvePodProject(fixture(config({shrinkResources:true})),POD_TARGETS,defaults).config.android?.release?.shrinkResources).toBe(true);
+  for (const release of [null,[],{minify:'true'},{shrinkResources:'false'},{shrinkResources:true,minify:false},{proguardRules:'missing.pro'},{unknown:true}])
+    expect(()=>resolvePodProject(fixture(config(release)),POD_TARGETS,defaults)).toThrow('android.release');
+  expect(resolvePodProject(fixture({...base,resources:{optimizeFontSeeds:false}}),POD_TARGETS,defaults).config.resources?.optimizeFontSeeds).toBe(false);
+  expect(()=>resolvePodProject(fixture({...base,resources:{optimizeFontSeeds:'false'}}),POD_TARGETS,defaults)).toThrow('resources.optimizeFontSeeds');
+});

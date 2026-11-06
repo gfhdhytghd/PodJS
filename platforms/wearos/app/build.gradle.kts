@@ -17,7 +17,14 @@ android {
         manifestPlaceholders["podTakeoverSourceVersionCode"] = providers.gradleProperty("podTakeoverSourceVersionCode").map(String::toInt).orElse(0).get()
         manifestPlaceholders["podTakeoverPurgeBackupAfter"] = providers.gradleProperty("podTakeoverPurgeBackupAfter").map(String::toInt).orElse(0).get()
     }
-    buildTypes { getByName("release") { isDebuggable = providers.gradleProperty("podReleaseDebuggable").map(String::toBooleanStrict).orElse(false).get() } }
+    buildTypes { getByName("release") {
+        isDebuggable = providers.gradleProperty("podReleaseDebuggable").map(String::toBooleanStrict).orElse(false).get()
+        isMinifyEnabled = providers.gradleProperty("podMinifyRelease").map(String::toBooleanStrict).orElse(true).get()
+        isShrinkResources = providers.gradleProperty("podShrinkResources").map(String::toBooleanStrict).orElse(false).get()
+        require(!isShrinkResources || isMinifyEnabled) { "podShrinkResources requires podMinifyRelease" }
+        proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+        providers.gradleProperty("podProguardRules").orNull?.let { proguardFiles(it) }
+    } }
     providers.gradleProperty("podDebugExternalDir").orNull?.let { directory ->
         sourceSets["debug"].manifest.srcFile("$directory/AndroidManifest.xml")
         sourceSets["debug"].java.srcDir("$directory/java")

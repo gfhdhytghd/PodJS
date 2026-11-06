@@ -17,6 +17,8 @@ export interface PodFontSlot {
 export interface PodProjectResources {
   /** Logical packaged asset name to a source path, relative to the project. */
   assets?: Record<string, string>;
+  /** Lossless per-cell compression; preserves every metric and seeded glyph. */
+  optimizeFontSeeds?: boolean;
   fontRegular?: string;
   fontSlots?: PodFontSlot[];
   /** Bounded startup hint; hashes and atlas parsing run on the existing worker. */
@@ -50,7 +52,7 @@ export interface PodProjectConfig {
   /** Omit duplicate function source strings, retaining error locations.
    * Opt in only if Function.toString source introspection is unused. */
   bytecode?: { stripSource: boolean };
-  android?: { splash?: AndroidSplash; workManagerTakeover?: WorkManagerTakeoverConfig; debugExternal?: DebugExternalConfig; resources?: string; theme?: string; cleartextTraffic?: boolean; bleProvisioning?: boolean; signing?: AndroidSigning; takeover?: { sourceVersionCode: number; purgeBackupAfter?: number; inactiveGenerationGc?: string } };
+  android?: { release?: { minify?: boolean; shrinkResources?: boolean; proguardRules?: string }; splash?: AndroidSplash; workManagerTakeover?: WorkManagerTakeoverConfig; debugExternal?: DebugExternalConfig; resources?: string; theme?: string; cleartextTraffic?: boolean; bleProvisioning?: boolean; signing?: AndroidSigning; takeover?: { sourceVersionCode: number; purgeBackupAfter?: number; inactiveGenerationGc?: string } };
 }
 
 export interface ResolvedPodProject {
@@ -120,6 +122,10 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
     if (!value.resources || typeof value.resources !== "object" || Array.isArray(value.resources)) invalid("resources must be an object");
     const r = value.resources as Record<string, unknown>;
     resources = {};
+    if (r.optimizeFontSeeds !== undefined) {
+      if (typeof r.optimizeFontSeeds !== "boolean") invalid("resources.optimizeFontSeeds must be boolean");
+      resources.optimizeFontSeeds = r.optimizeFontSeeds;
+    }
     if(r.glyphCache!==undefined){
       const option=r.glyphCache as Record<string,unknown>;
       if(!option||typeof option!=="object"||Array.isArray(option)||typeof option.warmChars!=="string"||option.warmChars.length>4096)invalid("resources.glyphCache requires warmChars string <=4096 code units");
@@ -195,6 +201,17 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
     if (!value.android || typeof value.android !== "object" || Array.isArray(value.android)) invalid("android must be an object");
     const candidate = value.android as Record<string, unknown>;
     android = {};
+    if (candidate.release !== undefined) {
+      const r = candidate.release as Record<string, unknown>;
+      if (!r || typeof r !== "object" || Array.isArray(r) || Object.keys(r).some(k => !["minify", "shrinkResources", "proguardRules"].includes(k))) invalid("android.release has unsupported options");
+      for (const k of ["minify", "shrinkResources"] as const) if (r[k] !== undefined && typeof r[k] !== "boolean") invalid(`android.release.${k} must be boolean`);
+      if (r.shrinkResources === true && r.minify === false) invalid("android.release.shrinkResources requires minify");
+      if (r.proguardRules !== undefined) {
+        const path = resolve(root, stringField(r.proguardRules, "android.release.proguardRules"));
+        if (!existsSync(path) || !statSync(path).isFile()) invalid("android.release.proguardRules file not found");
+      }
+      android.release = r as NonNullable<PodProjectConfig["android"]>["release"];
+    }
     if(candidate.splash!==undefined)android.splash=validateAndroidSplash(candidate.splash);
     if(candidate.workManagerTakeover!==undefined)android.workManagerTakeover=validateWorkManagerTakeover(candidate.workManagerTakeover);
     if(candidate.debugExternal!==undefined)android.debugExternal=validateDebugExternal(candidate.debugExternal);
