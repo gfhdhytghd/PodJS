@@ -130,6 +130,12 @@ Font preparation starts in the view constructor, overlapping existing service
 and window creation. The UI thread does not wait and the Surface callback is
 unchanged. Native boot joins the same preparation future before loading slots.
 Cached XML/path validation uses fixed ASCII rules without per-file regex builds.
+The same CRC/fingerprint-bound index also retains computed descriptor metrics.
+Warm slot installation can return copied cell/baseline/line-height values before
+constructing any Typeface. Actual first-run metrics are collected in memory and
+persisted after background warmup. Font/build/XML changes invalidate both faces
+and metrics. Warmup always receives a copy, so growing a fallback cell cannot
+change primary line metrics.
 
 System glyphs retain their advances, offsets and primary baseline while Rust
 removes only transparent right/bottom rows/columns. One physical transparent

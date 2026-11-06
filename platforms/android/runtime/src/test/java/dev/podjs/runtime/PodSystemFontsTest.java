@@ -11,6 +11,19 @@ import org.robolectric.annotation.Config;
 
 @RunWith(RobolectricTestRunner.class) @Config(sdk=30)
 public class PodSystemFontsTest {
+    @Test public void cachedMetricsRoundTripWithoutSharingMutableWarmupArraysAndInvalidateWithFontFiles()throws Exception {
+        File root=java.nio.file.Files.createTempDirectory("font-metrics").toFile(),font=new File(root,"Font.ttf");
+        try {
+            java.nio.file.Files.write(font.toPath(),new byte[]{1,2,3});
+            List<PodSystemFonts.Family> families=parse("<familyset><family name='sans-serif'><font>Font.ttf</font></family></familyset>");
+            int[] values={14,17,14,21};PodSystemFontIndex.Metric m=new PodSystemFontIndex.Metric(14,1,2,values);values[0]=99;
+            byte[] raw=PodSystemFontIndex.encode("xml","build","zh",families,root,"a".repeat(64),java.util.List.of(m));
+            PodSystemFontIndex.Value decoded=PodSystemFontIndex.decode(raw,"xml","build","zh",root);assertNotNull(decoded);assertEquals(1,decoded.metrics.size());
+            PodSystemFontIndex.Metric actual=decoded.metrics.get(0);assertEquals(m.key(),actual.key());assertArrayEquals(new int[]{14,17,14,21},actual.copy());
+            int[] warm=actual.copy();warm[0]=40;warm[1]=40;assertArrayEquals(new int[]{14,17,14,21},actual.copy());
+            font.setLastModified(font.lastModified()+2000);assertNull(PodSystemFontIndex.decode(raw,"xml","build","zh",root));
+        }finally{font.delete();root.delete();}
+    }
     @Test public void fastFileValidationMatchesThePreviousRegexForAllAsciiCharacterPairs() {
         java.util.regex.Pattern reference=java.util.regex.Pattern.compile("[A-Za-z0-9][A-Za-z0-9_.-]*");
         for(int a=0;a<128;a++)for(int b=0;b<128;b++){

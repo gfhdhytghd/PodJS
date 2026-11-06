@@ -6,12 +6,21 @@ import java.util.zip.CRC32;
 
 /** Bounded, disposable XML parse result; no font bytes or glyph pixels. */
 final class PodSystemFontIndex {
-    private static final int MAGIC=0x50464931;
+    private static final int MAGIC=0x50464932;
     static final class Value {
-        final List<PodSystemFonts.Family> families;final String identity;
-        Value(List<PodSystemFonts.Family> f,String i){families=f;identity=i;}
+        final List<PodSystemFonts.Family> families;final String identity;final List<Metric> metrics;
+        Value(List<PodSystemFonts.Family> f,String i,List<Metric> m){families=f;identity=i;metrics=m;}
+    }
+    static final class Metric {
+        final int pixels,bold,density;private final int[] values;
+        Metric(float px,int b,int d,int[] v){pixels=Float.floatToIntBits(px);bold=b;density=d;values=v.clone();}
+        String key(){return pixels+":"+bold+":"+density;}
+        int[] copy(){return values.clone();}
     }
     static byte[] encode(String xmlHash,String build,String language,List<PodSystemFonts.Family> families,File fontRoot,String identity)throws IOException {
+        return encode(xmlHash,build,language,families,fontRoot,identity,Collections.emptyList());
+    }
+    static byte[] encode(String xmlHash,String build,String language,List<PodSystemFonts.Family> families,File fontRoot,String identity,Collection<Metric> metrics)throws IOException {
         ByteArrayOutputStream bytes=new ByteArrayOutputStream();DataOutputStream out=new DataOutputStream(bytes);
         out.writeInt(MAGIC);out.writeUTF(xmlHash);out.writeUTF(build);out.writeUTF(language);out.writeUTF(identity);out.writeInt(families.size());
         TreeSet<String> files=new TreeSet<>();
@@ -24,6 +33,7 @@ final class PodSystemFontIndex {
             }
         }
         out.writeInt(files.size());for(String name:files){File file=new File(fontRoot,name);out.writeUTF(name);out.writeLong(file.length());out.writeLong(file.lastModified());}
+        out.writeInt(metrics.size());for(Metric m:metrics){out.writeInt(m.pixels);out.writeInt(m.bold);out.writeInt(m.density);for(int v:m.values)out.writeInt(v);}
         out.flush();CRC32 crc=new CRC32();crc.update(bytes.toByteArray());out.writeLong(crc.getValue());out.flush();
         if(bytes.size()>128*1024)throw new IOException("font index bound");return bytes.toByteArray();
     }
@@ -44,7 +54,14 @@ final class PodSystemFontIndex {
             }
             int files=bounded(input.readInt(),1,2048);
             for(int i=0;i<files;i++){String name=input.readUTF();if(!validFile(name))return null;File file=new File(fontRoot,name);long length=input.readLong(),mtime=input.readLong();if(file.length()!=length||file.lastModified()!=mtime)return null;}
-            if(input.readLong()!=crc.getValue()||input.read()!=-1)return null;return new Value(families,identity);
+            int metricCount=bounded(input.readInt(),0,256);ArrayList<Metric> metrics=new ArrayList<>(metricCount);
+            for(int i=0;i<metricCount;i++){
+                float px=Float.intBitsToFloat(input.readInt());if(!Float.isFinite(px)||px<1||px>128)return null;
+                int bold=bounded(input.readInt(),0,1),density=bounded(input.readInt(),1,4);
+                int[] value={bounded(input.readInt(),1,255),bounded(input.readInt(),1,255),bounded(input.readInt(),0,255),bounded(input.readInt(),1,512)};
+                if(value[2]>value[1])return null;metrics.add(new Metric(px,bold,density,value));
+            }
+            if(input.readLong()!=crc.getValue()||input.read()!=-1)return null;return new Value(families,identity,metrics);
         }catch(IOException|RuntimeException invalid){return null;}
     }
     private static int bounded(int value,int min,int max)throws IOException{if(value<min||value>max)throw new IOException("font index count");return value;}

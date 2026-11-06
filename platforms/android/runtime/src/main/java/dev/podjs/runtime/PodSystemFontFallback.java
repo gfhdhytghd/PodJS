@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 final class PodSystemFontFallback {
     private static final AtomicInteger warmGeneration=new AtomicInteger();
     private static boolean warmStarted;
-    private static long rasterCount,rasterNanos;
+    private static long rasterCount,rasterNanos,metricHits,metricBuilds;
     private static Bitmap scratch;
     private static Canvas canvas;
     private static final LinkedHashMap<String,Paint> paints=new LinkedHashMap<String,Paint>(32,.75f,true) {
@@ -50,6 +50,7 @@ final class PodSystemFontFallback {
     // JNI: logical cell width/height, baseline, line height. No packaged metrics.
     static synchronized int[] metrics(float px,int bold,int density) {
         if(!Float.isFinite(px)||px<1||px>128||density<1||density>4)return null;
+        int[] cached=PodSystemFonts.cachedMetrics(px,bold,density);if(cached!=null){metricHits++;return cached;}metricBuilds++;
         String key=Float.floatToIntBits(px)+":"+bold+":"+density+":"+PodSystemFonts.identity();
         Paint metrics=metricPaints.get(key);
         if(metrics==null){metrics=new Paint(Paint.ANTI_ALIAS_FLAG|Paint.SUBPIXEL_TEXT_FLAG|Paint.FILTER_BITMAP_FLAG);metrics.setTypeface(PodSystemFonts.primaryTypeface(bold!=0?700:400,false));metrics.setTextSize(px*density);metricPaints.put(key,metrics);}
@@ -57,8 +58,9 @@ final class PodSystemFontFallback {
         int baseline=(int)Math.ceil(-f.ascent/density);
         // The retained core centers the PRIMARY cell in each CSS line box.
         // Emoji overhang belongs to Fallback's larger cells, never to this box.
-        return new int[]{(int)Math.ceil(px),Math.min(255,Math.max(1,baseline+(int)Math.ceil(f.descent/density))),baseline,
+        int[] result=new int[]{(int)Math.ceil(px),Math.min(255,Math.max(1,baseline+(int)Math.ceil(f.descent/density))),baseline,
             Math.max(1,(int)Math.ceil((f.descent-f.ascent+f.leading)/density))};
+        PodSystemFonts.cacheMetrics(px,bold,density,result);return result;
     }
     static synchronized void prewarm() {
         if(warmStarted||!PodSystemFonts.enabled())return;
@@ -87,12 +89,13 @@ final class PodSystemFontFallback {
                         if(cells%8==0)Thread.sleep(1);
                     }
                 }
+                PodSystemFonts.persistMetrics();
                 android.util.Log.i("PodJSPerf","systemFontWarm cells="+cells+" existing="+skipped+" ms="+(System.nanoTime()-began)/1e6+" "+stats());
             }catch(Exception unavailable){android.util.Log.w("PodJS","system font prewarm stopped",unavailable);}
         },"pod-system-font-warm");worker.setDaemon(true);worker.setPriority(Thread.MIN_PRIORITY);worker.start();
     }
     static synchronized void cancelWarm(){warmGeneration.incrementAndGet();warmStarted=false;}
-    static synchronized String stats(){PodGlyphDiskCache cache=PodSystemFonts.disk();return "rasterCount="+rasterCount+" rasterMs="+rasterNanos/1e6+(cache==null?"":" diskHits="+cache.hits+" nativeDiskHits="+cache.nativeDiskHits+" diskMisses="+cache.misses+" diskReadMs="+cache.readNanos/1e6+" diskWriteMs="+cache.writeNanos/1e6+" diskBytes="+cache.bytes()+" inventoryReady="+cache.inventoryReady()+" cacheEntries="+cache.directoryEntries+" cacheInitializeMs="+cache.directoryInitializeNanos/1e6);}
+    static synchronized String stats(){PodGlyphDiskCache cache=PodSystemFonts.disk();return "metricHits="+metricHits+" metricBuilds="+metricBuilds+" rasterCount="+rasterCount+" rasterMs="+rasterNanos/1e6+(cache==null?"":" diskHits="+cache.hits+" nativeDiskHits="+cache.nativeDiskHits+" diskMisses="+cache.misses+" diskReadMs="+cache.readNanos/1e6+" diskWriteMs="+cache.writeNanos/1e6+" diskBytes="+cache.bytes()+" inventoryReady="+cache.inventoryReady()+" cacheEntries="+cache.directoryEntries+" cacheInitializeMs="+cache.directoryInitializeNanos/1e6);}
     private static String cacheKey(String text,float px,int bold,int w,int h,int baseline,int density){return PodSystemFonts.hash((PodSystemFonts.identity()+":"+Float.floatToIntBits(px)+":"+bold+":"+w+":"+h+":"+baseline+":"+density+":"+text).getBytes(java.nio.charset.StandardCharsets.UTF_8));}
     // Differential reference/legacy byte contract. Production JNI uses the
     // bulk int array below, with unpremultiplied Android ARGB values.

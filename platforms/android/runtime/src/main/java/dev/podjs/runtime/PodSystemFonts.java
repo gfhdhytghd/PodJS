@@ -52,7 +52,12 @@ final class PodSystemFonts {
     private static final HashMap<String,ByteBuffer> mappings=new HashMap<>();
     private static final ArrayList<Family> families=new ArrayList<>();
     private static final HashMap<String,Font> fonts=new HashMap<>();
-    private static String identity="",packagePath="";
+    private static String identity="",packagePath="",indexXmlHash="",indexBuild="",indexLanguage="";
+    private static final HashMap<String,PodSystemFontIndex.Metric> metricIndex=new HashMap<>();
+    private static boolean metricsDirty;
+    static synchronized int[] cachedMetrics(float px,int bold,int density){PodSystemFontIndex.Metric m=metricIndex.get(Float.floatToIntBits(px)+":"+bold+":"+density);return enabled&&m!=null?m.copy():null;}
+    static synchronized void cacheMetrics(float px,int bold,int density,int[] values){if(!enabled||metricIndex.size()>=256)return;PodSystemFontIndex.Metric m=new PodSystemFontIndex.Metric(px,bold,density,values);metricIndex.put(m.key(),m);metricsDirty=true;}
+    static synchronized void persistMetrics(){if(!enabled||disk==null||!metricsDirty)return;try{disk.fontIndex(PodSystemFontIndex.encode(indexXmlHash,indexBuild,indexLanguage,families,new File("/system/fonts"),identity,metricIndex.values()));metricsDirty=false;}catch(IOException unavailable){/* Recompute metrics on the next cache miss. */}}
     private static JSONObject config;
     private static PodGlyphDiskCache disk;
     private static volatile boolean enabled;
@@ -72,7 +77,7 @@ final class PodSystemFonts {
         if(context==null)return;
         String current=context.getApplicationInfo().sourceDir;
         if(current.equals(packagePath))return;
-        packagePath=current;enabled=false;config=null;disk=null;faces.clear();primaryFaces.clear();families.clear();mappings.clear();fonts.clear();
+        packagePath=current;metricIndex.clear();metricsDirty=false;enabled=false;config=null;disk=null;faces.clear();primaryFaces.clear();families.clear();mappings.clear();fonts.clear();
         try {
             byte[] manifest;
             try(InputStream input=context.getAssets().open("pod.manifest.json")){manifest=readBounded(input,2*1024*1024);}
@@ -87,7 +92,7 @@ final class PodSystemFonts {
             String language=Locale.getDefault().getLanguage(),build=Build.FINGERPRINT+":podjs-system-skia-v4-argb";
             File fontRoot=new File("/system/fonts");String xmlHash=hash(xml);
             PodSystemFontIndex.Value cached=PodSystemFontIndex.decode(disk==null?null:disk.fontIndex(),xmlHash,build,language,fontRoot);
-            if(cached!=null){families.addAll(cached.families);identity=cached.identity;}
+            if(cached!=null){families.addAll(cached.families);identity=cached.identity;for(PodSystemFontIndex.Metric m:cached.metrics)metricIndex.put(m.key(),m);}
             else {
                 List<Family> parsed=parse(new ByteArrayInputStream(xml));
                 for(Family family:parsed)if(family.name.equals("sans-serif"))families.add(family);
@@ -100,8 +105,8 @@ final class PodSystemFonts {
             }
             // Font objects and mapped files are created only for a requested
             // style. XML parsing does not contend with native Vulkan creation.
-            enabled=true;
-            android.util.Log.i("PodJSPerf","systemFonts indexHit="+(cached!=null)+" mappedFiles="+mappings.size()+" families="+families.size()+" identity="+identity+" diskLimit="+PodGlyphDiskCache.MAX_BYTES+(disk==null?"":" cacheEntries="+disk.directoryEntries+" cacheScanMs="+disk.directoryScanNanos/1e6+" cacheInitializeMs="+disk.directoryInitializeNanos/1e6));
+            indexXmlHash=xmlHash;indexBuild=build;indexLanguage=language;enabled=true;
+            android.util.Log.i("PodJSPerf","systemFonts indexHit="+(cached!=null)+" mappedFiles="+mappings.size()+" cachedMetrics="+metricIndex.size()+" families="+families.size()+" identity="+identity+" diskLimit="+PodGlyphDiskCache.MAX_BYTES+(disk==null?"":" cacheEntries="+disk.directoryEntries+" cacheScanMs="+disk.directoryScanNanos/1e6+" cacheInitializeMs="+disk.directoryInitializeNanos/1e6));
         }catch(Exception invalid) {
             config=null;throw new IllegalStateException("Cannot resolve configured system fonts",invalid);
         }
