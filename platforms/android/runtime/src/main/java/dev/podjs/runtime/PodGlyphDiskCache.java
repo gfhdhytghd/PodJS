@@ -28,7 +28,7 @@ final class PodGlyphDiskCache {
     private boolean writesEnabled,initialized,inventoryFailed,mayHaveRecords;
     private byte[] pendingIndex;private String[] pendingIdentity;
     private final LinkedHashSet<String> earlyAccess=new LinkedHashSet<>(),earlyDeleted=new LinkedHashSet<>();
-    long hits,misses,readNanos,writeNanos;
+    long hits,misses,readNanos,writeNanos,nativeDiskHits;
     long directoryScanNanos,directoryInitializeNanos;int directoryEntries;
     PodGlyphDiskCache(File root,long limit)throws IOException {this(root,limit,allocationUnit(root),false);}
     PodGlyphDiskCache(File root,long limit,boolean deferred)throws IOException {this(root,limit,allocationUnit(root),deferred);}
@@ -73,6 +73,7 @@ final class PodGlyphDiskCache {
         File file(File root){if(file==null)file=new File(root,name);return file;}
     }
     private static native byte[] nativeScan(String directory);
+    private static native int[] nativeReadArgb(String filename,int expected);
     static ArrayList<Existing> decodeScan(File root,byte[] raw)throws IOException {
         if(raw==null||raw.length<8||raw.length>5*1024*1024)throw new IOException("glyph directory bounds");
         DataInputStream in=new DataInputStream(new ByteArrayInputStream(raw));
@@ -168,8 +169,19 @@ final class PodGlyphDiskCache {
     }
     synchronized int[] getArgb(String key,int expected) {
         if(expected<12||expected>MAX_CELL||expected%4!=0)return null;
-        Pending queued=pending.get(name(key));
+        String name=name(key);Pending queued=pending.get(name);
         if(queued!=null&&queued.argb!=null&&queued.size==expected){hits++;return queued.argb;}
+        if(queued==null){
+            Existing e=files.get(name);File file=e==null?(!initialized&&mayHaveRecords?new File(root,name):null):e.file(root);
+            if(file==null){misses++;return null;}
+            long began=System.nanoTime();boolean used=false;
+            try {
+                int[] result=nativeReadArgb(file.getAbsolutePath(),expected);used=true;
+                if(result==null){misses++;remove(name,file);return null;}
+                clock=Math.max(clock+1,System.currentTimeMillis());file.setLastModified(clock);if(!initialized)earlyTouch(name);hits++;nativeDiskHits++;return result;
+            }catch(LinkageError unavailable){/* Host tests retain the independent Java decoder. */}
+            finally{if(used)readNanos+=System.nanoTime()-began;}
+        }
         byte[] found=get(key,expected);if(found==null)return null;
         int[] result=new int[found.length/4];java.nio.ByteBuffer.wrap(found).order(java.nio.ByteOrder.LITTLE_ENDIAN).asIntBuffer().get(result);return result;
     }

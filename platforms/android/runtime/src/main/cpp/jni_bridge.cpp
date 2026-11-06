@@ -26,8 +26,15 @@
 #include "render_thread.h"
 #include "system_font_pixels.h"
 #include "glyph_cache_directory.h"
+#include "glyph_cache_read.h"
 
 static double monoMs() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+extern "C" JNIEXPORT jintArray JNICALL Java_dev_podjs_runtime_PodGlyphDiskCache_nativeReadArgb(JNIEnv* env,jclass,jstring filename,jint expected) {
+  if(!filename||expected<12)return nullptr;const char* path=env->GetStringUTFChars(filename,nullptr);if(!path)return nullptr;
+  std::vector<uint8_t> bytes;bool valid=podjs_fonts::readGlyphRecord(path,size_t(expected),bytes);env->ReleaseStringUTFChars(filename,path);if(!valid)return nullptr;
+  static_assert(std::endian::native==std::endian::little);std::vector<jint> words(bytes.size()/4);std::memcpy(words.data(),bytes.data(),bytes.size());
+  auto result=env->NewIntArray(jsize(words.size()));if(result)env->SetIntArrayRegion(result,0,jsize(words.size()),words.data());return result;
+}
 extern "C" JNIEXPORT jbyteArray JNICALL Java_dev_podjs_runtime_PodGlyphDiskCache_nativeScan(JNIEnv* env,jclass,jstring directory) {
   const double began=monoMs();
   if(!directory)return nullptr;const char* path=env->GetStringUTFChars(directory,nullptr);if(!path)return nullptr;

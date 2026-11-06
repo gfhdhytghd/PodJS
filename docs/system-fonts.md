@@ -96,6 +96,12 @@ styles build the nearest XML face of each family and
 reuse identical families. A full-family construction remains a differential
 reference. Uncommon style requests retain full-family selection.
 
+Disk hits map the existing immutable compressed record read-only and decode
+zlib/CRC32 in native code, returning owned ARGB words through JNI. File format,
+metric bits and straight pixels are unchanged. This avoids Java inflater and
+integer-buffer setup on the first warm lookup. It is not zero-copy pixel mmap.
+Host tests retain the independent Java decoder.
+
 JNI receives unpremultiplied ARGB integers from Bitmap.getPixels in bulk. Native
 code converts them to the unchanged straight RGBA C ABI. Generated immutable
 ARGB arrays enter a bounded 1 MiB pending queue without byte packing or copying;

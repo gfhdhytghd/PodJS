@@ -92,7 +92,7 @@ final class PodSystemFontFallback {
         },"pod-system-font-warm");worker.setDaemon(true);worker.setPriority(Thread.MIN_PRIORITY);worker.start();
     }
     static synchronized void cancelWarm(){warmGeneration.incrementAndGet();warmStarted=false;}
-    static synchronized String stats(){PodGlyphDiskCache cache=PodSystemFonts.disk();return "rasterCount="+rasterCount+" rasterMs="+rasterNanos/1e6+(cache==null?"":" diskHits="+cache.hits+" diskMisses="+cache.misses+" diskReadMs="+cache.readNanos/1e6+" diskWriteMs="+cache.writeNanos/1e6+" diskBytes="+cache.bytes()+" inventoryReady="+cache.inventoryReady()+" cacheEntries="+cache.directoryEntries+" cacheInitializeMs="+cache.directoryInitializeNanos/1e6);}
+    static synchronized String stats(){PodGlyphDiskCache cache=PodSystemFonts.disk();return "rasterCount="+rasterCount+" rasterMs="+rasterNanos/1e6+(cache==null?"":" diskHits="+cache.hits+" nativeDiskHits="+cache.nativeDiskHits+" diskMisses="+cache.misses+" diskReadMs="+cache.readNanos/1e6+" diskWriteMs="+cache.writeNanos/1e6+" diskBytes="+cache.bytes()+" inventoryReady="+cache.inventoryReady()+" cacheEntries="+cache.directoryEntries+" cacheInitializeMs="+cache.directoryInitializeNanos/1e6);}
     private static String cacheKey(String text,float px,int bold,int w,int h,int baseline,int density){return PodSystemFonts.hash((PodSystemFonts.identity()+":"+Float.floatToIntBits(px)+":"+bold+":"+w+":"+h+":"+baseline+":"+density+":"+text).getBytes(java.nio.charset.StandardCharsets.UTF_8));}
     // Differential reference/legacy byte contract. Production JNI uses the
     // bulk int array below, with unpremultiplied Android ARGB values.

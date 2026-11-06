@@ -10,6 +10,8 @@ flags=(-std=c++20 -O2 -pthread ${PODJS_TEST_CXXFLAGS:-} -Itests/cpp -Icrates/pod
 "$build/font-pixels"
 "$cxx" "${flags[@]}" tests/cpp/glyph_cache_directory_test.cpp -o "$build/font-directory"
 "$build/font-directory"
+"$cxx" "${flags[@]}" tests/cpp/glyph_cache_read_test.cpp -lz -o "$build/font-read"
+"$build/font-read"
 "$cxx" "${flags[@]}" "$cpp/gpu_draw_list.cpp" "$cpp/vulkan_gpu.cpp" "$cpp/gpu_draw_list_test.cpp" -o "$build/gpu"
 "$build/gpu"
 "$cxx" "${flags[@]}" -Itests/cpp "$cpp/render_thread.cpp" "$cpp/vulkan_renderer.cpp" "$cpp/gpu_draw_list.cpp" "$cpp/vulkan_gpu.cpp" tests/cpp/vulkan_frame_pipeline_test.cpp -o "$build/pipeline"
