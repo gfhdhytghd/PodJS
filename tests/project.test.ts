@@ -19,6 +19,14 @@ const base = { entry: "main.tsx", appId: "com.example.demo", versionName: "1.2.3
 const defaults = { fontRegular: "font.ttf", fontBold: "font.ttf", outputRoot: "/tmp/pod-dist" };
 
 describe("external project config", () => {
+  test('system font source is explicit and does not require packaged font files',()=>{
+    const system={...base,resources:{fontSource:'system',fontRegular:'missing.ttf',fontBold:'missing-bold.ttf',fontSlots:[{slot:33,px:14}]}};
+    const resolved=resolvePodProject(fixture(system),POD_TARGETS,defaults);
+    expect(resolved.config.resources?.fontSource).toBe('system');expect(resolved.fontSlots[0]?.slot).toBe(33);
+    expect(resolvePodProject(fixture(base),POD_TARGETS,defaults).config.resources?.fontSource).toBeUndefined();
+    expect(()=>resolvePodProject(fixture({...system,resources:{fontSource:'bundled',fontRegular:'missing.ttf'}}),POD_TARGETS,defaults)).toThrow('font resource');
+    for(const fontSource of [null,false,0,'SYSTEM','auto'])expect(()=>resolvePodProject(fixture({...base,resources:{fontSource}}),POD_TARGETS,defaults)).toThrow('fontSource');
+  });
   test("native backup retention defaults to keep and purge requires an explicit version", () => {
     expect(resolvePodProject(fixture(base), POD_TARGETS, defaults).config.android?.takeover).toBeUndefined();
     expect(resolvePodProject(fixture({...base, android:{takeover:{sourceVersionCode:40}}}), POD_TARGETS, defaults).config.android?.takeover).toEqual({sourceVersionCode:40});

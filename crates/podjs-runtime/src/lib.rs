@@ -55,7 +55,7 @@ use pocketjs_core::spec;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
 pub const MIN_ABI_VERSION: u32 = 1;
 pub const DEFAULT_LOGICAL_WIDTH: u32 = 240;
 pub const DEFAULT_LOGICAL_HEIGHT: u32 = 240;
@@ -1253,6 +1253,33 @@ pub extern "C" fn pod_runtime_set_benchmark(runtime:*mut PodRuntime,callback:Opt
 /// loading. userdata must outlive the runtime and every acquired render snapshot.
 pub type PodSystemGlyphCallback = unsafe extern "C" fn(usize, *const u16, usize, f32, u32,
     u32, u32, u32, u32, *mut f32, *mut f32, *mut f32, *mut u8, usize) -> i32;
+/// Writes logical cell width, cell height, baseline and line height.
+pub type PodSystemFontMetricsCallback=unsafe extern "C" fn(usize,f32,u32,u32,*mut u32)->i32;
+#[unsafe(no_mangle)]
+pub extern "C" fn pod_runtime_set_system_font_metrics(runtime:*mut PodRuntime,callback:Option<PodSystemFontMetricsCallback>,userdata:usize)->i32 {
+    let Ok(runtime)=runtime_mut(runtime) else {return ERR_ARGUMENT;};
+    let Some(callback)=callback else {return ERR_ARGUMENT;};
+    runtime.surface.with_ui(|ui|ui.set_system_font_metrics(std::sync::Arc::new(move|px,bold,density|{
+        let mut result=[0;4];
+        (unsafe{callback(userdata,px,u32::from(bold),u32::from(density),result.as_mut_ptr())}==OK).then_some(result)
+    })));OK
+}
+
+/// Bounded, explicit host diagnostic. Returns JSON bytes written, or zero.
+/// The input and output must remain valid for this call and must not overlap.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pod_runtime_probe_glyph_cache(runtime:*mut PodRuntime,text:*const u8,length:usize,slot:u32,out:*mut u8,capacity:usize)->usize {
+    if text.is_null()||out.is_null()||length>1024||slot>63||capacity>65536 {return 0;}
+    let Ok(runtime)=runtime_mut(runtime) else {return 0;};
+    let Ok(text)=std::str::from_utf8(unsafe{std::slice::from_raw_parts(text,length)}) else {return 0;};
+    if text.chars().count()>128||!runtime.surface.ensure_font(slot as u8) {return 0;}
+    let before=runtime.surface.glyph_cache_stats().0;
+    let samples=runtime.surface.with_ui(|ui|ui.probe_glyph_cache(text,slot as u8));
+    let after=runtime.surface.glyph_cache_stats().0;
+    let Ok(json)=serde_json::to_vec(&json!({"samples":samples,"cacheMisses":after.misses-before.misses,"cacheHits":after.hits-before.hits})) else {return 0;};
+    if json.len()>capacity {return 0;}
+    unsafe{std::ptr::copy_nonoverlapping(json.as_ptr(),out,json.len());}json.len()
+}
 #[unsafe(no_mangle)]
 pub extern "C" fn pod_runtime_set_system_font_fallback(
     runtime: *mut PodRuntime, callback: Option<PodSystemGlyphCallback>, userdata: usize,
@@ -3517,7 +3544,7 @@ mod tests {
     #[test]
     fn abi_one_two_three_hosts_boot_supported_guests_without_bypassing_validation() {
         for target_name in ["android-watch", "wearos-watch", "watchos-watch", "harmonyos-watch"] {
-            for (host_abi, package_abi, accepted) in [(3,1,true),(3,2,true),(3,3,true),(2,1,true),(2,2,true),(1,1,true),(1,2,false),(2,0,false),(2,3,false),(3,4,false)] {
+            for (host_abi, package_abi, accepted) in [(4,4,true),(4,3,true),(4,1,true),(3,1,true),(3,2,true),(3,3,true),(2,1,true),(2,2,true),(1,1,true),(1,2,false),(2,0,false),(2,3,false),(3,4,false)] {
                 let target = CString::new(target_name).unwrap(); let caps = CString::new("[]").unwrap();
                 let mut config = valid_config(&target,&caps); config.host_abi = host_abi;
                 let runtime = pod_runtime_create(&config); assert!(!runtime.is_null());

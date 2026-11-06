@@ -500,6 +500,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                 long candidate = 0;
                 Throwable failure = null;
                 try {
+                    PodSystemFonts.ensure(getContext());
                     long createBegan = PodStartupTrace.now();
                     candidate = nativeCreate(bootSurface, targetId, width, height, density, touchSlop, minFling, maxFling, dataPath);
                     if (candidate == 0) throw new IllegalStateException("PodJS native host creation failed");
@@ -614,6 +615,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         }
         if (!firstTextureLogged) {
             firstTextureLogged = true;
+            PodSystemFontFallback.prewarm();
             PodActiveValidationAndroid.afterFirstFrame(getContext());
             if (getContext() instanceof android.app.Activity) {
                 ((android.app.Activity)getContext()).getWindow().setBackgroundDrawable(
@@ -626,6 +628,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     }
 
     @Override protected void onDetachedFromWindow() {
+        PodSystemFontFallback.cancelWarm();
         if (screenCheckpointRegistered) {
             getContext().unregisterReceiver(screenCheckpoint);
             screenCheckpointRegistered = false;
@@ -876,6 +879,11 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private static native boolean nativeCanGoBack(long host);
     private static native void nativeBootAssets(long host, AssetManager assets);
     private static native long nativeCreate(Surface surface, String target, int width, int height, float density, int touchSlop, int minFling, int maxFling, String dataDir);
+    private static native String nativeProbeGlyphCache(long host,byte[] text,int slot);
+    // Called only by an explicit host diagnostic on the service handler.
+    void probeGlyphCache(String text,int slot,java.util.function.Consumer<String> result) {
+        serviceHandler.post(()->result.accept(host==0?null:nativeProbeGlyphCache(host,text.getBytes(java.nio.charset.StandardCharsets.UTF_8),slot)));
+    }
     private static native void nativeBoot(long host, byte[] pak, byte[] js, byte[] manifest);
     private static native boolean nativeRendererReady(long host);
     private static native void nativeResize(long host, Surface surface, int width, int height);

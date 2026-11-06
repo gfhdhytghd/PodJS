@@ -38,6 +38,7 @@ struct Host {
   jclass benchmarkClass{};
   jmethodID benchmarkDispatch{};
   jmethodID fontRaster{};
+  jmethodID fontMetrics{};
   podjs_perf::FramePerfWindow framePerf;
   podjs_gpu::RendererTimingRecorder hostDiagnostics;
   PodRuntime* runtime{};
@@ -98,7 +99,24 @@ static int32_t systemGlyph(uintptr_t userdata,const uint16_t* text,size_t units,
   }
   if(bytes)env->DeleteLocalRef(bytes);if(cluster)env->DeleteLocalRef(cluster);if(attached)host->vm->DetachCurrentThread();return result;
 }
+static int32_t systemFontMetrics(uintptr_t userdata,float px,uint32_t bold,uint32_t density,uint32_t* output) {
+  auto* host=reinterpret_cast<Host*>(userdata);JNIEnv* env=nullptr;
+  bool attached=host->vm->GetEnv(reinterpret_cast<void**>(&env),JNI_VERSION_1_6)!=JNI_OK;
+  if(attached&&host->vm->AttachCurrentThread(&env,nullptr)!=JNI_OK)return 1;
+  auto values=static_cast<jintArray>(env->CallStaticObjectMethod(host->fontFallback,host->fontMetrics,jfloat(px),jint(bold),jint(density)));
+  int32_t result=1;
+  if(env->ExceptionCheck())env->ExceptionClear();
+  else if(values&&env->GetArrayLength(values)==4){jint data[4];env->GetIntArrayRegion(values,0,4,data);for(int i=0;i<4;i++)output[i]=uint32_t(data[i]);result=0;}
+  if(values)env->DeleteLocalRef(values);if(attached)host->vm->DetachCurrentThread();return result;
+}
 static void renderFrame(Host* h, int64_t frameTimeNanos = 0);
+extern "C" JNIEXPORT jstring JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeProbeGlyphCache(JNIEnv* env,jclass,jlong p,jbyteArray input,jint slot) {
+  auto* h=reinterpret_cast<Host*>(p);if(!h||!input||slot<0||slot>63)return nullptr;
+  jsize n=env->GetArrayLength(input);if(n>1024)return nullptr;std::vector<uint8_t> text(n),result(65537);
+  env->GetByteArrayRegion(input,0,n,reinterpret_cast<jbyte*>(text.data()));
+  size_t length=pod_runtime_probe_glyph_cache(h->runtime,text.data(),text.size(),uint32_t(slot),result.data(),65536);
+  if(!length)return nullptr;result[length]=0;return env->NewStringUTF(reinterpret_cast<const char*>(result.data()));
+}
 static void fail(JNIEnv* env, const char* message) { jclass c = env->FindClass("java/lang/IllegalStateException"); env->ThrowNew(c, message); }
 
 static void jsStackLog(uintptr_t, const uint8_t* line, size_t length) {
@@ -302,9 +320,11 @@ const char* capabilities = "[\"input.touch\",\"input.rotary\",\"data.kv\",\"devi
   auto fontClass=env->FindClass("dev/podjs/runtime/PodSystemFontFallback");
   if(fontClass) {
     host->fontFallback=static_cast<jclass>(env->NewGlobalRef(fontClass));
+    host->fontMetrics=env->GetStaticMethodID(fontClass,"metrics","(FII)[I");
     host->fontRaster=env->GetStaticMethodID(fontClass,"raster","(Ljava/lang/String;FIIIII)[B");env->DeleteLocalRef(fontClass);
   }
-  if(env->ExceptionCheck()||!host->fontFallback||!host->fontRaster||
+  if(env->ExceptionCheck()||!host->fontFallback||!host->fontRaster||!host->fontMetrics||
+      pod_runtime_set_system_font_metrics(host->runtime,systemFontMetrics,reinterpret_cast<uintptr_t>(host.get()))!=0||
       pod_runtime_set_system_font_fallback(host->runtime,systemGlyph,reinterpret_cast<uintptr_t>(host.get()))!=0) {
     ANativeWindow_release(window);pod_runtime_destroy(host->runtime);
     env->ReleaseStringUTFChars(target,t);env->ReleaseStringUTFChars(dataDir,d);

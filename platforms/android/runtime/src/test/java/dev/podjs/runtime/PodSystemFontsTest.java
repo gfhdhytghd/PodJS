@@ -1,0 +1,24 @@
+package dev.podjs.runtime;
+
+import static org.junit.Assert.*;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.robolectric.RobolectricTestRunner;
+import org.robolectric.annotation.Config;
+
+@RunWith(RobolectricTestRunner.class) @Config(sdk=30)
+public class PodSystemFontsTest {
+    private List<PodSystemFonts.Family> parse(String xml)throws Exception{return PodSystemFonts.parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));}
+    @Test public void preservesCollectionIndexLanguageWeightAndVariationAxes()throws Exception {
+        List<PodSystemFonts.Family> families=parse("<familyset><family name='sans-serif'><font weight='700' style='italic' index='2'> Font.ttc <axis tag='wght' stylevalue='750'/></font></family><family lang='zh-Hans'><font weight='400'>Chinese.ttf</font></family></familyset>");
+        assertEquals(2,families.size());assertEquals("sans-serif",families.get(0).name);assertEquals("zh-Hans",families.get(1).lang);
+        PodSystemFonts.Face face=families.get(0).faces.get(0);assertEquals("Font.ttc",face.file);assertEquals(2,face.index);assertEquals(700,face.weight);assertEquals("italic",face.style);assertEquals("'wght' 750.0",face.axes.get(0));
+    }
+    @Test public void rejectsInvalidAxisBeforeTypefaceConstruction() {
+        assertThrows(Exception.class,()->parse("<familyset><family><font>F.ttf<axis tag='wght' stylevalue='NaN'/></font></family></familyset>"));
+        assertThrows(Exception.class,()->parse("<familyset><family><font>F.ttf<axis tag='bad' stylevalue='3'/></font></family></familyset>"));
+    }
+}

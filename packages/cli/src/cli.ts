@@ -14,6 +14,7 @@ import { buildBackground } from "./background-build.ts";
 import { writeProjectManifest } from "./package-manifest.ts";
 import { androidPackagePlan, androidPackageOptions, signAndroidApk, rotateAndroidSigning, type RotateOptions } from "./android-signing.ts";
 import { optimizePakFontSeeds } from "./pak-font-seeds.ts";
+import {systemFontManifest} from './system-fonts.ts';
 import { buildPakIntegrity, pakFontAliases } from "./pak-integrity.ts";
 
 import { findUnknownStyleProps } from "./style-props-check.ts";
@@ -82,6 +83,8 @@ function doctor(): void {
 
 async function build(target: Target, project?: ResolvedPodProject, diagnosticJsStack=false, production=false): Promise<ResolvedPodProject | undefined> {
   const profile = POD_TARGETS[target];
+  const systemFonts=project?.config.resources?.fontSource==='system';
+  if(systemFonts&&target!=='android-watch'&&target!=='wearos-watch')fail('system font source requires an Android target');
   if(project?.config.resources?.glyphCache&&target!=="android-watch"&&target!=="wearos-watch") fail("runtime glyph pages currently require android-watch or wearos-watch");
   if (project) {
     const unsupported = project.config.capabilities.filter(capability => !profile.capabilities.includes(capability as never));
@@ -109,6 +112,7 @@ async function build(target: Target, project?: ResolvedPodProject, diagnosticJsS
     ...(target === "android-watch" || target === "wearos-watch" ? ["--minify"] : []),
     ...(diagnosticJsStack ? ["--diagnostic-js-stack"] : []),
     ...(production ? ["--production"] : []),
+    ...(systemFonts ? ['--system-fonts'] : []),
     ...(project?.fontSlots.length ? [`--font-slots-json=${JSON.stringify(project.fontSlots)}`] : []),
     ...(glyphCache ? [`--glyph-cache-json=${JSON.stringify(glyphCache)}`] : []),
     ...(project?.extraChars ? [`--extra-chars=${project.extraChars}`] : []),
@@ -149,7 +153,7 @@ async function build(target: Target, project?: ResolvedPodProject, diagnosticJsS
   const manifest = {
     schema: 1,
     target: profile.id,
-    hostAbi: project?.config.resources?.glyphCache ? 3 : profile.hostAbi,
+    hostAbi: systemFonts ? 4 : project?.config.resources?.glyphCache ? 3 : profile.hostAbi,
     logicalViewport: profile.logicalViewport,
     renderer: profile.renderer,
     capabilities: profile.capabilities,
@@ -157,6 +161,7 @@ async function build(target: Target, project?: ResolvedPodProject, diagnosticJsS
     bundleHash,
     pakHash: fnv1a64(pakBytes),
     pakIntegrity: buildPakIntegrity(pakBytes),
+    ...(systemFonts?{systemFonts:systemFontManifest(pakBytes,glyphCache?.warmChars??'')}:{}),
     ...(project?.config.resources?.preloadFontSlots?.length ? { preloadFontSlots: project.config.resources.preloadFontSlots } : {}),
     ...(bytecodeEnabled ? { bytecode: {
       file: "main.qbc",
@@ -219,7 +224,7 @@ async function packageTarget(target: Target, project?: ResolvedPodProject, relea
     gradleArgs.push(`-PpodReleaseDebuggable=${overrides.debuggable}`);
     if (!project && overrides.versionCode !== undefined) gradleArgs.push(`-PpodVersionCode=${overrides.versionCode}`);
     const plan = androidPackagePlan(release, project?.androidSigning);
-    run(["./gradlew", ...gradleArgs, ...plan.tasks.map(task => `${app}:${task}`), ":runtime:assembleRelease"], join(ROOT, "platforms/android"));
+    run(["./gradlew", "--max-workers=2", ...gradleArgs, ...plan.tasks.map(task => `${app}:${task}`), ":runtime:assembleRelease"], join(ROOT, "platforms/android"));
     if (plan.release && project?.androidSigning) {
       const module = target === "android-watch" ? "android/app" : "wearos/app";
       // Keep APKs outside the directory Gradle packages as runtime assets.

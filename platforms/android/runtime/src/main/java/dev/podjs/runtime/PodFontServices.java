@@ -21,6 +21,7 @@ final class PodFontServices {
         @Override public int hashCode(){return 31*System.identityHashCode(manager)+options.hashCode();}
     }
     static Typeface resolve(Context context,JSONObject args,int weight,boolean italic)throws IOException {
+        PodSystemFonts.ensure(context);
         int face=0;
         if(args.has("fontFaceIndex")){
             Object raw=args.opt("fontFaceIndex");
@@ -34,7 +35,7 @@ final class PodFontServices {
         String relative=string(args,"fontPath");
         String asset=string(args,"fontAsset");
         if(!relative.isEmpty()&&!asset.isEmpty())throw new IllegalArgumentException("fontPath and fontAsset are mutually exclusive");
-        Typeface fallback=Typeface.create(Typeface.DEFAULT,weight,italic);
+        Typeface fallback=PodSystemFonts.typeface(weight,italic);
         if(!asset.isEmpty()){
             String packaged=packagedAssetPath(asset);
             if(context==null)throw new IllegalArgumentException("fontAsset requires application context");

@@ -14,7 +14,7 @@ void pod_sync_cancellation_cancel(const PodSyncCancellation *value);
 bool pod_sync_cancellation_is_cancelled(const PodSyncCancellation *value);
 void pod_sync_cancellation_free(PodSyncCancellation *value);
 
-#define PODJS_RUNTIME_ABI_VERSION 3
+#define PODJS_RUNTIME_ABI_VERSION 4
 #define PODJS_RUNTIME_MIN_ABI_VERSION 1
 /* ABI 2 adds host-only sync handles without changing ABI 1 struct layouts.
  * New runtimes accept host configs 1..2. Packages must request 1..host_abi;
@@ -388,6 +388,9 @@ typedef int32_t (*PodSystemGlyphCallback)(uintptr_t userdata, const uint16_t *te
     uint32_t baseline, uint32_t density, float *advance, float *xoff, float *yoff,
     uint8_t *rgba, size_t length);
 int32_t pod_runtime_set_system_font_fallback(PodRuntime*, PodSystemGlyphCallback, uintptr_t userdata);
+typedef int32_t (*PodSystemFontMetricsCallback)(uintptr_t,float,uint32_t,uint32_t,uint32_t*);
+int32_t pod_runtime_set_system_font_metrics(PodRuntime*,PodSystemFontMetricsCallback,uintptr_t userdata);
+size_t pod_runtime_probe_glyph_cache(PodRuntime*,const uint8_t*,size_t,uint32_t,uint8_t*,size_t);
 typedef struct PodGlyphCacheStats {uint64_t hits,misses,raster_micros,resident_bytes,source_bytes,seed_bytes,cells;} PodGlyphCacheStats;
 /* Demand-only JSON; valid until next sample/destruction. Host debug gate required. */
 const char *pod_runtime_memory_stats(PodRuntime *runtime);

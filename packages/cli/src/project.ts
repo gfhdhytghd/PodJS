@@ -15,6 +15,8 @@ export interface PodFontSlot {
 }
 
 export interface PodProjectResources {
+  /** Opt-in Android device fonts. Omitted preserves packaged font behavior. */
+  fontSource?: 'bundled'|'system';
   /** Logical packaged asset name to a source path, relative to the project. */
   assets?: Record<string, string>;
   /** Lossless per-cell compression; preserves every metric and seeded glyph. */
@@ -124,6 +126,10 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
     if (!value.resources || typeof value.resources !== "object" || Array.isArray(value.resources)) invalid("resources must be an object");
     const r = value.resources as Record<string, unknown>;
     resources = {};
+    if(r.fontSource!==undefined){
+      if(r.fontSource!=='bundled'&&r.fontSource!=='system')invalid('resources.fontSource must be bundled or system');
+      resources.fontSource=r.fontSource;
+    }
     if (r.optimizeFontSeeds !== undefined) {
       if (typeof r.optimizeFontSeeds !== "boolean") invalid("resources.optimizeFontSeeds must be boolean");
       resources.optimizeFontSeeds = r.optimizeFontSeeds;
@@ -162,7 +168,7 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
         if (typeof f.px !== "number" || !Number.isFinite(f.px) || f.px < 1 || f.px > 128) invalid("fontSlots px must be in 1..128");
         if ((f.bold !== undefined && typeof f.bold !== "boolean") || (f.rasterAdvances !== undefined && typeof f.rasterAdvances !== "boolean")) invalid("fontSlots bold/rasterAdvances must be booleans");
         used.add(f.slot as number);
-        return {slot:f.slot as number, px:f.px, path:stringField(f.path, "fontSlots.path"),
+        return {slot:f.slot as number, px:f.px, path:resources?.fontSource==='system'&&f.path===undefined?'system':stringField(f.path, "fontSlots.path"),
           ...(f.bold === undefined ? {} : {bold:f.bold as boolean}), ...(f.rasterAdvances === undefined ? {} : {rasterAdvances:f.rasterAdvances as boolean})};
       });
     }
@@ -187,10 +193,10 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
   }
   const fontRegular = resolve(root, resources?.fontRegular ?? defaults.fontRegular);
   const fontBold = resolve(root, resources?.fontBold ?? defaults.fontBold);
-  if (!existsSync(fontRegular) || !existsSync(fontBold)) invalid("configured font resource not found");
+  if (resources?.fontSource!=='system'&&(!existsSync(fontRegular) || !existsSync(fontBold))) invalid("configured font resource not found");
   const fontSlots = (resources?.fontSlots ?? []).map(resource => {
     const path = resolve(root, resource.path);
-    if (!existsSync(path) || !statSync(path).isFile()) invalid(`fontSlots file not found: ${path}`);
+    if (resources?.fontSource!=='system'&&(!existsSync(path) || !statSync(path).isFile())) invalid(`fontSlots file not found: ${path}`);
     return {...resource, path};
   });
   const extraChars = resources?.extraCharsFile === undefined ? "" : (() => {
