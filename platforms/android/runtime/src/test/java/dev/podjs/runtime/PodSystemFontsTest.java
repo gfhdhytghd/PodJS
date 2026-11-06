@@ -11,6 +11,13 @@ import org.robolectric.annotation.Config;
 
 @RunWith(RobolectricTestRunner.class) @Config(sdk=30)
 public class PodSystemFontsTest {
+    @Test public void fastFileValidationMatchesThePreviousRegexForAllAsciiCharacterPairs() {
+        java.util.regex.Pattern reference=java.util.regex.Pattern.compile("[A-Za-z0-9][A-Za-z0-9_.-]*");
+        for(int a=0;a<128;a++)for(int b=0;b<128;b++){
+            String value=""+(char)a+(char)b;assertEquals(reference.matcher(value).matches(),PodSystemFontIndex.validFile(value));
+        }
+        assertFalse(PodSystemFontIndex.validFile(null));assertFalse(PodSystemFontIndex.validFile(""));assertFalse(PodSystemFontIndex.validFile("中文.ttf"));
+    }
     @Test public void immutableFontFingerprintChangesWithBuildXmlAndFileIdentity()throws Exception {
         java.nio.file.Path root=java.nio.file.Files.createTempDirectory("font-identity");File font=root.resolve("Font.ttf").toFile();
         try {

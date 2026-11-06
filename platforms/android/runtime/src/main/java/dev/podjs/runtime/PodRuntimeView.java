@@ -67,6 +67,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private int bootGeneration;
     private boolean detached;
     private final ExecutorService boot = Executors.newSingleThreadExecutor();
+    private final java.util.concurrent.FutureTask<Void> fontPreparation;
     private final PodServices services;
     private final String targetId;
     private float rotaryRemainder;
@@ -409,6 +410,14 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         super(context);
         long began = PodStartupTrace.now();
         this.targetId = targetId;
+        // Start independent device-font IO while the existing services/window
+        // are being created. No UI wait or Surface callback is postponed.
+        final Context fontContext=context.getApplicationContext();
+        fontPreparation=new java.util.concurrent.FutureTask<>(()->{
+            long started=PodStartupTrace.now();PodSystemFonts.ensure(fontContext);
+            PodStartupTrace.stage("systemFontPrepare",started);return null;
+        });
+        Thread fontWorker=new Thread(fontPreparation,"pod-font-prepare");fontWorker.setDaemon(true);fontWorker.start();
         // Default log level is INFO. Only a debuggable host explicitly opted in
         // via log.tag.PodJSService=DEBUG collects/logs completion-turn timings.
         serviceResultTrace = new ServiceResultTrace(
@@ -502,17 +511,11 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                 try {
                     // Font XML/mapping and Vulkan/runtime creation do not share
                     // resources. Join before any package can install font slots.
-                    final android.content.Context fontContext=getContext().getApplicationContext();
-                    java.util.concurrent.FutureTask<Void> fonts=new java.util.concurrent.FutureTask<>(()->{
-                        long began=PodStartupTrace.now();PodSystemFonts.ensure(fontContext);
-                        PodStartupTrace.stage("systemFontPrepare",began);return null;
-                    });
-                    Thread fontWorker=new Thread(fonts,"pod-font-prepare");fontWorker.setDaemon(true);fontWorker.start();
                     long createBegan = PodStartupTrace.now();
                     candidate = nativeCreate(bootSurface, targetId, width, height, density, touchSlop, minFling, maxFling, dataPath);
                     if (candidate == 0) throw new IllegalStateException("PodJS native host creation failed");
                     PodStartupTrace.stage("nativeCreate", createBegan);
-                    try {fonts.get();}
+                    try {fontPreparation.get();}
                     catch(InterruptedException interrupted){Thread.currentThread().interrupt();throw new IllegalStateException("Font preparation interrupted",interrupted);}
                     catch(java.util.concurrent.ExecutionException invalid){throw new IllegalStateException("Font preparation failed",invalid.getCause());}
                     long assetsBegan = PodStartupTrace.now();

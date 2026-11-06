@@ -113,6 +113,10 @@ Java retains compact names/metadata and creates File paths only
 when a record is accessed. This scans the live directory and preserves full LRU
 and byte-budget validation; it does not trust a persisted glyph catalog. Native
 failure, non-ASCII foreign names, or an oversized transfer use the Java scan.
+Font preparation starts in the view constructor, overlapping existing service
+and window creation. The UI thread does not wait and the Surface callback is
+unchanged. Native boot joins the same preparation future before loading slots.
+Cached XML/path validation uses fixed ASCII rules without per-file regex builds.
 
 System glyphs retain their advances, offsets and primary baseline while Rust
 removes only transparent right/bottom rows/columns. One physical transparent

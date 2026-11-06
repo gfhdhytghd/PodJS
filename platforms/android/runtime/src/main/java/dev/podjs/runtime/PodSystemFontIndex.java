@@ -32,7 +32,7 @@ final class PodSystemFontIndex {
         try {
             CRC32 crc=new CRC32();crc.update(raw,0,raw.length-8);DataInputStream input=new DataInputStream(new ByteArrayInputStream(raw));
             if(input.readInt()!=MAGIC||!input.readUTF().equals(xmlHash)||!input.readUTF().equals(build)||!input.readUTF().equals(language))return null;
-            String identity=input.readUTF();if(!identity.matches("[0-9a-f]{64}"))return null;
+            String identity=input.readUTF();if(!validIdentity(identity))return null;
             int count=bounded(input.readInt(),1,512);ArrayList<PodSystemFonts.Family> families=new ArrayList<>();
             for(int i=0;i<count;i++) {
                 PodSystemFonts.Family family=new PodSystemFonts.Family();family.name=input.readUTF();family.lang=input.readUTF();int faces=bounded(input.readInt(),0,64);
@@ -48,5 +48,13 @@ final class PodSystemFontIndex {
         }catch(IOException|RuntimeException invalid){return null;}
     }
     private static int bounded(int value,int min,int max)throws IOException{if(value<min||value>max)throw new IOException("font index count");return value;}
-    static boolean validFile(String name){return name!=null&&name.matches("[A-Za-z0-9][A-Za-z0-9_.-]*");}
+    private static boolean alphanumeric(char c){return c>='A'&&c<='Z'||c>='a'&&c<='z'||c>='0'&&c<='9';}
+    static boolean validFile(String name){
+        if(name==null||name.isEmpty()||!alphanumeric(name.charAt(0)))return false;
+        for(int i=1;i<name.length();i++){char c=name.charAt(i);if(!alphanumeric(c)&&c!='_'&&c!='.'&&c!='-')return false;}return true;
+    }
+    private static boolean validIdentity(String value){
+        if(value.length()!=64)return false;
+        for(int i=0;i<64;i++){char c=value.charAt(i);if(!(c>='0'&&c<='9'||c>='a'&&c<='f'))return false;}return true;
+    }
 }
