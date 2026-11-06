@@ -3,6 +3,9 @@ package dev.podjs.runtime;
 import static org.junit.Assert.*;
 import android.graphics.Paint;
 import android.graphics.Typeface;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Rect;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import org.junit.Test;
@@ -15,6 +18,21 @@ import org.robolectric.annotation.GraphicsMode;
 @Config(sdk=30)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 public class PodSystemFontFallbackUnitTest {
+    @Test public void bulkArgbMatchesIndependentCanvasForRareAndEmojiClusters() {
+        for(int bold=0;bold<=1;bold++)for(int density=1;density<=2;density++)for(String text:new String[]{"A","龘","𠮷","❤️","👍🏽","👨‍👩‍👧‍👦"}) {
+            Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG|Paint.SUBPIXEL_TEXT_FLAG|Paint.FILTER_BITMAP_FLAG);
+            paint.setTypeface(Typeface.create(Typeface.DEFAULT,bold!=0?Typeface.BOLD:Typeface.NORMAL));paint.setTextSize(17*density);paint.setColor(android.graphics.Color.WHITE);
+            int baseline=(int)Math.ceil(-paint.getFontMetrics().ascent/density);
+            int[] actual=PodSystemFontFallback.rasterArgb(text,17,bold,38,38,baseline,density);
+            if(!paint.hasGlyph(text)){assertNull(actual);continue;}
+            assertNotNull(actual);Rect bounds=new Rect();paint.getTextBounds(text,0,text.length(),bounds);
+            float x=(float)Math.ceil(Math.max(0,-bounds.left)/(double)density),y=(float)Math.ceil(Math.max(0,-(baseline*density+bounds.top))/(double)density);
+            assertEquals(Float.floatToRawIntBits(paint.measureText(text)/density),actual[0]);assertEquals(Float.floatToRawIntBits(x),actual[1]);assertEquals(Float.floatToRawIntBits(y),actual[2]);
+            Bitmap bitmap=Bitmap.createBitmap(38*density,38*density,Bitmap.Config.ARGB_8888);Canvas canvas=new Canvas(bitmap);canvas.drawText(text,x*density,(baseline+y)*density,paint);
+            int[] expected=new int[38*38*density*density];bitmap.getPixels(expected,0,38*density,0,0,38*density,38*density);
+            assertArrayEquals(expected,java.util.Arrays.copyOfRange(actual,3,actual.length));bitmap.recycle();
+        }
+    }
     @Test public void primaryMetricsUseNaturalHeightWhileFallbackPixelsMayOverhang() {
         for(int bold=0;bold<=1;bold++)for(int density=1;density<=2;density++) {
             Paint reference=new Paint(Paint.ANTI_ALIAS_FLAG|Paint.SUBPIXEL_TEXT_FLAG|Paint.FILTER_BITMAP_FLAG);

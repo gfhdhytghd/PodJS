@@ -5,6 +5,7 @@
 # Android's system fallback is called from the retained UI core through JNI.
 -keep class dev.podjs.runtime.PodSystemFontFallback {
     static byte[] raster(java.lang.String, float, int, int, int, int, int);
+    static int[] rasterArgb(java.lang.String, float, int, int, int, int, int);
     static int[] metrics(float, int, int);
 }
 

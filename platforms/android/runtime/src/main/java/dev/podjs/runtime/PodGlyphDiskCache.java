@@ -15,6 +15,10 @@ final class PodGlyphDiskCache {
     private final long directoryBytes;
     private final LinkedHashMap<String,File> files=new LinkedHashMap<>(128,.75f,true);
     private long bytes,clock,reservedBytes;
+    private long indexBytes,pendingBytes;
+    private final LinkedHashMap<String,byte[]> pending=new LinkedHashMap<>();
+    private Thread writer;
+    private boolean writesEnabled;
     long hits,misses,readNanos,writeNanos;
     PodGlyphDiskCache(File root,long limit)throws IOException {
         this(root,limit,allocationUnit(root));
@@ -35,12 +39,14 @@ final class PodGlyphDiskCache {
         for(File file:entries) {
             String name=file.getName();long length=file.length(),last=file.lastModified();
             if(name.equals(".identity")&&length==130){reservedBytes=cost(130);bytes+=reservedBytes;continue;}
+            if(name.equals(".font-index")&&length<=128*1024){indexBytes=cost(length);bytes+=indexBytes;continue;}
             if(name.length()!=70||!name.endsWith(".glyph")||!isKey(name.substring(0,64))||length>MAX_CELL+20){file.delete();continue;}
             ordered.add(new Existing(file,name,length,last));
         }
         ordered.sort(Comparator.comparingLong((Existing e)->e.last).thenComparing(e->e.name));
         for(Existing e:ordered){files.put(e.name,e.file);bytes+=cost(e.length);clock=Math.max(clock,e.last);}
         if(reservedBytes>limit&&new File(root,".identity").delete()){bytes-=reservedBytes;reservedBytes=0;}
+        if(bytes>limit&&indexBytes>0&&new File(root,".font-index").delete()){bytes-=indexBytes;indexBytes=0;}
         trim(limit);
     }
     private static final class Existing {final File file;final String name;final long length,last;Existing(File f,String n,long l,long t){file=f;name=n;length=l;last=t;}}
@@ -55,7 +61,24 @@ final class PodGlyphDiskCache {
         while(bytes>target&&it.hasNext()) {File file=it.next().getValue();long size=cost(file.length());if(file.delete()||!file.exists()){bytes-=size;it.remove();}else break;}
     }
     private void remove(String name,File file){if(file.delete()||!file.exists()){files.remove(name);recount();}}
-    private void recount(){bytes=directoryBytes+(new File(root,".identity").isFile()?reservedBytes:0);for(File file:files.values())bytes+=cost(file.length());}
+    private void recount(){bytes=directoryBytes+(new File(root,".identity").isFile()?reservedBytes:0)+(new File(root,".font-index").isFile()?indexBytes:0);for(File file:files.values())bytes+=cost(file.length());}
+    synchronized byte[] fontIndex() {
+        File file=new File(root,".font-index");
+        try(FileInputStream input=new FileInputStream(file)) {
+            long length=file.length();if(length<1||length>128*1024)return null;
+            byte[] raw=new byte[(int)length];int pos=0;while(pos<raw.length){int n=input.read(raw,pos,raw.length-pos);if(n<1)return null;pos+=n;}
+            return input.read()==-1?raw:null;
+        }catch(IOException unavailable){return null;}
+    }
+    synchronized void fontIndex(byte[] raw) {
+        if(raw==null||raw.length<1||raw.length>128*1024)return;
+        File temporary=new File(root,".font-index.tmp");long charge=cost(raw.length);
+        try {
+            trim(limit-charge);if(bytes+charge>limit)return;
+            try(FileOutputStream output=new FileOutputStream(temporary)){output.write(raw);}
+            if(temporary.renameTo(new File(root,".font-index"))){indexBytes=charge;recount();}
+        }catch(IOException unavailable){/* A missing index only repeats XML parsing. */}finally{temporary.delete();}
+    }
     synchronized boolean contains(String key){File file=files.get(name(key));return file!=null&&file.isFile();}
     synchronized String identity(String signature) {
         if(!isKey(signature))return null;
@@ -79,6 +102,8 @@ final class PodGlyphDiskCache {
         if(expected<12||expected>MAX_CELL)return null;
         long began=System.nanoTime();String name=name(key);File file=files.get(name);
         try {
+            byte[] queued=pending.get(name);
+            if(queued!=null&&queued.length==expected){hits++;return queued;}
             if(file==null){misses++;return null;}
             try(DataInputStream input=new DataInputStream(new BufferedInputStream(new FileInputStream(file)))) {
                 if(input.readInt()!=MAGIC||input.readInt()!=expected)throw new IOException("glyph header");
@@ -93,24 +118,53 @@ final class PodGlyphDiskCache {
         }catch(IOException|RuntimeException invalid){misses++;if(file!=null)remove(name,file);return null;}
         finally{readNanos+=System.nanoTime()-began;}
     }
-    synchronized void put(String key,byte[] raw) {
+    // Pixels are immutable after publication. Keep at most 1 MiB pending, and
+    // drop persistence work rather than blocking foreground rendering.
+    synchronized void putAsync(String key,byte[] raw) {
+        if(raw==null||raw.length<12||raw.length>MAX_CELL||limit==0)return;
+        String name=name(key);if(files.containsKey(name)||pending.containsKey(name)||pendingBytes+raw.length>MAX_CELL)return;
+        pending.put(name,raw);pendingBytes+=raw.length;
+        startWriter();
+    }
+    synchronized void enableWrites(){writesEnabled=true;startWriter();}
+    private void startWriter() {
+        if(writesEnabled&&writer==null&&!pending.isEmpty()) {
+            writer=new Thread(()->{
+                try{android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_LOWEST);}catch(RuntimeException hostTest){}
+                while(true) {
+                    String next;byte[] cell;
+                    synchronized(this){if(pending.isEmpty()){writer=null;notifyAll();return;}Map.Entry<String,byte[]> e=pending.entrySet().iterator().next();next=e.getKey();cell=e.getValue();}
+                    put(next.substring(0,64),cell);
+                    synchronized(this){pending.remove(next);pendingBytes-=cell.length;notifyAll();}
+                }
+            },"pod-glyph-persist");writer.setDaemon(true);writer.setPriority(Thread.MIN_PRIORITY);writer.start();
+        }
+    }
+    synchronized boolean awaitWrites(long millis)throws InterruptedException {
+        long deadline=System.nanoTime()+millis*1_000_000L;
+        while(writer!=null||!pending.isEmpty()){long left=deadline-System.nanoTime();if(left<=0)return false;wait(Math.max(1,left/1_000_000L));}return true;
+    }
+    void put(String key,byte[] raw) {
         if(raw==null||raw.length<12||raw.length>MAX_CELL||limit==0)return;
         long began=System.nanoTime();String name=name(key);File temporary=new File(root,name+".tmp");
         try {
-            if(files.containsKey(name))return;
+            synchronized(this){if(files.containsKey(name))return;}
             ByteArrayOutputStream output=new ByteArrayOutputStream();
             DataOutputStream header=new DataOutputStream(output);CRC32 crc=new CRC32();crc.update(raw);
             header.writeInt(MAGIC);header.writeInt(raw.length);header.writeLong(crc.getValue());
             Deflater deflater=new Deflater(Deflater.BEST_SPEED);
             try(DeflaterOutputStream encoded=new DeflaterOutputStream(output,deflater)){encoded.write(raw);}finally{deflater.end();}
             byte[] packed=output.toByteArray();long charge=cost(packed.length);if(charge>limit)return;
-            trim(limit-charge);if(bytes+charge>limit)return;
-            try(FileOutputStream stream=new FileOutputStream(temporary)){stream.write(packed);}
-            File file=new File(root,name);if(!temporary.renameTo(file))return;
-            clock=Math.max(clock+1,System.currentTimeMillis());file.setLastModified(clock);
-            files.put(name,file);bytes+=charge;
+            synchronized(this) {
+                if(files.containsKey(name))return;
+                trim(limit-charge);if(bytes+charge>limit)return;
+                try(FileOutputStream stream=new FileOutputStream(temporary)){stream.write(packed);}
+                File file=new File(root,name);if(!temporary.renameTo(file))return;
+                clock=Math.max(clock+1,System.currentTimeMillis());file.setLastModified(clock);
+                files.put(name,file);bytes+=charge;
+            }
         }catch(IOException|RuntimeException unavailable){/* The cache never gates rendering. */}
-        finally{temporary.delete();writeNanos+=System.nanoTime()-began;}
+        finally{synchronized(this){temporary.delete();writeNanos+=System.nanoTime()-began;}}
     }
     synchronized long bytes(){return bytes;}
 }

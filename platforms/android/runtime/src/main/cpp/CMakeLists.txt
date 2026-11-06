@@ -10,4 +10,4 @@ target_compile_features(podjs_android PRIVATE cxx_std_20)
 target_compile_options(podjs_android PRIVATE -O2)
 target_include_directories(podjs_android PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../crates/podjs-runtime/include")
-target_link_libraries(podjs_android PRIVATE podjs_runtime android log vulkan)
+target_link_libraries(podjs_android PRIVATE podjs_runtime android log vulkan dl)

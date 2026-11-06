@@ -82,3 +82,27 @@ Verification includes `bun run test`, the application typecheck/full suite,
 separate signed R8 packages, UI screenshots and measured A/B data. The bounded
 `pod_runtime_probe_glyph_cache` host diagnostic reports first acquisition and
 immediate repeat times and checks that their pixels match; it has no product UI.
+
+
+## Startup and acquisition work
+
+The bounded `.font-index` caches the selected XML families, collection indices,
+weights and axes. Its CRC, XML SHA-256, OS/renderer identity, language and selected
+file metadata must match before reuse. A mismatch parses XML again. The index
+shares the 16 MiB disk budget with glyphs. Font objects/maps are lazy per requested
+style; no-text metrics require only the mapped primary sans face. Disk glyph
+hits return before constructing Paint or fallback typefaces. Ordinary 400/700
+styles build the nearest XML face of each family and
+reuse identical families. A full-family construction remains a differential
+reference. Uncommon style requests retain full-family selection.
+
+JNI receives unpremultiplied ARGB integers from Bitmap.getPixels in bulk. Native
+code converts them to the unchanged straight RGBA C ABI. Generated immutable
+records enter a bounded 1 MiB pending queue; compression and atomic writes run
+at the lowest Android thread priority after first presentation. A full queue
+skips persistence, never foreground drawing. Pending records remain readable.
+
+System glyphs retain their advances, offsets and primary baseline while Rust
+removes only transparent right/bottom rows/columns. One physical transparent
+sample remains for bilinear filtering. Stable per-glyph dimensions survive
+cache eviction and old snapshots. Legacy packaged atlas cells stay unchanged.

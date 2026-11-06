@@ -16,6 +16,7 @@
 #include <fstream>
 #include <cstdio>
 #include <unistd.h>
+#include <dlfcn.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <linux/fs.h>
@@ -23,6 +24,7 @@
 #include "podjs_runtime.h"
 #include "touch_snapshot_queue.h"
 #include "render_thread.h"
+#include "system_font_pixels.h"
 
 static double monoMs() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 struct MappedAsset {
@@ -86,18 +88,18 @@ static int32_t systemGlyph(uintptr_t userdata,const uint16_t* text,size_t units,
   bool attached=host->vm->GetEnv(reinterpret_cast<void**>(&env),JNI_VERSION_1_6)!=JNI_OK;
   if(attached&&host->vm->AttachCurrentThread(&env,nullptr)!=JNI_OK)return 1;
   jstring cluster=env->NewString(reinterpret_cast<const jchar*>(text),jsize(units));
-  auto bytes=cluster?static_cast<jbyteArray>(env->CallStaticObjectMethod(host->fontFallback,host->fontRaster,
+  auto pixels=cluster?static_cast<jintArray>(env->CallStaticObjectMethod(host->fontFallback,host->fontRaster,
       cluster,jfloat(px),jint(bold),jint(w),jint(h),jint(baseline),jint(density))):nullptr;
   int32_t result=1;
   if(env->ExceptionCheck())env->ExceptionClear();
-  else if(bytes&&size_t(env->GetArrayLength(bytes))==length+12) {
-    uint8_t metrics[12];env->GetByteArrayRegion(bytes,0,12,reinterpret_cast<jbyte*>(metrics));
+  else if(pixels&&size_t(env->GetArrayLength(pixels))*4==length+12) {
+    std::vector<uint32_t> argb(length/4+3);
+    env->GetIntArrayRegion(pixels,0,jsize(argb.size()),reinterpret_cast<jint*>(argb.data()));
     static_assert(std::endian::native==std::endian::little);
-    std::memcpy(advance,metrics,4);std::memcpy(xoff,metrics+4,4);std::memcpy(yoff,metrics+8,4);
-    env->GetByteArrayRegion(bytes,12,jsize(length),reinterpret_cast<jbyte*>(rgba));
-    if(!env->ExceptionCheck())result=0;else env->ExceptionClear();
+    if(!env->ExceptionCheck()&&podjs_fonts::decodeArgb(argb.data(),argb.size(),advance,xoff,yoff,rgba,length))result=0;
+    else if(env->ExceptionCheck())env->ExceptionClear();
   }
-  if(bytes)env->DeleteLocalRef(bytes);if(cluster)env->DeleteLocalRef(cluster);if(attached)host->vm->DetachCurrentThread();return result;
+  if(pixels)env->DeleteLocalRef(pixels);if(cluster)env->DeleteLocalRef(cluster);if(attached)host->vm->DetachCurrentThread();return result;
 }
 static int32_t systemFontMetrics(uintptr_t userdata,float px,uint32_t bold,uint32_t density,uint32_t* output) {
   auto* host=reinterpret_cast<Host*>(userdata);JNIEnv* env=nullptr;
@@ -292,6 +294,20 @@ extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodSyncFileReceiver_nat
 extern "C" JNIEXPORT jlong JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeCreate(
     JNIEnv* env, jclass, jobject surface, jstring target, jint width, jint height, jfloat density, jint touchSlop, jint minFling, jint maxFling, jstring dataDir) {
   const double began = monoMs();
+  Dl_info library{};const char* abi="unknown";
+#if defined(__aarch64__)
+  abi="arm64-v8a";
+#elif defined(__arm__)
+  abi="armeabi-v7a";
+#elif defined(__x86_64__)
+  abi="x86_64";
+#endif
+  int elfClass=-1,machine=-1;
+  if(dladdr(reinterpret_cast<void*>(&systemGlyph),&library)&&library.dli_fbase) {
+    auto* header=static_cast<const uint8_t*>(library.dli_fbase);
+    if(header[0]==0x7f&&header[1]=='E'&&header[2]=='L'&&header[3]=='F'){elfClass=header[4];machine=int(header[18])|(int(header[19])<<8);}
+  }
+  __android_log_print(ANDROID_LOG_INFO,"PodJSPerf","nativeLibrary abi=%s pointerBits=%zu elfClass=%d machine=%d path=%s",abi,sizeof(void*)*8,elfClass,machine,library.dli_fname?library.dli_fname:"unknown");
   const char* t = env->GetStringUTFChars(target, nullptr); const char* d = env->GetStringUTFChars(dataDir, nullptr);
   if (std::string(t) != "android-watch" && std::string(t) != "wearos-watch") { fail(env, "PodJS target mismatch"); return 0; }
   ANativeWindow* window = ANativeWindow_fromSurface(env, surface);
@@ -321,7 +337,7 @@ const char* capabilities = "[\"input.touch\",\"input.rotary\",\"data.kv\",\"devi
   if(fontClass) {
     host->fontFallback=static_cast<jclass>(env->NewGlobalRef(fontClass));
     host->fontMetrics=env->GetStaticMethodID(fontClass,"metrics","(FII)[I");
-    host->fontRaster=env->GetStaticMethodID(fontClass,"raster","(Ljava/lang/String;FIIIII)[B");env->DeleteLocalRef(fontClass);
+    host->fontRaster=env->GetStaticMethodID(fontClass,"rasterArgb","(Ljava/lang/String;FIIIII)[I");env->DeleteLocalRef(fontClass);
   }
   if(env->ExceptionCheck()||!host->fontFallback||!host->fontRaster||!host->fontMetrics||
       pod_runtime_set_system_font_metrics(host->runtime,systemFontMetrics,reinterpret_cast<uintptr_t>(host.get()))!=0||

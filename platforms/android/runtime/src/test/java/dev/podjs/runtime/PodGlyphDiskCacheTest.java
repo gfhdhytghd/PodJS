@@ -7,6 +7,29 @@ import java.util.*;
 import org.junit.Test;
 
 public class PodGlyphDiskCacheTest {
+    @Test public void pendingPixelsStayBoundedUntilFirstPresentationAndPersistWithoutChangingBytes()throws Exception {
+        File root=Files.createTempDirectory("glyph-pending").toFile();
+        try {
+            PodGlyphDiskCache cache=new PodGlyphDiskCache(root,PodGlyphDiskCache.MAX_BYTES,4096);
+            byte[] raw=new byte[256*1024];new Random(41).nextBytes(raw);
+            for(int i=1;i<=5;i++)cache.putAsync(key(i),raw);
+            assertEquals(0,root.listFiles().length);assertFalse(cache.awaitWrites(1));
+            for(int i=1;i<=4;i++)assertArrayEquals(raw,cache.get(key(i),raw.length));
+            assertNull(cache.get(key(5),raw.length));cache.enableWrites();assertTrue(cache.awaitWrites(10000));
+            PodGlyphDiskCache reopened=new PodGlyphDiskCache(root,PodGlyphDiskCache.MAX_BYTES,4096);
+            for(int i=1;i<=4;i++)assertArrayEquals(raw,reopened.get(key(i),raw.length));
+            assertTrue(reopened.bytes()<=PodGlyphDiskCache.MAX_BYTES);
+        }finally{for(File f:root.listFiles())f.delete();root.delete();}
+    }
+    @Test public void parsedFontIndexSharesTheSamePhysicalBudgetWithPixelsAndTemporaryWrites()throws Exception {
+        File root=Files.createTempDirectory("glyph-index-budget").toFile();
+        try {
+            PodGlyphDiskCache cache=new PodGlyphDiskCache(root,32768,4096);byte[] index=new byte[512];new Random(7).nextBytes(index);
+            cache.fontIndex(index);for(int i=1;i<=8;i++)cache.put(key(i),cell(i));
+            assertArrayEquals(index,cache.fontIndex());assertTrue(cache.bytes()<=32768);
+            PodGlyphDiskCache reopened=new PodGlyphDiskCache(root,32768,4096);assertArrayEquals(index,reopened.fontIndex());assertTrue(reopened.bytes()<=32768);
+        }finally{for(File f:root.listFiles())f.delete();root.delete();}
+    }
     @Test public void fullBudgetReservesDirectoryGrowthBeforeEvictingLongNames()throws Exception {
         File root=Files.createTempDirectory("glyph-directory").toFile();
         try {
