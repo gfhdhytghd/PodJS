@@ -16,7 +16,7 @@ final class PodContentFiles {
     private final File root;
     private static final Object[] LOCKS=new Object[64];
     static { for(int i=0;i<LOCKS.length;i++)LOCKS[i]=new Object(); }
-    PodContentFiles(File files)throws IOException {root=new File(files,"content-v2").getCanonicalFile();if(!root.isDirectory()&&!root.mkdirs())throw new IOException("content_storage_unavailable");}
+    PodContentFiles(File files)throws IOException {root=new File(files,"content-v2").getCanonicalFile();if(!root.isDirectory()){if(!root.mkdirs())throw new IOException("content_storage_unavailable");syncDir(root.getParentFile());}}
     private File path(String p)throws IOException {if(p.contains("..")||!p.matches("[a-f0-9]{64}(?:/[a-z0-9.-]{1,128})?"))throw new IllegalArgumentException("invalid_content_path");File f=new File(root,p).getCanonicalFile();if(!f.toPath().startsWith(root.toPath()))throw new IllegalArgumentException("invalid_content_path");if(!f.getParentFile().isDirectory()){if(!f.getParentFile().mkdirs())throw new IOException("content_storage_unavailable");syncDir(f.getParentFile().getParentFile());}return f;}
     private Object lock(File f){return LOCKS[(f.getPath().hashCode()&0x7fffffff)%LOCKS.length];}
     private static void syncDir(File dir)throws IOException {try(FileChannel c=FileChannel.open(dir.toPath(),StandardOpenOption.READ)){c.force(true);}}
