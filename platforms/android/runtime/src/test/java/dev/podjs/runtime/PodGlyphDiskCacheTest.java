@@ -7,6 +7,22 @@ import java.util.*;
 import org.junit.Test;
 
 public class PodGlyphDiskCacheTest {
+    @Test public void immutableArgbQueuePacksOnlyOnWriterAndSurvivesRestartWithExactFloatAndColorBits()throws Exception {
+        File root=Files.createTempDirectory("glyph-argb").toFile();
+        try {
+            PodGlyphDiskCache cache=new PodGlyphDiskCache(root,PodGlyphDiskCache.MAX_BYTES,4096);
+            int[] argb={Float.floatToRawIntBits(12.5f),Float.floatToRawIntBits(1f),Float.floatToRawIntBits(2f),0x7f15879f,0xff00aa55,0};
+            cache.putArgbAsync(key(1),argb);assertEquals(0,root.listFiles().length);
+            assertSame(argb,cache.getArgb(key(1),argb.length*4));assertFalse(cache.awaitWrites(1));
+            cache.enableWrites();assertTrue(cache.awaitWrites(10000));
+            PodGlyphDiskCache reopened=new PodGlyphDiskCache(root,PodGlyphDiskCache.MAX_BYTES,4096);
+            assertArrayEquals(argb,reopened.getArgb(key(1),argb.length*4));
+            byte[] raw=reopened.get(key(1),argb.length*4);
+            assertEquals(0,raw[0]);assertEquals(0,raw[1]);assertEquals(0x48,raw[2]&255);assertEquals(0x41,raw[3]&255);
+            assertEquals(0x9f,raw[12]&255);assertEquals(0x87,raw[13]&255);assertEquals(0x15,raw[14]&255);assertEquals(0x7f,raw[15]&255);
+            assertTrue(reopened.bytes()<=PodGlyphDiskCache.MAX_BYTES);
+        }finally{for(File f:root.listFiles())f.delete();root.delete();}
+    }
     @Test public void pendingPixelsStayBoundedUntilFirstPresentationAndPersistWithoutChangingBytes()throws Exception {
         File root=Files.createTempDirectory("glyph-pending").toFile();
         try {

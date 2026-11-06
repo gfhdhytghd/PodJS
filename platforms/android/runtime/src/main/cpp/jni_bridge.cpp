@@ -82,14 +82,19 @@ static uint64_t benchmarkDispatch(uintptr_t data,const uint8_t* line,size_t leng
   if(value)env->DeleteLocalRef(value);if(env->ExceptionCheck()){env->ExceptionClear();return 0;}
   return result>0?uint64_t(result):0;
 }
+// Timing is enabled only by the existing host diagnostic, never normal frames.
+static thread_local bool glyphProbeActive=false;
+static thread_local std::vector<std::array<double,3>> glyphProbeStages;
 static int32_t systemGlyph(uintptr_t userdata,const uint16_t* text,size_t units,float px,uint32_t bold,
     uint32_t w,uint32_t h,uint32_t baseline,uint32_t density,float* advance,float* xoff,float* yoff,uint8_t* rgba,size_t length) {
+  const double began=glyphProbeActive?monoMs():0;
   auto* host=reinterpret_cast<Host*>(userdata);JNIEnv* env=nullptr;
   bool attached=host->vm->GetEnv(reinterpret_cast<void**>(&env),JNI_VERSION_1_6)!=JNI_OK;
   if(attached&&host->vm->AttachCurrentThread(&env,nullptr)!=JNI_OK)return 1;
   jstring cluster=env->NewString(reinterpret_cast<const jchar*>(text),jsize(units));
   auto pixels=cluster?static_cast<jintArray>(env->CallStaticObjectMethod(host->fontFallback,host->fontRaster,
       cluster,jfloat(px),jint(bold),jint(w),jint(h),jint(baseline),jint(density))):nullptr;
+  const double javaDone=glyphProbeActive?monoMs():0;
   int32_t result=1;
   if(env->ExceptionCheck())env->ExceptionClear();
   else if(pixels&&size_t(env->GetArrayLength(pixels))*4==length+12) {
@@ -99,7 +104,8 @@ static int32_t systemGlyph(uintptr_t userdata,const uint16_t* text,size_t units,
     if(!env->ExceptionCheck()&&podjs_fonts::decodeArgb(argb.data(),argb.size(),advance,xoff,yoff,rgba,length))result=0;
     else if(env->ExceptionCheck())env->ExceptionClear();
   }
-  if(pixels)env->DeleteLocalRef(pixels);if(cluster)env->DeleteLocalRef(cluster);if(attached)host->vm->DetachCurrentThread();return result;
+  if(pixels)env->DeleteLocalRef(pixels);if(cluster)env->DeleteLocalRef(cluster);if(attached)host->vm->DetachCurrentThread();
+  if(glyphProbeActive){double done=monoMs();glyphProbeStages.push_back({javaDone-began,done-javaDone,done-began});}return result;
 }
 static int32_t systemFontMetrics(uintptr_t userdata,float px,uint32_t bold,uint32_t density,uint32_t* output) {
   auto* host=reinterpret_cast<Host*>(userdata);JNIEnv* env=nullptr;
@@ -116,7 +122,12 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativ
   auto* h=reinterpret_cast<Host*>(p);if(!h||!input||slot<0||slot>63)return nullptr;
   jsize n=env->GetArrayLength(input);if(n>1024)return nullptr;std::vector<uint8_t> text(n),result(65537);
   env->GetByteArrayRegion(input,0,n,reinterpret_cast<jbyte*>(text.data()));
+  glyphProbeStages.clear();glyphProbeStages.reserve(128);glyphProbeActive=true;
   size_t length=pod_runtime_probe_glyph_cache(h->runtime,text.data(),text.size(),uint32_t(slot),result.data(),65536);
+  glyphProbeActive=false;
+  for(size_t i=0;i<glyphProbeStages.size();i++) {auto row=glyphProbeStages[i];
+    __android_log_print(ANDROID_LOG_INFO,"PodJSPerf","glyphProbe sample=%zu javaUs=%.3f decodeUs=%.3f callbackUs=%.3f",i+1,row[0]*1000,row[1]*1000,row[2]*1000);
+  }
   if(!length)return nullptr;result[length]=0;return env->NewStringUTF(reinterpret_cast<const char*>(result.data()));
 }
 static void fail(JNIEnv* env, const char* message) { jclass c = env->FindClass("java/lang/IllegalStateException"); env->ThrowNew(c, message); }

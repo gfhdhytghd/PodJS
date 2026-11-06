@@ -110,7 +110,7 @@ final class PodSystemFontFallback {
         PodGlyphDiskCache cache=PodSystemFonts.disk();
         String cacheKey=cache==null?null:cacheKey(text,px,bold,w,h,baseline,density);
         int length=12+w*h*density*density*4;
-        if(cache!=null){byte[] found=cache.get(cacheKey,length);if(found!=null){int[] result=new int[found.length/4];ByteBuffer.wrap(found).order(ByteOrder.LITTLE_ENDIAN).asIntBuffer().get(result);return result;}}
+        if(cache!=null){int[] found=cache.getArgb(cacheKey,length);if(found!=null)return found;}
         Paint paint=paint(px,bold,density);
         if(!paint.hasGlyph(text))return null;
         long began=System.nanoTime();
@@ -129,7 +129,7 @@ final class PodSystemFontFallback {
             result[0]=Float.floatToRawIntBits(advance);result[1]=Float.floatToRawIntBits(xoff);result[2]=Float.floatToRawIntBits(yoff);
             scratch.getPixels(result,3,width,0,0,width,height);
             rasterCount++;rasterNanos+=System.nanoTime()-began;
-            if(cache!=null){ByteBuffer raw=ByteBuffer.allocate(result.length*4).order(ByteOrder.LITTLE_ENDIAN);raw.asIntBuffer().put(result);cache.putAsync(cacheKey,raw.array());}
+            if(cache!=null)cache.putArgbAsync(cacheKey,result);
             return result;
         } finally { /* One bounded scratch surface is reused by the serial rasterizer. */ }
     }

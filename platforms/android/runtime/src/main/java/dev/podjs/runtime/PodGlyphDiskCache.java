@@ -15,8 +15,15 @@ final class PodGlyphDiskCache {
     private final long directoryBytes;
     private final LinkedHashMap<String,File> files=new LinkedHashMap<>(128,.75f,true);
     private long bytes,clock,reservedBytes;
-    private long indexBytes,pendingBytes;
-    private final LinkedHashMap<String,byte[]> pending=new LinkedHashMap<>();
+    private long indexBytes,pendingBytes,writingBytes;
+    private final Object writeMutex=new Object();
+    private static final class Pending {
+        final byte[] bytes;final int[] argb;final int size;
+        Pending(byte[] bytes){this.bytes=bytes;argb=null;size=bytes.length;}
+        Pending(int[] argb){bytes=null;this.argb=argb;size=argb.length*4;}
+        byte[] raw(){if(bytes!=null)return bytes;java.nio.ByteBuffer raw=java.nio.ByteBuffer.allocate(size).order(java.nio.ByteOrder.LITTLE_ENDIAN);raw.asIntBuffer().put(argb);return raw.array();}
+    }
+    private final LinkedHashMap<String,Pending> pending=new LinkedHashMap<>();
     private Thread writer;
     private boolean writesEnabled;
     long hits,misses,readNanos,writeNanos;
@@ -61,7 +68,7 @@ final class PodGlyphDiskCache {
         while(bytes>target&&it.hasNext()) {File file=it.next().getValue();long size=cost(file.length());if(file.delete()||!file.exists()){bytes-=size;it.remove();}else break;}
     }
     private void remove(String name,File file){if(file.delete()||!file.exists()){files.remove(name);recount();}}
-    private void recount(){bytes=directoryBytes+(new File(root,".identity").isFile()?reservedBytes:0)+(new File(root,".font-index").isFile()?indexBytes:0);for(File file:files.values())bytes+=cost(file.length());}
+    private void recount(){bytes=writingBytes+directoryBytes+(new File(root,".identity").isFile()?reservedBytes:0)+(new File(root,".font-index").isFile()?indexBytes:0);for(File file:files.values())bytes+=cost(file.length());}
     synchronized byte[] fontIndex() {
         File file=new File(root,".font-index");
         try(FileInputStream input=new FileInputStream(file)) {
@@ -102,8 +109,8 @@ final class PodGlyphDiskCache {
         if(expected<12||expected>MAX_CELL)return null;
         long began=System.nanoTime();String name=name(key);File file=files.get(name);
         try {
-            byte[] queued=pending.get(name);
-            if(queued!=null&&queued.length==expected){hits++;return queued;}
+            Pending queued=pending.get(name);
+            if(queued!=null&&queued.size==expected){hits++;return queued.raw();}
             if(file==null){misses++;return null;}
             try(DataInputStream input=new DataInputStream(new BufferedInputStream(new FileInputStream(file)))) {
                 if(input.readInt()!=MAGIC||input.readInt()!=expected)throw new IOException("glyph header");
@@ -118,12 +125,28 @@ final class PodGlyphDiskCache {
         }catch(IOException|RuntimeException invalid){misses++;if(file!=null)remove(name,file);return null;}
         finally{readNanos+=System.nanoTime()-began;}
     }
+    synchronized int[] getArgb(String key,int expected) {
+        if(expected<12||expected>MAX_CELL||expected%4!=0)return null;
+        Pending queued=pending.get(name(key));
+        if(queued!=null&&queued.argb!=null&&queued.size==expected){hits++;return queued.argb;}
+        byte[] found=get(key,expected);if(found==null)return null;
+        int[] result=new int[found.length/4];java.nio.ByteBuffer.wrap(found).order(java.nio.ByteOrder.LITTLE_ENDIAN).asIntBuffer().get(result);return result;
+    }
     // Pixels are immutable after publication. Keep at most 1 MiB pending, and
     // drop persistence work rather than blocking foreground rendering.
     synchronized void putAsync(String key,byte[] raw) {
         if(raw==null||raw.length<12||raw.length>MAX_CELL||limit==0)return;
-        String name=name(key);if(files.containsKey(name)||pending.containsKey(name)||pendingBytes+raw.length>MAX_CELL)return;
-        pending.put(name,raw);pendingBytes+=raw.length;
+        enqueue(key,new Pending(raw));
+    }
+    // The caller publishes an immutable Bitmap.getPixels result. JNI only
+    // reads it. Serialize its integer words on the low-priority writer.
+    synchronized void putArgbAsync(String key,int[] raw) {
+        if(raw==null||raw.length<3||raw.length>MAX_CELL/4||limit==0)return;
+        enqueue(key,new Pending(raw));
+    }
+    private void enqueue(String key,Pending raw) {
+        String name=name(key);if(files.containsKey(name)||pending.containsKey(name)||pendingBytes+raw.size>MAX_CELL)return;
+        pending.put(name,raw);pendingBytes+=raw.size;
         startWriter();
     }
     synchronized void enableWrites(){writesEnabled=true;startWriter();}
@@ -132,10 +155,10 @@ final class PodGlyphDiskCache {
             writer=new Thread(()->{
                 try{android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_LOWEST);}catch(RuntimeException hostTest){}
                 while(true) {
-                    String next;byte[] cell;
-                    synchronized(this){if(pending.isEmpty()){writer=null;notifyAll();return;}Map.Entry<String,byte[]> e=pending.entrySet().iterator().next();next=e.getKey();cell=e.getValue();}
-                    put(next.substring(0,64),cell);
-                    synchronized(this){pending.remove(next);pendingBytes-=cell.length;notifyAll();}
+                    String next;Pending cell;
+                    synchronized(this){if(pending.isEmpty()){writer=null;notifyAll();return;}Map.Entry<String,Pending> e=pending.entrySet().iterator().next();next=e.getKey();cell=e.getValue();}
+                    put(next.substring(0,64),cell.raw());
+                    synchronized(this){pending.remove(next);pendingBytes-=cell.size;notifyAll();}
                 }
             },"pod-glyph-persist");writer.setDaemon(true);writer.setPriority(Thread.MIN_PRIORITY);writer.start();
         }
@@ -145,8 +168,12 @@ final class PodGlyphDiskCache {
         while(writer!=null||!pending.isEmpty()){long left=deadline-System.nanoTime();if(left<=0)return false;wait(Math.max(1,left/1_000_000L));}return true;
     }
     void put(String key,byte[] raw) {
+        synchronized(writeMutex){writeRecord(key,raw);}
+    }
+    private void writeRecord(String key,byte[] raw) {
         if(raw==null||raw.length<12||raw.length>MAX_CELL||limit==0)return;
         long began=System.nanoTime();String name=name(key);File temporary=new File(root,name+".tmp");
+        long reservation=0;boolean committed=false;
         try {
             synchronized(this){if(files.containsKey(name))return;}
             ByteArrayOutputStream output=new ByteArrayOutputStream();
@@ -158,13 +185,17 @@ final class PodGlyphDiskCache {
             synchronized(this) {
                 if(files.containsKey(name))return;
                 trim(limit-charge);if(bytes+charge>limit)return;
-                try(FileOutputStream stream=new FileOutputStream(temporary)){stream.write(packed);}
-                File file=new File(root,name);if(!temporary.renameTo(file))return;
-                clock=Math.max(clock+1,System.currentTimeMillis());file.setLastModified(clock);
-                files.put(name,file);bytes+=charge;
+                writingBytes+=charge;bytes+=charge;reservation=charge;
             }
+            // The reservation includes the temporary file. Foreground misses
+            // can inspect metadata while the writer performs filesystem IO.
+            try(FileOutputStream stream=new FileOutputStream(temporary)){stream.write(packed);}
+            File file=new File(root,name);if(!temporary.renameTo(file))return;
+            long stamp;synchronized(this){clock=Math.max(clock+1,System.currentTimeMillis());stamp=clock;}
+            file.setLastModified(stamp);
+            synchronized(this){files.put(name,file);writingBytes-=reservation;reservation=0;committed=true;}
         }catch(IOException|RuntimeException unavailable){/* The cache never gates rendering. */}
-        finally{synchronized(this){temporary.delete();writeNanos+=System.nanoTime()-began;}}
+        finally{temporary.delete();synchronized(this){writingBytes-=reservation;if(!committed)bytes-=reservation;writeNanos+=System.nanoTime()-began;}}
     }
     synchronized long bytes(){return bytes;}
 }

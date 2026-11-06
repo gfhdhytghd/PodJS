@@ -98,9 +98,13 @@ reference. Uncommon style requests retain full-family selection.
 
 JNI receives unpremultiplied ARGB integers from Bitmap.getPixels in bulk. Native
 code converts them to the unchanged straight RGBA C ABI. Generated immutable
-records enter a bounded 1 MiB pending queue; compression and atomic writes run
+ARGB arrays enter a bounded 1 MiB pending queue without byte packing or copying;
+packing, compression and atomic writes run
 at the lowest Android thread priority after first presentation. A full queue
 skips persistence, never foreground drawing. Pending records remain readable.
+The writer can additionally hold one serialized record (at most 1 MiB) and its
+compressed output while writing. Its disk reservation includes the temporary
+record. Filesystem writes run outside the foreground metadata lock.
 
 System glyphs retain their advances, offsets and primary baseline while Rust
 removes only transparent right/bottom rows/columns. One physical transparent
