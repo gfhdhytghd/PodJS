@@ -40,7 +40,7 @@ export class ContentWindow {
  constructor(private now:()=>number,readonly budgetMillis=300000,readonly reserveMillis=10000,readonly maxBytes=8*1048576){
   if(budgetMillis<=reserveMillis||budgetMillis>300000||reserveMillis<10000||maxBytes<1||maxBytes>8*1048576)throw Error('invalid_content_budget');this.started=now();
  }
- available(bytes=0){return this.now()-this.started<this.budgetMillis-this.reserveMillis&&this.consumed+bytes<=this.maxBytes;}
+ available(bytes=0,estimateMillis=0){return this.now()-this.started+estimateMillis<this.budgetMillis-this.reserveMillis&&this.consumed+bytes<=this.maxBytes;}
  commit(bytes:number){if(!Number.isSafeInteger(bytes)||bytes<0)throw Error('invalid_content_progress');this.consumed+=bytes;}
 }
 /** One successful step persists at most one 64KiB frame or one bounded phase.
@@ -53,7 +53,7 @@ export class ContentWorker {
   const result:ContentWindowResult={status:'paused',bytes:0,objects:0,frames:0};
   try{while(options.window.available(65536)){
    await options.yieldControl();if(!contentEligibility(await options.signals()).cloudAllowed){result.status='waiting';break;}
-   let step;try{step=await options.step();}catch(e){if(['cloud_account_busy','library_busy'].includes((e as Error).message)){result.status='busy';break;}throw e;}
+   let step;try{step=await options.step();}catch(e){if((e as Error).message==='content_window_paused'){result.status='paused';break;}if(['cloud_account_busy','library_busy'].includes((e as Error).message)){result.status='busy';break;}throw e;}
    for(const n of [step.bytes,step.objects,step.frames])if(!Number.isSafeInteger(n)||n<0)throw Error('invalid_content_progress');
    if(step.bytes>65536||step.frames>1)throw Error('content_unit_too_large');
    result.bytes+=step.bytes;result.objects+=step.objects;result.frames+=step.frames;options.window.commit(step.bytes);
