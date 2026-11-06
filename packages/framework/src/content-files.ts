@@ -22,5 +22,5 @@ export class ContentFiles {
  async publish(path:string,bytes:Uint8Array,checkpoint?:string){if(bytes.length>266264)throw Error('content_batch_limit');return this.host('content.files.publish',{path,dataBase64:encodeBase64(bytes),...(checkpoint===undefined?{}:{checkpoint})});}
  /** Drop an untrusted derived prefix, never an application source. The zero
   * checkpoint must be durable before truncation so a lost reply remains safe. */
- async discard(path:string){const r=await this.host<{durableOffset:number}>('content.files.discard',{path});if(r.durableOffset!==0)throw Error('invalid_content_frame');}
+ async discard(path:string){const r=await this.host<{durableOffset:number;freedBytes?:number}>('content.files.discard',{path});if(r.durableOffset!==0||r.freedBytes!==undefined&&(!Number.isSafeInteger(r.freedBytes)||r.freedBytes<0))throw Error('invalid_content_frame');return r.freedBytes;}
 }

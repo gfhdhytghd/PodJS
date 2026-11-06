@@ -663,7 +663,7 @@ export const fileChunks = {
   },
   touch(path:string):Promise<{modified:number}> {return hostOperation<{modified:number}>("file.touch",{path}).result;},
   stat(path:string): Promise<{exists:boolean;file:boolean;directory:boolean;size:number;modified:number;changeToken?:string}> {
-    return hostOperation<{exists:boolean;file:boolean;directory:boolean;size:number;modified:number;changeToken?:string}>("file.stat",{path}).result;
+    return hostOperation<{exists:boolean;file:boolean;directory:boolean;size:number;modified:number;changeToken?:string;usableBytes?:number}>("file.stat",{path}).result;
   },
   /** Decode a byte range using Android's replacement behavior for malformed UTF-8. */
   readText(path:string,offset=0,maxBytes=65536): Promise<{text:string;bytesRead:number;offset:number;size:number;eof:boolean}> {

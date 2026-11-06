@@ -922,7 +922,7 @@ public final class PodDeviceServices implements AutoCloseable {
         return new JSONObject().put("modified", file.lastModified());
     }
     private JSONObject fileStat(JSONObject a) throws Exception {
-        File f = safeFile(required(a, "path")); return new JSONObject().put("exists", f.exists()).put("file", f.isFile()).put("directory", f.isDirectory()).put("size", f.isFile() ? f.length() : 0).put("modified", f.exists() ? f.lastModified() : 0).put("changeToken", f.exists()?fileChangeToken(f):"missing");
+        File f = safeFile(required(a, "path")); return new JSONObject().put("exists", f.exists()).put("file", f.isFile()).put("directory", f.isDirectory()).put("size", f.isFile() ? f.length() : 0).put("modified", f.exists() ? f.lastModified() : 0).put("changeToken", f.exists()?fileChangeToken(f):"missing").put("usableBytes", root.getUsableSpace());
     }
     private JSONObject fileDelete(JSONObject a) throws Exception { File f = safeFile(required(a, "path")); boolean deleted = f.isFile() && f.delete(); if (deleted || !f.exists()) temporaryFiles.remove(f); return new JSONObject().put("deleted", deleted); }
 

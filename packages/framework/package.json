@@ -105,7 +105,8 @@
     "./content-sha256": "./src/content-sha256.ts",
     "./content-host": "./src/content-host.ts",
     "./content-record": "./src/content-record.ts",
-    "./content-http": "./src/content-http.ts"
+    "./content-http": "./src/content-http.ts",
+    "./resource-journal": "./src/resource-journal.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",

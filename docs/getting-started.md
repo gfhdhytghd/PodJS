@@ -153,6 +153,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/sha256-stream` | Guest-owned native digest state; bounded updates and cooperative cancellation without temporary plaintext files. |
 | `@podjs/framework/checkpointed-file` | Publish immutable bytes with secure per-piece receipts and native atomic composition; restart without rewriting committed pieces. |
 | `@podjs/framework/sealed-gzip` | Bounded native gzip streaming over sealed local parts; per-part durable receipts and final EOF/CRC validation. |
+| `@podjs/framework/resource-journal` | Durable detach-before-delete references, immutable retired resources, bounded metadata pages and persistent quota reservations. |
 | `@podjs/framework/read-batch` | Memoize immutable reads within a caller-owned, serialized read transaction; no cache survives the transaction. |
 | `@podjs/framework/work-window` | Cooperative host-unit admission before a deadline, input-size estimates, measured margins and closed phase diagnostics; never races writes against timers. Includes `RepeatedWorkGuard` for completed identity replay between durable receipts, without first-unit time caps. |
 | `@podjs/framework/host-callsite` | Bounded numeric callsite counts, coarse byte bands and caller-certified receipt classes for release diagnostics. No argument contents or data identifiers. |
@@ -458,3 +459,23 @@ Lowering to zero revokes the override. No override is persisted across process
 death. Speculative audio-track holds still apply. Player gain/track readback is
 not a physical mixer or speaker measurement. Other applications retain the
 default system-media-volume behavior until they opt in.
+
+`ResourceJournal` accepts only caller-owned derived immutable files. Commit its
+prepared row replacement and reference detach with the application state CAS.
+Collection retires unreferenced resources before file IO; retired IDs/paths can
+never be attached again. New downloads use fresh IDs/paths. Lost deletion replies
+retry with batched actual file sizes, so freed bytes are not counted twice.
+Staging owners protect prepared files until the application attaches its final
+owner. `ResourceQuota` reserves persistent worst-case space conservatively. A
+crashed reservation remains until the owner reconciles its staging records.
+Android `file.stat` additionally returns `usableBytes` for the app filesystem;
+hosts without that field must report unknown capacity.
+
+An optional application authorization callback can inspect the durable deletion
+authority for each resource and commit retirement through its own state CAS.
+Revalidate network proof on every resumed deletion when the application requires
+a current remote copy. The persistent collection cursor bounds each scan at 32
+resources and lets rejected candidates yield to later ones. Android
+`content.files.discard` reports `freedBytes` under the file lock; replay returns
+zero, including concurrent requests. The framework's optional older-host
+fallback uses the batched size measurement.
