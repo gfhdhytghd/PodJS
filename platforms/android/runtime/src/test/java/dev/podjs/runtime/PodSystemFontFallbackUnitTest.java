@@ -31,6 +31,8 @@ public class PodSystemFontFallbackUnitTest {
             Bitmap bitmap=Bitmap.createBitmap(38*density,38*density,Bitmap.Config.ARGB_8888);Canvas canvas=new Canvas(bitmap);canvas.drawText(text,x*density,(baseline+y)*density,paint);
             int[] expected=new int[38*38*density*density];bitmap.getPixels(expected,0,38*density,0,0,38*density,38*density);
             assertArrayEquals(expected,java.util.Arrays.copyOfRange(actual,3,actual.length));bitmap.recycle();
+            PodSystemFontFallback.RasterState warm=new PodSystemFontFallback.RasterState();
+            try{assertArrayEquals(actual,warm.rasterArgb(text,17,bold,38,38,baseline,density));}finally{warm.close();}
         }
     }
     @Test public void primaryMetricsUseNaturalHeightWhileFallbackPixelsMayOverhang() {
@@ -63,5 +65,25 @@ public class PodSystemFontFallbackUnitTest {
             int ink=0;for(int i=12;i<cell.length;i+=4)if(cell[i+3]!=0)ink++;
             assertTrue("Native raster must contain ink",ink>0);
         }
+    }
+
+    @Test public void foregroundRasterDoesNotWaitForWarmScratchMonitor()throws Exception {
+        int[] reference=PodSystemFontFallback.rasterArgb("A",16,0,24,24,18,2);
+        PodSystemFontFallback.RasterState warm=new PodSystemFontFallback.RasterState();
+        java.util.concurrent.CountDownLatch locked=new java.util.concurrent.CountDownLatch(1);
+        Thread holder=new Thread(()->{synchronized(warm){locked.countDown();try{Thread.sleep(200);}catch(InterruptedException e){Thread.currentThread().interrupt();}}});
+        holder.start();locked.await();long began=System.nanoTime();
+        try{
+            assertArrayEquals(reference,PodSystemFontFallback.rasterArgb("A",16,0,24,24,18,2));
+            double ms=(System.nanoTime()-began)/1e6;System.out.println("foreground raster under 200 ms warm-state hold: "+ms+" ms");assertTrue(ms<150);
+        }finally{holder.join();warm.close();}
+    }
+    @Test public void callbackEntryTimestampExcludesTwoHundredMillisecondsOfPostTextureWork() {
+        org.robolectric.shadows.ShadowLog.clear();
+        PodFirstTextureTrace.record(1000,955,925,()->{try{Thread.sleep(200);}catch(InterruptedException e){throw new RuntimeException(e);}});
+        java.util.List<org.robolectric.shadows.ShadowLog.LogItem> logs=org.robolectric.shadows.ShadowLog.getLogsForTag("PodJSPerf");
+        assertEquals(2,logs.size());assertEquals("firstFrame surfaceToFirstFrameMs=45 viewToFirstTextureMs=75 callbackAtMs=1000",logs.get(0).msg);
+        assertTrue(logs.get(1).msg.startsWith("systemFontWarmStart callerMs="));
+        double duration=Double.parseDouble(logs.get(1).msg.substring(logs.get(1).msg.indexOf('=')+1));assertTrue(duration>=150);
     }
 }

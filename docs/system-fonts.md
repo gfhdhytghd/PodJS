@@ -163,3 +163,13 @@ that scene's presentation hash. Referenced texture generations/revisions remain
 part of the hash, including disappearance of a stale handle. Empty lists,
 auxiliary-surface commands, unknown opcodes and truncated records retain the
 conservative whole-registry path. Snapshot resource ownership is unchanged.
+
+First-texture startup timings use the callback-entry monotonic timestamp, before
+checkpoint, splash and warm-up work. `systemFontWarmStart callerMs` reports only
+the caller's warm-up scheduling cost; `firstTextureAfterWork` reports the old
+post-work endpoint separately. Neither value changes the first-texture sample.
+Warm-up admission and cancellation use an atomic token, not the foreground font
+monitor. Cache/config lookup and disk-write activation run on the worker.
+The worker has its own bounded Paint maps, Canvas and scratch bitmap; it cannot
+hold the foreground raster monitor. Its scratch bitmap is recycled on completion
+or cancellation. Glyph pixels and the 194-character/16 MiB policies are unchanged.

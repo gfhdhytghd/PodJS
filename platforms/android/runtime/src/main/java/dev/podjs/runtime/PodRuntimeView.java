@@ -622,21 +622,23 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         try { if (host != 0) nativeResize(host, surface, w, h);requestFrame(); } finally { surface.release(); }
     }
     @Override public void onSurfaceTextureUpdated(SurfaceTexture texture) {
+        final long callbackAtMs=android.os.SystemClock.elapsedRealtime();
         renderCheckpoint.textureUpdated(this,texture);
         if(host!=0&&nativeHasContent(host)){
             PodSplash splash=PodSplash.of(getContext());if(splash!=null&&splash.keeping())splash.texturePresented();
         }
         if (!firstTextureLogged) {
             firstTextureLogged = true;
-            PodSystemFontFallback.prewarm();
+            PodFirstTextureTrace.record(callbackAtMs,surfaceBegan,viewBegan,PodSystemFontFallback::prewarm);
             PodActiveValidationAndroid.afterFirstFrame(getContext());
             if (getContext() instanceof android.app.Activity) {
                 ((android.app.Activity)getContext()).getWindow().setBackgroundDrawable(
                     new android.graphics.drawable.ColorDrawable(android.graphics.Color.BLACK));
             }
-            android.util.Log.i("PodJSPerf", "firstFrame surfaceToFirstFrameMs="
-                + (android.os.SystemClock.elapsedRealtime() - surfaceBegan)
-                + " viewToFirstTextureMs=" + (android.os.SystemClock.elapsedRealtime() - viewBegan));
+            long afterWorkMs=android.os.SystemClock.elapsedRealtime();
+            android.util.Log.i("PodJSPerf","firstTextureAfterWork surfaceToAfterWorkMs="+(afterWorkMs-surfaceBegan)
+                +" callbackWorkMs="+(afterWorkMs-callbackAtMs));
+
         }
     }
 
