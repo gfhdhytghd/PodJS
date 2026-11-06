@@ -14,7 +14,7 @@ public final class PodCloudWorker extends Worker {
     static final Set<String> METHODS=Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
         "app.buildInfo","cloud.acquire","cloud.release","discovery.networkSnapshot","runtime.delay",
         "sql.query","sql.execute","sql.transaction","sql.notify","secure.keys","secure.get","secure.set","secure.delete","secure.update","secure.compareAndSet","secure.acquire","secure.release",
-        "crypto.random","crypto.hash","crypto.hmacSha256","crypto.verifyP256","crypto.ecdhPublicKey","crypto.ecdhUnwrap","crypto.hkdfSha256",
+        "crypto.v2.signingKey","crypto.v2.sign","crypto.v2.verify","crypto.v2.encrypt","crypto.v2.gunzip","crypto.random","crypto.hash","crypto.hmacSha256","crypto.verifyP256","crypto.ecdhPublicKey","crypto.ecdhUnwrap","crypto.hkdfSha256",
         "crypto.aesGcmEncrypt","crypto.aesGcmDecrypt","crypto.largeAesGcmEncrypt","crypto.gunzipSealedParts","crypto.closeSealedGzip","crypto.openSealedParts","crypto.largeAesGcmDecrypt","crypto.gzip","crypto.gunzip",
         "log.append","http.download","uri.parse","file.list","file.createTemp","file.read","file.write","file.publishBytes","file.stat","file.hash","file.commit","file.compose","file.delete",
         "file.gzip","file.gunzip","file.htmlText","file.openText","file.readTextChunk","file.closeText"

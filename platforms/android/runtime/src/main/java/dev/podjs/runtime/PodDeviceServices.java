@@ -99,6 +99,11 @@ public final class PodDeviceServices implements AutoCloseable {
             case "secure.acquire": return new JSONObject().put("acquired",secureLeases.acquire(required(args,"key")));
             case "secure.release": secureLeases.release(required(args,"key")); return new JSONObject().put("ok",true);
             case "secure.keys": case "secure.get": case "secure.set": case "secure.delete": case "secure.update": case "secure.compareAndSet": return secureOperation(method,args);
+            case "crypto.v2.signingKey": return v2Signing(args,false);
+            case "crypto.v2.sign": return v2Signing(args,true);
+            case "crypto.v2.verify": return new JSONObject().put("valid",PodSyncV2Crypto.verify(decode(args,"publicKeySec1"),decode(args,"dataBase64"),decode(args,"signatureBase64")));
+            case "crypto.v2.encrypt": return new JSONObject().put("ciphertextBase64",enc(PodSyncV2Crypto.encrypt(decode(args,"keyBase64"),decode(args,"nonceBase64"),decode(args,"dataBase64"),decode(args,"aadBase64"))));
+            case "crypto.v2.gunzip": return new JSONObject().put("dataBase64",enc(PodSyncV2Crypto.gunzip(decode(args,"dataBase64"),args.getInt("plainBytes"))));
             case "crypto.verifyP256": return new JSONObject().put("valid",PodCloudCrypto.verifyP256(decode(args,"publicKeySpki"),decode(args,"dataBase64"),decode(args,"signatureBase64")));
             case "crypto.ecdhPublicKey": return ecdhPublicKey(args);
             case "crypto.ecdhPossessionProof": return ecdhPossessionProof(args);
@@ -443,6 +448,26 @@ public final class PodDeviceServices implements AutoCloseable {
                 return ecdhPair(args,create);
             }
         }
+    }
+    /** Separate non-exportable signing identity; never falls back to ECDH. */
+    private JSONObject v2Signing(JSONObject args,boolean signing)throws Exception {
+        String id=required(args,"keyIdSha256");if(!id.matches("[0-9a-f]{64}"))throw new IllegalArgumentException("invalid_key_digest");
+        String alias="podjs.signing.v2."+id;java.security.KeyPair pair;
+        synchronized(SECURE_LOCK){
+            try(java.io.RandomAccessFile file=new java.io.RandomAccessFile(new File(secureFile.getParentFile(),"secure.store.lock"),"rw");java.nio.channels.FileLock lock=file.getChannel().lock()){
+                KeyStore store=ecdhStore();
+                if(!countedContains(store,alias)){
+                    if(signing||!args.optBoolean("create",false)||countedContains(store,alias+".created"))throw new IllegalStateException("signing_key_missing");
+                    java.security.KeyPairGenerator generator=java.security.KeyPairGenerator.getInstance("EC",KEYSTORE);
+                    generator.initialize(new KeyGenParameterSpec.Builder(alias,KeyProperties.PURPOSE_SIGN|KeyProperties.PURPOSE_VERIFY).setAlgorithmParameterSpec(new java.security.spec.ECGenParameterSpec("secp256r1")).setDigests(KeyProperties.DIGEST_SHA256).build());
+                    generator.generateKeyPair();getKey(alias+".created");
+                }
+                java.security.PrivateKey key=(java.security.PrivateKey)countedKey(store,alias);java.security.cert.Certificate cert=countedCertificate(store,alias);
+                if(key==null||cert==null)throw new IllegalStateException("signing_key_missing");pair=new java.security.KeyPair(cert.getPublicKey(),key);
+            }
+        }
+        if(signing)return new JSONObject().put("signatureBase64",enc(PodSyncV2Crypto.sign(pair.getPrivate(),decode(args,"dataBase64"))));
+        return new JSONObject().put("publicKeySec1",enc(PodSyncV2Crypto.publicBytes(pair.getPublic())));
     }
     private JSONObject ecdhPublicKey(JSONObject args) throws Exception {
         return new JSONObject().put("publicKeySpki",enc(lockedEcdhPair(args,true).getPublic().getEncoded()));

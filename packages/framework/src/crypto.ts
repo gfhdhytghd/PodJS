@@ -67,3 +67,19 @@ export function stableGzipHeader(bytes:Uint8Array):Uint8Array {
  if(bytes[4]===0&&bytes[5]===0&&bytes[6]===0&&bytes[7]===0&&bytes[9]===255)return bytes;
  const stable=new Uint8Array(bytes);stable.fill(0,4,8);stable[9]=255;return stable;
 }
+
+/** v2-only ports. Independent non-exportable P256 key and final-AAD encryption.
+ * keyIdSha256 is a digest of the approved account/scope/device/key identity. */
+export function createSyncV2Crypto(request:CryptoRequest){
+ const b64=bytesToBase64,raw=base64ToBytes;
+ return {
+  async signingKey(keyIdSha256:string,create=false){return raw((await request<{publicKeySec1:string}>('crypto.v2.signingKey',{keyIdSha256,create})).publicKeySec1);},
+  async sign(keyIdSha256:string,input:Uint8Array){return raw((await request<{signatureBase64:string}>('crypto.v2.sign',{keyIdSha256,dataBase64:b64(input)})).signatureBase64);},
+  async verify(publicKey:Uint8Array,input:Uint8Array,signature:Uint8Array){return (await request<{valid:boolean}>('crypto.v2.verify',{publicKeySec1:b64(publicKey),dataBase64:b64(input),signatureBase64:b64(signature)})).valid===true;},
+  async random(count:number){return raw((await request<{bytesBase64:string}>('crypto.random',{bytes:count})).bytesBase64);},
+  async hkdf(key:Uint8Array,salt:Uint8Array,info:Uint8Array){return raw((await request<{keyBase64:string}>('crypto.hkdfSha256',{inputBase64:b64(key),saltBase64:b64(salt),infoBase64:b64(info)})).keyBase64);},
+  async encrypt(key:Uint8Array,nonce:Uint8Array,input:Uint8Array,aad:Uint8Array){return raw((await request<{ciphertextBase64:string}>('crypto.v2.encrypt',{keyBase64:b64(key),nonceBase64:b64(nonce),dataBase64:b64(input),aadBase64:b64(aad)})).ciphertextBase64);},
+  async decrypt(key:Uint8Array,nonce:Uint8Array,input:Uint8Array,aad:Uint8Array){return raw((await request<{dataBase64:string}>('crypto.aesGcmDecrypt',{keyBase64:b64(key),nonceBase64:b64(nonce),ciphertextBase64:b64(input),aadBase64:b64(aad)})).dataBase64);},
+  async gunzip(input:Uint8Array,plainBytes:number){return raw((await request<{dataBase64:string}>('crypto.v2.gunzip',{dataBase64:b64(input),plainBytes})).dataBase64);},
+ };
+}
