@@ -12,6 +12,7 @@ final class PodGlyphDiskCache {
     private final File root;
     private final long limit;
     private final long allocationUnit;
+    private final long directoryBytes;
     private final LinkedHashMap<String,File> files=new LinkedHashMap<>(128,.75f,true);
     private long bytes,clock,reservedBytes;
     long hits,misses,readNanos,writeNanos;
@@ -21,8 +22,14 @@ final class PodGlyphDiskCache {
     // A zero allocation unit is used only by scaled, host-only cache tests.
     PodGlyphDiskCache(File root,long limit,long allocationUnit)throws IOException {
         if(limit<0||limit>MAX_BYTES)throw new IllegalArgumentException("glyph cache budget");
-        this.root=root;this.limit=limit;this.allocationUnit=allocationUnit;bytes=allocationUnit;
+        this.root=root;this.limit=limit;this.allocationUnit=allocationUnit;
         if(!root.isDirectory()&&!root.mkdirs())throw new IOException("glyph cache directory");
+        // Long hexadecimal names grow a multi-block directory. Reserve 1/32
+        // of the budget (512 KiB at 16 MiB), or its larger existing allocation.
+        // Deleted entries do not necessarily shrink a directory after restart.
+        directoryBytes=allocationUnit==0?0:Math.max(cost(root.length()),
+            Math.max(allocationUnit,((limit/32+allocationUnit-1)/allocationUnit)*allocationUnit));
+        bytes=directoryBytes;
         File[] entries=root.listFiles();if(entries==null)throw new IOException("glyph cache listing");
         ArrayList<Existing> ordered=new ArrayList<>(entries.length);
         for(File file:entries) {
@@ -39,7 +46,7 @@ final class PodGlyphDiskCache {
     private static final class Existing {final File file;final String name;final long length,last;Existing(File f,String n,long l,long t){file=f;name=n;length=l;last=t;}}
     private static long allocationUnit(File root){try{return Math.max(4096,new android.os.StatFs((root.isDirectory()?root:root.getParentFile()).getAbsolutePath()).getBlockSizeLong());}catch(RuntimeException unavailable){return 4096;}}
     // Reserve one allocation block for each record's inode/directory overhead,
-    // plus rounded data blocks and a block for the cache directory itself.
+    // plus rounded data blocks. Directory growth has a separate reserve.
     private long cost(long length){return allocationUnit==0?length:((length+allocationUnit-1)/allocationUnit+1)*allocationUnit;}
     private static boolean isKey(String key){if(key.length()!=64)return false;for(int i=0;i<64;i++){char c=key.charAt(i);if(!(c>='0'&&c<='9'||c>='a'&&c<='f'))return false;}return true;}
     private static String name(String key){if(!isKey(key))throw new IllegalArgumentException("glyph cache key");return key+".glyph";}
@@ -48,7 +55,7 @@ final class PodGlyphDiskCache {
         while(bytes>target&&it.hasNext()) {File file=it.next().getValue();long size=cost(file.length());if(file.delete()||!file.exists()){bytes-=size;it.remove();}else break;}
     }
     private void remove(String name,File file){if(file.delete()||!file.exists()){files.remove(name);recount();}}
-    private void recount(){bytes=allocationUnit+(new File(root,".identity").isFile()?reservedBytes:0);for(File file:files.values())bytes+=cost(file.length());}
+    private void recount(){bytes=directoryBytes+(new File(root,".identity").isFile()?reservedBytes:0);for(File file:files.values())bytes+=cost(file.length());}
     synchronized boolean contains(String key){File file=files.get(name(key));return file!=null&&file.isFile();}
     synchronized String identity(String signature) {
         if(!isKey(signature))return null;

@@ -7,6 +7,20 @@ import java.util.*;
 import org.junit.Test;
 
 public class PodGlyphDiskCacheTest {
+    @Test public void fullBudgetReservesDirectoryGrowthBeforeEvictingLongNames()throws Exception {
+        File root=Files.createTempDirectory("glyph-directory").toFile();
+        try {
+            PodGlyphDiskCache cache=new PodGlyphDiskCache(root,PodGlyphDiskCache.MAX_BYTES,4096);
+            assertTrue(cache.bytes()>=512*1024);
+            for(int i=1;i<=2000;i++)cache.put(key(i),cell(i));
+            assertTrue(cache.bytes()<=PodGlyphDiskCache.MAX_BYTES);
+            assertTrue(root.listFiles().length<=1984);
+            assertNull(cache.get(key(1),512));assertArrayEquals(cell(2000),cache.get(key(2000),512));
+            PodGlyphDiskCache reopened=new PodGlyphDiskCache(root,PodGlyphDiskCache.MAX_BYTES,4096);
+            assertTrue(reopened.bytes()<=PodGlyphDiskCache.MAX_BYTES);
+            assertArrayEquals(cell(2000),reopened.get(key(2000),512));
+        }finally{for(File f:root.listFiles())f.delete();root.delete();}
+    }
     @Test public void allocationBlocksAndDirectoryOverheadShareTheBudget()throws Exception {
         File root=Files.createTempDirectory("glyph-blocks").toFile();
         try {

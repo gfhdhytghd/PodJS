@@ -56,7 +56,8 @@ and formatters.
 The disposable disk cache is at `cacheDir/podjs-system-glyphs`. Its **16 MiB
 limit includes glyph records, the font identity receipt, and temporary writes**.
 The budget charges rounded filesystem data blocks, one additional metadata
-block per record, and a directory block. This conservatively accounts for tiny
+block per record, and 512 KiB for directory growth (or a larger existing
+directory allocation). This conservatively accounts for tiny
 files rather than allowing 16 MiB of compressed payload to occupy much more
 physical storage. Compressed records have a raw-size bound and CRC. Reads update LRU order;
 writes evict old records before writing an atomic replacement. Invalid or
