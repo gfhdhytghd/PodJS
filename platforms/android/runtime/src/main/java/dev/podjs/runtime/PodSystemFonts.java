@@ -60,6 +60,12 @@ final class PodSystemFonts {
     static synchronized String identity(){return identity;}
     static String hash(byte[] bytes){try{return hex(MessageDigest.getInstance("SHA-256").digest(bytes));}catch(Exception e){throw new IllegalStateException(e);}}
     private static String hex(byte[] bytes){char[] text=new char[bytes.length*2];String digits="0123456789abcdef";for(int i=0;i<bytes.length;i++){int b=bytes[i]&255;text[i*2]=digits.charAt(b>>>4);text[i*2+1]=digits.charAt(b&15);}return new String(text);}
+    static String fingerprint(byte[] xml,String build,Iterable<File> files)throws Exception {
+        MessageDigest signature=MessageDigest.getInstance("SHA-256");signature.update(xml);signature.update(build.getBytes(StandardCharsets.UTF_8));
+        signature.update("podjs-system-skia-v3".getBytes(StandardCharsets.UTF_8));
+        for(File file:files)signature.update((file.getName()+":"+file.length()+":"+file.lastModified()+"\n").getBytes(StandardCharsets.UTF_8));
+        return hex(signature.digest());
+    }
     static synchronized void ensure(Context context) {
         if(context==null)return;
         String current=context.getApplicationInfo().sourceDir;
@@ -76,24 +82,19 @@ final class PodSystemFonts {
             byte[] xml;
             try(InputStream input=new FileInputStream("/system/etc/fonts.xml")){xml=readBounded(input,2*1024*1024);}
             List<Family> parsed=parse(new ByteArrayInputStream(xml));
-            MessageDigest digest=MessageDigest.getInstance("SHA-256");digest.update(xml);digest.update(Build.FINGERPRINT.getBytes(StandardCharsets.UTF_8));
-            digest.update("podjs-system-skia-v2".getBytes(StandardCharsets.UTF_8));
             String language=Locale.getDefault().getLanguage();
             ArrayList<Family> selected=new ArrayList<>();
             for(Family family:parsed)if(family.name.equals("sans-serif"))selected.add(family);
             for(Family family:parsed)if(family.name.isEmpty()&&(family.lang.isEmpty()||family.lang.startsWith("zh")||family.lang.startsWith("ja")||family.lang.startsWith("ko")||family.lang.equals("und-Zsye")||family.lang.equals("und-Zsym")||(!language.isEmpty()&&family.lang.startsWith(language))))selected.add(family);
             if(selected.isEmpty())throw new IOException("missing default font family");
-            MessageDigest signature=MessageDigest.getInstance("SHA-256");signature.update(xml);signature.update(Build.FINGERPRINT.getBytes(StandardCharsets.UTF_8));
-            signature.update("podjs-system-skia-v2".getBytes(StandardCharsets.UTF_8));
             TreeSet<String> names=new TreeSet<>();for(Family family:selected)for(Face face:family.faces)if(face.file!=null&&face.file.matches("[A-Za-z0-9][A-Za-z0-9_.-]*"))names.add(face.file);
-            for(String name:names){File file=new File("/system/fonts",name);signature.update((name+":"+file.length()+":"+file.lastModified()+"\n").getBytes(StandardCharsets.UTF_8));}
-            String fileSignature=hex(signature.digest());
+            ArrayList<File> selectedFiles=new ArrayList<>();for(String name:names)selectedFiles.add(new File("/system/fonts",name));
+            String fileSignature=fingerprint(xml,Build.FINGERPRINT,selectedFiles);
             try{disk=new PodGlyphDiskCache(new File(context.getCacheDir(),"podjs-system-glyphs"),PodGlyphDiskCache.MAX_BYTES);}catch(IOException unavailable){disk=null;}
             // /system is an OS-owned immutable partition. Its build fingerprint,
-            // XML digest and every selected file's identity invalidate this small
-            // receipt; verified font content digests need not be recomputed on
-            // every process start. The receipt is inside the same 16 MiB budget.
-            String knownIdentity=disk==null?null:disk.identity(fileSignature);
+            // XML digest and every selected file's metadata identify this font
+            // set. Do not scan complete immutable system fonts before first
+            // display. The receipt is inside the same 16 MiB budget.
             for(Family family:selected) {
                 FontFamily.Builder builder=null;
                 for(Face face:family.faces) {
@@ -106,10 +107,7 @@ final class PodSystemFonts {
                             long size=stream.getChannel().size();if(size<12||size>64*1024*1024)continue;
                             buffer=stream.getChannel().map(FileChannel.MapMode.READ_ONLY,0,size);
                         }
-                        mappings.put(face.file,buffer);digest.update(face.file.getBytes(StandardCharsets.UTF_8));
-                        // Hash through a small reusable stream buffer, rather than
-                        // faulting every page into the retained font mapping's PSS.
-                        if(knownIdentity==null)try(InputStream stream=new FileInputStream(file)){byte[] block=new byte[65536];int n;while((n=stream.read(block))!=-1)digest.update(block,0,n);}
+                        mappings.put(face.file,buffer);
                     }
                     try {
                         Font.Builder font=new Font.Builder(buffer.asReadOnlyBuffer()).setTtcIndex(face.index).setWeight(face.weight)
@@ -121,8 +119,8 @@ final class PodSystemFonts {
                 if(builder!=null)families.add(builder.build());
             }
             if(families.isEmpty())throw new IOException("no usable system font family");
-            identity=knownIdentity==null?hex(digest.digest()):knownIdentity;enabled=true;
-            if(disk!=null&&knownIdentity==null)disk.identity(fileSignature,identity);
+            identity=fileSignature;enabled=true;
+            if(disk!=null&&!identity.equals(disk.identity(fileSignature)))disk.identity(fileSignature,identity);
             android.util.Log.i("PodJSPerf","systemFonts mappedFiles="+mappings.size()+" families="+families.size()+" identity="+identity+" diskLimit="+PodGlyphDiskCache.MAX_BYTES);
         }catch(Exception invalid) {
             config=null;throw new IllegalStateException("Cannot resolve configured system fonts",invalid);

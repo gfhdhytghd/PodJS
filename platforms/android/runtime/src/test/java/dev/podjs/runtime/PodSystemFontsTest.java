@@ -11,6 +11,16 @@ import org.robolectric.annotation.Config;
 
 @RunWith(RobolectricTestRunner.class) @Config(sdk=30)
 public class PodSystemFontsTest {
+    @Test public void immutableFontFingerprintChangesWithBuildXmlAndFileIdentity()throws Exception {
+        java.nio.file.Path root=java.nio.file.Files.createTempDirectory("font-identity");File font=root.resolve("Font.ttf").toFile();
+        try {
+            java.nio.file.Files.write(font.toPath(),new byte[]{1,2,3});byte[] xml="<familyset/>".getBytes(StandardCharsets.UTF_8);java.util.List<File> files=java.util.List.of(font);
+            String first=PodSystemFonts.fingerprint(xml,"build-a",files);assertEquals(first,PodSystemFonts.fingerprint(xml,"build-a",files));
+            assertNotEquals(first,PodSystemFonts.fingerprint(xml,"build-b",files));assertNotEquals(first,PodSystemFonts.fingerprint(new byte[]{4},"build-a",files));
+            java.nio.file.Files.write(font.toPath(),new byte[]{1,2,3,4});assertNotEquals(first,PodSystemFonts.fingerprint(xml,"build-a",files));
+            String second=PodSystemFonts.fingerprint(xml,"build-a",files);font.setLastModified(font.lastModified()+2000);assertNotEquals(second,PodSystemFonts.fingerprint(xml,"build-a",files));
+        }finally{font.delete();root.toFile().delete();}
+    }
     private List<PodSystemFonts.Family> parse(String xml)throws Exception{return PodSystemFonts.parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));}
     @Test public void preservesCollectionIndexLanguageWeightAndVariationAxes()throws Exception {
         List<PodSystemFonts.Family> families=parse("<familyset><family name='sans-serif'><font weight='700' style='italic' index='2'> Font.ttc <axis tag='wght' stylevalue='750'/></font></family><family lang='zh-Hans'><font weight='400'>Chinese.ttf</font></family></familyset>");

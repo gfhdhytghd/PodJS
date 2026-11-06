@@ -58,12 +58,13 @@ writes evict old records before writing an atomic replacement. Invalid or
 unavailable cache data causes regeneration, not missing text or failed edits.
 This is additional app storage; the APK contains no initial cache image.
 
-The pixel key includes the system-font content identity, rasterizer revision,
+The pixel key includes the immutable system-font identity, rasterizer revision,
 size, weight, density, cell geometry, baseline and text cluster. The identity
-includes font content digests, XML and the OS build fingerprint. A 130-byte
-receipt avoids rereading all font bytes on each process cold start. It is reused
-only when XML, the OS build fingerprint and all selected file sizes/mtimes
-match. This relies on the OS-owned immutable `/system` partition; mutable OEM
+is the SHA-256 of XML, the OS build fingerprint, the rasterizer revision and
+all selected file names/sizes/mtimes. No complete font scan runs before first
+display. A 130-byte receipt belongs to the same disk budget. Namespace identity
+changes when XML, the OS build fingerprint or selected file metadata changes.
+This relies on the OS-owned immutable `/system` partition; mutable OEM
 font overlays are outside the currently verified scope.
 
 Unsupported characters retain the existing tofu behavior. This option does not
