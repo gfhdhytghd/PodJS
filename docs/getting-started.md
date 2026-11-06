@@ -157,6 +157,12 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/work-window` | Cooperative host-unit admission before a deadline, input-size estimates, measured margins and closed phase diagnostics; never races writes against timers. Includes `RepeatedWorkGuard` for completed identity replay between durable receipts, without first-unit time caps. |
 | `@podjs/framework/host-callsite` | Bounded numeric callsite counts, coarse byte bands and caller-certified receipt classes for release diagnostics. No argument contents or data identifiers. |
 | `@podjs/framework/cpu-work` | Optional scoped CPU phase observation with coarse input bands, bounded elapsed time and closed outcomes. No input, identity or exception text; no IO without an observer. |
+| `@podjs/framework/content-worker` | Bounded content windows, transport conditions, frame-boundary yielding and caller-owned fairness counters. |
+| `@podjs/framework/content-files` | Bounded batched content IO, durable frame checkpoints, immutable publication and rejected-prefix discard. |
+| `@podjs/framework/content-sha256` | Incremental SHA-256 with bounded updates and serializable state for resumable content work. |
+| `@podjs/framework/content-host` | Native condition observations, authenticated session signals and separate content crypto ports. |
+| `@podjs/framework/content-record` | Bounded encrypted local metadata chunks, authenticated before decoding the complete record. |
+| `@podjs/framework/content-http` | Separate bounded host HTTP transport with request deadlines and temporary response-file cleanup. |
 | `@podjs/framework/background-handler` | Typed headless background-handler entry and delivery contracts. |
 | `@podjs/framework/debug-memory` | Scoped diagnostic resource ownership/accounting; counts are not native heap measurements. |
 | `@podjs/framework/text` | Text components and watch font/layout integration. |
