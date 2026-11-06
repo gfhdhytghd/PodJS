@@ -106,6 +106,13 @@ The writer can additionally hold one serialized record (at most 1 MiB) and its
 compressed output while writing. Its disk reservation includes the temporary
 record. Filesystem writes run outside the foreground metadata lock.
 
+Startup inventories existing glyph records with one bounded native directory
+scan and one JNI metadata transfer. Length and modification time come from one
+stat per entry. Java retains compact names/metadata and creates File paths only
+when a record is accessed. This scans the live directory and preserves full LRU
+and byte-budget validation; it does not trust a persisted glyph catalog. Native
+failure, non-ASCII foreign names, or an oversized transfer use the Java scan.
+
 System glyphs retain their advances, offsets and primary baseline while Rust
 removes only transparent right/bottom rows/columns. One physical transparent
 sample remains for bilinear filtering. Stable per-glyph dimensions survive

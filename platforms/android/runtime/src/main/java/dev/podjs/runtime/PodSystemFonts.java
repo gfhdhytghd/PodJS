@@ -101,7 +101,7 @@ final class PodSystemFonts {
             // Font objects and mapped files are created only for a requested
             // style. XML parsing does not contend with native Vulkan creation.
             enabled=true;
-            android.util.Log.i("PodJSPerf","systemFonts indexHit="+(cached!=null)+" mappedFiles="+mappings.size()+" families="+families.size()+" identity="+identity+" diskLimit="+PodGlyphDiskCache.MAX_BYTES);
+            android.util.Log.i("PodJSPerf","systemFonts indexHit="+(cached!=null)+" mappedFiles="+mappings.size()+" families="+families.size()+" identity="+identity+" diskLimit="+PodGlyphDiskCache.MAX_BYTES+(disk==null?"":" cacheEntries="+disk.directoryEntries+" cacheScanMs="+disk.directoryScanNanos/1e6+" cacheInitializeMs="+disk.directoryInitializeNanos/1e6));
         }catch(Exception invalid) {
             config=null;throw new IllegalStateException("Cannot resolve configured system fonts",invalid);
         }

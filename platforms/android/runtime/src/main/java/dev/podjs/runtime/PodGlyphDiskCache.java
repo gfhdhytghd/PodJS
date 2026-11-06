@@ -13,7 +13,7 @@ final class PodGlyphDiskCache {
     private final long limit;
     private final long allocationUnit;
     private final long directoryBytes;
-    private final LinkedHashMap<String,File> files=new LinkedHashMap<>(128,.75f,true);
+    private final LinkedHashMap<String,Existing> files=new LinkedHashMap<>(128,.75f,true);
     private long bytes,clock,reservedBytes;
     private long indexBytes,pendingBytes,writingBytes;
     private final Object writeMutex=new Object();
@@ -27,6 +27,7 @@ final class PodGlyphDiskCache {
     private Thread writer;
     private boolean writesEnabled;
     long hits,misses,readNanos,writeNanos;
+    long directoryScanNanos,directoryInitializeNanos;int directoryEntries;
     PodGlyphDiskCache(File root,long limit)throws IOException {
         this(root,limit,allocationUnit(root));
     }
@@ -41,22 +42,48 @@ final class PodGlyphDiskCache {
         directoryBytes=allocationUnit==0?0:Math.max(cost(root.length()),
             Math.max(allocationUnit,((limit/32+allocationUnit-1)/allocationUnit)*allocationUnit));
         bytes=directoryBytes;
-        File[] entries=root.listFiles();if(entries==null)throw new IOException("glyph cache listing");
-        ArrayList<Existing> ordered=new ArrayList<>(entries.length);
-        for(File file:entries) {
-            String name=file.getName();long length=file.length(),last=file.lastModified();
+        long began=System.nanoTime();ArrayList<Existing> entries=scan(root);
+        long scanned=System.nanoTime();ArrayList<Existing> ordered=new ArrayList<>(entries.size());
+        for(Existing entry:entries) {
+            String name=entry.name;long length=entry.length,last=entry.last;
             if(name.equals(".identity")&&length==130){reservedBytes=cost(130);bytes+=reservedBytes;continue;}
             if(name.equals(".font-index")&&length<=128*1024){indexBytes=cost(length);bytes+=indexBytes;continue;}
-            if(name.length()!=70||!name.endsWith(".glyph")||!isKey(name.substring(0,64))||length>MAX_CELL+20){file.delete();continue;}
-            ordered.add(new Existing(file,name,length,last));
+            if(name.length()!=70||!name.endsWith(".glyph")||!isKey(name.substring(0,64))||length>MAX_CELL+20){entry.file(root).delete();continue;}
+            ordered.add(entry);
         }
         ordered.sort(Comparator.comparingLong((Existing e)->e.last).thenComparing(e->e.name));
-        for(Existing e:ordered){files.put(e.name,e.file);bytes+=cost(e.length);clock=Math.max(clock,e.last);}
+        for(Existing e:ordered){files.put(e.name,e);bytes+=cost(e.length);clock=Math.max(clock,e.last);}
         if(reservedBytes>limit&&new File(root,".identity").delete()){bytes-=reservedBytes;reservedBytes=0;}
         if(bytes>limit&&indexBytes>0&&new File(root,".font-index").delete()){bytes-=indexBytes;indexBytes=0;}
         trim(limit);
+        directoryEntries=entries.size();directoryScanNanos=scanned-began;directoryInitializeNanos=System.nanoTime()-began;
     }
-    private static final class Existing {final File file;final String name;final long length,last;Existing(File f,String n,long l,long t){file=f;name=n;length=l;last=t;}}
+    static final class Existing {
+        private File file;final String name;final long length,last;
+        Existing(File f,String n,long l,long t){file=f;name=n;length=l;last=t;}
+        File file(File root){if(file==null)file=new File(root,name);return file;}
+    }
+    private static native byte[] nativeScan(String directory);
+    static ArrayList<Existing> decodeScan(File root,byte[] raw)throws IOException {
+        if(raw==null||raw.length<8||raw.length>5*1024*1024)throw new IOException("glyph directory bounds");
+        DataInputStream in=new DataInputStream(new ByteArrayInputStream(raw));
+        if(in.readInt()!=0x50474431)throw new IOException("glyph directory header");
+        int count=in.readInt();if(count<0||count>16384)throw new IOException("glyph directory count");
+        ArrayList<Existing> rows=new ArrayList<>(count);
+        for(int i=0;i<count;i++) {
+            int length=in.readUnsignedShort();if(length<1||length>255)throw new IOException("glyph directory name");
+            byte[] name=new byte[length];in.readFully(name);for(byte b:name)if(b<=0||b=='/')throw new IOException("glyph directory path");
+            String text=new String(name,java.nio.charset.StandardCharsets.US_ASCII);
+            long size=in.readLong(),stamp=in.readLong();if(size<0||stamp<0||text.equals(".")||text.equals(".."))throw new IOException("glyph directory metadata");
+            rows.add(new Existing(null,text,size,stamp));
+        }
+        if(in.read()!=-1)throw new IOException("glyph directory trailing data");return rows;
+    }
+    private static ArrayList<Existing> scan(File root)throws IOException {
+        try{byte[] raw=nativeScan(root.getAbsolutePath());if(raw!=null)return decodeScan(root,raw);}catch(LinkageError|IOException|RuntimeException unavailable){/* Host tests and unavailable native scanners use File metadata. */}
+        File[] files=root.listFiles();if(files==null)throw new IOException("glyph cache listing");
+        ArrayList<Existing> rows=new ArrayList<>(files.length);for(File f:files)rows.add(new Existing(f,f.getName(),f.length(),f.lastModified()));return rows;
+    }
     private static long allocationUnit(File root){try{return Math.max(4096,new android.os.StatFs((root.isDirectory()?root:root.getParentFile()).getAbsolutePath()).getBlockSizeLong());}catch(RuntimeException unavailable){return 4096;}}
     // Reserve one allocation block for each record's inode/directory overhead,
     // plus rounded data blocks. Directory growth has a separate reserve.
@@ -64,11 +91,11 @@ final class PodGlyphDiskCache {
     private static boolean isKey(String key){if(key.length()!=64)return false;for(int i=0;i<64;i++){char c=key.charAt(i);if(!(c>='0'&&c<='9'||c>='a'&&c<='f'))return false;}return true;}
     private static String name(String key){if(!isKey(key))throw new IllegalArgumentException("glyph cache key");return key+".glyph";}
     private void trim(long target) {
-        Iterator<Map.Entry<String,File>> it=files.entrySet().iterator();
-        while(bytes>target&&it.hasNext()) {File file=it.next().getValue();long size=cost(file.length());if(file.delete()||!file.exists()){bytes-=size;it.remove();}else break;}
+        Iterator<Map.Entry<String,Existing>> it=files.entrySet().iterator();
+        while(bytes>target&&it.hasNext()) {File file=it.next().getValue().file(root);long size=cost(file.length());if(file.delete()||!file.exists()){bytes-=size;it.remove();}else break;}
     }
     private void remove(String name,File file){if(file.delete()||!file.exists()){files.remove(name);recount();}}
-    private void recount(){bytes=writingBytes+directoryBytes+(new File(root,".identity").isFile()?reservedBytes:0)+(new File(root,".font-index").isFile()?indexBytes:0);for(File file:files.values())bytes+=cost(file.length());}
+    private void recount(){bytes=writingBytes+directoryBytes+(new File(root,".identity").isFile()?reservedBytes:0)+(new File(root,".font-index").isFile()?indexBytes:0);for(Existing e:files.values())bytes+=cost(e.file(root).length());}
     synchronized byte[] fontIndex() {
         File file=new File(root,".font-index");
         try(FileInputStream input=new FileInputStream(file)) {
@@ -86,7 +113,7 @@ final class PodGlyphDiskCache {
             if(temporary.renameTo(new File(root,".font-index"))){indexBytes=charge;recount();}
         }catch(IOException unavailable){/* A missing index only repeats XML parsing. */}finally{temporary.delete();}
     }
-    synchronized boolean contains(String key){File file=files.get(name(key));return file!=null&&file.isFile();}
+    synchronized boolean contains(String key){Existing e=files.get(name(key));return e!=null&&e.file(root).isFile();}
     synchronized String identity(String signature) {
         if(!isKey(signature))return null;
         try(FileInputStream stream=new FileInputStream(new File(root,".identity"))) {
@@ -107,7 +134,7 @@ final class PodGlyphDiskCache {
     }
     synchronized byte[] get(String key,int expected) {
         if(expected<12||expected>MAX_CELL)return null;
-        long began=System.nanoTime();String name=name(key);File file=files.get(name);
+        long began=System.nanoTime();String name=name(key);Existing entry=files.get(name);File file=entry==null?null:entry.file(root);
         try {
             Pending queued=pending.get(name);
             if(queued!=null&&queued.size==expected){hits++;return queued.raw();}
@@ -193,7 +220,7 @@ final class PodGlyphDiskCache {
             File file=new File(root,name);if(!temporary.renameTo(file))return;
             long stamp;synchronized(this){clock=Math.max(clock+1,System.currentTimeMillis());stamp=clock;}
             file.setLastModified(stamp);
-            synchronized(this){files.put(name,file);writingBytes-=reservation;reservation=0;committed=true;}
+            synchronized(this){files.put(name,new Existing(file,name,packed.length,stamp));writingBytes-=reservation;reservation=0;committed=true;}
         }catch(IOException|RuntimeException unavailable){/* The cache never gates rendering. */}
         finally{temporary.delete();synchronized(this){writingBytes-=reservation;if(!committed)bytes-=reservation;writeNanos+=System.nanoTime()-began;}}
     }

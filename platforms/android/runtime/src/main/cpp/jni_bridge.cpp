@@ -25,8 +25,17 @@
 #include "touch_snapshot_queue.h"
 #include "render_thread.h"
 #include "system_font_pixels.h"
+#include "glyph_cache_directory.h"
 
 static double monoMs() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+extern "C" JNIEXPORT jbyteArray JNICALL Java_dev_podjs_runtime_PodGlyphDiskCache_nativeScan(JNIEnv* env,jclass,jstring directory) {
+  const double began=monoMs();
+  if(!directory)return nullptr;const char* path=env->GetStringUTFChars(directory,nullptr);if(!path)return nullptr;
+  std::vector<uint8_t> bytes;bool valid=podjs_fonts::scanGlyphDirectory(path,bytes);env->ReleaseStringUTFChars(directory,path);
+  if(!valid)return nullptr;auto result=env->NewByteArray(jsize(bytes.size()));
+  if(result)env->SetByteArrayRegion(result,0,jsize(bytes.size()),reinterpret_cast<const jbyte*>(bytes.data()));
+  __android_log_print(ANDROID_LOG_INFO,"PodJSPerf","glyphDirectory nativeMs=%.3f transferBytes=%zu",monoMs()-began,bytes.size());return result;
+}
 struct MappedAsset {
   void* base = MAP_FAILED;
   size_t mappedLength = 0;

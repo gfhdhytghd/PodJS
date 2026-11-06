@@ -8,6 +8,8 @@ cxx=${CXX:-c++}
 flags=(-std=c++20 -O2 -pthread ${PODJS_TEST_CXXFLAGS:-} -Itests/cpp -Icrates/podjs-runtime/include -I"$cpp")
 "$cxx" "${flags[@]}" tests/cpp/system_font_pixels_test.cpp -o "$build/font-pixels"
 "$build/font-pixels"
+"$cxx" "${flags[@]}" tests/cpp/glyph_cache_directory_test.cpp -o "$build/font-directory"
+"$build/font-directory"
 "$cxx" "${flags[@]}" "$cpp/gpu_draw_list.cpp" "$cpp/vulkan_gpu.cpp" "$cpp/gpu_draw_list_test.cpp" -o "$build/gpu"
 "$build/gpu"
 "$cxx" "${flags[@]}" -Itests/cpp "$cpp/render_thread.cpp" "$cpp/vulkan_renderer.cpp" "$cpp/gpu_draw_list.cpp" "$cpp/vulkan_gpu.cpp" tests/cpp/vulkan_frame_pipeline_test.cpp -o "$build/pipeline"
