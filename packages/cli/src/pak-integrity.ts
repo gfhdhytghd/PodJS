@@ -121,3 +121,12 @@ export function buildPakIntegrity(pak: Uint8Array): PakIntegrityManifest {
     entries,
   };
 }
+
+/** Only immutable, content-addressed raw font sources may back Android assets. */
+export function pakFontAliases(pak: Uint8Array): import("./project-assets.ts").PakFontAlias[] {
+  const integrity = buildPakIntegrity(pak);
+  if (integrity.directoryBytes > 1024 * 1024) return [];
+  return integrity.entries.filter(entry =>
+    entry.key === `ui:font-source.${entry.sha256}` && entry.bytes > 0 && entry.bytes <= 64 * 1024 * 1024
+  ).map(entry => ({ ...entry }));
+}

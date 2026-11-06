@@ -167,3 +167,8 @@ test("release shrinking options reject invalid combinations and missing applicat
   expect(resolvePodProject(fixture({...base,resources:{optimizeFontSeeds:false}}),POD_TARGETS,defaults).config.resources?.optimizeFontSeeds).toBe(false);
   expect(()=>resolvePodProject(fixture({...base,resources:{optimizeFontSeeds:'false'}}),POD_TARGETS,defaults)).toThrow('resources.optimizeFontSeeds');
 });
+
+test("font source sharing can be disabled for Android legacy asset consumers", () => {
+  for (const shareFontSources of [true,false]) expect(resolvePodProject(fixture({...base,resources:{shareFontSources}}),POD_TARGETS,defaults).config.resources?.shareFontSources).toBe(shareFontSources);
+  expect(()=>resolvePodProject(fixture({...base,resources:{shareFontSources:'true'}}),POD_TARGETS,defaults)).toThrow('resources.shareFontSources');
+});

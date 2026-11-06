@@ -44,10 +44,14 @@ final class PodFontServices {
                 if(cache.containsKey(key)){Typeface result=cache.get(key);return result==null?fallback:result;}
                 Typeface result=null;
                 try{
-                    Typeface.Builder builder=new Typeface.Builder(manager,packaged).setTtcIndex(face).setWeight(weight).setItalic(italic);
-                    if(!variation.trim().isEmpty())builder.setFontVariationSettings(variation);
-                    result=builder.build();
-                }catch(RuntimeException invalidFont){ /* Missing, unreadable or invalid assets use the same fallback as files. */ }
+                    try{result=PodPakFontAssets.resolve(manager,asset,face,weight,italic,variation);}
+                    catch(Exception invalidMetadata){ /* Legacy/standalone assets still use their original path. */ }
+                    if(result==null){
+                        Typeface.Builder builder=new Typeface.Builder(manager,packaged).setTtcIndex(face).setWeight(weight).setItalic(italic);
+                        if(!variation.trim().isEmpty())builder.setFontVariationSettings(variation);
+                        result=builder.build();
+                    }
+                }catch(Exception invalidFont){ /* Missing, unreadable or invalid assets use the same fallback as files. */ }
                 cache.put(key,result);return result==null?fallback:result;
             }
         }

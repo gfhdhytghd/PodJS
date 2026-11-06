@@ -18,7 +18,7 @@ Applications can extend the rules or disable optimization in `pod.config.json`:
       "proguardRules": "android/app-rules.pro"
     }
   },
-  "resources": { "optimizeFontSeeds": true }
+  "resources": { "optimizeFontSeeds": true, "shareFontSources": true }
 }
 ```
 
@@ -49,7 +49,7 @@ python scripts/analyze-apk.py path/to/main.pak > inventory.json
 
 The JSON lists every entry's key, byte count, dtype, semantic type, SHA-256,
 static runtime consumer, font metadata, exact duplicates, APK entry sizes, and
-ABIs. A conditional consumer means the runtime supports that resource when the
+ABIs, and verified `pakFont` aliases. A conditional consumer means the runtime supports that resource when the
 app requests it. It does not prove that a particular run used that entry.
 
 The upstream `vendor/pocketjs/.cache/font-atlas/*.json` files cache build-time
@@ -59,9 +59,24 @@ one complete cached atlas set; the build reads only its matching key. The cache
 is not packaged or extracted on first launch. Different keys accumulate without
 an eviction policy. Do not delete a shared compiler cache during a scoped build.
 
-A full font included in both `ui:font-source.<sha256>` and `pod-assets/` serves
-two consumers: native glyph fallback and Android Typeface-based reader rendering.
-Removing either copy requires a shared source adapter. DCPK integrity v1 also
+Android builds now share an identical font asset with its raw
+`ui:font-source.<sha256>` entry by default. The asset manifest retains the logical
+name, byte count, and digest, and adds `pakFont` with the authenticated entry
+range. The build omits the standalone file only when its content matches that
+entry. Non-font assets and other targets keep physical assets. Set
+`resources.shareFontSources` to false for a legacy direct-AssetManager consumer.
+
+`PodFontServices` resolves the logical font through `PodPakFontAssets` for text
+measurement, paragraph shaping, line rasterization, and inline editing. It
+validates the manifest range against the signed DCPK directory and hashes the mapped font against its source digest. It opens the stored
+pak with AssetManager.openFd, and maps only the TTF range with FileChannel.map.
+Font.Builder consumes that direct mapped buffer with the same TTC index, weight,
+slant, variations, and default fallback construction as Typeface.Builder.
+Native glyph rendering and Android fonts read the same immutable APK file pages.
+The adapter creates no TTF byte-array copy, temporary font file, or extracted pak.
+Legacy standalone AAR assets still resolve through Typeface.Builder.
+
+ DCPK integrity v1 also
 rejects overlapping payload aliases. Whole-pak ZIP compression would discard
 the current direct mapping and random-read properties. These changes require
 separate runtime designs and acceptance; the lossless seed optimizer does not

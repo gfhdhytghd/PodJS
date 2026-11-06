@@ -55,3 +55,15 @@ describe("pak entry integrity manifest", () => {
     expect(() => buildPakIntegrity(trailing)).toThrow("unclaimed trailing bytes");
   });
 });
+
+test("font aliases require the exact content-addressed source key", async () => {
+  const {pakFontAliases}=await import('../packages/cli/src/pak-integrity.ts');
+  const {pack}=await import('../vendor/pocketjs/framework/compiler/pak.ts');
+  const {createHash}=await import('node:crypto');
+  const data=new TextEncoder().encode('immutable TTF bytes');
+  const digest=createHash('sha256').update(data).digest('hex');
+  const aliases=pakFontAliases(pack([{key:`ui:font-source.${digest}`,dtype:1,data},{key:'ui:font-source.'+'0'.repeat(64),dtype:1,data}]));
+  expect(aliases).toHaveLength(1);
+  expect(aliases[0]!.sha256).toBe(digest);
+  expect(aliases[0]!.bytes).toBe(data.length);
+});

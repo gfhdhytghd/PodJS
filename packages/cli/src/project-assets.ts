@@ -137,11 +137,14 @@ function fingerprint(path: string): { size: number; sha256: string } {
  * Callers must serialize writes to an output directory. Caught publication errors
  * restore the previous tree; the two renames do not provide crash recovery.
  */
-export function syncProjectAssets(outputDirectory: string, assets: Record<string, string>): Record<string, { size: number; sha256: string }> {
+export interface PakFontAlias { key: string; offset: number; bytes: number; sha256: string }
+export interface PackagedAsset { size: number; sha256: string; pakFont?: PakFontAlias }
+
+export function syncProjectAssets(outputDirectory: string, assets: Record<string, string>, fonts: readonly PakFontAlias[] = []): Record<string, PackagedAsset> {
   const output = resolve(outputDirectory);
   const tree = join(output, "pod-assets");
   const validated = resolveProjectAssets(assets, process.cwd()).resolved;
-  const result: Record<string, { size: number; sha256: string }> = Object.create(null);
+  const result: Record<string, PackagedAsset> = Object.create(null);
   // Legacy projects have no managed tree to write. Preserve their existing
   // behavior even if the build output is reached through a directory symlink.
   if (Object.keys(validated).length === 0 && !lstatIfPresent(tree)) return result;
@@ -160,6 +163,16 @@ export function syncProjectAssets(outputDirectory: string, assets: Record<string
   try {
     mkdirSync(next);
     for (const [name, source] of Object.entries(sources)) {
+      // A signed, immutable pak source is the snapshot for a shared font.
+      // Other assets keep the existing staged-copy/fingerprint transaction.
+      const font = /\.(ttf|otf|ttc)$/i.test(name) && fonts.length ? (() => {
+        const sourceInfo = fingerprint(source);
+        return fonts.find(font => font.bytes === sourceInfo.size && font.sha256 === sourceInfo.sha256);
+      })() : undefined;
+      if (font) {
+        result[name] = { size: font.bytes, sha256: font.sha256, pakFont: { ...font } };
+        continue;
+      }
       const destination = join(next, name);
       mkdirSync(dirname(destination), { recursive: true });
       requireDirectoryPath(dirname(destination));

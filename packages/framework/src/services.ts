@@ -693,7 +693,7 @@ export interface TextLayoutLine { start:number; end:number; visibleEnd:number; t
 export interface TextFontOptions {
   /** Relative to application files; missing or unreadable font files use system fallback. */
   fontPath?:string;
-  /** Logical resources.assets name; packaged under pod-assets/. Mutually exclusive with fontPath. */
+  /** Logical resources.assets name; Android can map identical raw pak font data. Mutually exclusive with fontPath. */
   fontAsset?:string; fontFaceIndex?:number; variationSettings?:string;
 }
 export interface TextLayoutOptions extends TextFontOptions {

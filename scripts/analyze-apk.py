@@ -30,7 +30,7 @@ def analyze(pak):
         data = pak[offset:offset + size]
         category = key.split('.')[0]
         use = {
-            'ui:font-source': 'conditional: source TTF on first non-seed glyph raster',
+            'ui:font-source': 'conditional: native non-seed glyph raster or Android pakFont asset request',
             'ui:font': 'conditional: atlas metrics/seeds when its font slot is used',
             'ui:img': 'conditional: image uploaded when its name is requested',
             'ui:styles': 'yes: style table at surface boot',
@@ -59,6 +59,21 @@ def main():
             result['zipEntries'] = [dict(name=e.filename, bytes=e.file_size, storedBytes=e.compress_size, compression=e.compress_type) for e in archive.infolist()]
             result['abis'] = sorted({e.filename.split('/')[1] for e in archive.infolist() if e.filename.startswith('lib/') and e.filename.endswith('.so')})
             result['pak'] = analyze(archive.read('assets/main.pak'))
+            manifest = json.loads(archive.read('assets/pod.manifest.json')) if 'assets/pod.manifest.json' in archive.namelist() else {}
+            sources_by_key = {row['key']: row for row in result['pak']['entries']}
+            result['pakFontAliases'] = []
+            for name, asset in manifest.get('assets', {}).items():
+                alias = asset.get('pakFont') if isinstance(asset, dict) else None
+                if not isinstance(alias, dict):
+                    continue
+                source = sources_by_key.get(alias.get('key'))
+                valid = bool(source and asset.get('size') == source['bytes'] == alias.get('bytes')
+                             and asset.get('sha256') == source['sha256'] == alias.get('sha256')
+                             and source['offset'] == alias.get('offset')
+                             and source['key'] == 'ui:font-source.' + source['sha256'])
+                result['pakFontAliases'].append(dict(name=name, **alias,
+                    standaloneAssetPresent='assets/pod-assets/' + name in archive.namelist(),
+                    verifiedAgainstPak=valid))
             font_sources = {r['sha256']:r['key'] for r in result['pak']['entries'] if r['type'] == 'ui:font-source'}
             result['duplicatePackagedAssets'] = []
             for entry in archive.infolist():

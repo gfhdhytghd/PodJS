@@ -19,6 +19,8 @@ export interface PodProjectResources {
   assets?: Record<string, string>;
   /** Lossless per-cell compression; preserves every metric and seeded glyph. */
   optimizeFontSeeds?: boolean;
+  /** Android font assets share identical raw pak TTF sources without extraction. */
+  shareFontSources?: boolean;
   fontRegular?: string;
   fontSlots?: PodFontSlot[];
   /** Bounded startup hint; hashes and atlas parsing run on the existing worker. */
@@ -125,6 +127,10 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
     if (r.optimizeFontSeeds !== undefined) {
       if (typeof r.optimizeFontSeeds !== "boolean") invalid("resources.optimizeFontSeeds must be boolean");
       resources.optimizeFontSeeds = r.optimizeFontSeeds;
+    }
+    if (r.shareFontSources !== undefined) {
+      if (typeof r.shareFontSources !== "boolean") invalid("resources.shareFontSources must be boolean");
+      resources.shareFontSources = r.shareFontSources;
     }
     if(r.glyphCache!==undefined){
       const option=r.glyphCache as Record<string,unknown>;

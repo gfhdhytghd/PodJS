@@ -263,3 +263,20 @@ describe("project asset synchronization", () => {
     expect(stages(output)).toEqual([]);
   });
 });
+
+test("identical content-addressed font assets share pak bytes and remove a stale standalone copy", () => {
+  const {root,output,source}=fixture();
+  const data=fs.readFileSync(source),sha256=digest(data);
+  const font={key:`ui:font-source.${sha256}`,offset:256,bytes:data.length,sha256};
+  syncProjectAssets(output,{'fonts/body.ttf':source});
+  expect(fs.existsSync(join(output,'pod-assets/fonts/body.ttf'))).toBe(true);
+  const shared=syncProjectAssets(output,{'fonts/body.ttf':source,'ordinary.bin':source},[font]);
+  expect(shared['fonts/body.ttf']).toEqual({size:data.length,sha256,pakFont:font});
+  expect(fs.existsSync(join(output,'pod-assets/fonts/body.ttf'))).toBe(false);
+  expect(fs.readFileSync(join(output,'pod-assets/ordinary.bin'))).toEqual(data);
+  // A different font or an old host keeps a physical asset and clears aliases.
+  fs.writeFileSync(source,'different font bytes');
+  expect(syncProjectAssets(output,{'fonts/body.ttf':source},[font])['fonts/body.ttf']!.pakFont).toBeUndefined();
+  expect(fs.readFileSync(join(output,'pod-assets/fonts/body.ttf'),'utf8')).toBe('different font bytes');
+  expect(syncProjectAssets(output,{'fonts/body.ttf':source})['fonts/body.ttf']!.pakFont).toBeUndefined();
+});
