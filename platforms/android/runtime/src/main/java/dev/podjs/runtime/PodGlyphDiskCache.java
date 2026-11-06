@@ -42,16 +42,16 @@ final class PodGlyphDiskCache {
         directoryBytes=allocationUnit==0?0:Math.max(cost(root.length()),
             Math.max(allocationUnit,((limit/32+allocationUnit-1)/allocationUnit)*allocationUnit));
         bytes=directoryBytes;
-        long began=System.nanoTime();ArrayList<Existing> entries=scan(root);
+        long began=System.nanoTime();Scan scan=scan(root);ArrayList<Existing> entries=scan.rows;
         long scanned=System.nanoTime();ArrayList<Existing> ordered=new ArrayList<>(entries.size());
         for(Existing entry:entries) {
             String name=entry.name;long length=entry.length,last=entry.last;
             if(name.equals(".identity")&&length==130){reservedBytes=cost(130);bytes+=reservedBytes;continue;}
             if(name.equals(".font-index")&&length<=128*1024){indexBytes=cost(length);bytes+=indexBytes;continue;}
-            if(name.length()!=70||!name.endsWith(".glyph")||!isKey(name.substring(0,64))||length>MAX_CELL+20){entry.file(root).delete();continue;}
+            if(!entry.nativeGlyph&&(name.length()!=70||!name.endsWith(".glyph")||!isKey(name.substring(0,64))||length>MAX_CELL+20)){entry.file(root).delete();continue;}
             ordered.add(entry);
         }
-        ordered.sort(Comparator.comparingLong((Existing e)->e.last).thenComparing(e->e.name));
+        if(!scan.sorted)ordered.sort(Comparator.comparingLong((Existing e)->e.last).thenComparing(e->e.name));
         for(Existing e:ordered){files.put(e.name,e);bytes+=cost(e.length);clock=Math.max(clock,e.last);}
         if(reservedBytes>limit&&new File(root,".identity").delete()){bytes-=reservedBytes;reservedBytes=0;}
         if(bytes>limit&&indexBytes>0&&new File(root,".font-index").delete()){bytes-=indexBytes;indexBytes=0;}
@@ -59,7 +59,7 @@ final class PodGlyphDiskCache {
         directoryEntries=entries.size();directoryScanNanos=scanned-began;directoryInitializeNanos=System.nanoTime()-began;
     }
     static final class Existing {
-        private File file;final String name;final long length,last;
+        private File file;boolean nativeGlyph;final String name;final long length,last;
         Existing(File f,String n,long l,long t){file=f;name=n;length=l;last=t;}
         File file(File root){if(file==null)file=new File(root,name);return file;}
     }
@@ -67,22 +67,23 @@ final class PodGlyphDiskCache {
     static ArrayList<Existing> decodeScan(File root,byte[] raw)throws IOException {
         if(raw==null||raw.length<8||raw.length>5*1024*1024)throw new IOException("glyph directory bounds");
         DataInputStream in=new DataInputStream(new ByteArrayInputStream(raw));
-        if(in.readInt()!=0x50474431)throw new IOException("glyph directory header");
+        if(in.readInt()!=0x50474432)throw new IOException("glyph directory header");
         int count=in.readInt();if(count<0||count>16384)throw new IOException("glyph directory count");
         ArrayList<Existing> rows=new ArrayList<>(count);
         for(int i=0;i<count;i++) {
             int length=in.readUnsignedShort();if(length<1||length>255)throw new IOException("glyph directory name");
-            byte[] name=new byte[length];in.readFully(name);for(byte b:name)if(b<=0||b=='/')throw new IOException("glyph directory path");
+            byte[] name=new byte[length];in.readFully(name);
             String text=new String(name,java.nio.charset.StandardCharsets.US_ASCII);
-            long size=in.readLong(),stamp=in.readLong();if(size<0||stamp<0||text.equals(".")||text.equals(".."))throw new IOException("glyph directory metadata");
-            rows.add(new Existing(null,text,size,stamp));
+            long size=in.readLong(),stamp=in.readLong();int glyph=in.readUnsignedByte();if(glyph>1||size<0||stamp<0||text.indexOf('/')>=0||text.indexOf(0)>=0||text.equals(".")||text.equals(".."))throw new IOException("glyph directory metadata");
+            Existing e=new Existing(null,text,size,stamp);e.nativeGlyph=glyph==1;rows.add(e);
         }
         if(in.read()!=-1)throw new IOException("glyph directory trailing data");return rows;
     }
-    private static ArrayList<Existing> scan(File root)throws IOException {
-        try{byte[] raw=nativeScan(root.getAbsolutePath());if(raw!=null)return decodeScan(root,raw);}catch(LinkageError|IOException|RuntimeException unavailable){/* Host tests and unavailable native scanners use File metadata. */}
+    private static final class Scan {final ArrayList<Existing> rows;final boolean sorted;Scan(ArrayList<Existing> r,boolean s){rows=r;sorted=s;}}
+    private static Scan scan(File root)throws IOException {
+        try{byte[] raw=nativeScan(root.getAbsolutePath());if(raw!=null)return new Scan(decodeScan(root,raw),true);}catch(LinkageError|IOException|RuntimeException unavailable){/* Host tests and unavailable native scanners use File metadata. */}
         File[] files=root.listFiles();if(files==null)throw new IOException("glyph cache listing");
-        ArrayList<Existing> rows=new ArrayList<>(files.length);for(File f:files)rows.add(new Existing(f,f.getName(),f.length(),f.lastModified()));return rows;
+        ArrayList<Existing> rows=new ArrayList<>(files.length);for(File f:files)rows.add(new Existing(f,f.getName(),f.length(),f.lastModified()));return new Scan(rows,false);
     }
     private static long allocationUnit(File root){try{return Math.max(4096,new android.os.StatFs((root.isDirectory()?root:root.getParentFile()).getAbsolutePath()).getBlockSizeLong());}catch(RuntimeException unavailable){return 4096;}}
     // Reserve one allocation block for each record's inode/directory overhead,

@@ -108,7 +108,8 @@ record. Filesystem writes run outside the foreground metadata lock.
 
 Startup inventories existing glyph records with one bounded native directory
 scan and one JNI metadata transfer. Length and modification time come from one
-stat per entry. Java retains compact names/metadata and creates File paths only
+stat per entry. Glyph-name validation and (mtime, name) sorting also run natively.
+Java retains compact names/metadata and creates File paths only
 when a record is accessed. This scans the live directory and preserves full LRU
 and byte-budget validation; it does not trust a persisted glyph catalog. Native
 failure, non-ASCII foreign names, or an oversized transfer use the Java scan.

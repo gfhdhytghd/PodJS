@@ -9,8 +9,8 @@ import org.junit.Test;
 public class PodGlyphDiskCacheTest {
     @Test public void nativeMetadataTransferKeepsNamesLengthsAndMillisecondTimesAndRejectsPartialTables()throws Exception {
         File root=new File("/private/glyph-cache");java.io.ByteArrayOutputStream bytes=new java.io.ByteArrayOutputStream();
-        java.io.DataOutputStream out=new java.io.DataOutputStream(bytes);out.writeInt(0x50474431);out.writeInt(1);
-        byte[] name=(key(7)+".glyph").getBytes(java.nio.charset.StandardCharsets.US_ASCII);out.writeShort(name.length);out.write(name);out.writeLong(123);out.writeLong(1234567890);
+        java.io.DataOutputStream out=new java.io.DataOutputStream(bytes);out.writeInt(0x50474432);out.writeInt(1);
+        byte[] name=(key(7)+".glyph").getBytes(java.nio.charset.StandardCharsets.US_ASCII);out.writeShort(name.length);out.write(name);out.writeLong(123);out.writeLong(1234567890);out.writeByte(1);
         byte[] raw=bytes.toByteArray();java.util.ArrayList<PodGlyphDiskCache.Existing> rows=PodGlyphDiskCache.decodeScan(root,raw);
         assertEquals(1,rows.size());assertEquals(new File(root,key(7)+".glyph"),rows.get(0).file(root));assertEquals(123,rows.get(0).length);assertEquals(1234567890,rows.get(0).last);
         for(int length=0;length<raw.length;length++){
