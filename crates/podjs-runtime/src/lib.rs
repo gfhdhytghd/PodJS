@@ -983,10 +983,6 @@ pub extern "C" fn pod_runtime_validate_package(
         set_error("package manifest is required");
         return ERR_ARGUMENT;
     };
-    if raw.len() > 128 * 1024 {
-        set_error("package manifest exceeds 131072 byte limit");
-        return ERR_ARGUMENT;
-    }
     let Ok(value) = serde_json::from_str::<Value>(raw) else {
         set_error("package manifest is invalid JSON");
         return ERR_ARGUMENT;
@@ -2396,31 +2392,36 @@ mod tests {
     }
 
     #[test]
-    fn package_manifest_limit_counts_newline_and_revokes_prior_validation() {
+    fn legacy_large_package_manifest_still_validates_and_mounts() {
+        let source = b"globalThis.frame=function(){}";
         let (pak, integrity, _) = integrity_pak(&[("ui:font.7", b"font atlas payload")]);
-        let original = package_manifest(&pak, Some(integrity), b"globalThis.frame=function(){}");
-        let target = CString::new("android-watch").unwrap();
-        let caps = CString::new("[]").unwrap();
-        let runtime = pod_runtime_create(&valid_config(&target, &caps));
-        assert!(!runtime.is_null());
-        assert_eq!(pod_runtime_load_pak(runtime, pak.as_ptr(), pak.len()), OK);
-        let mut exact = original.as_bytes().to_vec();
-        exact.resize(128 * 1024 - 1, b' ');
-        exact.push(b'\n');
-        let accepted = CString::new(exact.clone()).unwrap();
-        assert_eq!(pod_runtime_validate_package(runtime, accepted.as_ptr()), OK);
-        assert!(unsafe { &*runtime }.package_validated);
-        exact.push(b'\n');
-        let overflow = CString::new(exact).unwrap();
-        assert_eq!(pod_runtime_validate_package(runtime, overflow.as_ptr()), ERR_ARGUMENT);
-        assert!(!unsafe { &*runtime }.package_validated);
-        // Review R2: 2 MiB of valid JSON plus its published newline.
-        let mut appendix = original.as_bytes().to_vec();
-        appendix.resize(2 * 1024 * 1024, b' ');
-        appendix.push(b'\n');
-        assert_eq!(pod_runtime_validate_package(runtime, CString::new(appendix).unwrap().as_ptr()), ERR_ARGUMENT);
-        assert_eq!(pod_runtime_validate_package(runtime, original.as_ptr()), OK);
-        pod_runtime_destroy(runtime);
+        // These were accepted before the build-output budget was introduced.
+        // Exercise all runtime targets, including a 200-KiB old package and a
+        // manifest larger than the Android font reader's separate limit.
+        for target_name in ["android-watch", "wearos-watch", "harmonyos-watch", "watchos-watch"] {
+            for bytes in [128 * 1024, 128 * 1024 + 1, 200 * 1024, 2 * 1024 * 1024 + 1] {
+                let target = CString::new(target_name).unwrap();
+                let caps = CString::new("[]").unwrap();
+                let runtime = pod_runtime_create(&valid_config(&target, &caps));
+                assert!(!runtime.is_null());
+                assert_eq!(pod_runtime_load_pak(runtime, pak.as_ptr(), pak.len()), OK);
+                let original = package_manifest(&pak, Some(integrity.clone()), source);
+                let mut value: Value = serde_json::from_slice(original.as_bytes()).unwrap();
+                value["target"] = json!(target_name);
+                let mut padded = value.to_string().into_bytes();
+                padded.resize(bytes - 1, b' ');
+                padded.push(b'\n');
+                assert_eq!(padded.len(), bytes);
+                let manifest = CString::new(padded).unwrap();
+                assert_eq!(pod_runtime_validate_package(runtime, manifest.as_ptr()), OK,
+                    "{target_name}: {bytes} bytes");
+                assert!(unsafe { &*runtime }.package_validated);
+                assert_eq!(pod_runtime_eval_bundle(runtime, source.as_ptr(), source.len(), std::ptr::null()), OK,
+                    "{target_name}: {bytes} bytes must still mount");
+                assert!(unsafe { &*runtime }.mounted);
+                pod_runtime_destroy(runtime);
+            }
+        }
     }
 
     fn pak_stats(runtime: *mut PodRuntime) -> PodPakStats {

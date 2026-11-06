@@ -432,9 +432,6 @@ napi_value boot(napi_env env, napi_callback_info info) {
   if (!bytes(env, args[0], &js, &jsLength) || !bytes(env, args[1], &pak, &pakLength) ||
       !bytes(env, args[2], &manifest, &manifestLength)) return nullptr;
 
-  if(manifestLength>PODJS_PACKAGE_MANIFEST_MAX_BYTES) {
-    napi_throw_error(env,nullptr,"PodJS package manifest exceeds byte limit");return nullptr;
-  }
   std::vector<char> manifestText(manifestLength + 1, 0);
   std::memcpy(manifestText.data(), manifest, manifestLength);
   std::unique_lock lock(g_host.mutex);

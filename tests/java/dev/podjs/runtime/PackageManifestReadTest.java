@@ -38,10 +38,12 @@ public final class PackageManifestReadTest {
         rejects(root.resolve("r1-expanded.json"));
         rejects(root.resolve("newline-overflow.json"));
         rejects(root.resolve("r2-appendix.json"));
+        check(Files.size(root.resolve("r3-legacy-200k.json"))==204800);
+        rejects(root.resolve("r3-legacy-200k.json"));
         // UTF-8 byte boundaries, not UTF-16 units; caller closes its own stream.
         byte[] invalid={(byte)0xc0,(byte)0xaf};
         try{PodManifest.read(new ByteArrayInputStream(invalid));throw new AssertionError("accepted invalid UTF-8");}
         catch(java.nio.charset.CharacterCodingException expected){checks++;}
-        System.out.println("PackageManifestReadTest PASS: "+checks+" checks; shared 128-KiB contract, real writer outputs, R1/R2 rejection and fallback");
+        System.out.println("PackageManifestReadTest PASS: "+checks+" checks; background/sync 128-KiB contract, real writer outputs, R1/R2 fallback and R3 legacy input");
     }
 }

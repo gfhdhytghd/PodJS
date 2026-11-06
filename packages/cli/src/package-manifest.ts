@@ -2,8 +2,8 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { syncProjectAssets, type PackagedAsset, type PakFontAlias } from "./project-assets.ts";
 
-// Whole UTF-8 file, including the final newline. Matches PodManifest and the
-// native package validator; font sharing must not expand a valid package past it.
+// Build output budget for the whole UTF-8 file, including the final newline.
+// Fits the smallest installed reader; does not restrict legacy runtime inputs.
 export const PACKAGE_MANIFEST_MAX_BYTES = 128 * 1024;
 
 export function encodePackageManifest(value: unknown): Buffer {

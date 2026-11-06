@@ -70,13 +70,10 @@ public final class PodWorkManagerTakeover {
         configs.put(key,config);return config;
     }
     static Config readConfig(InputStream in,boolean compact,String packageName)throws Exception {
-        JSONObject manifest;
-        if(!compact)manifest=PodManifest.read(in);
-        else {
-            ByteArrayOutputStream bytes=new ByteArrayOutputStream();byte[] buffer=new byte[4096];int n;
-            while((n=in.read(buffer))!=-1){if(bytes.size()+n>65536)throw new IOException("legacy_config_invalid");bytes.write(buffer,0,n);}
-            manifest=new JSONObject(bytes.toString("UTF-8"));
-        }
+        int limit=compact?65536:1024*1024;
+        ByteArrayOutputStream bytes=new ByteArrayOutputStream();byte[] buffer=new byte[4096];int n;
+        while((n=in.read(buffer))!=-1){if(bytes.size()+n>limit)throw new IOException("legacy_config_invalid");bytes.write(buffer,0,n);}
+        JSONObject manifest=new JSONObject(bytes.toString("UTF-8"));
         if(compact&&(manifest.length()!=2||manifest.getInt("protocol")!=1||!manifest.has("androidWorkManagerTakeover")))throw new IOException("legacy_config_invalid");
         if(!manifest.has("androidWorkManagerTakeover")||(compact&&manifest.isNull("androidWorkManagerTakeover")))return null;
         Config parsed=new Config(manifest.getJSONObject("androidWorkManagerTakeover"));

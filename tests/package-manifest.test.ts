@@ -77,7 +77,7 @@ test("a complete 128-KiB shared file fits, including its final newline", () => {
   exportCase("exact-limit", result);
 });
 
-test("R2: JSON at the reader limit plus its newline restores the physical font", () => {
+test("R2: JSON at the build budget plus its newline restores the physical font", () => {
   const f = fixture(false); const { assets, sources } = ordinaryAssets(f, PACKAGE_MANIFEST_MAX_BYTES + 1, true);
   const encoded = encodePackageManifest(manifest(assets));
   expect(Buffer.byteLength(JSON.stringify(manifest(assets), null, 2))).toBe(PACKAGE_MANIFEST_MAX_BYTES);
@@ -121,5 +121,24 @@ test("empty assets use the same complete UTF-8 byte contract", () => {
   expect(bytes.byteLength).toBeGreaterThan(JSON.stringify(value, null, 2).length + 1);
   const previous = Buffer.from(bytes);
   expect(() => writeProjectManifest(f.output, { ...base, description: "汉".repeat(50_000) }, {})).toThrow("131072 bytes");
+  expect(readFileSync(join(f.output, "pod.manifest.json"))).toEqual(previous);
+});
+
+test("R3: old 200-KiB metadata remains a runtime input but cannot be newly published", () => {
+  const f = fixture(false);
+  const value = { ...base, androidWorkManagerTakeover: {
+    nativeAppId: "com.example.legacy", workerClasses: ["com.example.LegacyWorker"],
+    uniqueWorkNames: ["legacy-periodic"], tags: [],
+  } };
+  const encoded = encodePackageManifest(value);
+  const legacy = Buffer.concat([encoded.subarray(0, -1), Buffer.alloc(200 * 1024 - encoded.length, 32), Buffer.from("\n")]);
+  expect(legacy.byteLength).toBe(204800);
+  exportCase("r3-legacy-200k", legacy);
+  const large = { ...value, padding: "" };
+  large.padding = "x".repeat(200 * 1024 - encodePackageManifest(large).byteLength);
+  expect(encodePackageManifest(large).byteLength).toBe(204800);
+  writeProjectManifest(f.output, base, {});
+  const previous = readFileSync(join(f.output, "pod.manifest.json"));
+  expect(() => writeProjectManifest(f.output, large, {})).toThrow("131072 bytes including the final newline (204800 bytes)");
   expect(readFileSync(join(f.output, "pod.manifest.json"))).toEqual(previous);
 });

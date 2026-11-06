@@ -7,7 +7,8 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import org.json.JSONObject;
 
-/** Complete package manifest budget; shared by font, background, sync and takeover readers. */
+/** Historical 128-KiB reader for background packages and companion sync only.
+ * Build output has a separate budget; other legacy readers retain their own limits. */
 final class PodManifest {
     static final int MAX_BYTES=128*1024;
     /** Caller owns input. Count raw file bytes, including whitespace, before decoding. */
