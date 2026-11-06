@@ -11,46 +11,61 @@ final class PodGlyphDiskCache {
     private static final int MAGIC=0x50474c31,MAX_CELL=1024*1024;
     private final File root;
     private final long limit;
+    private final long allocationUnit;
     private final LinkedHashMap<String,File> files=new LinkedHashMap<>(128,.75f,true);
     private long bytes,clock,reservedBytes;
     long hits,misses,readNanos,writeNanos;
     PodGlyphDiskCache(File root,long limit)throws IOException {
+        this(root,limit,allocationUnit(root));
+    }
+    // A zero allocation unit is used only by scaled, host-only cache tests.
+    PodGlyphDiskCache(File root,long limit,long allocationUnit)throws IOException {
         if(limit<0||limit>MAX_BYTES)throw new IllegalArgumentException("glyph cache budget");
-        this.root=root;this.limit=limit;
+        this.root=root;this.limit=limit;this.allocationUnit=allocationUnit;bytes=allocationUnit;
         if(!root.isDirectory()&&!root.mkdirs())throw new IOException("glyph cache directory");
         File[] entries=root.listFiles();if(entries==null)throw new IOException("glyph cache listing");
-        Arrays.sort(entries,Comparator.comparingLong(File::lastModified).thenComparing(File::getName));
+        ArrayList<Existing> ordered=new ArrayList<>(entries.length);
         for(File file:entries) {
-            if(file.getName().equals(".identity")&&file.length()==130){reservedBytes=130;bytes+=130;continue;}
-            if(!file.getName().matches("[a-f0-9]{64}\\.glyph")||file.length()>MAX_CELL+20){file.delete();continue;}
-            files.put(file.getName(),file);bytes+=file.length();clock=Math.max(clock,file.lastModified());
+            String name=file.getName();long length=file.length(),last=file.lastModified();
+            if(name.equals(".identity")&&length==130){reservedBytes=cost(130);bytes+=reservedBytes;continue;}
+            if(name.length()!=70||!name.endsWith(".glyph")||!isKey(name.substring(0,64))||length>MAX_CELL+20){file.delete();continue;}
+            ordered.add(new Existing(file,name,length,last));
         }
+        ordered.sort(Comparator.comparingLong((Existing e)->e.last).thenComparing(e->e.name));
+        for(Existing e:ordered){files.put(e.name,e.file);bytes+=cost(e.length);clock=Math.max(clock,e.last);}
         if(reservedBytes>limit&&new File(root,".identity").delete()){bytes-=reservedBytes;reservedBytes=0;}
         trim(limit);
     }
-    private static String name(String key){if(!key.matches("[a-f0-9]{64}"))throw new IllegalArgumentException("glyph cache key");return key+".glyph";}
+    private static final class Existing {final File file;final String name;final long length,last;Existing(File f,String n,long l,long t){file=f;name=n;length=l;last=t;}}
+    private static long allocationUnit(File root){try{return Math.max(4096,new android.os.StatFs((root.isDirectory()?root:root.getParentFile()).getAbsolutePath()).getBlockSizeLong());}catch(RuntimeException unavailable){return 4096;}}
+    // Reserve one allocation block for each record's inode/directory overhead,
+    // plus rounded data blocks and a block for the cache directory itself.
+    private long cost(long length){return allocationUnit==0?length:((length+allocationUnit-1)/allocationUnit+1)*allocationUnit;}
+    private static boolean isKey(String key){if(key.length()!=64)return false;for(int i=0;i<64;i++){char c=key.charAt(i);if(!(c>='0'&&c<='9'||c>='a'&&c<='f'))return false;}return true;}
+    private static String name(String key){if(!isKey(key))throw new IllegalArgumentException("glyph cache key");return key+".glyph";}
     private void trim(long target) {
         Iterator<Map.Entry<String,File>> it=files.entrySet().iterator();
-        while(bytes>target&&it.hasNext()) {File file=it.next().getValue();long size=file.length();if(file.delete()||!file.exists()){bytes-=size;it.remove();}else break;}
+        while(bytes>target&&it.hasNext()) {File file=it.next().getValue();long size=cost(file.length());if(file.delete()||!file.exists()){bytes-=size;it.remove();}else break;}
     }
     private void remove(String name,File file){if(file.delete()||!file.exists()){files.remove(name);recount();}}
-    private void recount(){bytes=new File(root,".identity").isFile()?reservedBytes:0;for(File file:files.values())bytes+=file.length();}
+    private void recount(){bytes=allocationUnit+(new File(root,".identity").isFile()?reservedBytes:0);for(File file:files.values())bytes+=cost(file.length());}
+    synchronized boolean contains(String key){File file=files.get(name(key));return file!=null&&file.isFile();}
     synchronized String identity(String signature) {
-        if(!signature.matches("[a-f0-9]{64}"))return null;
+        if(!isKey(signature))return null;
         try(FileInputStream stream=new FileInputStream(new File(root,".identity"))) {
             byte[] raw=new byte[130];int pos=0;while(pos<raw.length){int n=stream.read(raw,pos,raw.length-pos);if(n<1)return null;pos+=n;}
             String receipt=new String(raw,java.nio.charset.StandardCharsets.US_ASCII);
-            if(stream.read()!=-1||!receipt.matches("[a-f0-9]{64}\\n[a-f0-9]{64}\\n")||!receipt.startsWith(signature+"\n"))return null;
+            if(stream.read()!=-1||receipt.charAt(64)!='\n'||receipt.charAt(129)!='\n'||!isKey(receipt.substring(0,64))||!isKey(receipt.substring(65,129))||!receipt.startsWith(signature+"\n"))return null;
             return receipt.substring(65,129);
         }catch(IOException invalid){return null;}
     }
     synchronized void identity(String signature,String identity) {
-        if(!signature.matches("[a-f0-9]{64}")||!identity.matches("[a-f0-9]{64}")||limit<130)return;
+        if(!isKey(signature)||!isKey(identity)||limit<cost(130))return;
         File temporary=new File(root,".identity.tmp");
         try {
-            trim(limit-130);if(bytes+130>limit)return;
+            trim(limit-cost(130));if(bytes+cost(130)>limit)return;
             try(FileOutputStream stream=new FileOutputStream(temporary)){stream.write((signature+"\n"+identity+"\n").getBytes(java.nio.charset.StandardCharsets.US_ASCII));}
-            if(temporary.renameTo(new File(root,".identity"))){reservedBytes=130;recount();}
+            if(temporary.renameTo(new File(root,".identity"))){reservedBytes=cost(130);recount();}
         }catch(IOException unavailable){/* Next process computes the font digests again. */}finally{temporary.delete();}
     }
     synchronized byte[] get(String key,int expected) {
@@ -81,12 +96,12 @@ final class PodGlyphDiskCache {
             header.writeInt(MAGIC);header.writeInt(raw.length);header.writeLong(crc.getValue());
             Deflater deflater=new Deflater(Deflater.BEST_SPEED);
             try(DeflaterOutputStream encoded=new DeflaterOutputStream(output,deflater)){encoded.write(raw);}finally{deflater.end();}
-            byte[] packed=output.toByteArray();if(packed.length>limit)return;
-            trim(limit-packed.length);if(bytes+packed.length>limit)return;
+            byte[] packed=output.toByteArray();long charge=cost(packed.length);if(charge>limit)return;
+            trim(limit-charge);if(bytes+charge>limit)return;
             try(FileOutputStream stream=new FileOutputStream(temporary)){stream.write(packed);}
             File file=new File(root,name);if(!temporary.renameTo(file))return;
             clock=Math.max(clock+1,System.currentTimeMillis());file.setLastModified(clock);
-            files.put(name,file);bytes+=file.length();
+            files.put(name,file);bytes+=charge;
         }catch(IOException|RuntimeException unavailable){/* The cache never gates rendering. */}
         finally{temporary.delete();writeNanos+=System.nanoTime()-began;}
     }

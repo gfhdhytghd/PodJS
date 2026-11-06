@@ -59,7 +59,7 @@ final class PodSystemFonts {
     static synchronized PodGlyphDiskCache disk(){return disk;}
     static synchronized String identity(){return identity;}
     static String hash(byte[] bytes){try{return hex(MessageDigest.getInstance("SHA-256").digest(bytes));}catch(Exception e){throw new IllegalStateException(e);}}
-    private static String hex(byte[] bytes){StringBuilder result=new StringBuilder();for(byte b:bytes)result.append(String.format(Locale.ROOT,"%02x",b&255));return result.toString();}
+    private static String hex(byte[] bytes){char[] text=new char[bytes.length*2];String digits="0123456789abcdef";for(int i=0;i<bytes.length;i++){int b=bytes[i]&255;text[i*2]=digits.charAt(b>>>4);text[i*2+1]=digits.charAt(b&15);}return new String(text);}
     static synchronized void ensure(Context context) {
         if(context==null)return;
         String current=context.getApplicationInfo().sourceDir;

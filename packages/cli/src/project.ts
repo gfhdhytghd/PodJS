@@ -24,7 +24,7 @@ export interface PodProjectResources {
   /** Android font assets share identical raw pak TTF sources without extraction. */
   shareFontSources?: boolean;
   fontRegular?: string;
-  fontSlots?: PodFontSlot[];
+  fontSlots?: Array<Omit<PodFontSlot,'path'>&{path?:string}>;
   /** Bounded startup hint; hashes and atlas parsing run on the existing worker. */
   preloadFontSlots?: number[];
   fontBold?: string;
@@ -195,7 +195,7 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
   const fontBold = resolve(root, resources?.fontBold ?? defaults.fontBold);
   if (resources?.fontSource!=='system'&&(!existsSync(fontRegular) || !existsSync(fontBold))) invalid("configured font resource not found");
   const fontSlots = (resources?.fontSlots ?? []).map(resource => {
-    const path = resolve(root, resource.path);
+    const path = resolve(root, resource.path??'system');
     if (resources?.fontSource!=='system'&&(!existsSync(path) || !statSync(path).isFile())) invalid(`fontSlots file not found: ${path}`);
     return {...resource, path};
   });

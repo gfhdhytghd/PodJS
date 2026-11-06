@@ -43,11 +43,17 @@ After the first displayed texture, a background worker warms the printable
 ASCII set and the deduplicated `warmChars` set in the preloaded slots. Visible
 text renders on demand. The rasterizer reuses one bitmap and pixel scratch
 array. Measurement and rendering retain the same advance and baseline when
-cells are read from disk or regenerated.
+cells are read from disk or regenerated. Existing disk records are not decoded
+again merely to prewarm them. Cache startup reads file metadata once before
+sorting; key validation and hex encoding avoid per-record regular expressions
+and formatters.
 
 The disposable disk cache is at `cacheDir/podjs-system-glyphs`. Its **16 MiB
 limit includes glyph records, the font identity receipt, and temporary writes**.
-Compressed records have a raw-size bound and CRC. Reads update LRU order;
+The budget charges rounded filesystem data blocks, one additional metadata
+block per record, and a directory block. This conservatively accounts for tiny
+files rather than allowing 16 MiB of compressed payload to occupy much more
+physical storage. Compressed records have a raw-size bound and CRC. Reads update LRU order;
 writes evict old records before writing an atomic replacement. Invalid or
 unavailable cache data causes regeneration, not missing text or failed edits.
 This is additional app storage; the APK contains no initial cache image.

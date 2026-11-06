@@ -58,7 +58,7 @@ final class PodSystemFontFallback {
         warmStarted=true;int generation=warmGeneration.incrementAndGet();
         org.json.JSONObject config=PodSystemFonts.config();
         Thread worker=new Thread(()->{
-            int cells=0;long began=System.nanoTime();
+            int cells=0,skipped=0;long began=System.nanoTime();
             try {
                 HashSet<Integer> wanted=new HashSet<>();org.json.JSONArray preload=config.optJSONArray("preloadFontSlots");
                 if(preload!=null)for(int i=0;i<preload.length();i++)wanted.add(preload.getInt(i));
@@ -70,23 +70,27 @@ final class PodSystemFontFallback {
                     for(int pos=0;pos<chars.length();) {
                         if(warmGeneration.get()!=generation)return;
                         int cp=chars.codePointAt(pos);pos+=Character.charCount(cp);
-                        raster(new String(Character.toChars(cp)),px,bold,m[0],m[1],m[2],density);cells++;
+                        String text=new String(Character.toChars(cp));PodGlyphDiskCache cache=PodSystemFonts.disk();
+                        if(cache!=null&&cache.contains(cacheKey(text,px,bold,m[0],m[1],m[2],density)))skipped++;
+                        else raster(text,px,bold,m[0],m[1],m[2],density);
+                        cells++;
                         if(cells%8==0)Thread.sleep(1);
                     }
                 }
-                android.util.Log.i("PodJSPerf","systemFontWarm cells="+cells+" ms="+(System.nanoTime()-began)/1e6+" "+stats());
+                android.util.Log.i("PodJSPerf","systemFontWarm cells="+cells+" existing="+skipped+" ms="+(System.nanoTime()-began)/1e6+" "+stats());
             }catch(Exception unavailable){android.util.Log.w("PodJS","system font prewarm stopped",unavailable);}
         },"pod-system-font-warm");worker.setDaemon(true);worker.setPriority(Thread.MIN_PRIORITY);worker.start();
     }
     static synchronized void cancelWarm(){warmGeneration.incrementAndGet();warmStarted=false;}
     static synchronized String stats(){PodGlyphDiskCache cache=PodSystemFonts.disk();return "rasterCount="+rasterCount+" rasterMs="+rasterNanos/1e6+(cache==null?"":" diskHits="+cache.hits+" diskMisses="+cache.misses+" diskReadMs="+cache.readNanos/1e6+" diskWriteMs="+cache.writeNanos/1e6+" diskBytes="+cache.bytes());}
+    private static String cacheKey(String text,float px,int bold,int w,int h,int baseline,int density){return PodSystemFonts.hash((PodSystemFonts.identity()+":"+Float.floatToIntBits(px)+":"+bold+":"+w+":"+h+":"+baseline+":"+density+":"+text).getBytes(java.nio.charset.StandardCharsets.UTF_8));}
     // JNI callback: header = logical advance/xoff/yoff float32 LE, then straight RGBA.
     static synchronized byte[] raster(String text,float px,int bold,int w,int h,int baseline,int density) {
         if(!validText(text)||!Float.isFinite(px)||px<1||px>255
                 ||w<1||h<1||w>255||h>255||density<1||density>4||baseline<0||baseline>h)return null;
         Paint paint=paint(px,bold,density);
         PodGlyphDiskCache cache=PodSystemFonts.disk();
-        String cacheKey=cache==null?null:PodSystemFonts.hash((PodSystemFonts.identity()+":"+Float.floatToIntBits(px)+":"+bold+":"+w+":"+h+":"+baseline+":"+density+":"+text).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        String cacheKey=cache==null?null:cacheKey(text,px,bold,w,h,baseline,density);
         int length=12+w*h*density*density*4;
         if(cache!=null){byte[] found=cache.get(cacheKey,length);if(found!=null)return found;}
         if(!paint.hasGlyph(text))return null;
