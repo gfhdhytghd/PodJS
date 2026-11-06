@@ -983,6 +983,10 @@ pub extern "C" fn pod_runtime_validate_package(
         set_error("package manifest is required");
         return ERR_ARGUMENT;
     };
+    if raw.len() > 128 * 1024 {
+        set_error("package manifest exceeds 131072 byte limit");
+        return ERR_ARGUMENT;
+    }
     let Ok(value) = serde_json::from_str::<Value>(raw) else {
         set_error("package manifest is invalid JSON");
         return ERR_ARGUMENT;
@@ -2389,6 +2393,34 @@ mod tests {
         });
         if let Some(integrity) = integrity { value["pakIntegrity"] = integrity; }
         CString::new(value.to_string()).unwrap()
+    }
+
+    #[test]
+    fn package_manifest_limit_counts_newline_and_revokes_prior_validation() {
+        let (pak, integrity, _) = integrity_pak(&[("ui:font.7", b"font atlas payload")]);
+        let original = package_manifest(&pak, Some(integrity), b"globalThis.frame=function(){}");
+        let target = CString::new("android-watch").unwrap();
+        let caps = CString::new("[]").unwrap();
+        let runtime = pod_runtime_create(&valid_config(&target, &caps));
+        assert!(!runtime.is_null());
+        assert_eq!(pod_runtime_load_pak(runtime, pak.as_ptr(), pak.len()), OK);
+        let mut exact = original.as_bytes().to_vec();
+        exact.resize(128 * 1024 - 1, b' ');
+        exact.push(b'\n');
+        let accepted = CString::new(exact.clone()).unwrap();
+        assert_eq!(pod_runtime_validate_package(runtime, accepted.as_ptr()), OK);
+        assert!(unsafe { &*runtime }.package_validated);
+        exact.push(b'\n');
+        let overflow = CString::new(exact).unwrap();
+        assert_eq!(pod_runtime_validate_package(runtime, overflow.as_ptr()), ERR_ARGUMENT);
+        assert!(!unsafe { &*runtime }.package_validated);
+        // Review R2: 2 MiB of valid JSON plus its published newline.
+        let mut appendix = original.as_bytes().to_vec();
+        appendix.resize(2 * 1024 * 1024, b' ');
+        appendix.push(b'\n');
+        assert_eq!(pod_runtime_validate_package(runtime, CString::new(appendix).unwrap().as_ptr()), ERR_ARGUMENT);
+        assert_eq!(pod_runtime_validate_package(runtime, original.as_ptr()), OK);
+        pod_runtime_destroy(runtime);
     }
 
     fn pak_stats(runtime: *mut PodRuntime) -> PodPakStats {

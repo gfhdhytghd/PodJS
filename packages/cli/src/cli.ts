@@ -11,7 +11,7 @@ import { POD_TARGETS, type PodTargetProfile } from "../../framework/src/targets.
 import { resolvePodProject, type ResolvedPodProject } from "./project.ts";
 import { workManagerTakeoverAsset, manifestWorkManagerTakeover } from "./workmanager-takeover.ts";
 import { buildBackground } from "./background-build.ts";
-import { syncProjectAssets } from "./project-assets.ts";
+import { writeProjectManifest } from "./package-manifest.ts";
 import { androidPackagePlan, androidPackageOptions, signAndroidApk, rotateAndroidSigning, type RotateOptions } from "./android-signing.ts";
 import { optimizePakFontSeeds } from "./pak-font-seeds.ts";
 import { buildPakIntegrity, pakFontAliases } from "./pak-integrity.ts";
@@ -145,7 +145,6 @@ async function build(target: Target, project?: ResolvedPodProject, diagnosticJsS
   const background = await buildBackground(project?.background ?? {}, out);
   const pakBytes = readFileSync(pak);
   const shareFonts = (target === "android-watch" || target === "wearos-watch") && project?.config.resources?.shareFontSources !== false;
-  const assets = syncProjectAssets(out, project?.assets ?? {}, shareFonts ? pakFontAliases(pakBytes) : []);
   const bundleHash = fnv1a64(readFileSync(js));
   const manifest = {
     schema: 1,
@@ -174,13 +173,8 @@ async function build(target: Target, project?: ResolvedPodProject, diagnosticJsS
     background,
     backgroundServices: project?.config.backgroundServices ?? [],
     ...(project && manifestWorkManagerTakeover(project.config.appId, project.config.android?.workManagerTakeover) ? { androidWorkManagerTakeover: project.config.android!.workManagerTakeover } : {}),
-    ...(Object.keys(assets).length ? { assets } : {}),
   };
-  // Keep the bounded Java manifest reader compatible with very large projects.
-  if (Object.values(assets).some(asset => asset.pakFont) && Buffer.byteLength(JSON.stringify(manifest, null, 2)) > 2 * 1024 * 1024) {
-    manifest.assets = syncProjectAssets(out, project?.assets ?? {});
-  }
-  writeFileSync(join(out, "pod.manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  writeProjectManifest(out, manifest, project?.assets ?? {}, shareFonts ? pakFontAliases(pakBytes) : []);
   writeFileSync(join(out, "pod.workmanager.json"), workManagerTakeoverAsset(project?.config.appId ?? "dev.podjs.androidwatch", project?.config.android?.workManagerTakeover));
   writeAndroidSplash(out,project?.config.android?.splash,project?.androidTheme);
   if (target === "android-watch" || target === "wearos-watch") {

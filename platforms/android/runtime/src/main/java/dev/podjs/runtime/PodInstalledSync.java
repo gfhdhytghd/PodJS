@@ -40,17 +40,10 @@ final class PodInstalledSync implements AutoCloseable {
         }
     }
     static PodInstalledSync open(Context context,String target) throws Exception {
-        ByteArrayOutputStream bytes=new ByteArrayOutputStream();
+        HashSet<String> grants;
         try(InputStream input=context.getAssets().open("pod.manifest.json")) {
-            byte[] block=new byte[4096]; int count;
-            while((count=input.read(block))!=-1) {
-                if(bytes.size()+count>128*1024) throw new IllegalArgumentException("Manifest too large");
-                bytes.write(block,0,count);
-            }
+            grants=approvedCapabilities(PodManifest.read(input),target);
         }
-        String json=StandardCharsets.UTF_8.newDecoder().onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
-            .decode(java.nio.ByteBuffer.wrap(bytes.toByteArray())).toString();
-        HashSet<String> grants=approvedCapabilities(new JSONObject(json),target);
         return grants.isEmpty()?null:new PodInstalledSync(context,grants);
     }
     static HashSet<String> approvedCapabilities(JSONObject manifest,String target) throws Exception {

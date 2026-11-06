@@ -22,6 +22,8 @@ void pod_sync_cancellation_free(PodSyncCancellation *value);
 #define PODJS_DEFAULT_LOGICAL_WIDTH 240
 #define PODJS_DEFAULT_LOGICAL_HEIGHT 240
 #define PODJS_MAX_TOUCHES 8
+/* Complete UTF-8 package manifest, including trailing whitespace/newline. */
+#define PODJS_PACKAGE_MANIFEST_MAX_BYTES 131072
 
 typedef struct PodRuntime PodRuntime;
 /* Optional synchronous closed telemetry. Host timestamps the actual observation.

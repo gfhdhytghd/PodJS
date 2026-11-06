@@ -36,17 +36,8 @@ public final class PodBackgroundPackage {
      * reused for downloaded packages; those need independent authentication. */
     static PodBackgroundPackage installed(android.content.Context context, String target) throws Exception {
         android.content.res.AssetManager manager=context.getAssets();
-        ByteArrayOutputStream bytes=new ByteArrayOutputStream();
-        try (InputStream input=manager.open("pod.manifest.json")) {
-            byte[] block=new byte[4096]; int count;
-            while ((count=input.read(block))!=-1) {
-                if (bytes.size()+count>128*1024) throw new IllegalArgumentException("Manifest too large");
-                bytes.write(block,0,count);
-            }
-        }
-        String json=StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
-            .decode(ByteBuffer.wrap(bytes.toByteArray())).toString();
-        JSONObject manifest=new JSONObject(json);
+        JSONObject manifest;
+        try(InputStream input=manager.open("pod.manifest.json")) { manifest=PodManifest.read(input); }
         if (!target.equals(manifest.getString("target"))) throw new SecurityException("Background target mismatch");
         if (!manifest.has("background")) manifest.put("background",new JSONObject());
         return new PodBackgroundPackage(context.getPackageName(),manifest,manager::open);

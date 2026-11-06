@@ -403,6 +403,9 @@ extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeBo
   const double loaded=monoMs();
   if(result){fail(env,pod_runtime_last_error());return;}
   Asset manifest=openAsset("pod.manifest.json"); if(!manifest)return;
+  if(AAsset_getLength64(manifest.get())>PODJS_PACKAGE_MANIFEST_MAX_BYTES) {
+    fail(env,"PodJS package manifest exceeds byte limit");return;
+  }
   const auto* mb=static_cast<const char*>(AAsset_getBuffer(manifest.get()));
   if(!mb){fail(env,"PodJS cannot map asset pod.manifest.json");return;}
   const std::string json(mb,AAsset_getLength64(manifest.get()));

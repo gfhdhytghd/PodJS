@@ -6,13 +6,11 @@ import android.graphics.Typeface;
 import android.graphics.fonts.Font;
 import android.graphics.fonts.FontFamily;
 import android.graphics.fonts.FontStyle;
-import java.io.ByteArrayOutputStream;
 import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
-import java.nio.charset.StandardCharsets;
 import java.util.WeakHashMap;
 import org.json.JSONObject;
 
@@ -27,9 +25,7 @@ final class PodPakFontAssets {
     private static synchronized JSONObject manifest(AssetManager manager) throws Exception {
         JSONObject known=manifests.get(manager);if(known!=null)return known;
         try(InputStream input=manager.open("pod.manifest.json")) {
-            ByteArrayOutputStream bytes=new ByteArrayOutputStream();byte[] block=new byte[8192];int n;
-            while((n=input.read(block))!=-1){if(bytes.size()+n>2*1024*1024)throw new IOException("font manifest exceeds limit");bytes.write(block,0,n);}
-            known=new JSONObject(bytes.toString(StandardCharsets.UTF_8.name()));manifests.put(manager,known);return known;
+            known=PodManifest.read(input);manifests.put(manager,known);return known;
         }
     }
     static Typeface resolve(AssetManager manager,String name,int face,int weight,boolean italic,String variation) throws Exception {

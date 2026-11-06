@@ -102,3 +102,13 @@ rejects overlapping payload aliases. Whole-pak ZIP compression would discard
 the current direct mapping and random-read properties. These changes require
 separate runtime designs and acceptance; the lossless seed optimizer does not
 introduce them.
+
+The complete `pod.manifest.json` file has a 128 KiB UTF-8 budget, including its
+final newline. Android font, background, companion-sync and legacy takeover
+readers use `PodManifest`; native package validation and Harmony's background
+reader use the same budget. The separate compact `pod.workmanager.json` retains
+its 64 KiB limit. A build checks the exact buffer it will write. If font aliases
+alone exceed the package budget, it discards that staged asset transaction and
+retries with physical font assets. If legacy metadata also exceeds the budget,
+the build fails before publishing assets or replacing the previous manifest.
+The budget is not raised to make aliases fit.

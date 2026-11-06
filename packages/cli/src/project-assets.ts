@@ -140,18 +140,24 @@ function fingerprint(path: string): { size: number; sha256: string } {
 export interface PakFontAlias { key: string; offset: number; bytes: number; sha256: string }
 export interface PackagedAsset { size: number; sha256: string; pakFont?: PakFontAlias }
 
-export function syncProjectAssets(outputDirectory: string, assets: Record<string, string>, fonts: readonly PakFontAlias[] = []): Record<string, PackagedAsset> {
+export function syncProjectAssets(outputDirectory: string, assets: Record<string, string>, fonts: readonly PakFontAlias[] = [], beforePublish?: (assets: Record<string, PackagedAsset>) => void): Record<string, PackagedAsset> {
   const output = resolve(outputDirectory);
   const tree = join(output, "pod-assets");
   const validated = resolveProjectAssets(assets, process.cwd()).resolved;
   const result: Record<string, PackagedAsset> = Object.create(null);
   // Legacy projects have no managed tree to write. Preserve their existing
   // behavior even if the build output is reached through a directory symlink.
-  if (Object.keys(validated).length === 0 && !lstatIfPresent(tree)) return result;
+  if (Object.keys(validated).length === 0 && !lstatIfPresent(tree)) {
+    beforePublish?.(result);
+    return result;
+  }
   requireDirectoryPath(output);
   const hadPrevious = requireSafeTree(tree);
   const sources = safeSources(validated, tree);
-  if (Object.keys(sources).length === 0 && !hadPrevious) return result;
+  if (Object.keys(sources).length === 0 && !hadPrevious) {
+    beforePublish?.(result);
+    return result;
+  }
 
   mkdirSync(output, { recursive: true });
   requireDirectoryPath(output);
@@ -179,6 +185,7 @@ export function syncProjectAssets(outputDirectory: string, assets: Record<string
       copyFileSync(source, destination, constants.COPYFILE_EXCL);
       result[name] = fingerprint(destination);
     }
+    beforePublish?.(result);
     // Recheck immediately before publication; never replace a newly introduced
     // symlink or remove an original source that has moved into the managed tree.
     requireDirectoryPath(output);
