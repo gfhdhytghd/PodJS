@@ -76,6 +76,27 @@ Native glyph rendering and Android fonts read the same immutable APK file pages.
 The adapter creates no TTF byte-array copy, temporary font file, or extracted pak.
 Legacy standalone AAR assets still resolve through Typeface.Builder.
 
+The old compressed font allocates a full TTF buffer on ART's heap, which can
+also collect unreachable startup objects and run their native cleaners. The
+mapped path removes that allocation pressure. After the first successful font
+mapping of at least 8 MiB per AssetManager, the adapter requests collection once,
+with the new Typeface still live. Cache hits and subsequent styles do not
+request collection. The numeric `pakFontFirstCollection` startup trace records
+its cost. Include this first-use cost when comparing font paths; a home screen
+that does not request an asset font does not execute this collection.
+
+Foreground cloud lifecycle calls authenticate background handlers with a bounded
+UTF-8 decoder and streaming SHA-256. They no longer create a whole-source String
+just to discard it after verification. Byte length, hash, strict UTF-8, handler
+identity, and capability checks still apply. Workers that execute a handler
+retain the existing source-loading path.
+
+Capture `/proc/<pid>/smaps_rollup` and full mappings before `dumpsys meminfo`.
+The process callback from meminfo can request collection, so also retain the
+post-meminfo snapshot. Compare file clean pages, anonymous/dirty pages, native
+heap, Java heap, and first-use peak separately. For mixed-core emulator hosts,
+record CPU affinity and use the same CPU class for both variants.
+
  DCPK integrity v1 also
 rejects overlapping payload aliases. Whole-pak ZIP compression would discard
 the current direct mapping and random-read properties. These changes require

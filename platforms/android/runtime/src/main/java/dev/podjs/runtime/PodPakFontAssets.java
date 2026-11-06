@@ -19,6 +19,11 @@ import org.json.JSONObject;
 /** Font and UI parsers map the same immutable APK pages. No TTF heap/file copy. */
 final class PodPakFontAssets {
     private static final WeakHashMap<AssetManager,JSONObject> manifests=new WeakHashMap<>();
+    private static final WeakHashMap<AssetManager,Boolean> collected=new WeakHashMap<>();
+    private static synchronized boolean firstLargeFont(AssetManager manager,long bytes) {
+        if(bytes<8L*1024*1024||collected.containsKey(manager))return false;
+        collected.put(manager,Boolean.TRUE);return true;
+    }
     private static synchronized JSONObject manifest(AssetManager manager) throws Exception {
         JSONObject known=manifests.get(manager);if(known!=null)return known;
         try(InputStream input=manager.open("pod.manifest.json")) {
@@ -44,7 +49,18 @@ final class PodPakFontAssets {
             if(!variation.trim().isEmpty())builder.setFontVariationSettings(variation);
             Font font=builder.build();
             // Same family/style/fallback construction as Typeface.Builder.build().
-            return new Typeface.CustomFallbackBuilder(new FontFamily.Builder(font).build()).setStyle(new FontStyle(weight,italic?FontStyle.FONT_SLANT_ITALIC:FontStyle.FONT_SLANT_UPRIGHT)).build();
+            Typeface result=new Typeface.CustomFallbackBuilder(new FontFamily.Builder(font).build()).setStyle(new FontStyle(weight,italic?FontStyle.FONT_SLANT_ITALIC:FontStyle.FONT_SLANT_UPRIGHT)).build();
+            if(firstLargeFont(manager,entry.bytes)) {
+                // The legacy compressed-asset path allocates the entire font on
+                // ART's heap and thereby collects startup temporaries. A mapped
+                // font removes that pressure. Request collection once after the
+                // first large font is live, instead of retaining those dead Java
+                // objects and their native cleaners until unrelated pressure.
+                long began=PodStartupTrace.now();
+                Runtime.getRuntime().gc();
+                PodStartupTrace.stage("pakFontFirstCollection",began);
+            }
+            return result;
         }
     }
 }

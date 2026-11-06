@@ -117,6 +117,13 @@ public final class PodBackgroundPackage {
         if(output.size()!=item.getInt("bytes")||!PodBackgroundScheduler.sha256(source).equals(item.getString("sha256")))throw new SecurityException("Cloud source hash mismatch");
         return source;
     }
+    /** Foreground lifecycle calls authenticate the handler but do not execute it. */
+    void verifyCloudSource(boolean debugBuild) throws Exception {
+        cloudHostMethod(debugBuild);
+        JSONObject item=handlers.optJSONObject("watchrss-cloud-sync");
+        if(item==null)throw new SecurityException("Cloud background handler missing");
+        PodUtf8Artifact.verify(assets.open(item.getString("file")),item.getLong("bytes"),item.getString("sha256"));
+    }
     boolean permitsSource(String hash, String[] methods) throws Exception {
         if (!java.util.Arrays.asList(grants).containsAll(java.util.Arrays.asList(methods))) return false;
         java.util.Iterator<String> names=handlers.keys();
