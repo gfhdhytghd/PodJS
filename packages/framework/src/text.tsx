@@ -21,16 +21,18 @@ interface Entry {
  handle:number;path?:string;width:number;height:number;carets:number[];listeners:Set<Listener>;
  cache?:TextCacheState;
  stage:LoadStage;loadFailure?:SystemTextFailureStage;succeeded:boolean;
+ background:boolean;prefetch?:PrefetchLease;
 }
 export interface SystemTextCache {close():void;stats():{retained:number;retainedBytes:number;entries:number}}
-interface TextCacheState {id:number;closed:boolean;maxEntries:number;maxBytes:number;members:Set<Entry>;idle:Set<Entry>}
+interface PrefetchLease {bytes:number;release:()=>void}
+interface TextCacheState {id:number;closed:boolean;maxEntries:number;maxBytes:number;members:Set<Entry>;idle:Set<Entry>;prefetches:Set<PrefetchLease>}
 const textCaches=new WeakMap<SystemTextCache,TextCacheState>();let nextCacheId=1;
 /** A component-scoped bitmap history; active owners keep their ordinary leases. */
 export function createSystemTextCache(options:{maxEntries?:number;maxBytes?:number}={}):SystemTextCache {
  const maxEntries=options.maxEntries??24,maxBytes=options.maxBytes??8*1024*1024;
  if(!Number.isSafeInteger(maxEntries)||maxEntries<0||!Number.isSafeInteger(maxBytes)||maxBytes<0)throw new RangeError("Invalid system text cache bounds");
- const state:TextCacheState={id:nextCacheId++,closed:false,maxEntries,maxBytes,members:new Set(),idle:new Set()};
- const cache:SystemTextCache={close(){if(state.closed)return;state.closed=true;for(const entry of [...state.idle])discard(entry);},stats(){return {retained:state.idle.size,retainedBytes:[...state.idle].reduce((sum,e)=>sum+e.width*e.height*4,0),entries:state.members.size};}};
+ const state:TextCacheState={id:nextCacheId++,closed:false,maxEntries,maxBytes,members:new Set(),idle:new Set(),prefetches:new Set()};
+ const cache:SystemTextCache={close(){if(state.closed)return;state.closed=true;for(const lease of [...state.prefetches])lease.release();for(const entry of [...state.idle])discard(entry);},stats(){return {retained:state.idle.size,retainedBytes:[...state.idle].reduce((sum,e)=>sum+e.width*e.height*4,0),entries:state.members.size};}};
  textCaches.set(cache,state);return cache;
 }
 function discard(entry:Entry):void {
@@ -40,11 +42,19 @@ function discard(entry:Entry):void {
 function retain(entry:Entry):boolean {
  const cache=entry.cache;if(!cache||cache.closed||entry.handle<0||!entry.succeeded||cache.maxEntries===0)return false;
  cache.idle.delete(entry);cache.idle.add(entry);
- let bytes=[...cache.idle].reduce((sum,e)=>sum+e.width*e.height*4,0);
- while(cache.idle.size>cache.maxEntries||bytes>cache.maxBytes){const oldest=cache.idle.values().next().value!;bytes-=oldest.width*oldest.height*4;discard(oldest);}
+ trimIdle(cache);
  return !entry.cancelled;
 }
-const entries=new Map<string,Entry>(),queue:Entry[]=[];let active=0,nextEntryId=1;
+function trimIdle(cache:TextCacheState,extraEntries=0,extraBytes=0):boolean {
+ const reserved=[...cache.prefetches].reduce((sum,p)=>sum+p.bytes,0)+extraBytes;
+ if(cache.prefetches.size+extraEntries>cache.maxEntries||reserved>cache.maxBytes)return false;
+ let bytes=[...cache.idle].reduce((sum,e)=>sum+e.width*e.height*4,0)+reserved;
+ while(cache.idle.size&&(cache.idle.size+cache.prefetches.size+extraEntries>cache.maxEntries||bytes>cache.maxBytes)){
+  const oldest=cache.idle.values().next().value!;bytes-=oldest.width*oldest.height*4;discard(oldest);
+ }
+ return cache.idle.size+cache.prefetches.size+extraEntries<=cache.maxEntries&&bytes<=cache.maxBytes;
+}
+const entries=new Map<string,Entry>(),queue:Entry[]=[];let active=0,activeBackground=0,nextEntryId=1;
 let succeededTotal=0,failedTotal=0,deliveredTotal=0;
 const failuresByStage:Record<SystemTextFailureStage,number>={raster:0,read:0,upload:0,"set-image":0,"ready-callback":0};
 const remove=async(path:string|undefined)=>{if(path)await fileChunks.remove(path).catch(()=>{});};
@@ -114,10 +124,45 @@ async function load(entry:Entry){
   entry.stage="delivery";
   // One failed consumer must not prevent delivery to other current consumers.
   for(const listener of entry.listeners)deliver(entry,listener);
+  countSuccess(entry);
  }catch{if(!entry.cancelled){entry.loadFailure=stage;countFailure(stage);}}
- finally{await remove(entry.path);entry.path=undefined;}
+ finally{try{await remove(entry.path);}finally{entry.path=undefined;entry.prefetch?.release();}}
 }
-function pump(){while(active<2&&queue.length){const entry=queue.shift()!;if(entry.cancelled)continue;entry.started=true;entry.stage="raster";active++;void load(entry).finally(()=>{active--;pump();});}}
+function pump(){
+ for(let i=queue.length-1;i>=0;i--)if(queue[i]!.cancelled)queue.splice(i,1);
+ while(active<2&&queue.length){
+  let index=queue.findIndex(entry=>!entry.background);
+  if(index<0){if(activeBackground)return;index=0;}
+  const entry=queue.splice(index,1)[0]!,background=entry.background;entry.started=true;entry.stage="raster";active++;if(background)activeBackground++;
+  void load(entry).finally(()=>{active--;if(background)activeBackground--;pump();});
+ }
+}
+function newEntry(options:SystemTextLineOptions,key:string,cache:TextCacheState|undefined,background:boolean):Entry {
+ const entry:Entry={id:nextEntryId++,key,options,refs:0,cancelled:false,started:false,handle:-1,width:0,height:0,carets:[],listeners:new Set(),stage:"queued",succeeded:false,cache,background};
+ entries.set(key,entry);cache?.members.add(entry);queue.push(entry);return entry;
+}
+/** Best-effort adjacent-content preparation. One background job leaves a slot
+ * for visible text. Pending reservations and ready history share the cache's
+ * byte/entry limits. Cancel drains late files without publishing an image. */
+export function prefetchSystemTextLines(options:readonly SystemTextLineOptions[],owner:SystemTextCache):()=>void {
+ const cache=textCaches.get(owner);if(!cache||cache.closed)throw new Error("System text cache is closed");
+ const leases:PrefetchLease[]=[];
+ for(const input of options){
+  const key="cache:"+cache.id+":"+JSON.stringify(input),known=entries.get(key);
+  if(known){if(cache.idle.delete(known))cache.idle.add(known);continue;}
+  if(!Number.isInteger(input.widthPx)||!Number.isInteger(input.heightPx)||input.widthPx<1||input.heightPx<1||input.widthPx>512||input.heightPx>512)continue;
+  const extent=(n:number)=>2**Math.ceil(Math.log2(n)),bytes=extent(input.widthPx)*extent(input.heightPx)*4;
+  if(bytes>cache.maxBytes||!trimIdle(cache,1,bytes))continue;
+  const entry=newEntry({...input},key,cache,true);entry.refs++;
+  let released=false;
+  const lease:PrefetchLease={bytes,release(){
+   if(released)return;released=true;cache.prefetches.delete(lease);entry.prefetch=undefined;
+   if(--entry.refs===0&&!retain(entry))discard(entry);
+  }};
+  entry.prefetch=lease;cache.prefetches.add(lease);leases.push(lease);
+ }
+ pump();return()=>{for(const lease of leases)lease.release();};
+}
 export function bindSystemTextLine(options:SystemTextLineOptions,node:NodeMirror,ready:(value:{width:number;height:number;carets:number[]})=>void,cache?:SystemTextCache):()=>void{
  return bindSystemTextLineKey(options,node,ready,JSON.stringify(options),cache);
 }
@@ -125,8 +170,8 @@ function bindSystemTextLineKey(options:SystemTextLineOptions,node:NodeMirror,rea
  const cache=owner?textCaches.get(owner):undefined;if(owner&&(!cache||cache.closed))throw new Error("System text cache is closed");
  if(cache)key="cache:"+cache.id+":"+key;
  let entry=entries.get(key);
- if(!entry){entry={id:nextEntryId++,key,options,refs:0,cancelled:false,started:false,handle:-1,width:0,height:0,carets:[],listeners:new Set(),stage:"queued",succeeded:false,cache};entries.set(key,entry);cache?.members.add(entry);queue.push(entry);}
- entry.cache?.idle.delete(entry);entry.refs++;
+ if(!entry)entry=newEntry(options,key,cache,false);
+ entry.background=false;entry.cache?.idle.delete(entry);entry.refs++;
  const listener:Listener={node,ready,state:"pending"};entry.listeners.add(listener);
  if(entry.handle>=0)deliver(entry,listener);pump();
  let released=false;

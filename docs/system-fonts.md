@@ -141,3 +141,19 @@ System glyphs retain their advances, offsets and primary baseline while Rust
 removes only transparent right/bottom rows/columns. One physical transparent
 sample remains for bilinear filtering. Stable per-glyph dimensions survive
 cache eviction and old snapshots. Legacy packaged atlas cells stay unchanged.
+
+## Adjacent reader line preparation
+
+`prefetchSystemTextLines(options, cache)` prepares exact `SystemTextLine` requests
+without creating scene nodes. This is separate from the device glyph cache.
+The caller owns the cache and the cancellation function. Completed textures
+enter the same bounded history as released visible lines. Pending reservations
+and retained history share its entry/byte limits. Active visible leases keep
+their existing ownership rules and are not evicted to admit background work.
+One background request leaves the other host slot available for visible text;
+queued visible requests precede background requests. Attaching a visible line to
+an in-flight preparation promotes that exact entry instead of creating another
+raster request. Full options, including font revision, paragraph, dimensions and
+style, remain the cache identity. Cancellation/close drain late temporary files
+without publishing a stale image. This API does not change glyph pixels, font
+selection, line metrics, the 194-character startup warmup or its 16 MiB disk cap.

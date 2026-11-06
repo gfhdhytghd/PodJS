@@ -15,7 +15,7 @@ mock.module('../src/services.ts',()=>({
  fileChunks:{remove:async(path:string)=>{files.push(path);}},base64ToBytes:()=>{throw Error('file upload must avoid pixel bytes');},
  hasTextureFileUpload:()=>true,uploadTextureFile:()=>texture++
 }));
-const {SystemTextLine,createSystemTextCache,systemTextResourceCounts}=await import('../src/text.tsx');
+const {SystemTextLine,createSystemTextCache,prefetchSystemTextLines,systemTextResourceCounts}=await import('../src/text.tsx');
 const settle=async()=>{for(let i=0;i<16;i++)await Promise.resolve();};
 test('fixed text scene preserves clipping, fallback, carets, raster identity and final ownership',async()=>{
  let dispose!:()=>void,root!:Node;const caretEvents:any[]=[];
@@ -56,4 +56,44 @@ test('scoped bitmap history reuses released pixels, obeys both limits and closes
  mount('二');requests[before].resolve({path:'text/cache-two',width:64,height:32,carets:[0,18]});await settle();dispose();await settle();expect(freed).toContain(firstHandle);expect(cache.stats().retained).toBe(1);
  cache.close();cache.close();expect(cache.stats()).toEqual({retained:0,retainedBytes:0,entries:0});expect(systemTextResourceCounts()).toEqual({active:0,queued:0,cached:0});
  const tiny=createSystemTextCache({maxEntries:8,maxBytes:4});before=requests.length;createRoot(stop=>{dispose=stop;SystemTextLine({options:{text:'小',widthPx:40,heightPx:24,baselinePx:18,fontSizePx:18},pixelScale:2,cache:tiny});});requests[before].resolve({path:'text/cache-tiny',width:64,height:32,carets:[0,18]});await settle();dispose();await settle();expect(tiny.stats().retained).toBe(0);tiny.close();
+});
+
+test('adjacent text preparation publishes identical pixels and keeps a slot for visible work',async()=>{
+ const cache=createSystemTextCache({maxEntries:4,maxBytes:32768}),before=requests.length;
+ const options=(text:string)=>({text,widthPx:40,heightPx:24,baselinePx:18,fontSizePx:18,fontRevision:'revision-a'});
+ const cancel=prefetchSystemTextLines([options('前'),options('后'),options('急')],cache);
+ expect(requests.slice(before).map(r=>r.options.text)).toEqual(['前']);
+ let dispose!:()=>void,root!:Node;
+ createRoot(stop=>{dispose=stop;root=SystemTextLine({options:options('急'),pixelScale:2,cache}) as unknown as Node;});
+ expect(requests.slice(before).map(r=>r.options.text)).toEqual(['前','急']);
+ requests[before+1]!.resolve({path:'text/urgent',width:64,height:32,carets:[0,18]});await settle();
+ const handle=images.at(-1)![1];expect(handle).toBeGreaterThanOrEqual(0);
+ expect((root.children[1] as Node).props.style).toEqual({width:32,height:16,opacity:1});
+ cancel();requests[before]!.resolve({path:'text/cancelled-prefetch',width:64,height:32,carets:[0,18]});await settle();
+ expect(requests).toHaveLength(before+2);expect(files).toContain('text/cancelled-prefetch');
+ cache.close();expect(freed).not.toContain(handle);dispose();await settle();expect(freed).toContain(handle);
+ expect(systemTextResourceCounts()).toEqual({active:0,queued:0,cached:0});
+});
+
+test('completed adjacent lines are reused without a second raster, upload or caret change',async()=>{
+ const cache=createSystemTextCache({maxEntries:2,maxBytes:16384}),before=requests.length;
+ const a={text:'甲',widthPx:40,heightPx:24,baselinePx:18,fontSizePx:18,colorArgb:0xff123456},b={...a,text:'乙'};
+ const cancel=prefetchSystemTextLines([a,b],cache);
+ requests[before]!.resolve({path:'text/prefetch-a',width:64,height:32,carets:[0,18]});await settle();
+ requests[before+1]!.resolve({path:'text/prefetch-b',width:64,height:32,carets:[0,19]});await settle();
+ expect(cache.stats()).toEqual({retained:2,retainedBytes:16384,entries:2});cancel();
+ let dispose!:()=>void;const carets:unknown[]=[];const uploads=texture;
+ createRoot(stop=>{dispose=stop;SystemTextLine({options:a,pixelScale:2,cache,onCarets:value=>carets.push(value)});});
+ expect(requests).toHaveLength(before+2);expect(texture).toBe(uploads);expect(carets.at(-1)).toEqual([0,9]);
+ dispose();cache.close();await settle();expect(systemTextResourceCounts()).toEqual({active:0,queued:0,cached:0});
+});
+
+test('prefetch reservations obey the shared byte limit and closing cancels late outputs',async()=>{
+ const cache=createSystemTextCache({maxEntries:5,maxBytes:8192}),before=requests.length,uploads=texture;
+ const a={text:'甲',widthPx:40,heightPx:24,baselinePx:18,fontSizePx:18};
+ prefetchSystemTextLines([a,{...a,text:'乙'},{...a,text:'丙'}],cache);
+ expect(requests).toHaveLength(before+1);expect(systemTextResourceCounts()).toEqual({active:1,queued:0,cached:1});
+ cache.close();cache.close();requests[before]!.resolve({path:'text/closed-prefetch',width:64,height:32,carets:[0,18]});await settle();
+ expect(texture).toBe(uploads);expect(files).toContain('text/closed-prefetch');expect(cache.stats().entries).toBe(0);
+ expect(systemTextResourceCounts()).toEqual({active:0,queued:0,cached:0});
 });
