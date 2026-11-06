@@ -81,7 +81,7 @@ final class PodSystemFonts {
             if(config==null)return;
             config.put("preloadFontSlots",root.optJSONArray("preloadFontSlots"));
             if(config.getInt("version")!=1||config.getLong("diskCacheBytes")!=PodGlyphDiskCache.MAX_BYTES)throw new IOException("system font contract");
-            try{disk=new PodGlyphDiskCache(new File(context.getCacheDir(),"podjs-system-glyphs"),PodGlyphDiskCache.MAX_BYTES);}catch(IOException unavailable){disk=null;}
+            try{disk=new PodGlyphDiskCache(new File(context.getCacheDir(),"podjs-system-glyphs"),PodGlyphDiskCache.MAX_BYTES,true);}catch(IOException unavailable){disk=null;}
             byte[] xml;
             try(InputStream input=new FileInputStream("/system/etc/fonts.xml")){xml=readBounded(input,2*1024*1024);}
             String language=Locale.getDefault().getLanguage(),build=Build.FINGERPRINT+":podjs-system-skia-v4-argb";

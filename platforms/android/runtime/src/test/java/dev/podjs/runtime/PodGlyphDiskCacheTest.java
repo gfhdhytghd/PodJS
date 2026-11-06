@@ -7,6 +7,29 @@ import java.util.*;
 import org.junit.Test;
 
 public class PodGlyphDiskCacheTest {
+    @Test public void deferredInventoryReadsOldPixelsAndPreservesEarlyLruBeforeAnyDiskWrite()throws Exception {
+        File root=Files.createTempDirectory("glyph-deferred").toFile();
+        try {
+            PodGlyphDiskCache old=new PodGlyphDiskCache(root,1200,0);old.put(key(1),cell(1));old.put(key(2),cell(2));
+            PodGlyphDiskCache cache=new PodGlyphDiskCache(root,1200,0,true);assertFalse(cache.inventoryReady());
+            assertArrayEquals(cell(1),cache.get(key(1),512));cache.putAsync(key(3),cell(3));
+            assertEquals(2,root.listFiles().length);assertFalse(cache.awaitWrites(1));
+            cache.enableWrites();assertTrue(cache.awaitWrites(10000));assertTrue(cache.inventoryReady());
+            assertArrayEquals(cell(1),cache.get(key(1),512));assertNull(cache.get(key(2),512));assertArrayEquals(cell(3),cache.get(key(3),512));
+            assertTrue(cache.bytes()<=1200);assertTrue(Arrays.stream(root.listFiles()).mapToLong(File::length).sum()<=1200);
+        }finally{for(File f:root.listFiles())f.delete();root.delete();}
+    }
+    @Test public void deferredMetadataAndGlyphsRemainInRamUntilInventoryAndShareTheBudgetAfterDrain()throws Exception {
+        File root=Files.createTempDirectory("glyph-deferred-index").toFile();
+        try {
+            PodGlyphDiskCache cache=new PodGlyphDiskCache(root,32768,4096,true);byte[] index=cell(17);
+            cache.fontIndex(index);cache.identity(key(8),key(9));cache.putAsync(key(1),cell(1));
+            assertEquals(0,root.listFiles().length);assertArrayEquals(index,cache.fontIndex());assertEquals(key(9),cache.identity(key(8)));
+            cache.enableWrites();assertTrue(cache.awaitWrites(10000));assertTrue(cache.inventoryReady());
+            assertTrue(cache.bytes()<=32768);PodGlyphDiskCache reopened=new PodGlyphDiskCache(root,32768,4096);
+            assertArrayEquals(index,reopened.fontIndex());assertEquals(key(9),reopened.identity(key(8)));assertArrayEquals(cell(1),reopened.get(key(1),512));
+        }finally{for(File f:root.listFiles())f.delete();root.delete();}
+    }
     @Test public void nativeMetadataTransferKeepsNamesLengthsAndMillisecondTimesAndRejectsPartialTables()throws Exception {
         File root=new File("/private/glyph-cache");java.io.ByteArrayOutputStream bytes=new java.io.ByteArrayOutputStream();
         java.io.DataOutputStream out=new java.io.DataOutputStream(bytes);out.writeInt(0x50474432);out.writeInt(1);

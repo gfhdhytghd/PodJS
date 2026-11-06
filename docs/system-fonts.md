@@ -106,13 +106,20 @@ The writer can additionally hold one serialized record (at most 1 MiB) and its
 compressed output while writing. Its disk reservation includes the temporary
 record. Filesystem writes run outside the foreground metadata lock.
 
-Startup inventories existing glyph records with one bounded native directory
+After first presentation, inventory existing glyph records with one bounded native directory
 scan and one JNI metadata transfer. Length and modification time come from one
 stat per entry. Glyph-name validation and (mtime, name) sorting also run natively.
 Java retains compact names/metadata and creates File paths only
 when a record is accessed. This scans the live directory and preserves full LRU
 and byte-budget validation; it does not trust a persisted glyph catalog. Native
 failure, non-ASCII foreign names, or an oversized transfer use the Java scan.
+Before inventory, first-screen reads open immutable records by their hashed key
+and validate their size and CRC. Pixel records, up to 128 KiB of parsed-font
+metadata, and bounded early-access bookkeeping remain in RAM. No cache file is
+written before inventory and LRU trimming complete. Early reads/deletions are
+reconciled before publishing the inventory. An already oversized/corrupt private
+directory is repaired during this deferred inventory; the cache never adds disk
+bytes before that repair. The ordinary eager constructor keeps its old behavior.
 Font preparation starts in the view constructor, overlapping existing service
 and window creation. The UI thread does not wait and the Surface callback is
 unchanged. Native boot joins the same preparation future before loading slots.
