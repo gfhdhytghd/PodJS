@@ -15,6 +15,17 @@ import org.robolectric.annotation.GraphicsMode;
 @Config(sdk=30)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 public class PodSystemFontFallbackUnitTest {
+    @Test public void primaryMetricsUseNaturalHeightWhileFallbackPixelsMayOverhang() {
+        for(int bold=0;bold<=1;bold++)for(int density=1;density<=2;density++) {
+            Paint reference=new Paint(Paint.ANTI_ALIAS_FLAG|Paint.SUBPIXEL_TEXT_FLAG|Paint.FILTER_BITMAP_FLAG);
+            reference.setTypeface(Typeface.create(Typeface.DEFAULT,bold!=0?Typeface.BOLD:Typeface.NORMAL));reference.setTextSize(17*density);
+            Paint.FontMetrics f=reference.getFontMetrics();int baseline=(int)Math.ceil(-f.ascent/density);
+            int[] metrics=PodSystemFontFallback.metrics(17,bold,density);
+            assertEquals(baseline,metrics[2]);assertEquals(baseline+(int)Math.ceil(f.descent/density),metrics[1]);
+            assertTrue("An emoji extent must not shift the centered primary line",metrics[1]<38);
+            assertNotNull(PodSystemFontFallback.raster("A",17,bold,38,38,baseline,density));
+        }
+    }
     @Test public void rejectsInvalidHostRequestsBeforeAllocation() {
         assertNull(PodSystemFontFallback.raster("\ud800",16,0,24,24,18,2));
         assertNull(PodSystemFontFallback.raster(null,16,0,24,24,18,2));

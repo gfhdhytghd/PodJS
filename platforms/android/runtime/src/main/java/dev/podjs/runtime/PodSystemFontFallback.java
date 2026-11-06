@@ -49,8 +49,10 @@ final class PodSystemFontFallback {
     static synchronized int[] metrics(float px,int bold,int density) {
         if(!Float.isFinite(px)||px<1||px>128||density<1||density>4)return null;
         Paint.FontMetrics f=paint(px,bold,density).getFontMetrics();
-        int baseline=(int)Math.ceil(-f.ascent/density),extent=(int)Math.ceil(px*2+4);
-        return new int[]{Math.min(255,extent),Math.min(255,Math.max(extent,(int)Math.ceil((f.bottom-f.top)/density))),baseline,
+        int baseline=(int)Math.ceil(-f.ascent/density);
+        // The retained core centers the PRIMARY cell in each CSS line box.
+        // Emoji overhang belongs to Fallback's larger cells, never to this box.
+        return new int[]{(int)Math.ceil(px),Math.min(255,Math.max(1,baseline+(int)Math.ceil(f.descent/density))),baseline,
             Math.max(1,(int)Math.ceil((f.descent-f.ascent+f.leading)/density))};
     }
     static synchronized void prewarm() {
@@ -67,6 +69,7 @@ final class PodSystemFontFallback {
                     org.json.JSONObject slot=slots.getJSONObject(i);if(!wanted.isEmpty()&&!wanted.contains(slot.getInt("slot")))continue;
                     float px=(float)slot.getDouble("px");int bold=slot.getBoolean("bold")?1:0,density=slot.getInt("density");
                     int[] m=metrics(px,bold,density);if(m==null)continue;
+                    int extent=Math.min(255,(int)Math.ceil(px*2+4));m[0]=Math.max(m[0],extent);m[1]=Math.max(m[1],extent);
                     for(int pos=0;pos<chars.length();) {
                         if(warmGeneration.get()!=generation)return;
                         int cp=chars.codePointAt(pos);pos+=Character.charCount(cp);

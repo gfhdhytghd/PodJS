@@ -35,6 +35,8 @@ not on every Android version or OEM font overlay.
 Both retained native glyph callbacks and Android paragraph/EditText services
 use the same mapped typefaces. Skia/Minikin provides metrics, rasterization and
 emoji cluster shaping. The native surface keeps append-only glyph IDs, and
+centers the font's natural primary cell in its line box. Larger emoji/overhang
+cells are separate so they cannot move ordinary text upward. The native surface
 uses a shared 8 MiB LRU for system-font pixels. In-flight render snapshots can
 retain evicted cells, so 8 MiB is a cache-reference limit, not a total PSS limit.
 Legacy packaged fonts keep their existing coverage rasterizer and cache.
