@@ -29,6 +29,13 @@ final class PodContentFiles {
         if("content.files.stat".equals(method)){JSONArray paths=a.getJSONArray("paths"),out=new JSONArray();if(paths.length()>32)throw new IllegalArgumentException("content_batch_limit");for(int i=0;i<paths.length();i++){String p=paths.getString(i);File f=path(p);synchronized(lock(f)){JSONObject c=cp(f);int offset=c==null?0:number(c,"durableOffset",266264);if(offset>f.length())throw new IOException("content_checkpoint_corrupt");out.put(new JSONObject().put("path",p).put("exists",f.isFile()).put("size",f.length()).put("durableOffset",offset).put("checkpoint",c==null?JSONObject.NULL:c.getString("checkpoint")));}}return new JSONObject().put("entries",out);}
         if("content.files.read".equals(method)){JSONArray ranges=a.getJSONArray("ranges"),out=new JSONArray();if(ranges.length()>32)throw new IllegalArgumentException("content_batch_limit");int total=0;for(int i=0;i<ranges.length();i++){JSONObject r=ranges.getJSONObject(i);int offset=number(r,"offset",266264),n=number(r,"length",262144);total+=n;if(total>262144)throw new IllegalArgumentException("content_batch_limit");File f=path(r.getString("path"));byte[] b=new byte[n];synchronized(lock(f)){try(RandomAccessFile in=new RandomAccessFile(f,"r")){if((long)offset+n>in.length())throw new IOException("invalid_content_range");in.seek(offset);in.readFully(b);}}out.put(new JSONObject().put("dataBase64",Base64.encodeToString(b,Base64.NO_WRAP)));}return new JSONObject().put("entries",out);}
         File f=path(a.getString("path"));synchronized(lock(f)){
+            if("content.files.discard".equals(method)){
+                // Retire the prefix first. If truncation/reply fails, the next
+                // frame still starts at zero and truncates any untrusted tail.
+                atomic(new File(f.getPath()+".checkpoint"),new JSONObject().put("durableOffset",0).put("checkpoint","").toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                try(RandomAccessFile out=new RandomAccessFile(f,"rw")){out.setLength(0);out.getFD().sync();}
+                syncDir(f.getParentFile());return new JSONObject().put("durableOffset",0);
+            }
             if("content.files.frame".equals(method)){
                 int offset=number(a,"offset",266264);byte[] b=decode(a);String checkpoint=a.getString("checkpoint");if(offset%65536!=0||b.length<1||b.length>65536||offset+b.length>266264||checkpoint.getBytes(java.nio.charset.StandardCharsets.UTF_8).length>8192)throw new IllegalArgumentException("invalid_content_frame");
                 JSONObject saved=cp(f);int durable=saved==null?0:number(saved,"durableOffset",266264);

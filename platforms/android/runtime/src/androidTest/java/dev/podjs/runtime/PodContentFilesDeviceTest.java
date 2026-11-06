@@ -21,4 +21,11 @@ public class PodContentFilesDeviceTest {
   }finally{try(java.util.stream.Stream<Path> paths=Files.walk(root.toPath())){for(Path p:paths.sorted(Comparator.reverseOrder()).collect(java.util.stream.Collectors.toList()))Files.deleteIfExists(p);}}
  }
  @Test public void conditionsNeverInventApplicationBluetoothSession()throws Exception{JSONObject s=PodContentConditions.snapshot(InstrumentationRegistry.getInstrumentation().getTargetContext());assertFalse(s.has("bluetooth"));assertFalse(s.has("localRoute"));assertTrue(s.has("charging"));assertTrue(s.has("wifi"));assertTrue(s.has("cellular"));assertTrue(s.has("internet"));}
+ @Test public void rejectedPrefixReopensAtZeroAndAcceptsCorrectBytes()throws Exception{
+  Context c=InstrumentationRegistry.getInstrumentation().getTargetContext();File root=Files.createTempDirectory(c.getCacheDir().toPath(),"content-discard-").toFile();
+  try{String path=String.join("",Collections.nCopies(64,"a"))+"/rejected.data";PodContentFiles host=new PodContentFiles(root);host.execute("content.files.frame",new JSONObject().put("path",path).put("offset",0).put("dataBase64",Base64.encodeToString(new byte[]{1,2},Base64.NO_WRAP)).put("checkpoint","unverified"));
+   host.execute("content.files.discard",new JSONObject().put("path",path));host=new PodContentFiles(root);JSONObject stat=host.execute("content.files.stat",new JSONObject().put("paths",new JSONArray().put(path))).getJSONArray("entries").getJSONObject(0);assertEquals(0,stat.getInt("durableOffset"));assertEquals(0,stat.getInt("size"));
+   host.execute("content.files.frame",new JSONObject().put("path",path).put("offset",0).put("dataBase64",Base64.encodeToString(new byte[]{3,4},Base64.NO_WRAP)).put("checkpoint","retry"));assertArrayEquals(new byte[]{3,4},Files.readAllBytes(new File(root,"content-v2/"+path).toPath()));
+  }finally{try(java.util.stream.Stream<Path> paths=Files.walk(root.toPath())){for(Path p:paths.sorted(Comparator.reverseOrder()).collect(java.util.stream.Collectors.toList()))Files.deleteIfExists(p);}}
+ }
 }

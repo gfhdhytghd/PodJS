@@ -40,3 +40,11 @@ session membership, protocol receipts, and queue ordering.
 
 These capabilities do not enable content synchronization, local object transfer,
 automatic eviction, custody release, or note segmentation by themselves.
+
+`ContentFiles.discard(path)` retires an untrusted derived prefix after an upper
+layer integrity check fails. It is restricted to the existing hashed content-v2
+projection root. Native IO publishes/fsyncs a zero checkpoint before truncating
+and fsyncing the data file. Thus a lost reply or interruption cannot resurrect
+an accepted prefix; the next frame starts at zero and truncates an old tail.
+The caller must only pass the rejected derived cache, never an original source
+or another authenticated block. This operation does not evict business content.
