@@ -99,7 +99,13 @@
     "./video-paging": "./src/video-paging.ts",
     "./benchmark": "./src/benchmark.ts",
     "./testing/solid-preload": "./testing/solid-preload.ts",
-    "./p256": "./src/p256.ts"
+    "./p256": "./src/p256.ts",
+    "./content-worker": "./src/content-worker.ts",
+    "./content-files": "./src/content-files.ts",
+    "./content-sha256": "./src/content-sha256.ts",
+    "./content-host": "./src/content-host.ts",
+    "./content-record": "./src/content-record.ts",
+    "./content-http": "./src/content-http.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",

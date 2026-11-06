@@ -102,6 +102,7 @@ public final class PodDeviceServices implements AutoCloseable {
             case "crypto.v2.signingKey": return v2Signing(args,false);
             case "crypto.v2.sign": return v2Signing(args,true);
             case "crypto.v2.verify": return new JSONObject().put("valid",PodSyncV2Crypto.verify(decode(args,"publicKeySec1"),decode(args,"dataBase64"),decode(args,"signatureBase64")));
+            case "crypto.v2.decrypt": return new JSONObject().put("dataBase64",enc(PodSyncV2Crypto.decrypt(decode(args,"keyBase64"),decode(args,"nonceBase64"),decodeV2Cipher(args),decode(args,"aadBase64"))));
             case "crypto.v2.encrypt": return new JSONObject().put("ciphertextBase64",enc(PodSyncV2Crypto.encrypt(decode(args,"keyBase64"),decode(args,"nonceBase64"),decode(args,"dataBase64"),decode(args,"aadBase64"))));
             case "crypto.v2.gunzip": return new JSONObject().put("dataBase64",enc(PodSyncV2Crypto.gunzip(decode(args,"dataBase64"),args.getInt("plainBytes"))));
             case "crypto.verifyP256": return new JSONObject().put("valid",PodCloudCrypto.verifyP256(decode(args,"publicKeySpki"),decode(args,"dataBase64"),decode(args,"signatureBase64")));
@@ -932,6 +933,7 @@ public final class PodDeviceServices implements AutoCloseable {
     }
     private static int bounded(int n) { if (n < 0 || n > MAX_CHUNK_BYTES) throw new IllegalArgumentException("invalid_max_bytes"); return n; }
     private static String required(JSONObject a, String k) { String v = a.optString(k, null); if (v == null) throw new IllegalArgumentException("missing_" + k); return v; }
+    private static byte[] decodeV2Cipher(JSONObject a) {String s=required(a,"ciphertextBase64");if(s.length()>349548)throw new IllegalArgumentException("invalid_v2_ciphertext");byte[] b=Base64.decode(s,Base64.DEFAULT);if(b.length<16||b.length>262160)throw new IllegalArgumentException("invalid_v2_ciphertext");return b;}
     private static byte[] decodeInput(JSONObject a) { return a.has("dataBase64") ? decode(a, "dataBase64") : required(a, "data").getBytes(StandardCharsets.UTF_8); }
     private static byte[] decode(JSONObject a, String k) { try { byte[] b = Base64.decode(required(a, k), Base64.DEFAULT); if (b.length > MAX_CHUNK_BYTES) throw new IllegalArgumentException("chunk_too_large"); return b; } catch (IllegalArgumentException e) { throw new IllegalArgumentException("invalid_base64", e); } }
     private static String enc(byte[] b) { return Base64.encodeToString(b, Base64.NO_WRAP); }

@@ -12,9 +12,11 @@ public final class PodCloudWorker extends Worker {
     private volatile PodBackgroundRun active;
     private volatile PodServices services;
     static final Set<String> METHODS=Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
+        "content.http","content.files.stat","content.files.read","content.files.frame","content.files.publish","content.files.replace","content.conditions",
+        "content.crypto.v2.encrypt","content.crypto.v2.decrypt","content.crypto.v2.gunzip","content.crypto.hash","content.crypto.hmacSha256","content.crypto.hkdfSha256","content.crypto.random","content.crypto.aesGcmDecrypt","content.crypto.gzip",
         "app.buildInfo","cloud.acquire","cloud.release","discovery.networkSnapshot","runtime.delay",
         "sql.query","sql.execute","sql.transaction","sql.notify","secure.keys","secure.get","secure.set","secure.delete","secure.update","secure.compareAndSet","secure.acquire","secure.release",
-        "crypto.v2.signingKey","crypto.v2.sign","crypto.v2.verify","crypto.v2.encrypt","crypto.v2.gunzip","crypto.random","crypto.hash","crypto.hmacSha256","crypto.verifyP256","crypto.ecdhPublicKey","crypto.ecdhUnwrap","crypto.hkdfSha256",
+        "crypto.v2.signingKey","crypto.v2.sign","crypto.v2.verify","crypto.v2.encrypt","crypto.v2.decrypt","crypto.v2.gunzip","crypto.random","crypto.hash","crypto.hmacSha256","crypto.verifyP256","crypto.ecdhPublicKey","crypto.ecdhUnwrap","crypto.hkdfSha256",
         "crypto.aesGcmEncrypt","crypto.aesGcmDecrypt","crypto.largeAesGcmEncrypt","crypto.gunzipSealedParts","crypto.closeSealedGzip","crypto.openSealedParts","crypto.largeAesGcmDecrypt","crypto.gzip","crypto.gunzip",
         "log.append","http.download","uri.parse","file.list","file.createTemp","file.read","file.write","file.publishBytes","file.stat","file.hash","file.commit","file.compose","file.delete",
         "file.gzip","file.gunzip","file.htmlText","file.openText","file.readTextChunk","file.closeText"

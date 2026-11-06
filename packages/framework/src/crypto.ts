@@ -79,7 +79,7 @@ export function createSyncV2Crypto(request:CryptoRequest){
   async random(count:number){return raw((await request<{bytesBase64:string}>('crypto.random',{bytes:count})).bytesBase64);},
   async hkdf(key:Uint8Array,salt:Uint8Array,info:Uint8Array){return raw((await request<{keyBase64:string}>('crypto.hkdfSha256',{inputBase64:b64(key),saltBase64:b64(salt),infoBase64:b64(info)})).keyBase64);},
   async encrypt(key:Uint8Array,nonce:Uint8Array,input:Uint8Array,aad:Uint8Array){return raw((await request<{ciphertextBase64:string}>('crypto.v2.encrypt',{keyBase64:b64(key),nonceBase64:b64(nonce),dataBase64:b64(input),aadBase64:b64(aad)})).ciphertextBase64);},
-  async decrypt(key:Uint8Array,nonce:Uint8Array,input:Uint8Array,aad:Uint8Array){return raw((await request<{dataBase64:string}>('crypto.aesGcmDecrypt',{keyBase64:b64(key),nonceBase64:b64(nonce),ciphertextBase64:b64(input),aadBase64:b64(aad)})).dataBase64);},
+  async decrypt(key:Uint8Array,nonce:Uint8Array,input:Uint8Array,aad:Uint8Array){return raw((await request<{dataBase64:string}>(input.length>262144?'crypto.v2.decrypt':'crypto.aesGcmDecrypt',{keyBase64:b64(key),nonceBase64:b64(nonce),ciphertextBase64:b64(input),aadBase64:b64(aad)})).dataBase64);},
   async gunzip(input:Uint8Array,plainBytes:number){return raw((await request<{dataBase64:string}>('crypto.v2.gunzip',{dataBase64:b64(input),plainBytes})).dataBase64);},
  };
 }

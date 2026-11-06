@@ -49,5 +49,6 @@ public final class PodSyncV2Crypto {
         try{inflater.setInput(in,at,in.length-at);while(!inflater.finished()){int n=inflater.inflate(b);require(n>0||inflater.finished());require(out.size()<=length-n);out.write(b,0,n);}int end=at+(int)inflater.getBytesRead();byte[] plain=out.toByteArray();require(end+8==in.length&&plain.length==length);CRC32 crc=new CRC32();crc.update(plain);require(le(in,end)==crc.getValue()&&le(in,end+4)==length);return plain;}finally{inflater.end();}
     }
     /** Explicit nonce is CSPRNG-produced by the caller before final AAD construction. */
+    public static byte[] decrypt(byte[] key,byte[] nonce,byte[] input,byte[] aad)throws Exception {require(input.length>=16&&input.length<=262160&&aad.length<=4096);return PodCloudCrypto.aes(false,key,nonce,input,aad);}
     public static byte[] encrypt(byte[] key,byte[] nonce,byte[] input,byte[] aad)throws Exception {require(input.length<=262144&&aad.length<=4096);return PodCloudCrypto.aes(true,key,nonce,input,aad);}
 }

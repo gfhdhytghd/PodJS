@@ -95,6 +95,10 @@ final class PodServices implements Closeable {
         android.util.Log.i("PodJSService","executor="+lane+" lane="+(headlessWork?"background":"foreground")+" tid="+android.os.Process.myTid());r.run();
     },"Pod"+lane+(headlessWork?"BG":"FG")));}
     private final ExecutorService worker = serviceExecutor("Device");
+    private final ExecutorService contentWorker = serviceExecutor("Content");
+    private PodDeviceServices contentDevice;
+    private PodContentFiles contentFiles;
+    private volatile PodHttpServices contentHttp;
     // Secure UI actions bypass this guest's file/cache queue as well as headless work.
     private final ExecutorService secureWorker = serviceExecutor("Secure");
     private volatile boolean headlessWork;
@@ -642,7 +646,7 @@ final class PodServices implements Closeable {
         if (!("secure.get".equals(method)&&!headlessWork&&device.hasWarmSecureStore()) && !method.endsWith(".release") && (method.startsWith("secure.") || method.startsWith("crypto.") || method.startsWith("file.") || "log.append".equals(method) || "uri.parse".equals(method)))
             request.priority = HostWorkPriority.DEVICE.reserve(headlessWork);
         final long queuedAt=System.nanoTime();
-        try { request.future = (method.startsWith("provision.") || method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.") || method.startsWith("discovery.") ? streamWorkers : method.startsWith("http.") ? transfers : method.startsWith("sql.") ? sqlWorker : method.startsWith("text.") ? textWorker : method.startsWith("secure.") ? secureWorker : worker).submit(() -> {
+        try { request.future = (method.startsWith("provision.") || method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.") || method.startsWith("discovery.") ? streamWorkers : method.startsWith("content.") ? contentWorker : method.startsWith("http.") ? transfers : method.startsWith("sql.") ? sqlWorker : method.startsWith("text.") ? textWorker : method.startsWith("secure.") ? secureWorker : worker).submit(() -> {
             long workAt=0,cpuAt=android.os.Debug.threadCpuTimeNanos();boolean workSuccess=false;
             try {
                 if (request.priority != null) request.priority.enter();
@@ -653,7 +657,20 @@ final class PodServices implements Closeable {
                 request.cancellation.throwIfCanceled();
                 workAt=System.nanoTime();
                 Object value;
-                if (method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.")) {
+                if ("content.http".equals(method)) {
+                    if(contentHttp==null)contentHttp=new PodHttpServices(context);
+                    value=contentHttp.execute("http.download",args);
+                } else if (method.startsWith("content.files.")) {
+                    if(contentFiles==null)contentFiles=new PodContentFiles(PodTakeover.filesRoot(context));
+                    value=contentFiles.execute(method,args);
+                } else if ("content.conditions".equals(method)) {
+                    value=PodContentConditions.snapshot(context);
+                } else if (method.startsWith("content.crypto.")) {
+                    String nativeMethod=method.substring("content.".length());
+                    if(!java.util.Arrays.asList("crypto.v2.encrypt","crypto.v2.decrypt","crypto.v2.gunzip","crypto.hash","crypto.hmacSha256","crypto.hkdfSha256","crypto.random","crypto.aesGcmDecrypt","crypto.gzip").contains(nativeMethod))throw new SecurityException("unsupported_content_crypto");
+                    if(contentDevice==null)contentDevice=new PodDeviceServices(context);
+                    value=contentDevice.execute(nativeMethod,args);
+                } else if (method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.")) {
                     value=method.startsWith("websocket.")?webSockets.execute(method,args,request.cancellation):byteStreams.execute(method,args,request.cancellation);
                 } else if (method.startsWith("provision.")) {
                     if(!displayResumed)throw new IllegalStateException("配对需要保持前台");
@@ -936,7 +953,7 @@ final class PodServices implements Closeable {
         if(request.method!=null&&request.method.startsWith("acoustic.")){
             acoustic.cancel();guidedWifi.cancel();main.post(()->{acousticPermission.cancel(id);guidedPermission.cancel(id);});
         }
-        http.cancel(id);
+        http.cancel(id);if(contentHttp!=null)contentHttp.cancel(id);
         media.cancel(request.method);
         video.cancel(request.method);
         if(request.method!=null&&request.method.startsWith("video.session."))videoSessions.cancel(request.videoSessionId);
@@ -972,7 +989,7 @@ final class PodServices implements Closeable {
         browserAuth.close();
         siteChallenge.close();
         main.post(browser::close);
-        http.close();
+        http.close();if(contentHttp!=null)contentHttp.close();
         provisioning.close(); networks.close(); bleDiscovery.close(); discovery.close(); webSockets.close(); byteStreams.close();
         streamWorkers.shutdownNow();
         transfers.shutdownNow();
@@ -986,6 +1003,8 @@ final class PodServices implements Closeable {
             if(cloudWork!=null)cloudWork.close(); if(background!=null) background.close(); if(notifications!=null)notifications.close(); device.close();
             workStats.emit(System.nanoTime(),true,headlessWork,line->android.util.Log.i("PodJSService",line));
         });
+        contentWorker.execute(()->{if(contentHttp!=null)contentHttp.close();if(contentDevice!=null)contentDevice.close();});
+        contentWorker.shutdown();
         secureWorker.shutdown();
         worker.shutdown();
     }
