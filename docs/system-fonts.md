@@ -157,3 +157,9 @@ raster request. Full options, including font revision, paragraph, dimensions and
 style, remain the cache identity. Cancellation/close drain late temporary files
 without publishing a stale image. This API does not change glyph pixels, font
 selection, line metrics, the 194-character startup warmup or its 16 MiB disk cap.
+
+Preparing a texture not referenced by the current DrawList does not invalidate
+that scene's presentation hash. Referenced texture generations/revisions remain
+part of the hash, including disappearance of a stale handle. Empty lists,
+auxiliary-surface commands, unknown opcodes and truncated records retain the
+conservative whole-registry path. Snapshot resource ownership is unchanged.

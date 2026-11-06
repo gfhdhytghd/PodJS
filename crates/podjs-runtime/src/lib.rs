@@ -25,6 +25,7 @@ pub mod byte_codecs;
 mod raw_json;
 mod register_merge;
 mod cpu_trace;
+mod draw_texture_refs;
 pub mod html;
 pub mod html_preview;
 pub mod xml;
@@ -1559,12 +1560,24 @@ pub extern "C" fn pod_runtime_snapshot(runtime: *mut PodRuntime, out: *mut PodDr
                 hash = (hash ^ version).wrapping_mul(0x100000001b3);
             }
         }
-        for slot in 0..ui.texture_slot_count() as u32 {
-            if let Some((handle, revision, _)) = ui.texture_at_versioned(slot) {
-                // Mix ordered identities and versions: XOR alone cancels simultaneous
-                // updates when two media textures acquire the same revision.
-                hash = (hash ^ handle as u32 as u64).wrapping_mul(0x100000001b3);
-                hash = (hash ^ revision).wrapping_mul(0x100000001b3);
+        if let Some(handles)=draw_texture_refs::referenced(&ui.draw().words) {
+            // Preparing an unattached line is not a change to the visible scene.
+            // Live/missing tags also invalidate a stale referenced handle at rev 0.
+            for handle in handles {
+                hash=(hash^handle as u32 as u64).wrapping_mul(0x100000001b3);
+                if let Some(revision)=ui.texture_revision(handle) {
+                    hash=(hash^1).wrapping_mul(0x100000001b3);
+                    hash=(hash^revision).wrapping_mul(0x100000001b3);
+                }else{hash=hash.wrapping_mul(0x100000001b3);}
+            }
+        }else {
+            // Empty/unknown lists and auxiliary surfaces retain the complete
+            // registry contract. Never omit dependencies of an unknown format.
+            for slot in 0..ui.texture_slot_count() as u32 {
+                if let Some((handle,revision,_))=ui.texture_at_versioned(slot) {
+                    hash=(hash^handle as u32 as u64).wrapping_mul(0x100000001b3);
+                    hash=(hash^revision).wrapping_mul(0x100000001b3);
+                }
             }
         }
     });
@@ -3281,6 +3294,54 @@ mod tests {
         for handle in [legacy, nearest, linear] {
             assert_eq!(pod_runtime_free_texture(runtime, handle), OK);
         }
+        pod_runtime_destroy(runtime);
+    }
+
+    #[test]
+    fn unused_prepared_textures_do_not_invalidate_a_visible_scene() {
+        let target=CString::new("android-watch").unwrap();let caps=CString::new("[]").unwrap();
+        let runtime=pod_runtime_create(&valid_config(&target,&caps));
+        let source=b"globalThis.frame = function() {}";validate(runtime,"android-watch",b"pak",source,&[]);
+        assert_eq!(pod_runtime_eval_bundle(runtime,source.as_ptr(),source.len(),std::ptr::null()),OK);
+        runtime_mut(runtime).unwrap().surface.with_ui(|ui| {
+            ui.set_prop(spec::ROOT_ID,spec::prop::BG_COLOR,0xff112233u32 as f64);ui.tick();
+            assert!(!ui.draw().words.is_empty());
+        });
+        let mut draw=PodDrawList{words:std::ptr::null(),word_count:0,content_hash:0,frame_number:0,changed:0};
+        assert_eq!(pod_runtime_snapshot(runtime,&mut draw),OK);let before=draw.content_hash;
+        let length=(pod_runtime_logical_width(runtime)*pod_runtime_logical_height(runtime)*4)as usize;
+        let mut pixels=vec![0;length];assert_eq!(pod_runtime_render_rgba_transparent_incremental(runtime,1,pixels.as_mut_ptr(),length),OK);let reference=pixels.clone();
+        let first=[1u8,2,3,255];let next=[9u8,8,7,255];
+        let prepared=pod_runtime_upload_rgba(runtime,first.as_ptr(),4,1,1);assert!(prepared>=0);
+        assert_eq!(pod_runtime_snapshot(runtime,&mut draw),OK);
+        assert_eq!(draw.content_hash,before,"an unattached prepared line must not redraw the current page");assert_eq!(draw.changed,0);
+        assert_eq!(pod_runtime_update_rgba(runtime,prepared,next.as_ptr(),4),OK);
+        assert_eq!(pod_runtime_snapshot(runtime,&mut draw),OK);assert_eq!(draw.content_hash,before);
+        assert_eq!(pod_runtime_free_texture(runtime,prepared),OK);
+        assert_eq!(pod_runtime_snapshot(runtime,&mut draw),OK);assert_eq!(draw.content_hash,before);
+        assert_eq!(pod_runtime_render_rgba_transparent_incremental(runtime,1,pixels.as_mut_ptr(),length),OK);assert_eq!(pixels,reference);
+        pod_runtime_destroy(runtime);
+    }
+
+    #[test]
+    fn visible_texture_updates_still_invalidate_while_unused_preparations_do_not() {
+        let target=CString::new("android-watch").unwrap();let caps=CString::new("[]").unwrap();
+        let runtime=pod_runtime_create(&valid_config(&target,&caps));let source=b"globalThis.frame = function() {}";
+        validate(runtime,"android-watch",b"pak",source,&[]);assert_eq!(pod_runtime_eval_bundle(runtime,source.as_ptr(),source.len(),std::ptr::null()),OK);
+        let first=[1u8,2,3,255];let next=[9u8,8,7,255];let a=pod_runtime_upload_rgba(runtime,first.as_ptr(),4,1,1);
+        runtime_mut(runtime).unwrap().surface.with_ui(|ui| {
+            let image=ui.create_node(spec::NodeType::Image as u8);ui.set_prop(image,spec::prop::WIDTH,4.0);ui.set_prop(image,spec::prop::HEIGHT,4.0);
+            ui.set_image(image,a);ui.insert_before(spec::ROOT_ID,image,0);ui.tick();
+            assert!(draw_texture_refs::referenced(&ui.draw().words).unwrap().contains(&a));
+        });
+        let mut draw=PodDrawList{words:std::ptr::null(),word_count:0,content_hash:0,frame_number:0,changed:0};
+        assert_eq!(pod_runtime_snapshot(runtime,&mut draw),OK);let before=draw.content_hash;
+        let b=pod_runtime_upload_rgba(runtime,first.as_ptr(),4,1,1);assert!(b>=0);assert_eq!(pod_runtime_snapshot(runtime,&mut draw),OK);assert_eq!(draw.content_hash,before);
+        assert_eq!(pod_runtime_update_rgba(runtime,a,next.as_ptr(),4),OK);assert_eq!(pod_runtime_update_rgba(runtime,b,next.as_ptr(),4),OK);
+        assert_eq!(pod_runtime_snapshot(runtime,&mut draw),OK);assert_ne!(draw.content_hash,before);assert_eq!(draw.changed,1);
+        let visible=draw.content_hash;assert_eq!(pod_runtime_snapshot(runtime,&mut draw),OK);assert_eq!(draw.changed,0);
+        assert_eq!(pod_runtime_free_texture(runtime,b),OK);assert_eq!(pod_runtime_snapshot(runtime,&mut draw),OK);assert_eq!(draw.content_hash,visible);
+        assert_eq!(pod_runtime_free_texture(runtime,a),OK);assert_eq!(pod_runtime_snapshot(runtime,&mut draw),OK);assert_ne!(draw.content_hash,visible);
         pod_runtime_destroy(runtime);
     }
 
