@@ -40,6 +40,9 @@ cells are separate so they cannot move ordinary text upward. The native surface
 uses a shared 8 MiB LRU for system-font pixels. In-flight render snapshots can
 retain evicted cells, so 8 MiB is a cache-reference limit, not a total PSS limit.
 Legacy packaged fonts keep their existing coverage rasterizer and cache.
+Font XML parsing and mapping run alongside native runtime/Vulkan creation on
+a worker. Boot joins font preparation before package/font installation, so
+fonts are ready for the first measurement without serializing independent setup.
 
 After the first displayed texture, a background worker warms the printable
 ASCII set and the deduplicated `warmChars` set in the preloaded slots. Visible

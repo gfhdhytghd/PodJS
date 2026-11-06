@@ -500,11 +500,21 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                 long candidate = 0;
                 Throwable failure = null;
                 try {
-                    PodSystemFonts.ensure(getContext());
+                    // Font XML/mapping and Vulkan/runtime creation do not share
+                    // resources. Join before any package can install font slots.
+                    final android.content.Context fontContext=getContext().getApplicationContext();
+                    java.util.concurrent.FutureTask<Void> fonts=new java.util.concurrent.FutureTask<>(()->{
+                        long began=PodStartupTrace.now();PodSystemFonts.ensure(fontContext);
+                        PodStartupTrace.stage("systemFontPrepare",began);return null;
+                    });
+                    Thread fontWorker=new Thread(fonts,"pod-font-prepare");fontWorker.setDaemon(true);fontWorker.start();
                     long createBegan = PodStartupTrace.now();
                     candidate = nativeCreate(bootSurface, targetId, width, height, density, touchSlop, minFling, maxFling, dataPath);
                     if (candidate == 0) throw new IllegalStateException("PodJS native host creation failed");
                     PodStartupTrace.stage("nativeCreate", createBegan);
+                    try {fonts.get();}
+                    catch(InterruptedException interrupted){Thread.currentThread().interrupt();throw new IllegalStateException("Font preparation interrupted",interrupted);}
+                    catch(java.util.concurrent.ExecutionException invalid){throw new IllegalStateException("Font preparation failed",invalid.getCause());}
                     long assetsBegan = PodStartupTrace.now();
                     nativeBootAssets(candidate, assets);
                     PodStartupTrace.stage("nativeBootAssets", assetsBegan);
