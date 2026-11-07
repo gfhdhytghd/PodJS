@@ -12,3 +12,52 @@ test('resource journal CAS rolls back stale metadata and reference detach togeth
 test('resource journal pages metadata and resources at 32 items',async()=>{const f=fixture();try{await f.journal.init();for(let i=0;i<64;i++)await f.db.transaction([f.journal.insert(String(i),String(i).padStart(3,'0'),'encrypted')]);expect((await f.journal.page()).length).toBe(32);expect((await f.journal.page('031')).length).toBe(32);await expect(f.journal.page('',33)).rejects.toThrow('resource_batch_limit');expect(()=>f.journal.register(Array(33).fill(r))).toThrow('resource_batch_limit');}finally{f.raw.close();}});
 test('resource quota reserves persistently and rejects overcommit',async()=>{const f=fixture();try{const quota=new ResourceQuota(f.db,'test'),release=await quota.reserve('a',70,100);await expect(new ResourceQuota(f.db,'test').reserve('b',31,100)).rejects.toThrow();expect(await f.db.query('SELECT id FROM podjs_resource_quota')).toEqual([{id:'a'}]);await release();const second=await quota.reserve('b',100,100);await second();expect(await f.db.query('SELECT * FROM podjs_resource_quota')).toEqual([]);}finally{f.raw.close();}});
 test('resource journal staging reference prevents collection before owner commit',async()=>{const f=fixture();try{await f.journal.init();await f.db.transaction([...f.journal.register([r]),...f.journal.attach('stage',[r.id])]);expect((await f.journal.collect(async()=>{},async()=>[])).files).toBe(0);await f.db.transaction([...f.journal.attach('body',[r.id]),f.journal.detach('stage')]);expect((await f.journal.collect(async()=>{},async()=>[])).files).toBe(0);}finally{f.raw.close();}});
+
+test('resource journal rejected owner commits neither GC cursor nor retirement',async()=>{
+ const f=fixture();try{
+  await f.journal.init();await f.db.transaction(f.journal.register([r]));const before=await f.db.query('SELECT * FROM podjs_resource_gc_cursor');let discarded=0;
+  await expect(f.journal.collect(async()=>{discarded++;},async()=>[12],32,async()=>({ids:[r.id],commit:async statements=>f.db.transaction([{sql:'CREATE TABLE IF NOT EXISTS podjs_sql_cas_guard(id INTEGER NOT NULL CHECK(id=1))'},{sql:'INSERT INTO podjs_sql_cas_guard VALUES(0)'},...statements])}))).rejects.toThrow();
+  expect(await f.db.query('SELECT * FROM podjs_resource_gc_cursor')).toEqual(before);expect(await f.db.query('SELECT retired,deleted FROM podjs_resources')).toEqual([{retired:0,deleted:0}]);expect(discarded).toBe(0);
+ }finally{f.raw.close();}
+});
+
+test('resource journal late commit failure rolls back cursor and retirement together',async()=>{
+ const f=fixture();try{
+  await f.journal.init();await f.db.transaction([...f.journal.register([r]),{sql:'INSERT INTO podjs_resource_gc_cursor VALUES(?,?)',params:['test','old']}]);let discarded=0;
+  await expect(f.journal.collect(async()=>{discarded++;},async()=>[12],32,async()=>({ids:[r.id],commit:async statements=>f.db.transaction([...statements,{sql:'INSERT INTO podjs_sql_cas_guard VALUES(0)'}])}))).rejects.toThrow();
+  expect(await f.db.query('SELECT last_id FROM podjs_resource_gc_cursor')).toEqual([{last_id:'old'}]);expect(await f.db.query('SELECT retired,deleted FROM podjs_resources')).toEqual([{retired:0,deleted:0}]);expect(discarded).toBe(0);
+ }finally{f.raw.close();}
+});
+
+test('resource journal denied pages advance only through the owner commit',async()=>{
+ const f=fixture();try{
+  await f.journal.init();await f.db.transaction(f.journal.register([r]));let commits=0;
+  expect(await f.journal.collect(async()=>{throw Error('must_not_discard');},async()=>{throw Error('must_not_measure');},32,async()=>({ids:[],commit:async statements=>{commits++;await f.db.transaction(statements);}}))).toEqual({freed:0,files:0});
+  expect(commits).toBe(1);expect(await f.db.query('SELECT last_id FROM podjs_resource_gc_cursor')).toEqual([{last_id:r.id}]);expect(await f.db.query('SELECT retired,deleted FROM podjs_resources')).toEqual([{retired:0,deleted:0}]);
+ }finally{f.raw.close();}
+});
+
+test('resource journal refreshes owner permission after measurement and before native deletion',async()=>{
+ const f=fixture();try{
+  await f.journal.init();await f.db.transaction(f.journal.register([r]));let valid=true,discarded=0;
+  await expect(f.journal.collect(async()=>{discarded++;},async()=>{valid=false;return [12];},32,async()=>({ids:[r.id],commit:async statements=>{if(!valid)throw Error('stale_owner');await f.db.transaction(statements);}}))).rejects.toThrow('stale_owner');
+  expect(discarded).toBe(0);expect(await f.db.query('SELECT retired,deleted FROM podjs_resources')).toEqual([{retired:1,deleted:0}]);
+ }finally{f.raw.close();}
+});
+
+test('resource journal retains completed bytes when deletion acknowledgement is rejected',async()=>{
+ const {ResourceCollectionError}=await import('../src/resource-journal'),f=fixture();try{
+  await f.journal.init();await f.db.transaction(f.journal.register([r]));let size=12,error:unknown;
+  try{await f.journal.collect(async()=>{const n=size;size=0;return n;},async()=>[size],32,async()=>({ids:[r.id],commit:async statements=>{if(statements.some(s=>s.sql.startsWith('UPDATE podjs_resources SET deleted=1')))throw Error('stale_owner');await f.db.transaction(statements);}}));}catch(e){error=e;}
+  expect(error).toBeInstanceOf(ResourceCollectionError);expect((error as InstanceType<typeof ResourceCollectionError>).completed).toEqual({freed:12,files:1});expect((error as Error).cause).toBeInstanceOf(Error);expect((error as Error).message).toBe('stale_owner');expect(await f.db.query('SELECT retired,deleted FROM podjs_resources')).toEqual([{retired:1,deleted:0}]);
+  expect(await f.journal.collect(async()=>0,async()=>[size])).toEqual({freed:0,files:1});expect(await f.db.query('SELECT deleted FROM podjs_resources')).toEqual([{deleted:1}]);
+ }finally{f.raw.close();}
+});
+
+test('resource journal preserves a completed file prefix before a later native failure',async()=>{
+ const {ResourceCollectionError}=await import('../src/resource-journal'),f=fixture();try{
+  const two={...r,id:'two',path:'derived/two'};await f.journal.init();await f.db.transaction(f.journal.register([r,two]));let error:unknown;
+  try{await f.journal.collect(async path=>{if(path===two.path)throw Error('io_failure');return 12;},async()=>[12,12]);}catch(e){error=e;}
+  expect(error).toBeInstanceOf(ResourceCollectionError);expect((error as InstanceType<typeof ResourceCollectionError>).completed).toEqual({freed:12,files:1});expect((error as Error).message).toBe('io_failure');expect(await f.db.query('SELECT id,retired,deleted FROM podjs_resources ORDER BY id')).toEqual([{id:'one',retired:1,deleted:1},{id:'two',retired:1,deleted:0}]);
+ }finally{f.raw.close();}
+});
