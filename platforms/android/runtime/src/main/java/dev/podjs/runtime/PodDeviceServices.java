@@ -56,6 +56,7 @@ public final class PodDeviceServices implements AutoCloseable {
     private final File secureFile;
     @FunctionalInterface interface SecureKeySource { SecretKey get() throws Exception; }
     private final SecureKeySource secureKey;
+    private final SecureKeySource secureReadKey;
     private final PodSecureLease secureLeases;
     private final SecureStoreMemory.State secureMemory;
     private final SecureRandom random = new SecureRandom();
@@ -79,12 +80,16 @@ public final class PodDeviceServices implements AutoCloseable {
     // Synthetic-key JVM tests use the same operations, locks and atomic writer.
     // Production always uses the public Context constructor and AndroidKeyStore.
     PodDeviceServices(File files, SecureKeySource key) {
+        this(files,key,key);
+    }
+    PodDeviceServices(File files, SecureKeySource key, SecureKeySource readKey) {
         if (!files.exists() && !files.mkdirs()) throw new IllegalStateException("service_root_unavailable");
         try { root = files.getCanonicalFile(); secureFile = new File(root.getParentFile(), SECURE_FILE); }
         catch (IOException e) { throw new IllegalStateException("service_root_unavailable", e); }
         secureLeases = new PodSecureLease(secureFile.getParentFile());
         secureMemory = SecureStoreMemory.at(secureFile);
         secureKey = key == null ? () -> getKey(SECURE_ALIAS) : key;
+        secureReadKey = readKey == null ? () -> getKey(SECURE_ALIAS,false) : readKey;
     }
 
     public synchronized JSONObject execute(String method, JSONObject args) throws Exception {
@@ -192,10 +197,12 @@ public final class PodDeviceServices implements AutoCloseable {
         if("secure.get".equals(method)&&secureMemory.snapshot!=null)return secureGet(args);
         long total=secureTrace.begin(),waiting=total;int id=args.optInt("requestId",-1);
         try{synchronized(SECURE_LOCK){
+            // Reads use the immutable cache or one atomically published file.
+            // They never create an OS lock file or a replacement key alias.
+            if("secure.get".equals(method)){secureTrace.end("secure.lock",waiting,id);return secureGet(args);}
             try(java.io.RandomAccessFile file=new java.io.RandomAccessFile(new File(secureFile.getParentFile(),"secure.store.lock"),"rw");
                 java.nio.channels.FileLock lock=file.getChannel().lock()){
                 secureTrace.end("secure.lock",waiting,id);
-                if("secure.get".equals(method))return secureGet(args);
                 if("secure.set".equals(method))return secureSet(args);
                 if("secure.compareAndSet".equals(method)){
                     String key=required(args,"key");
@@ -304,8 +311,9 @@ public final class PodDeviceServices implements AutoCloseable {
         // Mutations own a deep copy. A quota/fsync failure cannot alter a cached read.
         return SecureStoreMemory.copy(readSecureValues(id));
     }
-    private SecretKey secureKey() throws Exception {
-        if(secureMemory.key==null)secureMemory.key=secureKey.get();
+    private SecretKey secureKey() throws Exception {return secureKey(true);}
+    private SecretKey secureKey(boolean create) throws Exception {
+        if(secureMemory.key==null)secureMemory.key=(create?secureKey:secureReadKey).get();
         return secureMemory.key;
     }
     private JSONObject readSecureValues(int id) throws Exception {
@@ -328,7 +336,7 @@ public final class PodDeviceServices implements AutoCloseable {
         // on the hot read path. Startup decode still authenticates the whole map.
         byte[] bytes = readSecureBytes(secureFile);
         long began=secureTrace.begin();SecretKey key;
-        try{key=secureKey();}finally{secureTrace.end("secure.key",began,id);}
+        try{key=secureKey(false);}finally{secureTrace.end("secure.key",began,id);}
         SecureStoreCipher.Opened opened=SecureStoreCipher.decode(key,bytes);
         try{secureMemory.snapshot=new SecureStoreMemory.Snapshot(new JSONObject(new String(opened.plain,StandardCharsets.UTF_8)));secureMemory.cipherMaterial=opened.material;}
         finally{Arrays.fill(opened.plain,(byte)0);}
@@ -455,20 +463,22 @@ public final class PodDeviceServices implements AutoCloseable {
         String id=required(args,"keyIdSha256");if(!id.matches("[0-9a-f]{64}"))throw new IllegalArgumentException("invalid_key_digest");
         String alias="podjs.signing.v2."+id;java.security.KeyPair pair;
         synchronized(SECURE_LOCK){
-            try(java.io.RandomAccessFile file=new java.io.RandomAccessFile(new File(secureFile.getParentFile(),"secure.store.lock"),"rw");java.nio.channels.FileLock lock=file.getChannel().lock()){
-                KeyStore store=ecdhStore();
-                if(!countedContains(store,alias)){
-                    if(signing||!args.optBoolean("create",false)||countedContains(store,alias+".created"))throw new IllegalStateException("signing_key_missing");
-                    java.security.KeyPairGenerator generator=java.security.KeyPairGenerator.getInstance("EC",KEYSTORE);
-                    generator.initialize(new KeyGenParameterSpec.Builder(alias,KeyProperties.PURPOSE_SIGN|KeyProperties.PURPOSE_VERIFY).setAlgorithmParameterSpec(new java.security.spec.ECGenParameterSpec("secp256r1")).setDigests(KeyProperties.DIGEST_SHA256).build());
-                    generator.generateKeyPair();getKey(alias+".created");
-                }
-                java.security.PrivateKey key=(java.security.PrivateKey)countedKey(store,alias);java.security.cert.Certificate cert=countedCertificate(store,alias);
-                if(key==null||cert==null)throw new IllegalStateException("signing_key_missing");pair=new java.security.KeyPair(cert.getPublicKey(),key);
-            }
+            if(signing||!args.optBoolean("create",false))pair=loadV2SigningPair(alias,false);
+            else try(java.io.RandomAccessFile file=new java.io.RandomAccessFile(new File(secureFile.getParentFile(),"secure.store.lock"),"rw");java.nio.channels.FileLock lock=file.getChannel().lock()){pair=loadV2SigningPair(alias,true);}
         }
         if(signing)return new JSONObject().put("signatureBase64",enc(PodSyncV2Crypto.sign(pair.getPrivate(),decode(args,"dataBase64"))));
         return new JSONObject().put("publicKeySec1",enc(PodSyncV2Crypto.publicBytes(pair.getPublic())));
+    }
+    private java.security.KeyPair loadV2SigningPair(String alias,boolean create)throws Exception {
+        KeyStore store=ecdhStore();
+        if(!countedContains(store,alias)){
+            if(!create||countedContains(store,alias+".created"))throw new IllegalStateException("signing_key_missing");
+            java.security.KeyPairGenerator generator=java.security.KeyPairGenerator.getInstance("EC",KEYSTORE);
+            generator.initialize(new KeyGenParameterSpec.Builder(alias,KeyProperties.PURPOSE_SIGN|KeyProperties.PURPOSE_VERIFY).setAlgorithmParameterSpec(new java.security.spec.ECGenParameterSpec("secp256r1")).setDigests(KeyProperties.DIGEST_SHA256).build());
+            generator.generateKeyPair();getKey(alias+".created");
+        }
+        java.security.PrivateKey key=(java.security.PrivateKey)countedKey(store,alias);java.security.cert.Certificate cert=countedCertificate(store,alias);
+        if(key==null||cert==null)throw new IllegalStateException("signing_key_missing");return new java.security.KeyPair(cert.getPublicKey(),key);
     }
     private JSONObject ecdhPublicKey(JSONObject args) throws Exception {
         return new JSONObject().put("publicKeySpki",enc(lockedEcdhPair(args,true).getPublic().getEncoded()));
@@ -942,12 +952,13 @@ public final class PodDeviceServices implements AutoCloseable {
     private static java.security.cert.Certificate countedCertificate(KeyStore store,String alias)throws Exception {SecureOperationStats.PROCESS.op("getCertificate");return store.getCertificate(alias);}
     private static KeyStore.Entry countedEntry(KeyStore store,String alias)throws Exception {SecureOperationStats.PROCESS.op("getEntry");return store.getEntry(alias,null);}
     private static void keyOp(java.security.Key key,String op){if(key.getClass().getName().startsWith("android.security.keystore"))SecureOperationStats.PROCESS.op(op);}
-    private SecretKey getKey(String alias) throws Exception {
+    private SecretKey getKey(String alias) throws Exception {return getKey(alias,true);}
+    private SecretKey getKey(String alias,boolean create) throws Exception {
         synchronized(SECURE_LOCK){
             SecretKey cached=secureMemory.aliasKeys.get(alias);if(cached!=null)return cached;
             FailureBackoff failure=secureMemory.aliasFailures.computeIfAbsent(alias,k->new FailureBackoff());failure.check();
             try{KeyStore ks=ProcessKeyStore.get();
-            if(!countedContains(ks,alias)){KeyGenerator kg=KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES,KEYSTORE);kg.init(new KeyGenParameterSpec.Builder(alias,KeyProperties.PURPOSE_ENCRYPT|KeyProperties.PURPOSE_DECRYPT).setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build());SecureOperationStats.PROCESS.op("generate");kg.generateKey();}
+            if(!countedContains(ks,alias)){if(!create)throw new IOException("secure_key_missing");KeyGenerator kg=KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES,KEYSTORE);kg.init(new KeyGenParameterSpec.Builder(alias,KeyProperties.PURPOSE_ENCRYPT|KeyProperties.PURPOSE_DECRYPT).setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build());SecureOperationStats.PROCESS.op("generate");kg.generateKey();}
             SecretKey key=((KeyStore.SecretKeyEntry)countedEntry(ks,alias)).getSecretKey();secureMemory.aliasKeys.put(alias,key);failure.success();return key;}catch(Exception error){failure.failed(error);throw error;}
         }
     }
