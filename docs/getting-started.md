@@ -148,6 +148,8 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/request-policy` | `RequestFilter`, `createRequestAllowlist`: generic request rejection hooks; app owns keys and rejection replies. |
 | `@podjs/framework/browser-qr-wait` | `BrowserQrWait`, `browserQrWaitStatus`, `BrowserQrWaitOptions`, `BrowserQrWaitStatus`: configurable QR waiting state independent of page loading; no UI rendering. |
 | `@podjs/framework/sync-framing` | Bounded wire frame encoding/decoding for companion transports. |
+| `@podjs/framework/framing-boundary` | Connection-local prepare/commit upgrade guard; failure closes the socket without owning cursors. |
+| `@podjs/framework/object-frame` | Bounded WRP2 binary parts and JSON controls after an authenticated framing boundary. |
 | `@podjs/framework/sync-messages` | Companion message wire protocol and acknowledgement helpers. |
 | `@podjs/framework/platform-services` | Background scheduling, notification and companion/file-transfer service interfaces. |
 | `@podjs/framework/sha256-stream` | Guest-owned native digest state; bounded updates and cooperative cancellation without temporary plaintext files. |

@@ -72,6 +72,12 @@ export class StreamFrameConnection<T> {
   finally{this.writing=false;streamWriters.delete(this.stream);}
  }
  async close():Promise<void>{if(this.closed)return;this.closed=true;await this.stream.close();}
+ /** Transfer ownership only at a complete frame boundary. The old wrapper
+  * becomes unusable; its later close cannot close the new owner's stream. */
+ detachStream():FrameByteStream {
+  if(this.closed||this.reading||this.writing||streamReaders.has(this.stream)||streamWriters.has(this.stream))throw Error('Sync stream is not at a handoff boundary');
+  this.closed=true;return this.stream;
+ }
 }
 
 

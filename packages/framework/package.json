@@ -10,6 +10,8 @@
     "./services": "./src/services.ts",
     "./sync-state": "./src/sync-state.ts",
     "./sync-framing": "./src/sync-framing.ts",
+    "./framing-boundary": "./src/framing-boundary.ts",
+    "./object-frame": "./src/object-frame.ts",
     "./sync-messages": "./src/sync-messages.ts",
     "./platform-services": "./src/platform-services.ts",
     "./background-handler": "./src/background-handler.ts",

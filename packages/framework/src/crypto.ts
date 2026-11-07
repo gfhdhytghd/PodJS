@@ -48,6 +48,16 @@ export function hmacSha256Bytes(key:Uint8Array,input:Uint8Array):Uint8Array {
  }finally{block.fill(0);inner.fill(0);outer.fill(0);normalized?.fill(0);digest?.fill(0);}
 }
 
+/** HKDF-SHA256, one output block (L=32). Empty salt follows RFC 5869. */
+export function hkdfSha256Bytes(key:Uint8Array,salt:Uint8Array,info:Uint8Array):Uint8Array {
+ const prk=hmacSha256Bytes(salt.length?salt:new Uint8Array(32),key),input=new Uint8Array(info.length+1);input.set(info);input[info.length]=1;
+ try{return hmacSha256Bytes(prk,input);}finally{prk.fill(0);input.fill(0);}
+}
+/** Content-independent comparison for fixed-length authentication tags. */
+export function equalAuthenticationTag(a:Uint8Array,b:Uint8Array):boolean {
+ let diff=a.length^b.length;const n=Math.max(a.length,b.length);for(let i=0;i<n;i++)diff|=(a[i]??0)^(b[i]??0);return diff===0;
+}
+
 /** Java/Android releases write different gzip OS header bytes for identical
  * deflate streams. Recover an advertised encoding only after its entire digest
  * matches; never reinterpret a body or accept a hash mismatch. Input is immutable. */
