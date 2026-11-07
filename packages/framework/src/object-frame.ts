@@ -42,3 +42,13 @@ export class ObjectFrameConnection<T,H> {
  });}
  async close(){if(!this.closed){this.closed=true;await this.stream.close();}}
 }
+
+/** Strict membership for a bounded immutable-object batch. The caller binds
+ * scope/window and verifies each returned object's digest before reuse. */
+export function decodeObjectBatch(expected:readonly string[],response:{objects:any[];nextOids:string[]},decode:(value:string)=>Uint8Array,verify:(id:string,bytes:Uint8Array)=>void){
+ if(!Array.isArray(response.objects)||!Array.isArray(response.nextOids)||new Set(expected).size!==expected.length)throw Error('invalid_schema');
+ const remaining=new Set(expected),objects=new Map<string,Uint8Array>();let prior=-1;
+ for(const item of response.objects){if(!item||Object.keys(item).sort().join(',')!=='bytes,oid'||typeof item.oid!=='string'||typeof item.bytes!=='string'||!remaining.delete(item.oid))throw Error('invalid_schema');const index=expected.indexOf(item.oid);if(index<=prior)throw Error('invalid_schema');prior=index;const bytes=decode(item.bytes);verify(item.oid,bytes);objects.set(item.oid,bytes);}
+ prior=-1;for(const id of response.nextOids){if(!remaining.delete(id))throw Error('invalid_schema');const index=expected.indexOf(id);if(index<=prior)throw Error('invalid_schema');prior=index;}
+ if(remaining.size)throw Error('invalid_schema');return {objects,nextOids:response.nextOids};
+}

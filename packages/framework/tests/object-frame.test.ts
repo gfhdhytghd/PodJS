@@ -23,3 +23,6 @@ test('legacy stream ownership can transfer only at an idle frame boundary',async
 test('WRP2 same-stream concurrent readers and writers are rejected',async()=>{
  let unblock:()=>void=()=>{};const stream=new Stream(),blocked={...codecs,encodeControl:async(v:any)=>{await new Promise<void>(r=>unblock=r);return codecs.encodeControl(v);}},a=new ObjectFrameConnection(stream,blocked,()=>true),b=new ObjectFrameConnection(stream,codecs,()=>true);const first=a.writeControl({one:1});await expect(b.writeControl({two:2})).rejects.toThrow('concurrent_frame_write');unblock();await first;
 });
+
+import {decodeObjectBatch} from '../src/object-frame';
+test('object batch checks exact coverage, ordering, duplicates, extras and digest callback',()=>{const decode=(s:string)=>new Uint8Array([Number(s)]),verify=(id:string,b:Uint8Array)=>{if(id!==String(b[0]))throw Error('hash_mismatch');};expect([...decodeObjectBatch(['1','2'],{objects:[{oid:'1',bytes:'1'}],nextOids:['2']},decode,verify).objects.keys()]).toEqual(['1']);for(const response of [{objects:[{oid:'1',bytes:'1'}],nextOids:[]},{objects:[{oid:'1',bytes:'1'}],nextOids:['1','2']},{objects:[{oid:'3',bytes:'3'}],nextOids:['1','2']},{objects:[{oid:'2',bytes:'2'},{oid:'1',bytes:'1'}],nextOids:[]},{objects:[{oid:'1',bytes:'9'}],nextOids:['2']}])expect(()=>decodeObjectBatch(['1','2'],response,decode,verify)).toThrow();});

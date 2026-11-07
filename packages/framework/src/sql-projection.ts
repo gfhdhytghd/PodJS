@@ -40,3 +40,12 @@ export function captureSqlBasis(table:string,key:string,stateVersion:string,sour
  identifier(table);identifier(source);checkD64(stateVersion);
  return {sql:`INSERT INTO ${table}(scope,state_version,epoch,revision) SELECT ?,?,epoch,CAST(revision AS TEXT) FROM ${source} WHERE id=1 ON CONFLICT(scope) DO UPDATE SET state_version=excluded.state_version,epoch=excluded.epoch,revision=excluded.revision`,params:[key,stateVersion]};
 }
+
+/** Bound decrypted keyset scratch without assuming the SQL bridge can return
+ * an entire page. A single large item may occupy the caller's item limit. */
+export async function readBoundedKeysetBatch<T>(readOne:(after:string)=>Promise<T|undefined>,after:string,key:(item:T)=>string,size:(item:T)=>number,maxItems=16,maxBytes=65536){
+ if(!Number.isInteger(maxItems)||maxItems<1||!Number.isSafeInteger(maxBytes)||maxBytes<1)throw Error('invalid_page_limit');
+ const items:T[]=[];let bytes=0;
+ while(items.length<maxItems){const item=await readOne(after);if(!item)break;const next=key(item),n=size(item);if(next<=after||!Number.isSafeInteger(n)||n<0)throw Error('invalid_keyset_page');if(items.length&&bytes+n>maxBytes)break;items.push(item);bytes+=n;after=next;if(bytes>=maxBytes)break;}
+ return items;
+}

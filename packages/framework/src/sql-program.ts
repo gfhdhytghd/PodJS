@@ -8,9 +8,27 @@ export const SQL_PROGRAM_SCHEMA=[
  'CREATE TABLE IF NOT EXISTS podjs_sql_cas_guard(id INTEGER NOT NULL CHECK(id=1))',
  'CREATE TABLE IF NOT EXISTS podjs_sql_programs(binding TEXT NOT NULL,id TEXT NOT NULL,status TEXT NOT NULL,pages INTEGER NOT NULL,fragments INTEGER NOT NULL,operations INTEGER NOT NULL,bytes INTEGER NOT NULL,root TEXT NOT NULL,PRIMARY KEY(binding,id))',
  'CREATE TABLE IF NOT EXISTS podjs_sql_program_pages(binding TEXT NOT NULL,id TEXT NOT NULL,page INTEGER NOT NULL,part INTEGER NOT NULL,body TEXT NOT NULL,PRIMARY KEY(binding,id,page,part))',
- ...['INSERT','UPDATE','DELETE'].map(op=>`CREATE TRIGGER IF NOT EXISTS podjs_sql_program_pages_${op.toLowerCase()} BEFORE ${op} ON podjs_sql_program_pages WHEN EXISTS(SELECT 1 FROM podjs_sql_programs WHERE binding=${op==='DELETE'?'OLD':'NEW'}.binding AND id=${op==='DELETE'?'OLD':'NEW'}.id AND status='ready') BEGIN SELECT RAISE(ABORT,'sql_program_immutable');END`),
+ ...sqlProgramRelationGuards('podjs_sql_program_pages','binding','id','podjs_sql_program_pages'),
  "CREATE TRIGGER IF NOT EXISTS podjs_sql_program_ready BEFORE UPDATE ON podjs_sql_programs WHEN OLD.status='ready' BEGIN SELECT RAISE(ABORT,'sql_program_immutable');END",
 ];
+/** Exact-set assertions belong in the encrypted program, before any writes.
+ * Count plus disjoint authenticated key groups proves equality, including
+ * equal-count substitution. Each assertion executes in the final transaction. */
+export function sqlExactSetGuards(table:string,where:Record<string,string>,column:string,values:readonly string[]):Statement[]{
+ const identifier=(v:string)=>{if(!/^[a-z_][a-z0-9_]*$/i.test(v))throw Error('sql_program_invalid');return v;};
+ identifier(table);identifier(column);const entries=Object.entries(where);for(const [key]of entries)identifier(key);
+ if(new Set(values).size!==values.length)throw Error('sql_program_invalid');
+ const clause=entries.map(([key])=>key+'=?').join(' AND ')||'1',params=entries.map(([,value])=>value),out:Statement[]=[];
+ const assert=(condition:string,args:(string|number)[])=>out.push({sql:'INSERT INTO podjs_sql_cas_guard SELECT CASE WHEN '+condition+' THEN 1 ELSE 0 END',params:args},{sql:'DELETE FROM podjs_sql_cas_guard'});
+ assert('(SELECT COUNT(*) FROM '+table+' WHERE '+clause+')=?',[...params,values.length]);
+ for(let at=0;at<values.length;at+=32){const group=values.slice(at,at+32);assert('(SELECT COUNT(*) FROM '+table+' WHERE '+clause+' AND '+column+' IN ('+group.map(()=>'?').join(',')+'))=?',[...params,...group,group.length]);}
+ return out;
+}
+/** Freeze every direction of a staged relation once its owner is ready. */
+export function sqlProgramRelationGuards(table:string,binding:string,id:string,prefix:string){
+ for(const v of [table,binding,id,prefix])if(!/^[a-z_][a-z0-9_]*$/i.test(v))throw Error('sql_program_invalid');
+ return ['INSERT','UPDATE','DELETE'].map(op=>{const aliases=op==='UPDATE'?['OLD','NEW']:[op==='DELETE'?'OLD':'NEW'];return `CREATE TRIGGER IF NOT EXISTS ${prefix}_${op.toLowerCase()} BEFORE ${op} ON ${table} WHEN ${aliases.map(a=>`EXISTS(SELECT 1 FROM podjs_sql_programs WHERE binding=${a}.${binding} AND id=${a}.${id} AND status='ready')`).join(' OR ')} BEGIN SELECT RAISE(ABORT,'sql_program_immutable');END`;});
+}
 export interface SqlProgramCipher {seal(aad:string,value:unknown):Promise<string>;open(aad:string,body:string):Promise<any>;/** Native envelopes use nonceBase64/ciphertextBase64 AES-256-GCM. */nativeKey?():Promise<{keyBase64:string;aadJson:boolean}>}
 export type SqlProgramRef={binding:string;id:string;pages:number;fragments:number;operations:number;bytes:number;root:string};
 export type SqlProgramMarker=SqlProgramRef&{aadPrefix:string;keyBase64?:string;aadJson?:boolean;validateOnly?:boolean};
