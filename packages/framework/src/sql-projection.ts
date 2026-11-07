@@ -33,3 +33,10 @@ export async function stableSqlTriggers(db:ProjectionSql,definitions:readonly st
  }
  if(statements.length)await db.transaction(statements);return {ddl:statements.length-prefix.length,unchanged};
 }
+
+/** Copy a durable SQL revision after prepared writes, within their CAS transaction.
+ * A version tag prevents an old basis from overriding a later encrypted state. */
+export function captureSqlBasis(table:string,key:string,stateVersion:string,source:string):Statement{
+ identifier(table);identifier(source);checkD64(stateVersion);
+ return {sql:`INSERT INTO ${table}(scope,state_version,epoch,revision) SELECT ?,?,epoch,CAST(revision AS TEXT) FROM ${source} WHERE id=1 ON CONFLICT(scope) DO UPDATE SET state_version=excluded.state_version,epoch=excluded.epoch,revision=excluded.revision`,params:[key,stateVersion]};
+}

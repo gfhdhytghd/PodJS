@@ -53,6 +53,7 @@
     "./sql-changes": "./src/sql-changes.ts",
     "./sql": "./src/sql.ts",
     "./sql-projection": "./src/sql-projection.ts",
+    "./frozen-data": "./src/frozen-data.ts",
     "./radix-index": "./src/radix-index.ts",
     "./digest-cache": "./src/digest-cache.ts",
     "./frame-stream": "./src/frame-stream.ts",
