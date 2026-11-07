@@ -12,7 +12,7 @@ public final class PodCloudWorker extends Worker {
     private volatile PodBackgroundRun active;
     private volatile PodServices services;
     static final Set<String> METHODS=Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
-        "content.http","content.files.stat","content.files.read","content.files.frame","content.files.publish","content.files.replace","content.files.discard","content.conditions",
+        "content.http","content.http.release","content.files.stat","content.files.read","content.files.frame","content.files.publish","content.files.replace","content.files.discard","content.conditions",
         "content.crypto.v2.encrypt","content.crypto.v2.decrypt","content.crypto.v2.gunzip","content.crypto.hash","content.crypto.hmacSha256","content.crypto.hkdfSha256","content.crypto.random","content.crypto.aesGcmDecrypt","content.crypto.gzip",
         "app.buildInfo","cloud.acquire","cloud.release","discovery.networkSnapshot","runtime.delay",
         "sql.query","sql.execute","sql.transaction","sql.notify","secure.keys","secure.get","secure.set","secure.delete","secure.update","secure.compareAndSet","secure.acquire","secure.release",

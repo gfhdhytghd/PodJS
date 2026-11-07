@@ -39,5 +39,7 @@ JAVA
 cat > "$task_tmp/dev/podjs/runtime/PodTakeover.java" <<'JAVA'
 package dev.podjs.runtime; public class PodTakeover {static java.io.File root; static java.io.File filesRoot(android.content.Context context){return root;} }
 JAVA
-javac -cp "$http_cp" -d "$task_tmp/classes" "$task_tmp/android/content/Context.java" "$task_tmp/android/util/Base64.java" "$task_tmp/dev/podjs/runtime/PodTakeover.java" platforms/android/runtime/src/main/java/dev/podjs/runtime/PodHttpServices.java tests/java/dev/podjs/runtime/CloudHttpTest.java
+javac -cp "$http_cp" -d "$task_tmp/classes" "$task_tmp/android/content/Context.java" "$task_tmp/android/util/Base64.java" "$task_tmp/dev/podjs/runtime/PodTakeover.java" platforms/android/runtime/src/main/java/dev/podjs/runtime/PodHttpTempFiles.java platforms/android/runtime/src/main/java/dev/podjs/runtime/PodHttpServices.java tests/java/dev/podjs/runtime/CloudHttpTest.java tests/java/dev/podjs/runtime/ContentHttpTempTest.java
 java -ea -cp "$http_cp:$task_tmp/classes" dev.podjs.runtime.CloudHttpTest
+
+java -ea -cp "$http_cp:$task_tmp/classes" dev.podjs.runtime.ContentHttpTempTest

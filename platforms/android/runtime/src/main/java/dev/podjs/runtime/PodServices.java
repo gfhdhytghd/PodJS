@@ -657,9 +657,9 @@ final class PodServices implements Closeable {
                 request.cancellation.throwIfCanceled();
                 workAt=System.nanoTime();
                 Object value;
-                if ("content.http".equals(method)) {
+                if ("content.http".equals(method) || "content.http.release".equals(method)) {
                     if(contentHttp==null)contentHttp=new PodHttpServices(context);
-                    value=contentHttp.execute("http.download",args);
+                    value=contentHttp.execute("content.http.release".equals(method)?"http.release":"http.download",args);
                 } else if (method.startsWith("content.files.")) {
                     if(contentFiles==null)contentFiles=new PodContentFiles(PodTakeover.filesRoot(context));
                     value=contentFiles.execute(method,args);
@@ -714,6 +714,7 @@ final class PodServices implements Closeable {
                 else if (("crypto.openSealedParts".equals(method) || "crypto.largeAesGcmEncrypt".equals(method) || "crypto.largeAesGcmDecrypt".equals(method) || "crypto.gzip".equals(method) || "crypto.gunzip".equals(method) || "file.htmlText".equals(method) || "file.createTemp".equals(method) || "file.gzip".equals(method) || "file.gunzip".equals(method)) && value instanceof JSONObject) device.discardTemporary((JSONObject)value);
                 else if ("text.raster".equals(method)) PodTextRasterServices.discard(context,value);
                 else if ("http.download".equals(method) && value instanceof JSONObject) http.discard((JSONObject)value);
+                else if ("content.http".equals(method) && value instanceof JSONObject) contentHttp.discard((JSONObject)value);
             } catch (Exception error) {
                 if (requests.remove(id, request)) failure(id,
                     error instanceof SecureStoreLimits.Failure ? ((SecureStoreLimits.Failure)error).code : error instanceof SecurityException ? "permission_denied" : error instanceof ProvisioningSession.Failure ? "provision_"+((ProvisioningSession.Failure)error).reason : error instanceof UnsupportedOperationException ? "unsupported" : error instanceof IllegalArgumentException ? "invalid_argument" : "host_error",

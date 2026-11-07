@@ -31,6 +31,9 @@ public final class PodHttpServices implements AutoCloseable {
     private static final int DEFAULT_TIMEOUT_MS = 30_000;
     private final File root;
     private final OkHttpClient client;
+    private final PodHttpTempFiles tempPool;
+    private final Map<File,PodHttpTempFiles.Lease> managedFiles=new HashMap<>();
+    private final java.util.Set<File> activeManaged=new java.util.HashSet<>();
     private final Map<Integer, AtomicBoolean> cancellations = new ConcurrentHashMap<>();
     private final Map<Integer, Call> connections = new ConcurrentHashMap<>();
     private final Object cancellationLock = new Object();
@@ -46,11 +49,12 @@ public final class PodHttpServices implements AutoCloseable {
         if (context == null) throw new IllegalArgumentException("context_required");
         File base = PodTakeover.filesRoot(context);
         if (!base.exists() && !base.mkdirs()) throw new IllegalStateException("service_root_unavailable");
-        try { root = base.getCanonicalFile(); } catch (IOException e) { throw new IllegalStateException("service_root_unavailable", e); }
+        try { root = base.getCanonicalFile(); tempPool=new PodHttpTempFiles(root); } catch (IOException e) { throw new IllegalStateException("service_root_unavailable", e); }
     }
 
     public JSONObject execute(String method, JSONObject args) throws Exception {
         if (closed) throw new IllegalStateException("service_closed");
+        if("http.release".equals(method)){synchronized(cancellationLock){return new JSONObject().put("released",releaseManaged(safeFile(required(args,"path"))));}}
         if (!"http.download".equals(method) || args == null) throw new IllegalArgumentException("unsupported_method");
         int requestId = args.optInt("requestId", 0);
         if(requestId==0){requestId=internalIds.getAndDecrement();args.put("requestId",requestId);}
@@ -59,8 +63,17 @@ public final class PodHttpServices implements AutoCloseable {
         AtomicBoolean cancelled = new AtomicBoolean(false);
         if (requestId != 0 && cancellations.putIfAbsent(requestId, cancelled) != null) throw new IllegalArgumentException("duplicate_request_id");
         java.util.concurrent.ScheduledFuture<?> deadline=deadlines.schedule(()->cancel(id),callTimeout,java.util.concurrent.TimeUnit.MILLISECONDS);
-        try { return download(args, cancelled); }
-        finally { deadline.cancel(false); if (requestId != 0) { cancellations.remove(requestId, cancelled); connections.remove(requestId); } }
+        File managed=null;boolean complete=false;
+        try {
+            if(args.optBoolean("managedTemp",false)){
+                long maximum=args.optLong("maxBytes",PodHttpTempFiles.MAX_FILE_BYTES);if(maximum<1||maximum>PodHttpTempFiles.MAX_FILE_BYTES)throw new IllegalArgumentException("invalid_managed_max_bytes");
+                synchronized(cancellationLock){if(closed)throw new IOException("download_cancelled");PodHttpTempFiles.Lease lease=tempPool.acquire();managed=lease.file;managedFiles.put(managed,lease);activeManaged.add(managed);args.put("path",root.toPath().relativize(managed.toPath()).toString()).put("temporary",true).put("maxBytes",maximum);}
+            }
+            JSONObject result=download(args,cancelled);complete=true;return result;
+        } finally {
+            try{synchronized(cancellationLock){if(managed!=null){activeManaged.remove(managed);if(!complete||closed)releaseManaged(managed);}}}
+            finally{deadline.cancel(false);if(requestId!=0){cancellations.remove(requestId,cancelled);connections.remove(requestId);}}
+        }
     }
 
     /** Cancels a currently running download with the matching request id. */
@@ -84,6 +97,7 @@ public final class PodHttpServices implements AutoCloseable {
             deadlines.shutdownNow();
             for (File file : temporaryFiles) file.delete();
             temporaryFiles.clear();
+            for(File file:new java.util.ArrayList<>(managedFiles.keySet()))if(!activeManaged.contains(file))try{releaseManaged(file);}catch(IOException ignored){}
             for (AtomicBoolean flag : cancellations.values()) flag.set(true);
             activeCalls = new java.util.ArrayList<>(connections.values());
         }
@@ -101,9 +115,15 @@ public final class PodHttpServices implements AutoCloseable {
 
     void discard(JSONObject result) {
         synchronized (cancellationLock) {
-            try { File file=safeFile(result.getString("path")); if(temporaryFiles.remove(file))file.delete(); }
+            try { File file=safeFile(result.getString("path")); if(!releaseManaged(file)&&temporaryFiles.remove(file))file.delete(); }
             catch(Exception ignored) { }
         }
+    }
+
+    private boolean releaseManaged(File file)throws IOException {
+        if(activeManaged.contains(file))return false;
+        PodHttpTempFiles.Lease lease=managedFiles.remove(file);if(lease==null)return false;
+        temporaryFiles.remove(file);lease.close();return true;
     }
 
     private JSONObject download(JSONObject args, AtomicBoolean cancelled) throws Exception {
