@@ -858,7 +858,8 @@ final class PodServices implements Closeable {
             try {
                 for (int i=0;i<statements.length();i++) {
                     cancellation.throwIfCanceled();
-                    execute(statements.getJSONObject(i));
+                    if(statements.getJSONObject(i).has("program")) PodSqlProgram.execute(db(),statements.getJSONObject(i).getJSONObject("program"),cancellation);
+                    else execute(statements.getJSONObject(i));
                     if (reportChanges) {
                         try (Cursor cursor = db().rawQuery("SELECT changes()", null)) {
                             if (!cursor.moveToFirst()) throw new IllegalStateException("Missing SQLite change count");
@@ -867,7 +868,7 @@ final class PodServices implements Closeable {
                     }
                 }
                 cancellation.throwIfCanceled();
-                db().setTransactionSuccessful();
+                if(!args.optBoolean("validateOnly",false)&&!PodSqlProgram.validateOnly(statements))db().setTransactionSuccessful();
             } finally { db().endTransaction(); }
             return reportChanges ? changes : JSONObject.NULL;
         }

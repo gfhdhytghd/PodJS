@@ -65,6 +65,8 @@ export class ResourceJournal {
 
 /** Persistent conservative reservation. A crashed owner retains quota until its
  * staging records are reconciled; it never promises the same bytes twice. */
+export type ResourceReservation={binding:string;id:string;bytes:number};
+export type ResourceRelease=(()=>Promise<void>)&{reservation?:ResourceReservation};
 export class ResourceQuota {
  constructor(readonly db:ProjectionSql,readonly binding:string){}
  async reserve(id:string,bytes:number,available:number){
@@ -73,6 +75,9 @@ export class ResourceQuota {
    {sql:'CREATE TABLE IF NOT EXISTS podjs_sql_cas_guard(id INTEGER NOT NULL CHECK(id=1))'},
    {sql:'INSERT INTO podjs_sql_cas_guard SELECT CASE WHEN COALESCE((SELECT SUM(bytes) FROM podjs_resource_quota WHERE binding=?),0)+?<=? THEN 1 ELSE 0 END',params:[this.binding,bytes,available]},
    {sql:'DELETE FROM podjs_sql_cas_guard'},{sql:'INSERT INTO podjs_resource_quota VALUES(?,?,?)',params:[this.binding,id,bytes]}]);
-  return async()=>{await this.db.transaction([{sql:'DELETE FROM podjs_resource_quota WHERE binding=? AND id=?',params:[this.binding,id]}]);};
+  return this.release({binding:this.binding,id,bytes});
  }
+ private release(ref:ResourceReservation):ResourceRelease {const release=async()=>{await this.db.transaction([{sql:'DELETE FROM podjs_resource_quota WHERE binding=? AND id=? AND bytes=?',params:[ref.binding,ref.id,ref.bytes]}]);};Object.defineProperty(release,'reservation',{value:Object.freeze({...ref})});return release;}
+ async resume(ref:ResourceReservation){if(ref.binding!==this.binding||!Number.isSafeInteger(ref.bytes)||ref.bytes<0)throw Error('storage_pressure');const row=(await this.db.query('SELECT bytes FROM podjs_resource_quota WHERE binding=? AND id=?',[ref.binding,ref.id]))[0];if(!row||Number(row.bytes)!==ref.bytes)throw Error('storage_pressure');return this.release(ref);}
+
 }

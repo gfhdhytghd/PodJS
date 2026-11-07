@@ -11,3 +11,8 @@ test('radix inventory rebuilds only affected paths, retains off-path bytes and d
  const changed=[...stored].filter(([key,row])=>before.get(key)!==row.hash);expect(changed.length).toBe(patch.writes.length);
  stored.get('').hash='wrong';await expect(updateRadixIndex(ports,[rows[0]!])).rejects.toThrow('index_hash_mismatch');
 });
+test('radix deletion never resurrects stale descendants when a removed branch is reinserted',async()=>{
+ const stored=new Map<string,any>(),ports={read:async(p:string)=>stored.get(p)??null,encode,hash},rows=Array.from({length:300},(_,i)=>({key:'0'+hash(encode({i} as any)).slice(1),value:i}));
+ const apply=async(patch:any[])=>{const result=await updateRadixIndex(ports,patch);for(const w of result.writes)stored.set(w.prefix,w);return result.root.count;};
+ expect(await apply(rows)).toBe(300);expect(await apply(rows.map(r=>({...r,remove:true})))).toBe(0);expect(await apply([{...rows[0]!,value:'new'}])).toBe(1);expect(await apply(rows.slice(1,270))).toBe(270);
+});

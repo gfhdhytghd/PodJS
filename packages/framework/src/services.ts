@@ -1,3 +1,4 @@
+import {materializeSqlPrograms} from './sql-program';
 import type {VideoBenchmarkAction} from './benchmark.ts';
 import { bytesToBase64 as portableBytesToBase64 } from "../../../vendor/pocketjs/framework/src/bytes.ts";
 import { __onHostEvent, hasCapability } from "./watch.ts";
@@ -195,11 +196,11 @@ export const sqlite = {
     return counts[0]!;
   },
   async transaction(statements: readonly SqlStatement[]): Promise<void> {
-    await hostOperation("sql.transaction", { statements }).result;
+    await hostOperation("sql.transaction", { statements:statements.some(s=>(s as any).program)?await materializeSqlPrograms(statements):statements }).result;
   },
   /** SQLite changes() after each statement, returned only after commit. */
   transactionChanges(statements: readonly SqlStatement[]): Promise<number[]> {
-    return hostOperation<number[]>("sql.transaction", { statements, reportChanges: true }).result;
+    if(!statements.some(s=>(s as any).program))return hostOperation<number[]>("sql.transaction", {statements,reportChanges:true}).result;return materializeSqlPrograms(statements).then(values=>hostOperation<number[]>("sql.transaction", { statements:values, reportChanges: true }).result);
   },
 };
 export const textInput = {

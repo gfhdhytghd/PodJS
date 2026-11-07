@@ -109,7 +109,10 @@
     "./content-host": "./src/content-host.ts",
     "./content-record": "./src/content-record.ts",
     "./content-http": "./src/content-http.ts",
-    "./resource-journal": "./src/resource-journal.ts"
+    "./resource-journal": "./src/resource-journal.ts",
+    "./sql-state-journal": "./src/sql-state-journal.ts",
+    "./sql-program": "./src/sql-program.ts",
+    "./sql-authenticated-cache": "./src/sql-authenticated-cache.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",
