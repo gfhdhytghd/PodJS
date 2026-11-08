@@ -164,6 +164,10 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/content-files` | Bounded batched content IO, durable frame checkpoints, immutable publication and rejected-prefix discard. |
 | `@podjs/framework/content-sha256` | Incremental SHA-256 with bounded updates and serializable state for resumable content work. |
 | `@podjs/framework/content-host` | Native condition observations, authenticated session signals and separate content crypto ports. |
+| `@podjs/framework/frozen-data` | `frozenDataRecord`: validate a frozen plain-object record's exact own data keys before reading values; rejects accessors, hidden keys and prototypes. |
+| `@podjs/framework/sql-state-journal` | `SqlStateJournal`: authenticated incremental state stored in the same SQLite CAS as business data; versions are read from SQLite and caches never bypass writer fences. |
+| `@podjs/framework/sql-program` | Encrypted, bounded preparation of one native atomic SQL transaction; exact-set and relation guards run before any write. |
+| `@podjs/framework/sql-authenticated-cache` | `SqlAuthenticatedCache`: encrypted normalized values with authenticated snapshot membership; the caller commits returned writes under its own state CAS. |
 | `@podjs/framework/content-record` | Bounded encrypted local metadata chunks, authenticated before decoding the complete record. |
 | `@podjs/framework/content-http` | Separate bounded host HTTP transport with request deadlines and temporary response-file cleanup. |
 | `@podjs/framework/background-handler` | Typed headless background-handler entry and delivery contracts. |
