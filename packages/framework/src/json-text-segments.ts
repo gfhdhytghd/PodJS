@@ -86,13 +86,22 @@ export function isGreedyScalarSegmentation(texts:readonly string[],limits:Scalar
  return ok&&at===texts.length;
 }
 
-/** SHA-256 over the UTF-8 concatenation of well-formed string parts. Parts
- * are hashed in bounded slices; no concatenated copy is created. */
-export function utf8PartsSha256(parts:Iterable<string>):{sha256:string;bytes:number} {
- const hash=new ContentSha256();let bytes=0;
- for(const part of parts)for(let start=0;start<part.length;){
-  let end=Math.min(part.length,start+65536);const last=part.charCodeAt(end-1);if(end<part.length&&last>=0xd800&&last<=0xdbff)end--;
-  const chunk=encodeUtf8(part.slice(start,end),'strict');hash.update(chunk);bytes+=chunk.length;start=end;
+/** Feeds well-formed strings (as UTF-8) and byte arrays of any length into
+ * `hash` in bounded slices, below the ContentSha256 per-update limit. No
+ * concatenated copy is created. Returns the number of bytes added. */
+export function updateSha256Parts(hash:ContentSha256,parts:Iterable<string|Uint8Array>):number {
+ let bytes=0;
+ for(const part of parts){
+  if(typeof part!=='string'){for(let at=0;at<part.length;at+=262144)hash.update(part.subarray(at,at+262144));bytes+=part.length;continue;}
+  for(let start=0;start<part.length;){
+   let end=Math.min(part.length,start+65536);const last=part.charCodeAt(end-1);if(end<part.length&&last>=0xd800&&last<=0xdbff)end--;
+   const chunk=encodeUtf8(part.slice(start,end),'strict');hash.update(chunk);bytes+=chunk.length;start=end;
+  }
  }
+ return bytes;
+}
+/** SHA-256 over the UTF-8 concatenation of well-formed string parts. */
+export function utf8PartsSha256(parts:Iterable<string>):{sha256:string;bytes:number} {
+ const hash=new ContentSha256(),bytes=updateSha256Parts(hash,parts);
  return {sha256:hash.finish(),bytes};
 }
