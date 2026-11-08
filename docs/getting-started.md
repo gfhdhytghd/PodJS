@@ -163,6 +163,7 @@ Native service availability varies by host; check capabilities and handle failur
 | `@podjs/framework/content-worker` | Bounded content windows, transport conditions, frame-boundary yielding and caller-owned fairness counters. |
 | `@podjs/framework/content-files` | Bounded batched content IO, durable frame checkpoints, immutable publication and rejected-prefix discard. |
 | `@podjs/framework/content-sha256` | Incremental SHA-256 with bounded updates and serializable state for resumable content work. |
+| `@podjs/framework/json-text-segments` | `segmentScalarsGreedy`, `GreedyScalarSegmenter`: longest Unicode-scalar prefixes under raw UTF-8 and escaped-JSON byte limits; `isGreedyScalarSegmentation` rechecks boundaries; `utf8PartsSha256` hashes parts without concatenating them. |
 | `@podjs/framework/content-host` | Native condition observations, authenticated session signals and separate content crypto ports. |
 | `@podjs/framework/frozen-data` | `frozenDataRecord`: validate a frozen plain-object record's exact own data keys before reading values; rejects accessors, hidden keys and prototypes. |
 | `@podjs/framework/sql-state-journal` | `SqlStateJournal`: authenticated incremental state stored in the same SQLite CAS as business data; versions are read from SQLite and caches never bypass writer fences. |

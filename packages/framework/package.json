@@ -106,6 +106,7 @@
     "./content-worker": "./src/content-worker.ts",
     "./content-files": "./src/content-files.ts",
     "./content-sha256": "./src/content-sha256.ts",
+    "./json-text-segments": "./src/json-text-segments.ts",
     "./content-host": "./src/content-host.ts",
     "./content-record": "./src/content-record.ts",
     "./content-http": "./src/content-http.ts",
