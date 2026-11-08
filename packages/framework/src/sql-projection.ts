@@ -1,4 +1,5 @@
 /** Bounded, restartable SQL building blocks. No import-time I/O. */
+import {decodeUtf8Chunk} from './bytes';
 export type Statement={sql:string;params?:readonly unknown[]};
 export interface ProjectionSql {query(sql:string,params?:readonly unknown[]):Promise<Record<string,unknown>[]>;transaction(statements:Statement[]):Promise<void>}
 const identifier=(s:string)=>{if(!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(s))throw Error('invalid_sql_identifier');return s;};
@@ -20,6 +21,30 @@ export async function commitSqlCas(db:ProjectionSql,binding:{table:string;keyCol
 export async function readSqlKeysetPage(db:Pick<ProjectionSql,'query'>,query:string,params:readonly unknown[],limit=64){
  if(!Number.isInteger(limit)||limit<1||limit>256)throw Error('invalid_page_limit');
  for(;;){try{return {rows:await db.query(query+' LIMIT ?',[...params,limit]),limit};}catch(error){if(limit===1||!/query result too large/i.test(String(error)))throw error;limit=Math.max(1,Math.floor(limit/2));}}
+}
+/** Reads one TEXT cell in bounded byte pieces. SQLite `length()`/`substr()` on
+ * TEXT stop at the first U+0000, so the cell is read as `CAST(... AS BLOB)` hex
+ * pieces and decoded strictly on UTF-8 boundaries in the guest. The table,
+ * column and key columns are identifiers; `key` values bind as parameters.
+ * Returns null for SQL NULL or a missing row. */
+export async function readSqlTextPieces(db:Pick<ProjectionSql,'query'>,cell:{table:string;column:string;key:Record<string,unknown>},pieceBytes=65536){
+ if(!Number.isSafeInteger(pieceBytes)||pieceBytes<4)throw Error('invalid_page_limit');
+ const keys=Object.keys(cell.key);if(!keys.length)throw Error('invalid_sql_identifier');
+ const value=`CAST(${identifier(cell.column)} AS BLOB)`,from=` FROM ${identifier(cell.table)} WHERE ${keys.map(k=>identifier(k)+' IS ?').join(' AND ')}`,params=keys.map(k=>cell.key[k]);
+ const head=(await db.query(`SELECT length(${value}) AS n${from}`,params))[0];if(!head||head.n===null)return null;
+ const total=Number(head.n);if(!Number.isSafeInteger(total)||total<0)throw Error('sql_text_invalid');
+ let text='',carry=new Uint8Array(0),read=0;
+ while(read<total){
+  const hex=(await db.query(`SELECT hex(substr(${value},?,?)) AS h${from}`,[read+1,pieceBytes,...params]))[0]?.h;
+  if(typeof hex!=='string'||hex.length%2||!hex.length||hex.length/2>pieceBytes)throw Error('sql_text_invalid');
+  const bytes=new Uint8Array(carry.length+hex.length/2);bytes.set(carry);for(let i=0,at=carry.length;i<hex.length;i+=2,at++){const b=parseInt(hex.slice(i,i+2),16);if(Number.isNaN(b))throw Error('sql_text_invalid');bytes[at]=b;}
+  read+=hex.length/2;let cut=bytes.length;
+  if(read<total){let lead=cut-1;while(lead>0&&cut-lead<4&&(bytes[lead]!&0xc0)===0x80)lead--;const b=bytes[lead]!,need=b<0x80?1:b>=0xf0?4:b>=0xe0?3:b>=0xc0?2:1;if(lead+need>cut)cut=lead;}
+  for(let at=0;at<cut;){const part=decodeUtf8Chunk(bytes.subarray(0,cut),at);text+=part.text;at=part.next;}
+  carry=bytes.slice(cut);
+ }
+ if(carry.length||read!==total)throw Error('sql_text_invalid');
+ return text;
 }
 const normalized=(sql:string)=>sql.replace(/^CREATE TRIGGER IF NOT EXISTS /i,'CREATE TRIGGER ').trim().replace(/;$/,'');
 /** Install code-authored triggers only when their full stored definition

@@ -8,7 +8,9 @@ import type {StateCipher} from './sql-state-journal';
 import {CHUNKED_REF_KEY,chunkedRef,type SqlChunkedValues} from './chunked-aead';
 import {utf8ToString} from './bytes';
 /** Values whose serialization exceeds `inlineBytes` are stored as chunk rows
- * (one bounded AEAD block per row); the cache row keeps a small sealed ref. */
+ * (one bounded AEAD block per row); the cache row keeps a small sealed ref.
+ * The `chunks` binding must belong to this cache alone: `dropExcept` deletes
+ * every chunk row of that binding whose owner is not a value of this cache. */
 export interface CacheSpill {chunks:SqlChunkedValues;inlineBytes:number}
 export const SQL_AUTHENTICATED_CACHE_SCHEMA=[
  'CREATE TABLE IF NOT EXISTS podjs_sql_cache_values(binding TEXT NOT NULL,id TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(binding,id))',
