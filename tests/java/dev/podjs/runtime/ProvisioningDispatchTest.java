@@ -38,6 +38,28 @@ public final class ProvisioningDispatchTest {
             ProvisioningTest.failure(ProvisioningSession.Failure.EXPIRED,()->host.execute("provision.check",owned,null));
             ProvisioningTest.failure(ProvisioningSession.Failure.CLOSED,()->host.execute("provision.respond",response,null));
         }finally{host.close();}
+        for(String reason:new String[]{"user_declined","user_back","background","timeout","error"}){
+            ProvisioningTest.Relay r=new ProvisioningTest.Relay();
+            OnlineProvisioningSession s=ProvisioningTest.open(r,new long[]{0});
+            PodBleProvisionServices h=new PodBleProvisionServices(null);
+            set(h,"session",s);set(h,"sessionId",s.sessionId());
+            h.execute("provision.close",new JSONObject().put("sessionId",s.sessionId()).put("reason",reason),null);
+            ProvisioningTest.check(reason.equals(r.closeBody.optString("reason")));
+            h.close();
+        }
+        ProvisioningHttpTest.install();
+        PodBleProvisionServices actual=new PodBleProvisionServices(null);
+        JSONObject started=actual.execute("provision.start",new JSONObject().put("deviceId","d").put("installId","i").put("transport","internet").put("requestId","1").put("appVersion","watch-production-path+28"),new android.os.CancellationSignal());
+        ProvisioningTest.check("watch-production-path+28".equals(ProvisioningHttpTest.connections.get(0).getRequestProperty("X-WatchRSS-App-Version")));
+        actual.execute("provision.close",new JSONObject().put("sessionId",started.getString("sessionId")).put("reason","user_back"),null);
+        long deadline=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+        while(ProvisioningHttpTest.connections.size()<2&&System.nanoTime()<deadline)Thread.yield();
+        ProvisioningTest.check(ProvisioningHttpTest.connections.size()==2);
+        ProvisioningHttpTest.Connection closed=ProvisioningHttpTest.connections.get(1);
+        while(closed.output.size()==0&&System.nanoTime()<deadline)Thread.yield();
+        ProvisioningTest.check("watch-production-path+28".equals(closed.getRequestProperty("X-WatchRSS-App-Version")));
+        ProvisioningTest.check("user_back".equals(new JSONObject(closed.output.toString(java.nio.charset.StandardCharsets.UTF_8)).getString("reason")));
+        actual.close();
         System.out.println("PASS: "+args[0]+" production dispatch: R43 held configure liveness, bound response, sequence, ownership and phone cancellation");
     }
 }

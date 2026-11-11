@@ -12,7 +12,7 @@ public final class ProvisioningTest {
     interface Throwing{void run()throws Exception;}
     static void failure(String reason,Throwing action)throws Exception{try{action.run();throw new AssertionError("accepted invalid operation");}catch(ProvisioningSession.Failure e){check(reason.equals(e.reason));}}
     static class Relay implements OnlineProvisioningSession.Http {
-        String id;byte[] secret;int seq;Object sequenceAdvertised;boolean releasePolicy;boolean transientResponse,phoneClosed,offlineProbe;byte[] firstResponse;JSONObject received;
+        String id;byte[] secret;int seq;Object sequenceAdvertised;boolean releasePolicy;boolean transientResponse,phoneClosed,offlineProbe;byte[] firstResponse;JSONObject received,closeBody;
         final List<String> calls=new ArrayList<>();
         public OnlineProvisioningSession.Reply exchange(String method,String path,String token,byte[] body){
             calls.add(method+" "+path);
@@ -38,7 +38,7 @@ public final class ProvisioningTest {
                     return reply(200,new JSONObject().put("accepted",true));
                 }
                 if(path.endsWith("/ownership/challenge")||path.endsWith("/ownership/release"))return reply(200,new JSONObject().put("ownershipReleased",true));
-                check(path.endsWith("/close"));return reply(200,new JSONObject());
+                check(path.endsWith("/close"));closeBody=new JSONObject(new String(body,StandardCharsets.UTF_8));return reply(200,new JSONObject());
             }catch(Exception e){throw new AssertionError(e);}
         }
         public void abort(){}

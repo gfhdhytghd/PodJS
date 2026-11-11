@@ -15,7 +15,7 @@ final class PodBleProvisionServices implements Closeable {
     private String sessionId,startOwner;
     PodBleProvisionServices(Context context){this.context=context;}
     JSONObject execute(String method,JSONObject args,CancellationSignal cancellation) throws Exception {
-        if("provision.close".equals(method)){cancel(args.optString("sessionId"));return new JSONObject().put("closed",true);}
+        if("provision.close".equals(method)){cancel(args.optString("sessionId"),args.optString("reason","error"));return new JSONObject().put("closed",true);}
         if("provision.start".equals(method)){
             final boolean internet=ProvisioningSession.INTERNET.equals(args.optString("transport",ProvisioningSession.BLUETOOTH));
             final ProvisioningSession opened;
@@ -24,7 +24,7 @@ final class PodBleProvisionServices implements Closeable {
                 cancellation.throwIfCanceled();
                 if(closed||session!=null)throw new IllegalStateException("配对服务忙碌");
                 if(!internet)PodBlePermissions.require(context,false,true);
-                opened=internet?new OnlineProvisioningSession(args.getString("deviceId"),args.getString("installId")):new BleProvisioningSession(context,args.getString("deviceId"),args.getString("installId"));
+                opened=internet?new OnlineProvisioningSession(args.getString("deviceId"),args.getString("installId"),args.optString("appVersion")):new BleProvisioningSession(context,args.getString("deviceId"),args.getString("installId"));
                 session=opened;openedId=opened.sessionId();sessionId=openedId;starting=true;startOwner=args.getString("requestId");
             }
             try{opened.start();JSONObject value=new JSONObject().put("qr",opened.qr()).put("sessionId",openedId).put("messageSequenceMax",opened.messageSequenceMax()).put("ownershipReleaseV1",opened.ownershipReleaseSupported()).put("transport",internet?ProvisioningSession.INTERNET:ProvisioningSession.BLUETOOTH);synchronized(this){if(session==opened)starting=false;}return value;}
@@ -38,9 +38,11 @@ final class PodBleProvisionServices implements Closeable {
         if("provision.respond".equals(method)){active.respond(args.getInt("sequence"),args.getJSONObject("result"));return new JSONObject().put("sent",true);}
         throw new IllegalArgumentException("不支持的配对操作");
     }
-    synchronized void cancel(String expected){if(expected.equals(sessionId))closeSession();}
+    synchronized void cancel(String expected){cancel(expected,"error");}
+    synchronized void cancel(String expected,String reason){if(expected.equals(sessionId))closeSession(reason);}
     /** A cancelled start has no session id on the guest side yet; it still owns the opening session. */
     synchronized void cancelStart(String owner){if(starting&&owner.equals(startOwner))closeSession();}
-    synchronized void closeSession(){if(session!=null)session.close();session=null;sessionId=null;startOwner=null;starting=false;}
+    synchronized void closeSession(){closeSession("error");}
+    synchronized void closeSession(String reason){if(session!=null)session.close(reason);session=null;sessionId=null;startOwner=null;starting=false;}
     public synchronized void close(){closed=true;closeSession();}
 }

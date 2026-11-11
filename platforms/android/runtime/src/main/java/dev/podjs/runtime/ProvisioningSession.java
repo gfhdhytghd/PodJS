@@ -20,6 +20,8 @@ public interface ProvisioningSession extends Closeable {
     /** Non-consuming liveness check, including while a request awaits user confirmation. */
     void checkActive() throws Exception;
     void respond(int sequence,JSONObject result) throws Exception;
+    /** Optional diagnostic reason; older transports keep their close behavior. */
+    default void close(String reason){close();}
     @Override void close();
 
     /** User-safe failure with a stable reason; never carries secrets, tokens or server bodies. */

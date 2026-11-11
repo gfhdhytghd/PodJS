@@ -116,7 +116,7 @@ final class PodServices implements Closeable {
     private PodScreenServices screen;
     private final PodDebugPerformance debugPerformance = new PodDebugPerformance();
     private boolean displayResumed=true;
-    void screenLifecycle(boolean resumed){displayResumed=resumed;if(!resumed)main.post(()->{if(mediaPrefixCache.startupPreview!=null)mediaPrefixCache.startupPreview.hide(0);});if(!resumed)provisioning.closeSession();mediaSurfaces.lifecycle(resumed);videoSessions.lifecycle(resumed);main.post(()->{if(!closed){debugPerformance.lifecycle(resumed);if(screen!=null)screen.lifecycle(resumed);}});}
+    void screenLifecycle(boolean resumed){displayResumed=resumed;if(!resumed)main.post(()->{if(mediaPrefixCache.startupPreview!=null)mediaPrefixCache.startupPreview.hide(0);});if(!resumed)provisioning.closeSession("background");mediaSurfaces.lifecycle(resumed);videoSessions.lifecycle(resumed);main.post(()->{if(!closed){debugPerformance.lifecycle(resumed);if(screen!=null)screen.lifecycle(resumed);}});}
     private final PodVideoDecoderBudget videoDecoderBudget;
     private final PodVideoServices video;
     private final PodMediaPrefixCache mediaPrefixCache;
@@ -673,7 +673,7 @@ final class PodServices implements Closeable {
                 } else if (method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.")) {
                     value=method.startsWith("websocket.")?webSockets.execute(method,args,request.cancellation):byteStreams.execute(method,args,request.cancellation);
                 } else if (method.startsWith("provision.")) {
-                    if(!displayResumed)throw new IllegalStateException("配对需要保持前台");
+                    if(!displayResumed&&!"provision.close".equals(method))throw new IllegalStateException("配对需要保持前台");
                     request.cancellation.setOnCancelListener(()->{if("provision.start".equals(method))provisioning.cancelStart(Integer.toString(id));else provisioning.cancel(args.optString("sessionId"));});
                     value=provisioning.execute(method,args,request.cancellation);
                 } else if (method.startsWith("discovery.")) {

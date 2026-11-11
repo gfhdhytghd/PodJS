@@ -55,7 +55,10 @@ public final class OnlineProvisioningSession implements ProvisioningSession {
     private byte[] pendingResponse;
 
     public OnlineProvisioningSession(String deviceId,String installId){
-        this(deviceId,installId,new UrlHttp(),()->System.nanoTime()/1000000L,task->{Thread thread=new Thread(task,"watchrss-pairing-close");thread.setDaemon(true);thread.start();});
+        this(deviceId,installId,"");
+    }
+    public OnlineProvisioningSession(String deviceId,String installId,String appVersion){
+        this(deviceId,installId,new UrlHttp(appVersion),()->System.nanoTime()/1000000L,task->{Thread thread=new Thread(task,"watchrss-pairing-close");thread.setDaemon(true);thread.start();});
     }
     OnlineProvisioningSession(String deviceId,String installId,Http http,Clock clock,Executor closer){
         if(deviceId==null||deviceId.isEmpty()||installId==null||installId.isEmpty())throw new IllegalArgumentException("Invalid setup identity");
@@ -68,7 +71,7 @@ public final class OnlineProvisioningSession implements ProvisioningSession {
     @Override public synchronized int messageSequenceMax(){return sequenceMax;}
     @Override public synchronized boolean ownershipReleaseSupported(){return releaseSupported;}
     private void check(){
-        if(!closed&&clock.millis()>=deadline){close();throw new Failure(Failure.EXPIRED,"二维码已过期，请重新开始");}
+        if(!closed&&clock.millis()>=deadline){close("timeout");throw new Failure(Failure.EXPIRED,"二维码已过期，请重新开始");}
         if(closed)throw new Failure(Failure.CLOSED,"配对已结束，请在手表重新打开配对页面");
     }
     private Failure reject(){close();return new Failure(Failure.REJECTED,"配对未完成，请重新开始");}
@@ -190,7 +193,7 @@ public final class OnlineProvisioningSession implements ProvisioningSession {
         check();
         if(reply.status>=200&&reply.status<300)return reply;
         if(reply.status==429||reply.status==408||reply.status>=500)return null;
-        if(reply.status==410){close();throw new Failure(Failure.EXPIRED,"二维码已过期，请重新开始");}
+        if(reply.status==410){close("timeout");throw new Failure(Failure.EXPIRED,"二维码已过期，请重新开始");}
         throw reject();
     }
     private JSONObject parse(Reply reply){
@@ -202,7 +205,9 @@ public final class OnlineProvisioningSession implements ProvisioningSession {
         check();
     }
 
-    @Override public void close(){
+    @Override public void close(){close("error");}
+    @Override public void close(String reason){
+        final String diagnostic=reason!=null&&reason.matches("user_declined|user_back|background|timeout|error")?reason:"error";
         final String token;
         synchronized(this){
             if(closed)return;closed=true;Arrays.fill(secret,(byte)0);
@@ -212,12 +217,15 @@ public final class OnlineProvisioningSession implements ProvisioningSession {
         closedSignal.countDown();
         http.abort();
         // Best effort only; the relay's TTL is the final cleanup when the network is down.
-        if(token!=null)try{closer.execute(()->{try{http.exchange("POST",SESSIONS+"/"+sessionId+"/close",token,"{}".getBytes(StandardCharsets.UTF_8));}catch(Exception ignored){}});}catch(RuntimeException ignored){}
+        if(token!=null)try{closer.execute(()->{try{http.exchange("POST",SESSIONS+"/"+sessionId+"/close",token,new JSONObject().put("reason",diagnostic).toString().getBytes(StandardCharsets.UTF_8));}catch(Exception ignored){}});}catch(RuntimeException ignored){}
     }
 
     static final class UrlHttp implements Http {
         private final Set<HttpURLConnection> open=Collections.newSetFromMap(new ConcurrentHashMap<>());
         private boolean aborted;
+        private final String appVersion;
+        UrlHttp(){this("");}
+        UrlHttp(String appVersion){this.appVersion=appVersion==null?"":appVersion;}
         @Override public Reply exchange(String method,String path,String token,byte[] body) throws IOException {
             HttpURLConnection connection=(HttpURLConnection)new URL(ORIGIN+path).openConnection();
             synchronized(this){
@@ -228,6 +236,8 @@ public final class OnlineProvisioningSession implements ProvisioningSession {
                 connection.setInstanceFollowRedirects(false);connection.setUseCaches(false);
                 connection.setConnectTimeout(8000);connection.setReadTimeout(10000);connection.setRequestMethod(method);
                 connection.setRequestProperty("Accept","application/json");
+                // All pairing routes, including session RPC and close, use this exchange.
+                if(!appVersion.isEmpty())connection.setRequestProperty("X-WatchRSS-App-Version",appVersion);
                 if(token!=null)connection.setRequestProperty("x-watchrss-pairing-token",token);
                 if(body!=null){
                     connection.setDoOutput(true);connection.setRequestProperty("Content-Type","application/json");connection.setFixedLengthStreamingMode(body.length);
