@@ -207,7 +207,7 @@ public final class OnlineProvisioningSession implements ProvisioningSession {
 
     @Override public void close(){close("error");}
     @Override public void close(String reason){
-        final String diagnostic=reason!=null&&reason.matches("user_declined|user_back|background|timeout|error")?reason:"error";
+        final String diagnostic=ProvisioningSession.closeReason(reason);
         final String token;
         synchronized(this){
             if(closed)return;closed=true;Arrays.fill(secret,(byte)0);

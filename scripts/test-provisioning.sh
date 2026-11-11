@@ -30,10 +30,13 @@ final class BleProvisioningSession extends BleProvisioningStub {
  public void checkActive(){throw new AssertionError();} public void respond(int seq,org.json.JSONObject result){throw new AssertionError();} public void close(){}
 }
 JAVA
+queue_status=0
 for variant in main noBleProvision; do
   dispatch=platforms/android/runtime/src/main/java/dev/podjs/runtime/PodBleProvisionServices.java
   if [[ "$variant" == noBleProvision ]]; then dispatch=platforms/android/runtime/src/noBleProvision/java/dev/podjs/runtime/PodOnlineProvisionServices.java; fi
   mkdir -p "$provision_tmp/$variant"
-  javac -cp "$json:$provision_tmp" -d "$provision_tmp/$variant" "$provision_tmp/stubs/android/content/Context.java" "$provision_tmp/stubs/android/os/CancellationSignal.java" "$provision_tmp/stubs/dev/podjs/runtime/PodBlePermissions.java" "$provision_tmp/stubs/dev/podjs/runtime/BleProvisioningSession.java" "$dispatch" tests/java/dev/podjs/runtime/ProvisioningDispatchTest.java
+  javac -cp "$json:$provision_tmp" -d "$provision_tmp/$variant" "$provision_tmp/stubs/android/content/Context.java" "$provision_tmp/stubs/android/os/CancellationSignal.java" "$provision_tmp/stubs/dev/podjs/runtime/PodBlePermissions.java" "$provision_tmp/stubs/dev/podjs/runtime/BleProvisioningSession.java" "$dispatch" tests/java/dev/podjs/runtime/ProvisioningDispatchTest.java tests/java/dev/podjs/runtime/ProvisioningQueueTest.java
   java -ea -cp "$json:$provision_tmp/$variant:$provision_tmp" dev.podjs.runtime.ProvisioningDispatchTest "$variant"
+  java -ea -cp "$json:$provision_tmp/$variant:$provision_tmp" dev.podjs.runtime.ProvisioningQueueTest "$variant" || queue_status=1
 done
+exit "$queue_status"

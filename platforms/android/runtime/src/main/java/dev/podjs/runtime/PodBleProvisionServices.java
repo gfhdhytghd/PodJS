@@ -38,10 +38,16 @@ final class PodBleProvisionServices implements Closeable {
         if("provision.respond".equals(method)){active.respond(args.getInt("sequence"),args.getJSONObject("result"));return new JSONObject().put("sent",true);}
         throw new IllegalArgumentException("不支持的配对操作");
     }
+    /** Called by the service cancellation listener on its calling thread, never queued. */
+    void cancelOperation(String method,JSONObject args,String reason){
+        if("provision.start".equals(method))cancelStart(args.optString("requestId"),reason);
+        else cancel(args.optString("sessionId"),reason);
+    }
     synchronized void cancel(String expected){cancel(expected,"error");}
     synchronized void cancel(String expected,String reason){if(expected.equals(sessionId))closeSession(reason);}
-    /** A cancelled start has no session id on the guest side yet; it still owns the opening session. */
-    synchronized void cancelStart(String owner){if(starting&&owner.equals(startOwner))closeSession();}
+    /** The guest may cancel after start finished but before its result was delivered. */
+    synchronized void cancelStart(String owner){cancelStart(owner,"error");}
+    synchronized void cancelStart(String owner,String reason){if(owner.equals(startOwner))closeSession(reason);}
     synchronized void closeSession(){closeSession("error");}
     synchronized void closeSession(String reason){if(session!=null)session.close(reason);session=null;sessionId=null;startOwner=null;starting=false;}
     public synchronized void close(){closed=true;closeSession();}

@@ -38,7 +38,7 @@ export interface SqlStatement { sql: string; params?: readonly SqlValue[] }
 export class HostServiceError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = "HostServiceError"; }
 }
-export interface HostOperation<T> { result: Promise<T>; cancel(): void }
+export interface HostOperation<T> { result: Promise<T>; cancel(reason?: string): void }
 const pending = new Map<number, { method:string;diagnosticSite:number;resolve(value: unknown): void; reject(error: Error): void; status?:(value:unknown)=>void }>();
 let nextId = 1;
 /** Live promise/callback table, including the stats request if called by a guest. */
@@ -148,18 +148,19 @@ function serviceOperation<T>(method: string, args: Record<string, unknown>, stat
   const result = new Promise<T>((resolve, reject) => {
     const capability = methods[method];
     if (!capability || !hasCapability(capability)) { reject(new HostServiceError("unsupported", `Unsupported host service: ${method}`)); return; }
-    if (pending.size >= (/^video\.(?!(?:cache|frame|surface)\.)/.test(method) ? 72 : 64)) { reject(new HostServiceError("busy", "Too many pending host operations")); return; }
+    // Reserve one cleanup slot beyond every ordinary operation's admission limit.
+    if (pending.size >= (method==='provision.close'?73:/^video\.(?!(?:cache|frame|surface)\.)/.test(method) ? 72 : 64)) { reject(new HostServiceError("busy", "Too many pending host operations")); return; }
     pending.set(id, { diagnosticSite,method:Object.prototype.hasOwnProperty.call(methods,method)?method:'other',resolve: value => resolve(value as T), reject, status });
     try { emit({ t: "service.request", version: 1, id, method, args }); }
     catch (error) { pending.delete(id); reject(error); }
   });
-  return { result, cancel() {
+  return { result, cancel(reason?:string) {
     const request = pending.get(id);
     if (!request) return;
     pending.delete(id);
     try { request.status?.({type:"cancelled"}); } catch { /* Cancellation must still settle. */ }
     request.reject(new HostServiceError("cancelled", "Operation cancelled"));
-    emit({ t: "service.cancel", version: 1, id });
+    emit({ t: "service.cancel", version: 1, id, reason:typeof reason==='string'&&/^(user_declined|user_back|background|timeout|error)$/.test(reason)?reason:'error' });
   } };
 }
 export interface DisplayPowerState {interactive:boolean;resumed:boolean;applied:boolean;windowKeepScreenOn:boolean;owners:string[]}
@@ -576,7 +577,7 @@ export const browserAuth = {
       onStatus?.(value);
     });
     const finish=()=>{cancelled=true;publish(wait.finish());};
-    return {result:operation.result.then(value=>{finish();return value;},error=>{finish();throw error;}),cancel:()=>{operation.cancel();finish();}};
+    return {result:operation.result.then(value=>{finish();return value;},error=>{finish();throw error;}),cancel:(reason?:string)=>{operation.cancel(reason);finish();}};
   },
 };
 /** Read-only DOM snapshot. Cookie completion belongs to the native CookieManager. */

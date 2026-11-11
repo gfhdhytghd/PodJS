@@ -8,6 +8,7 @@ import org.json.JSONObject;
 public interface ProvisioningSession extends Closeable {
     String INTERNET="internet";
     String BLUETOOTH="bluetooth";
+    static String closeReason(Object value){return value instanceof String&&((String)value).matches("user_declined|user_back|background|timeout|error")?(String)value:"error";}
     void start() throws Exception;
     String qr() throws Exception;
     String sessionId();

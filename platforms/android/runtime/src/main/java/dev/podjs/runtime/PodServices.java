@@ -257,6 +257,7 @@ final class PodServices implements Closeable {
     private volatile boolean closed;
     private static final class Request {
         final CancellationSignal cancellation = new CancellationSignal();
+        volatile String cancelReason="error";
         volatile Future<?> future;
         HostWorkPriority.Ticket priority;
         AlertDialog dialog;
@@ -308,16 +309,22 @@ final class PodServices implements Closeable {
     void pauseVideoForLifecycle() { video.pauseForLifecycle(); videoSessions.lifecycle(false); }
     void dispatch(JSONObject command) throws Exception {
         int id = command.getInt("id");
-        if ("service.cancel".equals(command.getString("t"))) { cancel(id); return; }
+        if ("service.cancel".equals(command.getString("t"))) { cancel(id,ProvisioningSession.closeReason(command.opt("reason"))); return; }
         if (closed) return;
         if (command.optInt("version") != 1) { failure(id,"unsupported","Unsupported service version"); return; }
         if (id <= 0 || requests.containsKey(id)) { failure(id,"invalid_argument","Invalid request id"); return; }
-        if (requests.size() >= 64) { failure(id,"busy","Too many requests"); return; }
         String method = command.getString("method");
         JSONObject args = command.getJSONObject("args");
         Request request = new Request();
         request.method = method;
-        requests.put(id, request);
+        // Closing an owned session must not wait behind its blocked receive/RPC.
+        if("provision.close".equals(method)){
+            try {reply(id,true,provisioning.execute(method,args,request.cancellation),null,null);}
+            catch(Exception error){failure(id,"host_error",error.getMessage());}
+            return;
+        }
+        if (requests.size() >= 64) { failure(id,"busy","Too many requests"); return; }
+        requests.put(id,request);
         if(method.startsWith("acoustic.")) {
             try {acoustic.requireDebug();}catch(Exception error){requests.remove(id,request);failure(id,"permission_denied",error.getMessage());return;}
             if("acoustic.requestPermission".equals(method)) {
@@ -641,6 +648,7 @@ final class PodServices implements Closeable {
             return;
         }
         args.put("requestId", id);
+        if(method.startsWith("provision."))request.cancellation.setOnCancelListener(()->provisioning.cancelOperation(method,args,request.cancelReason));
         // Only shared device/secure work uses this gate. Network transfers and
         // main-thread dialogs never hold an admission ticket while awaiting IO.
         if (!("secure.get".equals(method)&&!headlessWork&&device.hasWarmSecureStore()) && !method.endsWith(".release") && (method.startsWith("secure.") || method.startsWith("crypto.") || method.startsWith("file.") || "log.append".equals(method) || "uri.parse".equals(method)))
@@ -674,7 +682,6 @@ final class PodServices implements Closeable {
                     value=method.startsWith("websocket.")?webSockets.execute(method,args,request.cancellation):byteStreams.execute(method,args,request.cancellation);
                 } else if (method.startsWith("provision.")) {
                     if(!displayResumed&&!"provision.close".equals(method))throw new IllegalStateException("配对需要保持前台");
-                    request.cancellation.setOnCancelListener(()->{if("provision.start".equals(method))provisioning.cancelStart(Integer.toString(id));else provisioning.cancel(args.optString("sessionId"));});
                     value=provisioning.execute(method,args,request.cancellation);
                 } else if (method.startsWith("discovery.")) {
                     value = method.startsWith("discovery.network")?networks.execute(method,args,request.cancellation):"discovery.mdns".equals(method)?discovery.execute(method,args,request.cancellation):bleDiscovery.execute(method,args,request.cancellation);
@@ -706,7 +713,7 @@ final class PodServices implements Closeable {
                 } else value = method.startsWith("sql.") ? sql(method, args, request.cancellation) : method.startsWith("http.") ? http.execute(method,args) : device.execute(method, args);
                 workSuccess=true;
                 if (requests.remove(id, request)) reply(id, true, value, null, null);
-                else if ("provision.start".equals(method) && value instanceof JSONObject) provisioning.cancel(((JSONObject)value).optString("sessionId"));
+                else if ("provision.start".equals(method) && value instanceof JSONObject) provisioning.cancel(((JSONObject)value).optString("sessionId"),request.cancelReason);
                 else if ("discovery.networkSubscribe".equals(method)) networks.discard(args.getString("subscriptionId"));
                 else if ("websocket.connect".equals(method) && value instanceof JSONObject) webSockets.discard((JSONObject)value);
                 else if (("rfcomm.listen".equals(method) || "rfcomm.accept".equals(method) || "tcp.listen".equals(method) || "tcp.accept".equals(method)) && value instanceof JSONObject) byteStreams.discard((JSONObject)value);
@@ -945,9 +952,14 @@ final class PodServices implements Closeable {
             main.post(() -> { if(!closed) sink.complete(json); });
         } catch(Exception error) { throw new IllegalStateException(error); }
     }
-    private void cancel(int id) {
-        Request request = requests.remove(id);
-        if(request == null) return;
+    private void cancel(int id) {cancel(id,"error");}
+    private void cancel(int id,String reason) {
+        Request request = requests.get(id);
+        if(request!=null)request.cancelReason=reason;
+        // A completed start may already be removed while its reply is still in
+        // the bridge. Its owner id remains authoritative until session cleanup.
+        provisioning.cancelStart(Integer.toString(id),reason);
+        if(request==null||!requests.remove(id,request))return;
         request.cancellation.cancel();
         if (request.priority != null) request.priority.cancel();
         if(request.timer != null) main.removeCallbacks(request.timer);
