@@ -343,6 +343,8 @@ public final class PodTakeover {
                 case "space_insufficient":return "存储空间不足";
                 case "user_locked":return "手表已锁定";
                 case "migration_admission_failed":return "迁移记录校验失败";
+                case "migration_storage_invalid":return "迁移目录中有异常文件";
+                case "verification_scratch_invalid":return "校验目录中有异常文件";
                 case "active_validation_failed":return "迁移后数据校验失败";
                 case "unknown_user_files":return "发现无法识别的数据";
                 case "target_conflict":return "目标位置已有数据";
@@ -358,7 +360,7 @@ public final class PodTakeover {
         }
         private static String nextStep(String phase,String reason) {
             if("PAUSED".equals(phase)) {
-                if("migration_row_too_large".equals(reason))return "原数据未改动，请截图联系支持。";
+                if("migration_row_too_large".equals(reason)||"migration_storage_invalid".equals(reason)||"verification_scratch_invalid".equals(reason))return "原数据未改动，请截图联系支持。";
                 return "已完成的部分会保留，可重试或重开应用继续。";
             }
             if(!"BLOCKED".equals(phase))return "迁移期间不会修改原数据，请保持应用在前台。";
