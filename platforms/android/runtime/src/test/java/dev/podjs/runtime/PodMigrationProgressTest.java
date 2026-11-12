@@ -68,7 +68,7 @@ public class PodMigrationProgressTest {
                 assertEquals("迁移已暂停",label(view,"title").getText().toString());
                 String detail=label(view,"detail").getText().toString();
                 assertTrue(detail,detail.startsWith("原因：")&&detail.endsWith("（"+code+"）")&&detail.length()>code.length()+5);
-                assertEquals("migration_row_too_large".equals(code)?"原数据未改动。请截图本页并联系支持。":"已完成的部分会保留。点“重试迁移”，或重新打开应用继续。",label(view,"next").getText().toString());
+                assertEquals("migration_row_too_large".equals(code)?"原数据未改动，请截图联系支持。":"已完成的部分会保留，可重试或重开应用继续。",label(view,"next").getText().toString());
                 assertEquals("重试迁移",label(view,"retry").getText().toString());
                 assertEquals(android.view.View.VISIBLE,label(view,"retry").getVisibility());
                 assertTrue(label(view,"retry").isEnabled());

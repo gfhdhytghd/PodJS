@@ -290,7 +290,7 @@ public final class PodTakeover {
             retry=new android.widget.TextView(context);retry.setText("重试迁移");retry.setTextSize(14);retry.setTextColor(0xff000000);retry.setGravity(android.view.Gravity.CENTER);
             android.graphics.drawable.GradientDrawable pill=new android.graphics.drawable.GradientDrawable();pill.setColor(PRIMARY);pill.setCornerRadius(20*dp);retry.setBackground(pill);
             retry.setPadding((int)(24*dp),0,(int)(24*dp),0);retry.setClickable(true);retry.setFocusable(true);
-            android.widget.LinearLayout.LayoutParams button=new android.widget.LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT,(int)(40*dp));button.topMargin=(int)(10*dp);column.addView(retry,button);
+            android.widget.LinearLayout.LayoutParams button=new android.widget.LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT,(int)(36*dp));button.topMargin=(int)(8*dp);column.addView(retry,button);
             render(new JSONObject(),true);
         }
         private static android.widget.TextView text(Context context,android.widget.LinearLayout column,int sp,int color,int top) {
@@ -358,15 +358,15 @@ public final class PodTakeover {
         }
         private static String nextStep(String phase,String reason) {
             if("PAUSED".equals(phase)) {
-                if("migration_row_too_large".equals(reason))return "原数据未改动。请截图本页并联系支持。";
-                return "已完成的部分会保留。点“重试迁移”，或重新打开应用继续。";
+                if("migration_row_too_large".equals(reason))return "原数据未改动，请截图联系支持。";
+                return "已完成的部分会保留，可重试或重开应用继续。";
             }
             if(!"BLOCKED".equals(phase))return "迁移期间不会修改原数据，请保持应用在前台。";
-            if("user_locked".equals(reason))return "请先解锁手表，再点“重试迁移”。";
-            if("space_insufficient".equals(reason))return "请清理存储空间，再点“重试迁移”。";
-            if("store_needs_reauth_user_confirmation".equals(reason))return "原数据已保留。迁移完成后请重新登录账号。";
-            if("active_validation_failed".equals(reason))return "数据已迁移，但打开时校验失败。请截图本页并联系支持。";
-            return "原数据未改动。请截图本页并联系支持。";
+            if("user_locked".equals(reason))return "请先解锁手表，再重试。";
+            if("space_insufficient".equals(reason))return "请清理存储空间，再重试。";
+            if("store_needs_reauth_user_confirmation".equals(reason))return "原数据已保留，完成后请重新登录。";
+            if("active_validation_failed".equals(reason))return "数据已迁移但校验失败，请截图联系支持。";
+            return "原数据未改动，请截图联系支持。";
         }
         void render(JSONObject status,boolean running) {
             String phase=status.optString("progressPhase",status.optString("phase","CHECKING"));
@@ -375,7 +375,10 @@ public final class PodTakeover {
             String displayPhase="PAUSED".equals(durable)||"BLOCKED".equals(durable)?durable:phase;
             title.setText(phaseLabel(displayPhase));percent.setText(value+"%");
             ring.set(value/100f,running&&value==0,"BLOCKED".equals(durable)&&!running?ERROR:PRIMARY);
-            detail.setText((copied>0?"已复制 "+bytes(copied):"")+(reason.isEmpty()?"":(copied>0?"\n":"")+reasonLine(reason)));detail.setVisibility(detail.length()>0?VISIBLE:GONE);
+            // Halted pages drop the numeric readouts (the ring keeps progress) so reason, next step and retry fit the round screen.
+            percent.setVisibility(halted?GONE:VISIBLE);
+            String bytesLine=!halted&&copied>0?"已复制 "+bytes(copied):"";
+            detail.setText(bytesLine+(reason.isEmpty()?"":(bytesLine.isEmpty()?"":"\n")+reasonLine(reason)));detail.setVisibility(detail.length()>0?VISIBLE:GONE);
             next.setText(nextStep(displayPhase,reason));
             boolean canRetry=!running&&halted;retry.setVisibility(canRetry?VISIBLE:GONE);retry.setEnabled(canRetry);
             setContentDescription(title.getText()+" "+value+"%");
