@@ -53,7 +53,46 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
     private java.util.function.BiConsumer<String,Long> timings=(s,n)->{};
     PodRoomV18Converter withTimings(java.util.function.BiConsumer<String,Long> sink){timings=sink;return this;}
     PodRoomV18Converter withActiveFactory(Factory readOnly){activeFactory=readOnly;return this;}
-    private Db activeDb(File f)throws Exception{return (activeFactory==null?factory:activeFactory).open(f);}
+    private Db activeDb(File f)throws Exception {checkDatabaseFamily(f);checkSourceAliases(f);return (activeFactory==null?factory:activeFactory).open(f);}
+    private Db open(File f)throws Exception {checkDatabaseFamily(f);checkSourceAliases(f);return factory.open(f);}
+    private void checkSourceAliases(File file)throws IOException {
+        File g=file.getParentFile();if(g.getName().equals("verification-work")||g.getName().equals("capture-work"))g=g.getParentFile();
+        for(File protectedBase:new File[]{source,new File(g,"room.sqlite")})if(protectedBase!=null)
+            for(String left:new String[]{"","-journal","-wal","-shm"})for(String right:new String[]{"","-journal","-wal","-shm"}) {
+                File candidate=new File(file+left),original=new File(protectedBase+right);
+                if((protectedBase==source||!candidate.getAbsoluteFile().equals(original.getAbsoluteFile()))&&Files.exists(candidate.toPath(),LinkOption.NOFOLLOW_LINKS)&&Files.exists(original.toPath(),LinkOption.NOFOLLOW_LINKS)&&Files.isSameFile(candidate.toPath(),original.toPath()))throw new IOException("migration_storage_invalid");
+            }
+    }
+    static void checkDatabaseFamily(File database)throws IOException {
+        for(String suffix:new String[]{"","-journal","-wal","-shm"})PodTakeoverCoordinator.requirePrivateFile(new File(database+suffix));
+    }
+    static void checkGenerationStorage(File generation)throws IOException {
+        PodTakeoverCoordinator.requirePrivateDirectory(generation);
+        if(!Files.exists(generation.toPath(),LinkOption.NOFOLLOW_LINKS))return;
+        if(generation.getName().equals("verification-work")){validateScratch(generation,false);return;}
+        if(generation.getName().equals("capture-work")){validateScratch(generation,true);return;}
+        checkPrivateTree(generation,new HashSet<>());
+        for(String name:new String[]{"room.sqlite","podjs.sqlite","room-progress.sqlite"})checkDatabaseFamily(new File(generation,name));
+        File[] children=generation.listFiles();if(children==null)throw new IOException("migration_storage_invalid");
+        // Complete preflight before any scratch cleanup or any SQLite open.
+        for(File child:children) {
+            String name=child.getName();
+            if(name.equals("capture-work")||name.matches("capture-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}"))validateScratch(child,true);
+            if(name.equals("verification-work")||name.matches("verify-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}"))validateScratch(child,false);
+        }
+    }
+    private static void checkPrivateTree(File file,Set<Object> inodes)throws IOException {
+        PodTakeoverCoordinator.Work.check();
+        if(Files.isDirectory(file.toPath(),LinkOption.NOFOLLOW_LINKS)) {
+            PodTakeoverCoordinator.requirePrivateDirectory(file);
+            File[] children=file.listFiles();if(children==null)throw new IOException("migration_storage_invalid");
+            for(File child:children)checkPrivateTree(child,inodes);
+        } else {
+            PodTakeoverCoordinator.requirePrivateFile(file);
+            Object key=Files.readAttributes(file.toPath(),java.nio.file.attribute.BasicFileAttributes.class,LinkOption.NOFOLLOW_LINKS).fileKey();
+            if(key!=null&&!inodes.add(key))throw new IOException("migration_storage_invalid");
+        }
+    }
     private static final int MAX_GUEST_SCHEMA_VERSION=9;
     public void activeFast(File g)throws Exception {
         long began=System.nanoTime();
@@ -127,7 +166,7 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
                     if(!m.exists()&&w.length()>0)throw new IOException("source_wal_unlocked");
                     wal=new FileInputStream(w);
                 }
-            }catch(Exception e){close();throw e;}
+            }catch(Exception|Error e){PodTakeoverCoordinator.closeAfterFailure(this,e);throw e;}
         }
         static String digest(FileInputStream in)throws Exception {
             if(in==null)return "absent";
@@ -147,6 +186,7 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
         }
     }
     public void snapshot(File g) throws Exception {
+        checkGenerationStorage(g);
         File receipt=new File(g,"snapshot.properties");
         if(receipt.exists()){resume(g,PodTakeoverCoordinator.Phase.SNAPSHOTTED);return;}
         String localIdentity=identity.read(g);
@@ -162,7 +202,7 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
             if(!before.equals(capture.digest()))throw new IOException("source_changed");
         }
         long capturedSchema;String capturedContract;
-        try(Db db=factory.open(raw)) {
+        try(Db db=open(raw)) {
             validateSource(db);capturedSchema=number(scalar(db,"PRAGMA user_version"));capturedContract=contractHash(db);
             // Only the private DB is checkpointed. Never copy source SHM (locks).
             db.query("PRAGMA wal_checkpoint(TRUNCATE)");
@@ -217,7 +257,10 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
     }
     static String q(String identifier){return "\""+identifier.replace("\"","\"\"")+"\"";}
     private Db target(File g)throws Exception {
-        Db d=factory.open(new File(g,"podjs.sqlite"));
+        checkGenerationStorage(g);
+        File database=new File(g,"podjs.sqlite");checkSourceAliases(database);checkSourceAliases(new File(g,"room-progress.sqlite"));
+        Db d=open(database);
+        try {
         d.query("PRAGMA journal_mode=DELETE");d.exec("PRAGMA synchronous=FULL");d.exec("PRAGMA foreign_keys=ON");
         d.exec("ATTACH DATABASE ? AS migration",new File(g,"room-progress.sqlite").getAbsolutePath());
         d.query("PRAGMA migration.journal_mode=DELETE");d.exec("PRAGMA migration.synchronous=FULL");
@@ -226,12 +269,14 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
         d.exec("CREATE TABLE IF NOT EXISTS migration.content_reference(item_id INTEGER NOT NULL,kind TEXT NOT NULL,relative_path TEXT NOT NULL,PRIMARY KEY(item_id,kind))");
         d.exec("CREATE TABLE IF NOT EXISTS migration.receipt(id INTEGER PRIMARY KEY,digest TEXT NOT NULL)");
         return d;
+        }catch(Exception|Error failure){PodTakeoverCoordinator.closeAfterFailure(d,failure);throw failure;}
     }
     public void resume(File g,PodTakeoverCoordinator.Phase phase)throws Exception {
+        checkGenerationStorage(g);
         Properties p=PodTakeoverCoordinator.read(new File(g,"snapshot.properties"));
         if(!version().equals(p.getProperty("version")) || !hash(new File(g,"room.sqlite")).equals(p.getProperty("snapshot")) || !hex(MessageDigest.getInstance("SHA-256").digest(resource("watchrss-schema.json").getBytes(StandardCharsets.UTF_8))).equals(p.getProperty("schema")))throw new IOException("snapshot_changed");
         pruneScratch(g,"capture-");clearScratch(new File(g,"capture-work"),true);pruneScratch(g,"verify-");
-        try(Db s=factory.open(new File(g,"room.sqlite"))){validateSource(s);
+        try(Db s=open(new File(g,"room.sqlite"))){validateSource(s);
             if(p.containsKey("sourceContract")&&!contractHash(s).equals(p.getProperty("sourceContract"))||p.containsKey("sourceSchema")&&!Long.toString(number(scalar(s,"PRAGMA user_version"))).equals(p.getProperty("sourceSchema")))throw new IOException("source_contract_changed");
             if(number(scalar(s,"PRAGMA user_version"))==19&&!p.containsKey("sourceContract"))throw new IOException("source_contract_missing");
         }
@@ -286,7 +331,7 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
     }
     public void copy(File g)throws Exception {
         resume(g,PodTakeoverCoordinator.Phase.COPYING);
-        try(Db s=factory.open(new File(g,"room.sqlite"));Db d=target(g)){
+        try(Db s=open(new File(g,"room.sqlite"));Db d=target(g)){
             initialize(d,g);
             long total=sourceRows(s),done=completedRows(d);PodTakeoverCoordinator.Work.worked("room",done,total);
             for(String table:TABLES){
@@ -409,14 +454,19 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
         for(String t:new String[]{"migration.cursor","migration.catalog","migration.content_reference"})h.update(tableDigest(d,t).getBytes(StandardCharsets.UTF_8));return hex(h.digest());
     }
     static void seal(Db d)throws Exception{d.exec("INSERT OR REPLACE INTO migration.receipt VALUES(1,?)",fingerprint(d));}
-    private static void clearScratch(File directory,boolean capture)throws Exception {
+    private static void validateScratch(File directory,boolean capture)throws IOException {
+        PodTakeoverCoordinator.requirePrivateDirectory(directory);
         if(!Files.exists(directory.toPath(),LinkOption.NOFOLLOW_LINKS))return;
-        if(!directory.getCanonicalFile().equals(directory.getAbsoluteFile())||!Files.isDirectory(directory.toPath(),LinkOption.NOFOLLOW_LINKS))throw new IOException("candidate_symlink");
         Set<String> names=new HashSet<>();
         for(String base:capture?new String[]{"room.sqlite"}:new String[]{"podjs.sqlite","room-progress.sqlite","snapshot.properties"})
             for(String suffix:new String[]{"","-journal","-wal","-shm",".tmp"})names.add(base+suffix);
         File[] children=directory.listFiles();if(children==null)throw new IOException("candidate_unreadable");
-        for(File child:children)if(!names.contains(child.getName())||!Files.isRegularFile(child.toPath(),LinkOption.NOFOLLOW_LINKS))throw new IOException("verification_scratch_invalid");
+        for(File child:children){if(!names.contains(child.getName()))throw new IOException("verification_scratch_invalid");PodTakeoverCoordinator.requirePrivateFile(child);}
+    }
+    private static void clearScratch(File directory,boolean capture)throws Exception {
+        validateScratch(directory,capture);
+        if(!Files.exists(directory.toPath(),LinkOption.NOFOLLOW_LINKS))return;
+        File[] children=directory.listFiles();if(children==null)throw new IOException("migration_storage_invalid");
         for(File child:children)Files.delete(child.toPath());Files.delete(directory.toPath());
     }
     private static void pruneScratch(File generation,String prefix)throws Exception {
@@ -450,7 +500,7 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
         if(auditSnapshot.exists()) {
             if(!snapshot.equals(PodTakeoverCoordinator.read(auditSnapshot)))throw new IOException("verification_snapshot_changed");
         } else PodTakeoverCoordinator.atomic(auditSnapshot,snapshot);
-        try(Db sourceDb=factory.open(new File(g,"room.sqlite"));Db expected=target(audit)) {
+        try(Db sourceDb=open(new File(g,"room.sqlite"));Db expected=target(audit)) {
             initialize(expected,audit);
             long total=sourceRows(sourceDb),done=completedRows(expected);PodTakeoverCoordinator.Work.worked("roomVerify",done,total);
             for(String table:TABLES) {
@@ -472,7 +522,7 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
             expected.exec("UPDATE offline_media_policy SET suppress_download=0 WHERE id=1");
             checks(expected);
         }
-        try(Db expected=target(audit);Db s=factory.open(new File(g,"room.sqlite"));Db d=target(g)){
+        try(Db expected=target(audit);Db s=open(new File(g,"room.sqlite"));Db d=target(g)){
             checks(d);
             for(Map<String,Object> row:d.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")) {
                 String table=(String)row.get("name");
@@ -489,7 +539,7 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
                 JSONArray rows=new JSONArray();for(Map<String,Object> r:d.query("SELECT value_json FROM migration.catalog WHERE table_name=? ORDER BY key_json",t))rows.put(new JSONObject((String)r.get("value_json")));
                 if(t.equals("reader_presets"))catalogs.put("records",rows);else assets.put(t.equals("reader_font_assets")?"fonts":t.equals("reader_background_assets")?"backgrounds":"deletions",rows);
             }
-            catalogs.put("assets",assets);try(FileOutputStream out=new FileOutputStream(catalog)){out.write(catalogs.toString().getBytes(StandardCharsets.UTF_8));out.getFD().sync();}
+            catalogs.put("assets",assets);PodTakeoverCoordinator.requirePrivateFile(catalog);try(FileOutputStream out=new FileOutputStream(catalog)){out.write(catalogs.toString().getBytes(StandardCharsets.UTF_8));out.getFD().sync();}
             receipt.setProperty("catalog.digest",hash(catalog));receipt.setProperty("activationReady","false");receipt.setProperty("digest",fingerprint(d));receipt.setProperty("version",version());
         }
         PodTakeoverCoordinator.atomic(verification,receipt);

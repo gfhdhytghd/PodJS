@@ -34,15 +34,16 @@ public final class PodSyncOutbox implements Closeable {
     public PodSyncOutbox(Context context, String appId) throws IOException {
         PodTakeover.requireReady(context);
         id(appId);
-        File root = new File(context.getNoBackupFilesDir(),"podjs-outbox");
+        File root = new File(PodTakeover.sandbox(context),"no_backup/podjs-outbox");
         if (!root.mkdirs() && !root.isDirectory()) throw new IOException("Outbox unavailable");
+        PodRoomV18Converter.checkDatabaseFamily(new File(root,appId + ".sqlite"));
         db = SQLiteDatabase.openOrCreateDatabase(new File(root,appId + ".sqlite"),null);
         try {
             db.execSQL("PRAGMA synchronous=FULL");
             db.execSQL("CREATE TABLE IF NOT EXISTS outbox (ordinal INTEGER PRIMARY KEY AUTOINCREMENT, peer TEXT NOT NULL, id TEXT NOT NULL, payload BLOB NOT NULL, expires INTEGER NOT NULL, priority INTEGER NOT NULL, cost INTEGER NOT NULL, UNIQUE(peer,id))");
             db.execSQL("CREATE INDEX IF NOT EXISTS outbox_delivery ON outbox(peer,priority,ordinal)");
             db.execSQL("CREATE TABLE IF NOT EXISTS ttl_intents (peer TEXT NOT NULL, id TEXT NOT NULL, digest BLOB NOT NULL, ttl INTEGER NOT NULL, expires INTEGER NOT NULL, priority INTEGER NOT NULL, PRIMARY KEY(peer,id))");
-        } catch (RuntimeException error) { db.close(); throw error; }
+        } catch (RuntimeException|Error error) { PodTakeoverCoordinator.closeAfterFailure(db,error); throw error; }
     }
     private static void id(String value) {
         if (value == null || !value.matches("[A-Za-z0-9_.:-]{1,128}")) throw new IllegalArgumentException("Invalid identity");

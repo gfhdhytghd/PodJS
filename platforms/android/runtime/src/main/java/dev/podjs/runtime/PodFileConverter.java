@@ -89,6 +89,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         File part=safe(target.getParentFile(),".takeover-"+PodStoreConverter.slot(target.getName())+".part");
         if(Files.exists(part.toPath(),LinkOption.NOFOLLOW_LINKS)&&!Files.isRegularFile(part.toPath(),LinkOption.NOFOLLOW_LINKS))throw new IOException("part_not_regular");
         // Unlink stale private partials instead of truncating an existing inode.
+        PodTakeoverCoordinator.requirePrivateFile(part);
         Files.deleteIfExists(part.toPath());
         BasicFileAttributes before=Files.readAttributes(source.toPath(),BasicFileAttributes.class,LinkOption.NOFOLLOW_LINKS);
         MessageDigest digest=MessageDigest.getInstance("SHA-256");long count=0;
@@ -256,6 +257,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         JSONObject actual=measure(f);if(actual.getLong("size")!=row.getLong("byteCount")||!actual.getString("sha256").equals(row.getString("sha256").toLowerCase(Locale.ROOT)))throw new IOException("asset_catalog_mismatch");return true;}catch(Exception error){throw failure("files/"+path,error);}
     }
     private JSONObject report(File g)throws Exception {
+        PodRoomV18Converter.checkGenerationStorage(g);
         JSONObject entries=entries(g),r=new JSONObject().put("version",version()).put("blockers",new JSONArray()).put("degraded",new JSONArray()).put("derivedSync","empty-rebuild-before-export");
         JSONObject classes=new JSONObject();JSONArray unknownPaths=new JSONArray();int unknownFiles=0,unrecognizedCache=0;
         for(String p:names(entries)) try {

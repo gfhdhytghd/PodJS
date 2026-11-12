@@ -41,10 +41,11 @@ public final class PodSyncIncomingFiles implements Closeable {
     public PodSyncIncomingFiles(Context context, String appId) throws Exception {
         PodTakeover.requireReady(context);
         this.context=context; storageApp=storageAppId(appId);
-        File directory=new File(context.getNoBackupFilesDir(),"podjs-file-offers");
+        File directory=new File(PodTakeover.sandbox(context),"no_backup/podjs-file-offers");
         if (!directory.mkdirs() && !directory.isDirectory()) throw new IOException("File journal unavailable");
         lockPath=new File(directory,storageApp+".lock");
-        db=SQLiteDatabase.openOrCreateDatabase(new File(directory,storageApp+".sqlite"),null);
+        PodRoomV18Converter.checkDatabaseFamily(new File(directory,storageApp+".sqlite"));
+        db = SQLiteDatabase.openOrCreateDatabase(new File(directory,storageApp+".sqlite"),null);
         try {
             db.execSQL("PRAGMA synchronous=FULL");
             db.execSQL("CREATE TABLE IF NOT EXISTS offers (peer TEXT NOT NULL, id TEXT NOT NULL, phase TEXT NOT NULL, manifest TEXT NOT NULL, PRIMARY KEY(peer,id))");
@@ -53,7 +54,7 @@ public final class PodSyncIncomingFiles implements Closeable {
             try(Cursor rows=db.rawQuery("SELECT peer,id,phase,manifest FROM offers",null)) {
                 int count=0; while(rows.moveToNext()) { new Offer(rows); if(++count>128) throw new IOException("Incoming file journal quota exceeded"); }
             }
-        } catch (Exception error) { db.close(); throw error; }
+        } catch (Exception|Error error) { PodTakeoverCoordinator.closeAfterFailure(db,error); throw error; }
     }
     private static void identity(String value) {
         if (value==null || !value.matches("[A-Za-z0-9_.:-]{1,128}")) throw new IllegalArgumentException("Invalid sync identity");

@@ -290,7 +290,7 @@ public final class PodTakeoverCoordinator {
                     p.setProperty("resumePhase",phase.name());
                     // Converter exceptions can contain secrets or URLs; persist only fixed codes.
                     String cancelled=work.reason(error);
-                    p.setProperty("reason",cancelled!=null?cancelled:error instanceof IOException && ("space_insufficient".equals(error.getMessage()) || "user_locked".equals(error.getMessage()) || "migration_row_too_large".equals(error.getMessage()))?error.getMessage():converter==EMPTY?"converter_unavailable":"stage_failed");
+                    p.setProperty("reason",cancelled!=null?cancelled:error instanceof IOException && ("space_insufficient".equals(error.getMessage()) || "user_locked".equals(error.getMessage()) || "migration_row_too_large".equals(error.getMessage()) || "migration_storage_invalid".equals(error.getMessage()) || "verification_scratch_invalid".equals(error.getMessage()))?error.getMessage():converter==EMPTY?"converter_unavailable":"stage_failed");
                     save(p,Phase.PAUSED); return p;
                 } catch(OutOfMemoryError memory) {
                     if(Thread.interrupted())work.interrupted=true;
@@ -358,6 +358,29 @@ public final class PodTakeoverCoordinator {
         checkpoint.timed("activeResolvePointer",System.nanoTime()-began);
         return generation(admitted.getProperty("generation"));
     }
+    /** Writable private files must own their inode. NOFOLLOW alone does not
+     * protect a source reached through a hard link, including SQLite sidecars. */
+    public static void requirePrivateDirectory(File directory)throws IOException {
+        try {
+            if(!directory.getAbsoluteFile().equals(directory.getCanonicalFile()))throw new IOException("migration_storage_invalid");
+            for(java.nio.file.Path p=directory.toPath().toAbsolutePath();p!=null;p=p.getParent())
+                if(Files.isSymbolicLink(p))throw new IOException("migration_storage_invalid");
+            try {
+                if(!Files.readAttributes(directory.toPath(),java.nio.file.attribute.BasicFileAttributes.class,LinkOption.NOFOLLOW_LINKS).isDirectory())throw new IOException("migration_storage_invalid");
+            }catch(java.nio.file.NoSuchFileException absent){}
+        }catch(IOException failure){throw new IOException("migration_storage_invalid",failure);}
+    }
+    public static void requirePrivateFile(File file)throws IOException {
+        requirePrivateDirectory(file.getAbsoluteFile().getParentFile());
+        try {
+            java.nio.file.attribute.BasicFileAttributes attributes;
+            try {attributes=Files.readAttributes(file.toPath(),java.nio.file.attribute.BasicFileAttributes.class,LinkOption.NOFOLLOW_LINKS);}
+            catch(java.nio.file.NoSuchFileException absent){return;}
+            if(!attributes.isRegularFile()||attributes.isSymbolicLink())throw new IOException("migration_storage_invalid");
+            Object links=Files.getAttribute(file.toPath(),"unix:nlink",LinkOption.NOFOLLOW_LINKS);
+            if(!(links instanceof Number)||((Number)links).longValue()!=1)throw new IOException("migration_storage_invalid");
+        }catch(IOException|UnsupportedOperationException|IllegalArgumentException failure){throw new IOException("migration_storage_invalid",failure);}
+    }
     private static void safeFile(File file)throws IOException {
         if(!file.getCanonicalFile().equals(file.getAbsoluteFile()))throw new IOException("takeover_symlink");
         for(Path path=file.toPath().toAbsolutePath();path!=null;path=path.getParent())if(Files.isSymbolicLink(path))throw new IOException("takeover_symlink");
@@ -368,11 +391,18 @@ public final class PodTakeoverCoordinator {
     }
     static void atomic(File file, Properties p) throws IOException {
         safeFile(file);File temporary=new File(file.getParentFile(),file.getName()+".tmp");safeFile(temporary);
+        PodTakeoverCoordinator.requirePrivateFile(file);
+        PodTakeoverCoordinator.requirePrivateFile(temporary);
         try(FileChannel channel=FileChannel.open(temporary.toPath(),StandardOpenOption.CREATE,StandardOpenOption.TRUNCATE_EXISTING,StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS)){
             OutputStream out=java.nio.channels.Channels.newOutputStream(channel);p.store(out,null);out.flush();channel.force(true);
         }
         Files.move(temporary.toPath(),file.toPath(),StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);
         syncDirectory(file.getParentFile());
+    }
+    /** Cleanup must never replace the operation's original failure, even OOM. */
+    static void closeAfterFailure(AutoCloseable resource,Throwable failure) {
+        try {resource.close();}
+        catch(Exception|Error closing){if(closing!=failure)try{failure.addSuppressed(closing);}catch(Throwable unavailable){}}
     }
     static void syncDirectory(File directory) throws IOException {
         try(FileChannel channel=FileChannel.open(directory.toPath(),StandardOpenOption.READ)){channel.force(true);}
@@ -382,6 +412,6 @@ public final class PodTakeoverCoordinator {
         if (file.isDirectory()) {
             File[] children=file.listFiles(); if(children==null)throw new IOException("candidate_unreadable");
             for(File child:children)syncTree(child); syncDirectory(file);
-        } else try(RandomAccessFile data=new RandomAccessFile(file,"rw")){data.getFD().sync();}
+        } else try(FileChannel data=FileChannel.open(file.toPath(),StandardOpenOption.READ,LinkOption.NOFOLLOW_LINKS)){data.force(true);}
     }
 }

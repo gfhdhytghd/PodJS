@@ -24,14 +24,17 @@ public final class PodNotifications implements Closeable {
     public PodNotifications(Context context) throws Exception {
         PodTakeover.requireReady(context);
         this.context=context.getApplicationContext();manager=context.getSystemService(NotificationManager.class);
-        java.io.File root=new java.io.File(context.getNoBackupFilesDir(),"podjs-notifications");
+        java.io.File root=new java.io.File(PodTakeover.sandbox(context),"no_backup/podjs-notifications");
         if (!root.mkdirs()&&!root.isDirectory()) throw new java.io.IOException("Notification storage unavailable");
+        PodRoomV18Converter.checkDatabaseFamily(new java.io.File(root,"inbox.sqlite"));
         db=SQLiteDatabase.openOrCreateDatabase(new java.io.File(root,"inbox.sqlite"),null);
+        try {
         db.execSQL("PRAGMA synchronous=FULL");
         db.execSQL("CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, token TEXT UNIQUE NOT NULL, descriptor TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0)");
         db.execSQL("CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, body TEXT NOT NULL)");
         db.execSQL("CREATE TABLE IF NOT EXISTS action_tokens (token TEXT PRIMARY KEY, notification_id TEXT NOT NULL, action_id TEXT NOT NULL)");
         db.execSQL("CREATE TABLE IF NOT EXISTS scheduled (id TEXT PRIMARY KEY, run TEXT NOT NULL, descriptor TEXT NOT NULL)");
+        }catch(RuntimeException|Error failure){PodTakeoverCoordinator.closeAfterFailure(db,failure);throw failure;}
     }
     public boolean permitted() {
         if (Build.VERSION.SDK_INT>=33 && context.checkSelfPermission("android.permission.POST_NOTIFICATIONS")!=android.content.pm.PackageManager.PERMISSION_GRANTED) return false;

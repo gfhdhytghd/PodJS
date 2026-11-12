@@ -36,13 +36,14 @@ public final class PodSyncInbox implements Closeable {
     }
     public PodSyncInbox(Context context, String appId) throws IOException {
         PodTakeover.requireReady(context);
-        id(appId); File root = new File(context.getNoBackupFilesDir(),"podjs-inbox");
+        id(appId); File root = new File(PodTakeover.sandbox(context),"no_backup/podjs-inbox");
         if (!root.mkdirs() && !root.isDirectory()) throw new IOException("Inbox unavailable");
+        PodRoomV18Converter.checkDatabaseFamily(new File(root,appId + ".sqlite"));
         db = SQLiteDatabase.openOrCreateDatabase(new File(root,appId + ".sqlite"),null);
         try {
             db.execSQL("PRAGMA synchronous=FULL");
             db.execSQL("CREATE TABLE IF NOT EXISTS inbox (ordinal INTEGER PRIMARY KEY AUTOINCREMENT, peer TEXT NOT NULL, id TEXT NOT NULL, payload BLOB NOT NULL, expires INTEGER NOT NULL, priority INTEGER NOT NULL, cost INTEGER NOT NULL, applied INTEGER NOT NULL DEFAULT 0, UNIQUE(peer,id))");
-        } catch (RuntimeException error) { db.close(); throw error; }
+        } catch (RuntimeException|Error error) { PodTakeoverCoordinator.closeAfterFailure(db,error); throw error; }
     }
     private static void id(String value) {
         if (value == null || !value.matches("[A-Za-z0-9_.:-]{1,128}")) throw new IllegalArgumentException("Invalid identity");

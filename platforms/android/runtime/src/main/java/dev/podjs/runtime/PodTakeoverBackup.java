@@ -68,7 +68,19 @@ final class PodTakeoverBackup implements PodTakeoverCoordinator.Publisher {
         if(!TakeoverDigest.digestManifest(p,"ACTIVE",g.getName()).equals(TakeoverDigest.activeLines(sandbox,g.getName())))
             throw new IOException("digest_snapshot_changed");
     }
+    static void checkBackupControls(File sandbox,String generation)throws IOException {
+        File directory=new File(sandbox,NativeBackup.BACKUP+"/"+generation);
+        PodTakeoverCoordinator.requirePrivateDirectory(directory);
+        if(!java.nio.file.Files.exists(directory.toPath(),java.nio.file.LinkOption.NOFOLLOW_LINKS))return;
+        File[] children=directory.listFiles();if(children==null)throw new IOException("migration_storage_invalid");
+        for(File child:children) {
+            if(child.getName().equals("data")){PodTakeoverCoordinator.requirePrivateDirectory(child);continue;}
+            if(!java.util.Arrays.asList("manifest","manifest.tmp","seal","seal.tmp","ready","ready.tmp").contains(child.getName()))throw new IOException("migration_storage_invalid");
+            PodTakeoverCoordinator.requirePrivateFile(child);
+        }
+    }
     public void beforePublish(File g) throws Exception {
+        checkBackupControls(sandbox,g.getName());
         int version=config().getInt("dev.podjs.takeover.sourceVersionCode",0);
         String digest=new NativeBackup(sandbox).prepare(g.getName(),version,certificate(context));
         // Evidence only: the host-side post check compares digests. A mismatch must never strand

@@ -24,6 +24,7 @@ final class PodRoomAndroidDb implements PodRoomV18Converter.Db {
     }
     PodRoomAndroidDb(File file,boolean readOnly,android.os.CancellationSignal cancellation) {
         this.cancellation=cancellation;
+        try {PodRoomV18Converter.checkDatabaseFamily(file);}catch(java.io.IOException unsafe){throw new IllegalStateException("migration_storage_invalid",unsafe);}
         db=SQLiteDatabase.openDatabase(file.getAbsolutePath(),null,(readOnly?SQLiteDatabase.OPEN_READONLY:SQLiteDatabase.CREATE_IF_NECESSARY) | SQLiteDatabase.NO_LOCALIZED_COLLATORS);
     }
     public void exec(String sql,Object... args)throws Exception {
@@ -57,8 +58,10 @@ final class PodRoomAndroidDb implements PodRoomV18Converter.Db {
                 Object v=args[i];if(v==null)query.bindNull(i+1);else if(v instanceof Float||v instanceof Double)query.bindDouble(i+1,((Number)v).doubleValue());else if(v instanceof Number)query.bindLong(i+1,((Number)v).longValue());else query.bindString(i+1,v.toString());
             }
             android.database.sqlite.SQLiteCursor cursor=new android.database.sqlite.SQLiteCursor(driver,edit,query);
-            if(window>2L*1024*1024)cursor.setWindow(new android.database.CursorWindow("podjs-migration",window));
-            return cursor;
+            try {
+                if(window>2L*1024*1024)cursor.setWindow(new android.database.CursorWindow("podjs-migration",window));
+                return cursor;
+            }catch(RuntimeException|Error failure){PodTakeoverCoordinator.closeAfterFailure(cursor,failure);throw failure;}
         },sql,new String[0],null,signal)){
             long decoded=0;
             while(c.moveToNext()){

@@ -38,13 +38,14 @@ public final class PodSyncFileRequests implements Closeable {
     public PodSyncFileRequests(Context context,String appId) throws Exception {
         PodTakeover.requireReady(context);
         identity(appId);
-        File root=new File(context.getNoBackupFilesDir(),"podjs-file-requests");
+        File root=new File(PodTakeover.sandbox(context),"no_backup/podjs-file-requests");
         if(!root.mkdirs() && !root.isDirectory()) throw new IOException("File request storage unavailable");
-        db=SQLiteDatabase.openOrCreateDatabase(new File(root,appId+".sqlite"),null);
+        PodRoomV18Converter.checkDatabaseFamily(new File(root,appId+".sqlite"));
+        db = SQLiteDatabase.openOrCreateDatabase(new File(root,appId+".sqlite"),null);
         try {
             db.execSQL("PRAGMA synchronous=FULL");
             db.execSQL("CREATE TABLE IF NOT EXISTS requests (ordinal INTEGER PRIMARY KEY AUTOINCREMENT, peer TEXT NOT NULL, id TEXT NOT NULL UNIQUE, payload BLOB NOT NULL, reply TEXT, cost INTEGER NOT NULL)");
-        } catch(Exception error) { db.close(); throw error; }
+        } catch(Exception|Error error) { PodTakeoverCoordinator.closeAfterFailure(db,error); throw error; }
     }
     private static void identity(String value) {
         if(value==null || !value.matches("[A-Za-z0-9_.:-]{1,128}")) throw new IllegalArgumentException("Invalid sync identity");

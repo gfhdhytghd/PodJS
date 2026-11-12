@@ -834,13 +834,17 @@ final class PodServices implements Closeable {
     private SQLiteDatabase db() {
         if (database == null) {
             java.io.File path = PodTakeover.database(context);
-            database = path.equals(context.getDatabasePath("podjs.sqlite"))
+            try {PodRoomV18Converter.checkDatabaseFamily(path);}catch(java.io.IOException unsafe){throw new IllegalStateException("migration_storage_invalid",unsafe);}
+            SQLiteDatabase opened = path.equals(context.getDatabasePath("podjs.sqlite"))
                 ? context.openOrCreateDatabase("podjs.sqlite", Context.MODE_PRIVATE, null)
                 : SQLiteDatabase.openOrCreateDatabase(path, null);
-            database.setForeignKeyConstraintsEnabled(true);
+            try {
+            opened.setForeignKeyConstraintsEnabled(true);
             // Sync transactions touch more than the default 25 distinct SQL
             // shapes. Keep SQLite's bounded per-connection prepared cache warm.
-            database.setMaxSqlCacheSize(100);
+            opened.setMaxSqlCacheSize(100);
+            database=opened; // Publish only the fully initialized connection.
+            }catch(RuntimeException|Error failure){PodTakeoverCoordinator.closeAfterFailure(opened,failure);throw failure;}
         }
         return database;
     }

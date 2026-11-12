@@ -33,8 +33,9 @@ public final class PodBackgroundScheduler implements Closeable {
     public PodBackgroundScheduler(Context context) throws IOException {
         PodTakeover.requireReady(context);
         packageName=context.getPackageName();
-        File root = new File(context.getNoBackupFilesDir(),"podjs-background");
+        File root = new File(PodTakeover.sandbox(context),"no_backup/podjs-background");
         if (!root.mkdirs() && !root.isDirectory()) throw new IOException("Background storage unavailable");
+        PodRoomV18Converter.checkDatabaseFamily(new File(root,"jobs.sqlite"));
         db = SQLiteDatabase.openOrCreateDatabase(new File(root,"jobs.sqlite"),null);
         try {
             db.execSQL("PRAGMA synchronous=FULL");
@@ -53,7 +54,7 @@ public final class PodBackgroundScheduler implements Closeable {
             long workBegan = PodStartupTrace.now();
             work = WorkManager.getInstance(context.getApplicationContext());
             PodStartupTrace.stage("workManagerAcquire", workBegan);
-        } catch (RuntimeException error) { db.close(); throw error; }
+        } catch (RuntimeException|Error error) { PodTakeoverCoordinator.closeAfterFailure(db,error); throw error; }
     }
     static void id(String value) {
         if (value == null || !value.matches("[A-Za-z0-9_.:-]{1,128}")) throw new IllegalArgumentException("Invalid task identity");

@@ -11,7 +11,7 @@ import static org.junit.Assert.*;
 public final class PodMigrationAdapterTest {
     @Test public void boundedPagesAndLargeText()throws Exception {
         Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
-        File f=File.createTempFile("migration-pages-",".sqlite",context.getCacheDir());
+        File f=File.createTempFile("migration-pages-",".sqlite",context.getCacheDir()).getCanonicalFile();
         try(PodRoomV18Converter.Db db=new PodRoomAndroidDb(f)) {
             db.exec("CREATE TABLE sample(id INTEGER PRIMARY KEY,body TEXT NOT NULL)");
             String body="x".repeat(256*1024);
@@ -30,7 +30,7 @@ public final class PodMigrationAdapterTest {
     }
     @Test public void deadlineCancelsSqlAndClearsWorkerInterrupt()throws Exception {
         Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
-        File f=File.createTempFile("migration-timeout-",".sqlite",context.getCacheDir());
+        File f=File.createTempFile("migration-timeout-",".sqlite",context.getCacheDir()).getCanonicalFile();
         long began=android.os.SystemClock.uptimeMillis();
         try(PodRoomV18Converter.Db db=new PodRoomAndroidDb(f);PodTakeoverCoordinator.Work work=new PodTakeoverCoordinator.Work(50,p->{})) {
             try {
@@ -43,7 +43,7 @@ public final class PodMigrationAdapterTest {
     }
     @Test public void oversizedRowRetainsDataAndReturnsStableCode()throws Exception {
         Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
-        File f=File.createTempFile("migration-wide-",".sqlite",context.getCacheDir());
+        File f=File.createTempFile("migration-wide-",".sqlite",context.getCacheDir()).getCanonicalFile();
         try(PodRoomV18Converter.Db db=new PodRoomAndroidDb(f)) {
             db.exec("CREATE TABLE sample(body TEXT NOT NULL)");
             db.exec("INSERT INTO sample VALUES(?)","x".repeat(17*1024*1024));

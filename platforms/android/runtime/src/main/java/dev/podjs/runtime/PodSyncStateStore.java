@@ -30,9 +30,10 @@ public final class PodSyncStateStore implements Closeable {
     public PodSyncStateStore(Context context, String appId, String deviceId) throws Exception {
         PodTakeover.requireReady(context);
         id(appId); id(deviceId); this.deviceId = deviceId;
-        File root = new File(context.getNoBackupFilesDir(), "podjs-state");
+        File root = new File(PodTakeover.sandbox(context),"no_backup/podjs-state");
         if (!root.mkdirs() && !root.isDirectory()) throw new IOException("State storage unavailable");
-        db = SQLiteDatabase.openOrCreateDatabase(new File(root, appId + ".sqlite"), null);
+        PodRoomV18Converter.checkDatabaseFamily(new File(root, appId + ".sqlite"));
+        db = SQLiteDatabase.openOrCreateDatabase(new File(root, appId + ".sqlite"),null);
         try {
             db.execSQL("PRAGMA synchronous=FULL");
             db.execSQL("CREATE TABLE IF NOT EXISTS snapshot (slot INTEGER PRIMARY KEY CHECK(slot=1), device TEXT NOT NULL, data TEXT NOT NULL)");
@@ -42,7 +43,7 @@ public final class PodSyncStateStore implements Closeable {
             initial.put("data", new JSONObject().put("version", 1).put("clock", 0).put("entries", new JSONArray()).put("cursors", new JSONObject()).toString());
             db.insertWithOnConflict("snapshot", null, initial, SQLiteDatabase.CONFLICT_IGNORE);
             load();
-        } catch (Exception error) { db.close(); throw error; }
+        } catch (Exception|Error error) { PodTakeoverCoordinator.closeAfterFailure(db,error); throw error; }
     }
     private static void id(String value) {
         if (value == null || !value.matches("[A-Za-z0-9_.:-]{1,128}")) throw new IllegalArgumentException("Invalid state identity");
