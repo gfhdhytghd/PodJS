@@ -66,8 +66,9 @@ public class PodMigrationProgressTest {
                 controller.show(new org.json.JSONObject().put("phase","PAUSED").put("progressPhase","PAUSED").put("reason",code).put("percent",80));
                 Object view=controller.view;
                 assertEquals("迁移已暂停",label(view,"title").getText().toString());
-                assertEquals("原因："+code,label(view,"detail").getText().toString());
-                assertEquals("迁移候选已保留，可安全重试；重启应用也会从日志断点继续。",label(view,"next").getText().toString());
+                String detail=label(view,"detail").getText().toString();
+                assertTrue(detail,detail.startsWith("原因：")&&detail.endsWith("（"+code+"）")&&detail.length()>code.length()+5);
+                assertEquals("migration_row_too_large".equals(code)?"原数据未改动。请截图本页并联系支持。":"已完成的部分会保留。点“重试迁移”，或重新打开应用继续。",label(view,"next").getText().toString());
                 assertEquals("重试迁移",label(view,"retry").getText().toString());
                 assertEquals(android.view.View.VISIBLE,label(view,"retry").getVisibility());
                 assertTrue(label(view,"retry").isEnabled());

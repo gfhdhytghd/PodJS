@@ -333,13 +333,40 @@ public final class PodTakeover {
                 default:return "数据迁移";
             }
         }
+        private static String reasonText(String reason) {
+            switch(reason) {
+                case "migration_timeout":return "迁移用时过长";
+                case "migration_memory_limit":return "内容过大，内存不足";
+                case "migration_row_too_large":return "有一项内容过大";
+                case "migration_interrupted":return "迁移被系统中断";
+                case "stage_failed":return "迁移步骤出错";
+                case "space_insufficient":return "存储空间不足";
+                case "user_locked":return "手表已锁定";
+                case "migration_admission_failed":return "迁移记录校验失败";
+                case "active_validation_failed":return "迁移后数据校验失败";
+                case "unknown_user_files":return "发现无法识别的数据";
+                case "target_conflict":return "目标位置已有数据";
+                case "store_unsupported_or_failed":return "部分设置无法迁移";
+                case "store_needs_reauth_user_confirmation":return "账号需要重新登录";
+                default:return "";
+            }
+        }
+        private static String reasonLine(String reason) {
+            if(reason.isEmpty())return "";
+            String text=reasonText(reason);
+            return text.isEmpty()?"原因："+reason:"原因："+text+"（"+reason+"）";
+        }
         private static String nextStep(String phase,String reason) {
-            if("PAUSED".equals(phase))return "迁移候选已保留，可安全重试；重启应用也会从日志断点继续。";
-            if(!"BLOCKED".equals(phase))return "迁移期间不会修改原应用数据，请保持应用在前台。";
-            if("user_locked".equals(reason))return "请先解锁手表，然后重新检查。";
-            if("space_insufficient".equals(reason))return "请释放存储空间后重新检查。";
-            if("store_needs_reauth_user_confirmation".equals(reason))return "需要重新登录确认；现有候选与原数据均已保留。";
-            return "迁移未发布，原数据保持不变；请记录原因并联系支持。";
+            if("PAUSED".equals(phase)) {
+                if("migration_row_too_large".equals(reason))return "原数据未改动。请截图本页并联系支持。";
+                return "已完成的部分会保留。点“重试迁移”，或重新打开应用继续。";
+            }
+            if(!"BLOCKED".equals(phase))return "迁移期间不会修改原数据，请保持应用在前台。";
+            if("user_locked".equals(reason))return "请先解锁手表，再点“重试迁移”。";
+            if("space_insufficient".equals(reason))return "请清理存储空间，再点“重试迁移”。";
+            if("store_needs_reauth_user_confirmation".equals(reason))return "原数据已保留。迁移完成后请重新登录账号。";
+            if("active_validation_failed".equals(reason))return "数据已迁移，但打开时校验失败。请截图本页并联系支持。";
+            return "原数据未改动。请截图本页并联系支持。";
         }
         void render(JSONObject status,boolean running) {
             String phase=status.optString("progressPhase",status.optString("phase","CHECKING"));
@@ -348,7 +375,7 @@ public final class PodTakeover {
             String displayPhase="PAUSED".equals(durable)||"BLOCKED".equals(durable)?durable:phase;
             title.setText(phaseLabel(displayPhase));percent.setText(value+"%");
             ring.set(value/100f,running&&value==0,"BLOCKED".equals(durable)&&!running?ERROR:PRIMARY);
-            detail.setText((copied>0?"已复制 "+bytes(copied):"")+(reason.isEmpty()?"":(copied>0?"\n":"")+"原因："+reason));detail.setVisibility(detail.length()>0?VISIBLE:GONE);
+            detail.setText((copied>0?"已复制 "+bytes(copied):"")+(reason.isEmpty()?"":(copied>0?"\n":"")+reasonLine(reason)));detail.setVisibility(detail.length()>0?VISIBLE:GONE);
             next.setText(nextStep(displayPhase,reason));
             boolean canRetry=!running&&halted;retry.setVisibility(canRetry?VISIBLE:GONE);retry.setEnabled(canRetry);
             setContentDescription(title.getText()+" "+value+"%");
