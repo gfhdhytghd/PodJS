@@ -15,6 +15,9 @@ import org.json.*;
 public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
     public interface Db extends AutoCloseable {
         List<Map<String,Object>> query(String sql, Object... args) throws Exception;
+        /** Ordered scan: callers advance by the last key or actual page length.
+         * Hosts may return fewer rows to bound decoded text memory. */
+        default List<Map<String,Object>> page(String sql,Object... args)throws Exception{return query(sql,args);}
         void exec(String sql, Object... args) throws Exception;
         void close() throws Exception;
     }
@@ -89,7 +92,7 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
         try(InputStream in=PodRoomV18Converter.class.getResourceAsStream(name)) {
             if(in==null)throw new IOException("schema_resource_missing");
             ByteArrayOutputStream out=new ByteArrayOutputStream(); byte[] b=new byte[8192];int n;
-            while((n=in.read(b))!=-1)out.write(b,0,n);
+            while((n=in.read(b))!=-1){PodTakeoverCoordinator.Work.check();out.write(b,0,n);}
             return out.toString("UTF-8");
         }
     }
@@ -97,7 +100,7 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
     static String hash(File file) throws Exception {
         if(Files.isSymbolicLink(file.toPath()))throw new IOException("source_symlink");
         MessageDigest d=MessageDigest.getInstance("SHA-256");
-        try(InputStream in=new FileInputStream(file)){byte[] b=new byte[65536];int n;while((n=in.read(b))!=-1)d.update(b,0,n);}
+        try(InputStream in=new FileInputStream(file)){byte[] b=new byte[65536];int n;while((n=in.read(b))!=-1){PodTakeoverCoordinator.Work.check();d.update(b,0,n);}}
         return hex(d.digest());
     }
     /** POSIX byte ranges used by SQLite's unix VFS. Shared locks prohibit
@@ -129,7 +132,7 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
         static String digest(FileInputStream in)throws Exception {
             if(in==null)return "absent";
             in.getChannel().position(0);MessageDigest d=MessageDigest.getInstance("SHA-256");byte[] b=new byte[65536];int n;
-            while((n=in.read(b))!=-1)d.update(b,0,n);return hex(d.digest());
+            while((n=in.read(b))!=-1){PodTakeoverCoordinator.Work.check();d.update(b,0,n);}return hex(d.digest());
         }
         String digest()throws Exception {
             if(new File(source+"-wal").exists()!=(wal!=null))throw new IOException("source_changed");
@@ -137,7 +140,7 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
         }
         static void copy(FileInputStream in,File to)throws Exception {
             if(in==null)return;in.getChannel().position(0);
-            try(FileOutputStream out=new FileOutputStream(to)){byte[] b=new byte[65536];int n;while((n=in.read(b))!=-1)out.write(b,0,n);out.getFD().sync();}
+            try(FileOutputStream out=new FileOutputStream(to)){byte[] b=new byte[65536];int n;while((n=in.read(b))!=-1){PodTakeoverCoordinator.Work.check();out.write(b,0,n);}out.getFD().sync();}
         }
         public void close()throws IOException {
             try{if(walLock!=null)walLock.release();}finally{try{if(mainLock!=null)mainLock.release();}finally{try{if(shm!=null)shm.close();}finally{try{if(wal!=null)wal.close();}finally{if(main!=null)main.close();}}}}
@@ -148,8 +151,10 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
         if(receipt.exists()){resume(g,PodTakeoverCoordinator.Phase.SNAPSHOTTED);return;}
         String localIdentity=identity.read(g);
         if(localIdentity==null || localIdentity.trim().isEmpty())throw new IOException("identity_missing");
-        // New scratch directory per attempt; interrupted candidates remain private.
-        File scratch=new File(g,"capture-"+UUID.randomUUID());Files.createDirectories(scratch.toPath());
+        pruneScratch(g,"capture-");
+        // A raw capture has no receipt yet. Recreate its private bytes, including
+        // WAL sidecars, without accumulating a new source copy on every exit.
+        File scratch=new File(g,"capture-work");clearScratch(scratch,true);Files.createDirectories(scratch.toPath());
         File raw=new File(scratch,"room.sqlite");
         String sourceDigest;
         try(Capture capture=new Capture(source)) {
@@ -169,6 +174,7 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
         // Identity remains private in candidate metadata, never the public journal.
         p.setProperty("identity",localIdentity.trim());p.setProperty("schema",hex(MessageDigest.getInstance("SHA-256").digest(resource("watchrss-schema.json").getBytes(StandardCharsets.UTF_8))));
         PodTakeoverCoordinator.atomic(receipt,p);
+        clearScratch(scratch,true);
     }
     static Object scalar(Db db,String sql,Object... args)throws Exception {
         List<Map<String,Object>> rows=db.query(sql,args);return rows.isEmpty()?null:rows.get(0).values().iterator().next();
@@ -224,6 +230,7 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
     public void resume(File g,PodTakeoverCoordinator.Phase phase)throws Exception {
         Properties p=PodTakeoverCoordinator.read(new File(g,"snapshot.properties"));
         if(!version().equals(p.getProperty("version")) || !hash(new File(g,"room.sqlite")).equals(p.getProperty("snapshot")) || !hex(MessageDigest.getInstance("SHA-256").digest(resource("watchrss-schema.json").getBytes(StandardCharsets.UTF_8))).equals(p.getProperty("schema")))throw new IOException("snapshot_changed");
+        pruneScratch(g,"capture-");clearScratch(new File(g,"capture-work"),true);pruneScratch(g,"verify-");
         try(Db s=factory.open(new File(g,"room.sqlite"))){validateSource(s);
             if(p.containsKey("sourceContract")&&!contractHash(s).equals(p.getProperty("sourceContract"))||p.containsKey("sourceSchema")&&!Long.toString(number(scalar(s,"PRAGMA user_version"))).equals(p.getProperty("sourceSchema")))throw new IOException("source_contract_changed");
             if(number(scalar(s,"PRAGMA user_version"))==19&&!p.containsKey("sourceContract"))throw new IOException("source_contract_missing");
@@ -263,6 +270,10 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
         TreeMap<Long,String> keys=new TreeMap<>();for(Map<String,Object> r:s.query("PRAGMA table_info("+q(table)+")"))if(number(r.get("pk"))>0)keys.put(number(r.get("pk")),(String)r.get("name"));
         if(keys.isEmpty())throw new IOException("primary_key_missing");return new ArrayList<>(keys.values());
     }
+    private long sourceRows(Db source)throws Exception {
+        long total=0;for(String table:TABLES)total+=number(scalar(source,"SELECT count(*) FROM "+q(table)));return total;
+    }
+    private long completedRows(Db target)throws Exception{return number(scalar(target,"SELECT sum(rows_done) FROM migration.cursor"));}
     private List<Map<String,Object>> page(Db s,String table,List<String> keys,JSONArray after)throws Exception {
         List<Object> args=new ArrayList<>();StringBuilder sql=new StringBuilder("SELECT * FROM "+q(table));
         if(after!=null){sql.append(" WHERE ");for(int i=0;i<keys.size();i++){
@@ -271,12 +282,13 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
             sql.append(q(keys.get(i))).append(">?)");args.add(after.get(i));
         }}
         sql.append(" ORDER BY ");for(int i=0;i<keys.size();i++){if(i>0)sql.append(',');sql.append(q(keys.get(i)));}
-        sql.append(" LIMIT ?");args.add(batchSize);return s.query(sql.toString(),args.toArray());
+        sql.append(" LIMIT ?");args.add(batchSize);return s.page(sql.toString(),args.toArray());
     }
     public void copy(File g)throws Exception {
         resume(g,PodTakeoverCoordinator.Phase.COPYING);
         try(Db s=factory.open(new File(g,"room.sqlite"));Db d=target(g)){
             initialize(d,g);
+            long total=sourceRows(s),done=completedRows(d);PodTakeoverCoordinator.Work.worked("room",done,total);
             for(String table:TABLES){
                 List<String> keys=keys(s,table);
                 Object cursor=scalar(d,"SELECT key_json FROM migration.cursor WHERE table_name=?",table);
@@ -291,6 +303,7 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
                         hook.checkpoint(false);d.exec("COMMIT");
                     }catch(Exception e){d.exec("ROLLBACK");throw e;}
                     hook.checkpoint(true);progress.copied(new File(g,"podjs.sqlite").length());
+                    done+=rows.size();PodTakeoverCoordinator.Work.worked("room",done,total);
                 }
             }
             // Always reseal: a candidate created by the previous converter may
@@ -378,12 +391,14 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
         for(Map<String,Object> c:cols){order.add(q((String)c.get("name")));if(number(c.get("pk"))>0)primary.put(number(c.get("pk")),q((String)c.get("name")));}
         if(!primary.isEmpty())order=new ArrayList<>(primary.values());
         // Readback includes keys and all nullable values; length framing avoids ambiguity.
-        for(long offset=0;;offset+=128) {
-            List<Map<String,Object>> page=d.query("SELECT * FROM "+table+" ORDER BY "+String.join(",",order)+" LIMIT 128 OFFSET ?",offset);
+        for(long offset=0;;) {
+            PodTakeoverCoordinator.Work.check();
+            List<Map<String,Object>> page=d.page("SELECT * FROM "+table+" ORDER BY "+String.join(",",order)+" LIMIT 128 OFFSET ?",offset);
             if(page.isEmpty())break;
             for(Map<String,Object> r:page)for(Object v:r.values()){
                 String val=v==null?"N":v instanceof Number?"#"+v.toString():v instanceof byte[]?"B"+hex((byte[])v):"S"+v.toString();byte[] bytes=val.getBytes(StandardCharsets.UTF_8);hash.update((bytes.length+":").getBytes(StandardCharsets.US_ASCII));hash.update(bytes);
             }
+            offset+=page.size();
         }
         return hex(hash.digest());
     }
@@ -394,6 +409,20 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
         for(String t:new String[]{"migration.cursor","migration.catalog","migration.content_reference"})h.update(tableDigest(d,t).getBytes(StandardCharsets.UTF_8));return hex(h.digest());
     }
     static void seal(Db d)throws Exception{d.exec("INSERT OR REPLACE INTO migration.receipt VALUES(1,?)",fingerprint(d));}
+    private static void clearScratch(File directory,boolean capture)throws Exception {
+        if(!Files.exists(directory.toPath(),LinkOption.NOFOLLOW_LINKS))return;
+        if(!directory.getCanonicalFile().equals(directory.getAbsoluteFile())||!Files.isDirectory(directory.toPath(),LinkOption.NOFOLLOW_LINKS))throw new IOException("candidate_symlink");
+        Set<String> names=new HashSet<>();
+        for(String base:capture?new String[]{"room.sqlite"}:new String[]{"podjs.sqlite","room-progress.sqlite","snapshot.properties"})
+            for(String suffix:new String[]{"","-journal","-wal","-shm",".tmp"})names.add(base+suffix);
+        File[] children=directory.listFiles();if(children==null)throw new IOException("candidate_unreadable");
+        for(File child:children)if(!names.contains(child.getName())||!Files.isRegularFile(child.toPath(),LinkOption.NOFOLLOW_LINKS))throw new IOException("verification_scratch_invalid");
+        for(File child:children)Files.delete(child.toPath());Files.delete(directory.toPath());
+    }
+    private static void pruneScratch(File generation,String prefix)throws Exception {
+        File[] children=generation.listFiles();if(children==null)throw new IOException("candidate_unreadable");
+        for(File child:children)if(child.getName().matches(java.util.regex.Pattern.quote(prefix)+"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}"))clearScratch(child,prefix.equals("capture-"));
+    }
     public String verify(File g)throws Exception {
         resume(g,PodTakeoverCoordinator.Phase.VERIFYING);
         File verification=new File(g,"room-verification.properties"),catalog=new File(g,"reader-catalog.json");
@@ -405,23 +434,39 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
                     if(!version().equals(saved.getProperty("version"))||!digest.equals(saved.getProperty("digest"))||
                             !catalog.isFile()||!hash(catalog).equals(saved.getProperty("catalog.digest")))
                         throw new IOException("verification_receipt_changed");
-                    return digest;
+                    pruneScratch(g,"verify-");clearScratch(new File(g,"verification-work"),false);return digest;
                 }
         }
         Properties receipt=new Properties();
-        File audit=new File(g,"verify-"+UUID.randomUUID());Files.createDirectories(audit.toPath());
-        Files.copy(new File(g,"snapshot.properties").toPath(),new File(audit,"snapshot.properties").toPath());
+        pruneScratch(g,"verify-");
+        // One private verifier per generation. The data and its cursor commit
+        // together, just like import. Process death must not allocate another
+        // full database on every launch or restart the independent conversion.
+        File audit=new File(g,"verification-work");
+        if(!audit.getCanonicalFile().equals(audit.getAbsoluteFile()))throw new IOException("candidate_symlink");
+        Files.createDirectories(audit.toPath());
+        File auditSnapshot=new File(audit,"snapshot.properties");
+        Properties snapshot=PodTakeoverCoordinator.read(new File(g,"snapshot.properties"));
+        if(auditSnapshot.exists()) {
+            if(!snapshot.equals(PodTakeoverCoordinator.read(auditSnapshot)))throw new IOException("verification_snapshot_changed");
+        } else PodTakeoverCoordinator.atomic(auditSnapshot,snapshot);
         try(Db sourceDb=factory.open(new File(g,"room.sqlite"));Db expected=target(audit)) {
             initialize(expected,audit);
+            long total=sourceRows(sourceDb),done=completedRows(expected);PodTakeoverCoordinator.Work.worked("roomVerify",done,total);
             for(String table:TABLES) {
-                List<String> primary=keys(sourceDb,table);JSONArray after=null;
+                List<String> primary=keys(sourceDb,table);
+                Object cursor=scalar(expected,"SELECT key_json FROM migration.cursor WHERE table_name=?",table);
+                JSONArray after=cursor==null?null:new JSONArray((String)cursor);
+                long count=number(scalar(expected,"SELECT rows_done FROM migration.cursor WHERE table_name=?",table));
                 while(true) {
                     List<Map<String,Object>> rows=page(sourceDb,table,primary,after);if(rows.isEmpty())break;
                     expected.exec("BEGIN IMMEDIATE");try {
                         for(Map<String,Object> row:rows)convert(sourceDb,expected,table,row);
+                        after=new JSONArray();for(String k:primary)after.put(rows.get(rows.size()-1).get(k));
+                        count+=rows.size();expected.exec("INSERT OR REPLACE INTO migration.cursor VALUES(?,?,?)",table,after.toString(),count);
                         expected.exec("COMMIT");
                     }catch(Exception e){expected.exec("ROLLBACK");throw e;}
-                    after=new JSONArray();for(String k:primary)after.put(rows.get(rows.size()-1).get(k));
+                    done+=rows.size();PodTakeoverCoordinator.Work.worked("roomVerify",done,total);
                 }
             }
             expected.exec("UPDATE offline_media_policy SET suppress_download=0 WHERE id=1");
@@ -448,8 +493,8 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
             receipt.setProperty("catalog.digest",hash(catalog));receipt.setProperty("activationReady","false");receipt.setProperty("digest",fingerprint(d));receipt.setProperty("version",version());
         }
         PodTakeoverCoordinator.atomic(verification,receipt);
-        // Only scratch created by this verification invocation is removed.
-        File[] scratch=audit.listFiles();if(scratch!=null)for(File f:scratch)Files.delete(f.toPath());Files.delete(audit.toPath());
+        // The verification receipt is durable before scratch is reclaimed.
+        clearScratch(audit,false);
         return receipt.getProperty("digest");
     }
 }

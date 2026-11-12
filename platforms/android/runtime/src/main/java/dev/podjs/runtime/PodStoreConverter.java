@@ -85,7 +85,9 @@ public final class PodStoreConverter implements PodTakeoverCoordinator.Converter
     static String slot(String s)throws Exception{return PodRoomV18Converter.hex(MessageDigest.getInstance("SHA-256").digest(s.getBytes(StandardCharsets.UTF_8)));}
     public void copy(File g)throws Exception {
         resume(g,PodTakeoverCoordinator.Phase.COPYING);
-        for(Map.Entry<String,List<String>> entry:stores(g).entrySet()){
+        int done=0;SortedMap<String,List<String>> inventory=stores(g);
+        for(Map.Entry<String,List<String>> entry:inventory.entrySet()){
+            PodTakeoverCoordinator.Work.worked("stores",done++,inventory.size());
             String store=entry.getKey();File dir=new File(g,"store-results/"+slot(store)),receipt=new File(dir,"receipt.json");
             if(receipt.exists()){validateResult(dir);continue;}
             Files.createDirectories(dir.toPath());hook.checkpoint(store,"before");
@@ -132,6 +134,7 @@ public final class PodStoreConverter implements PodTakeoverCoordinator.Converter
             if(!sameJson(crypto.open(PodPreferenceReader.bytes(new File(dir,"secure.store"))),envelope))throw new IOException("secure_readback_invalid");
             json(receipt,report);hook.checkpoint(store,"receipt");
         }
+        PodTakeoverCoordinator.Work.worked("stores",inventory.size(),inventory.size());
         assemble(g);
     }
     void validateResult(File dir)throws Exception {

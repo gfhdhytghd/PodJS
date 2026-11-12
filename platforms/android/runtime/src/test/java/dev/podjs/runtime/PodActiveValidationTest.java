@@ -30,7 +30,7 @@ public class PodActiveValidationTest {
   List<String> queries=new ArrayList<>();
   PodRoomV18Converter.Factory ro=f->{PodRoomAndroidDb db=new PodRoomAndroidDb(f,true,null);return new PodRoomV18Converter.Db(){
    public void exec(String sql,Object...args){throw new AssertionError("fast wrote");}
-   public List<Map<String,Object>> query(String sql,Object...args){queries.add(sql);if(sql.contains("quick_check")||sql.contains("foreign_key_check"))throw new AssertionError("deep scan at admission");return db.query(sql,args);}
+   public List<Map<String,Object>> query(String sql,Object...args)throws Exception{queries.add(sql);if(sql.contains("quick_check")||sql.contains("foreign_key_check"))throw new AssertionError("deep scan at admission");return db.query(sql,args);}
    public void close(){db.close();}
   };};
   new PodRoomV18Converter(null,ro,"fixture").activeFast(g);assertEquals(6,queries.size());assertEquals("PRAGMA user_version",queries.get(0));

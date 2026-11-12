@@ -23,6 +23,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
     }
     private FileFailure failure(String path,Exception error){return error instanceof FileFailure?(FileFailure)error:new FileFailure(classify(path),error);}
     public interface Hook { void saved(String boundary) throws Exception; }
+    /** Cumulative verified bytes in this copy pass, including replayed files. */
     public interface ProgressHook { void copied(long bytes); }
     public interface FontReader { void load(File file, int faces) throws Exception; }
     private final File sandbox;
@@ -71,7 +72,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         MessageDigest digest=MessageDigest.getInstance("SHA-256");long count=0;
         try(FileChannel in=FileChannel.open(f.toPath(),StandardOpenOption.READ,LinkOption.NOFOLLOW_LINKS)) {
             ByteBuffer b=ByteBuffer.allocate(64*1024);int n;
-            while((n=in.read(b))!=-1){if(n==0)continue;digest.update(b.array(),0,n);count=Math.addExact(count,n);b.clear();}
+            while((n=in.read(b))!=-1){PodTakeoverCoordinator.Work.check();if(n==0)continue;digest.update(b.array(),0,n);count=Math.addExact(count,n);b.clear();}
         }
         BasicFileAttributes after=Files.readAttributes(f.toPath(),BasicFileAttributes.class,LinkOption.NOFOLLOW_LINKS);
         if(count!=before.size()||count!=after.size()||!Objects.equals(before.fileKey(),after.fileKey())||!before.lastModifiedTime().equals(after.lastModifiedTime()))throw new IOException("file_changed");
@@ -82,7 +83,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         safe(source.getParentFile(),source.getName());safe(target.getParentFile(),target.getName());
         if(Files.exists(target.toPath(),LinkOption.NOFOLLOW_LINKS)) {
             if(Files.isSameFile(source.toPath(),target.toPath()))throw new IOException("file_target_linked_to_source");
-            if(!same(measure(target),expected))throw new IOException("file_target_conflict");dirtyDirectories.add(target.getParentFile());if(stage.equals("copy"))progress.copied(expected.getLong("size"));return;
+            if(!same(measure(target),expected))throw new IOException("file_target_conflict");dirtyDirectories.add(target.getParentFile());return;
         }
         Files.createDirectories(target.getParentFile().toPath());
         File part=safe(target.getParentFile(),".takeover-"+PodStoreConverter.slot(target.getName())+".part");
@@ -94,7 +95,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         try(FileChannel in=FileChannel.open(source.toPath(),StandardOpenOption.READ,LinkOption.NOFOLLOW_LINKS);
             FileChannel out=FileChannel.open(part.toPath(),StandardOpenOption.CREATE_NEW,StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS)) {
             ByteBuffer b=ByteBuffer.allocateDirect(1024*1024);int n;
-            while((n=in.read(b))!=-1){if(n==0)continue;b.flip();digest.update(b.asReadOnlyBuffer());while(b.hasRemaining())out.write(b);count=Math.addExact(count,n);b.clear();}
+            while((n=in.read(b))!=-1){PodTakeoverCoordinator.Work.check();if(n==0)continue;b.flip();digest.update(b.asReadOnlyBuffer());while(b.hasRemaining())out.write(b);count=Math.addExact(count,n);b.clear();}
             out.force(false);
         }
         hook.saved(stage+".part");
@@ -107,7 +108,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         if(target.exists())throw new IOException("file_target_conflict");
         Files.move(part.toPath(),target.toPath(),StandardCopyOption.ATOMIC_MOVE);
         dirtyDirectories.add(target.getParentFile());hook.saved(stage+".rename");
-        if(stage.equals("copy"))progress.copied(count);
+
     }
     private void syncDirtyDirectories()throws Exception {
         List<File> directories=new ArrayList<>(dirtyDirectories);
@@ -224,6 +225,8 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
     public void copy(File g)throws Exception {
         resume(g,PodTakeoverCoordinator.Phase.COPYING);
         Files.createDirectories(safe(g,"podjs/files").toPath());JSONObject entries=entries(g);
+        long copied=0,total=0;for(String p:names(entries))if(classify(p).equals("asset"))total+=entries.getJSONObject(p).getLong("size");
+        PodTakeoverCoordinator.Work.worked("files",0,total);
         for(String p:names(entries))if(classify(p).equals("asset")){
             try {copyFile(safe(new File(g,"files-source"),p),safe(new File(g,"podjs/files"),p.substring(6)),entries.getJSONObject(p),"copy");}
             catch(Exception error){throw failure(p,error);}
@@ -231,6 +234,8 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
             File record=safe(new File(g,"files-completed"),PodStoreConverter.slot(p)+".json");
             if(record.exists()) {if(!receipt.toString().equals(PodStoreConverter.json(record).toString()))throw failure(p,new IOException("file_receipt_changed"));}
             else PodStoreConverter.json(record,receipt);
+            copied+=entries.getJSONObject(p).getLong("size");progress.copied(copied);
+            PodTakeoverCoordinator.Work.worked("files",copied,total);
             hook.saved("file");
         }
         syncDirtyDirectories();
@@ -284,17 +289,21 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
             }
         }
         try(PodRoomV18Converter.Db db=factory.open(new File(g,"podjs.sqlite"));PodRoomV18Converter.Db source=factory.open(new File(g,"room.sqlite"))) {
-            for(Map<String,Object> row:source.query("SELECT localPath FROM offline_media WHERE localPath IS NOT NULL")) {
+            for(Map<String,Object> row:source.query("SELECT localPath FROM offline_media WHERE localPath IS NOT NULL ORDER BY id")) {
                 String path=(String)row.get("localPath"),relative=PodRoomV18Converter.relative(path);
                 boolean own=ownSourcePath(path,relative);
                 if(!own)block(r,"offline_source_root_invalid");
             }
-            for(Map<String,Object> row:db.query("SELECT relative_path FROM offline_media WHERE relative_path IS NOT NULL")) {
+            for(Map<String,Object> row:db.query("SELECT relative_path FROM offline_media WHERE relative_path IS NOT NULL ORDER BY id")) {
                 String p=(String)row.get("relative_path");if(!exists(g,p))degraded(r,"offline_missing_retry",p);
             }
-            for(Map<String,Object> row:db.query("SELECT markdown,base_markdown FROM memo_notes ORDER BY note_id"))for(Object value:row.values())if(value instanceof String){
+            for(long offset=0;;) {
+                List<Map<String,Object>> page=db.page("SELECT markdown,base_markdown FROM memo_notes ORDER BY note_id LIMIT 128 OFFSET ?",offset);
+                if(page.isEmpty())break;offset+=page.size();
+                for(Map<String,Object> row:page)for(Object value:row.values())if(value instanceof String){
                 Matcher m=Pattern.compile("(?:^|[\\s(\"'])assets/([^\\s)\"'<>]+)").matcher((String)value);
                 while(m.find()){String key=m.group(1);if(!key.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,159}")){block(r,"note_asset_path_invalid");continue;}String p="notes/assets/"+key;if(!exists(g,p))degraded(r,"note_image_missing",p);}
+            }
             }
             // These are new-schema derived caches. The production LocalManifestBuilder hydrates
             // source text, constructs the complete manifest and checks revision before returning it.

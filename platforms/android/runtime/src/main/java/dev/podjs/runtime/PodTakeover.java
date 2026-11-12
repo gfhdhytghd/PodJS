@@ -30,7 +30,7 @@ public final class PodTakeover {
     private static PodTakeoverCoordinator coordinator(Context c,File sandbox,ProgressReporter progress) {
         return new PodTakeoverCoordinator(new File(sandbox,"files/package-takeover"),
                 () -> detect(c,sandbox),new PodTakeoverConverters(new PodRoomVersionsConverter(new File(sandbox,"databases/watchrss.db"),
-                    PodRoomAndroidDb::new,(File generation) -> PodStoreConverter.identity(new File(generation,"stores-source")),progress::roomCopied).withActiveFactory(f->new PodRoomAndroidDb(f,true,null)).withTimings(PodTakeoverDiagnostics::timed),
+                    PodRoomAndroidDb::new,(File generation) -> PodStoreConverter.identity(new File(generation,"stores-source")),progress::roomCopied).withActiveFactory(PodRoomAndroidDb::recoverPublished).withTimings(PodTakeoverDiagnostics::timed),
                     new PodStoreConverter(sandbox,new PodStoreAndroidCrypto(c),
                         "com.lightningstudio.watchrss.podjs.rehearsal".equals(c.getPackageName())&&
                         (c.getApplicationInfo().flags&android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0).withTimings(PodTakeoverDiagnostics::timed),
@@ -44,6 +44,7 @@ public final class PodTakeover {
                             android.util.Log.i("PodTakeoverPhase", phase.name());
                     }
                     public void timed(String step,long nanos){PodTakeoverDiagnostics.timed(step,nanos);}
+                    public void worked(String step,long done,long total){progress.worked(step,done,total);}
                     public void failed(PodTakeoverCoordinator.Phase phase,Exception error) {
                         PodTakeoverDiagnostics.warn(phase.name(),error);
                     }
@@ -102,45 +103,85 @@ public final class PodTakeover {
         if(progress!=null)try {
             result.put("progressPhase",progress.phase).put("percent",progress.percent())
                     .put("copiedBytes",progress.copied()).put("totalBytes",progress.totalBytes.get());
+            if(!progress.failure.isEmpty())result.put("reason",progress.failure);
         } catch(Exception ignored){}
         return result;
     }
     private interface StatusListener { void updated(JSONObject status); }
     private static final class ProgressState {
-        volatile String phase="CHECKING";
+        volatile String phase="CHECKING",generation="",failure="";
         volatile int heldPercent;
         final AtomicLong roomBytes=new AtomicLong(),fileBytes=new AtomicLong(),totalBytes=new AtomicLong();
         long copied(){return Math.addExact(roomBytes.get(),fileBytes.get());}
-        int percent(){
+        synchronized int percent(){
+            int value;
             switch(phase) {
-                case "NONE":return 100;case "DETECTED":return 5;case "SNAPSHOTTED":return 20;
-                case "COPYING":long total=totalBytes.get(),copied=copied();return total<=0?25:(int)Math.min(80,25+(copied*55/Math.max(1,total)));
-                case "VERIFYING":return 86;case "READY":return 93;case "ACTIVATING":return 97;case "ACTIVE":return 100;
-                case "PAUSED":case "BLOCKED":return heldPercent;default:return 0;
+                case "NONE":value=100;break;case "DETECTED":value=5;break;case "SNAPSHOTTED":value=20;break;
+                case "COPYING":value=25;break;case "VERIFYING":value=80;break;case "READY":value=93;break;
+                case "ACTIVATING":value=95;break;case "ACTIVE":value=99;break;default:value=0;
             }
+            heldPercent=Math.max(heldPercent,value);return heldPercent;
         }
     }
     private static final ConcurrentHashMap<String,ProgressState> progressStates=new ConcurrentHashMap<>();
     private static final class ProgressReporter {
         final Context context;final String key;final ProgressState state;final StatusListener listener;
+        int savedPercent=-1;long lastPublish;
         ProgressReporter(Context context,StatusListener listener) {
             this.context=context;this.key=context.getApplicationInfo().dataDir;this.listener=listener;
             this.state=progressStates.computeIfAbsent(key,ignored->new ProgressState());
         }
-        void reset(){state.phase="CHECKING";state.heldPercent=0;state.roomBytes.set(0);state.fileBytes.set(0);state.totalBytes.set(0);publish();}
-        void phase(PodTakeoverCoordinator.Phase phase) {
-            int previous=state.percent();if(phase==PodTakeoverCoordinator.Phase.PAUSED||phase==PodTakeoverCoordinator.Phase.BLOCKED)state.heldPercent=previous;
-            state.phase=phase.name();
+        File root(){return new File(sandbox(context),"files/package-takeover");}
+        void restore() {
             try {
-                Properties p=PodTakeoverCoordinator.read(new File(sandbox(context),"files/package-takeover/journal"));
-                long required=Long.parseLong(p.getProperty("requiredBytes","0"));
-                state.totalBytes.set(required>32L*1024*1024?(required-32L*1024*1024)/3:0);
-            } catch(Exception ignored){}
-            publish();
+                Properties journal=PodTakeoverCoordinator.read(new File(root(),"journal"));
+                String generation=journal.getProperty("generation","");
+                if(!generation.equals(state.generation))synchronized(state) {
+                    state.generation=generation;state.roomBytes.set(0);state.fileBytes.set(0);state.totalBytes.set(0);
+                }
+                Properties saved=PodTakeoverCoordinator.read(new File(root(),"progress"));
+                if("1".equals(saved.getProperty("protocol"))) {
+                    state.heldPercent=Math.max(state.heldPercent,Math.max(0,Math.min(99,Integer.parseInt(saved.getProperty("percent","0")))));
+                    if(generation.equals(saved.getProperty("generation"))) {
+                        state.roomBytes.accumulateAndGet(Long.parseLong(saved.getProperty("roomBytes","0")),Math::max);
+                        state.fileBytes.accumulateAndGet(Long.parseLong(saved.getProperty("fileBytes","0")),Math::max);
+                    }
+                }
+                state.phase=journal.getProperty("phase","CHECKING");
+            } catch(Exception failure){PodTakeoverDiagnostics.warn("PROGRESS",failure);}
         }
-        void roomCopied(long bytes){state.roomBytes.set(bytes);publish();}
-        void fileCopied(long bytes){state.fileBytes.addAndGet(bytes);publish();}
-        void publish(){if(listener!=null)listener.updated(status(context));}
+        void reset(){restore();state.failure="";publish(true);}
+        void phase(PodTakeoverCoordinator.Phase phase) {restore();state.phase=phase.name();publish(true);}
+        void worked(String step,long done,long total) {
+            int start,end;
+            switch(step) {
+                case "snapshot":start=5;end=20;break;
+                case "room":start=25;end=55;break;
+                case "roomVerify":start=55;end=65;break;
+                case "stores":start=65;end=68;break;
+                case "files":start=68;end=80;state.totalBytes.set(state.roomBytes.get()+Math.max(total,0));break;
+                case "bundle":start=80;end=93;break;
+                default:return;
+            }
+            int value=start+(int)((end-start)*(total<=0?1d:Math.max(0d,Math.min(1d,done/(double)total))));
+            synchronized(state){state.heldPercent=Math.max(state.heldPercent,value);}publish(false);
+        }
+        void roomCopied(long bytes){state.roomBytes.accumulateAndGet(bytes,Math::max);publish(false);}
+        void fileCopied(long bytes){state.fileBytes.accumulateAndGet(bytes,Math::max);publish(false);}
+        void complete(){state.failure="";state.phase="ACTIVE";state.heldPercent=100;publish(true);}
+        void failed(String reason){state.failure=reason;state.phase="PAUSED";publish(true);}
+        void publish(boolean force) {
+            int percent=state.percent();long now=android.os.SystemClock.uptimeMillis();
+            if(!force&&percent==savedPercent&&now-lastPublish<200)return;
+            // Percent and byte counters are a display checkpoint, never admission
+            // evidence. Persist only for a real migration; fresh boot stays read-only.
+            if(!state.generation.isEmpty()&&percent!=savedPercent)try {
+                Properties p=new Properties();p.setProperty("protocol","1");p.setProperty("generation",state.generation);
+                p.setProperty("percent",Integer.toString(Math.min(99,percent)));p.setProperty("roomBytes",Long.toString(state.roomBytes.get()));p.setProperty("fileBytes",Long.toString(state.fileBytes.get()));
+                PodTakeoverCoordinator.atomic(new File(root(),"progress"),p);
+            }catch(Exception failure){PodTakeoverDiagnostics.warn("PROGRESS",failure);}
+            savedPercent=percent;lastPublish=now;if(listener!=null)listener.updated(status(context));
+        }
     }
     private static final ExecutorService takeoverExecutor=Executors.newSingleThreadExecutor(r->{
         Thread thread=new Thread(r,"podjs-package-takeover");thread.setDaemon(true);return thread;
@@ -172,11 +213,13 @@ public final class PodTakeover {
         final android.os.Handler main=android.os.Handler.createAsync(android.os.Looper.getMainLooper());
         final AtomicBoolean running=new AtomicBoolean();
         RecoveryView view;boolean finished;
-        final Runnable checking=()->{if(!finished&&running.get())show(new JSONObject());};
+        final Runnable checking=()->{if(!finished&&running.get()&&alive())show(currentStatus());};
+        final Runnable refresh=new Runnable(){public void run(){if(!finished&&running.get()&&alive()){update(status(activity.get()));main.postDelayed(this,200);}}};
         RecoveryController(android.app.Activity activity,Runnable admitted){
             this.activity=new WeakReference<>(activity);this.admitted=admitted;
         }
         boolean alive(){android.app.Activity owner=activity.get();return owner!=null&&!owner.isFinishing()&&!owner.isDestroyed();}
+        JSONObject currentStatus(){android.app.Activity owner=activity.get();return owner==null?new JSONObject():status(owner);}
         void show(JSONObject state){
             if(finished||!alive())return;
             android.app.Activity owner=activity.get();
@@ -200,7 +243,7 @@ public final class PodTakeover {
         }
         void finish(boolean ready,long posted){
             PodStartupTrace.stage("admissionMainQueueWait",posted);
-            main.removeCallbacks(checking);
+            main.removeCallbacks(checking);main.removeCallbacks(refresh);
             if(finished||!alive())return;
             if(ready){finished=true;admitted.run();}
             else {
@@ -210,17 +253,19 @@ public final class PodTakeover {
         }
         void start() {
             if(finished||!alive()||!running.compareAndSet(false,true))return;
-            if(view!=null)view.render(new JSONObject(),true);
+            if(view!=null)view.render(status(activity.get()),true);
             // Retain a bounded checking fallback for unusually slow admission.
-            main.postDelayed(checking,120);
+            main.postDelayed(checking,120);main.postDelayed(refresh,200);
             Context context=activity.get().getApplicationContext();
             long queued=PodStartupTrace.now();
             takeoverExecutor.execute(()->{
                 PodStartupTrace.stage("admissionQueueWait",queued);
                 long began=PodStartupTrace.now();
                 boolean ready=false;ProgressReporter reporter=new ProgressReporter(context,this::update);reporter.reset();
-                try {paths(context,reporter);ready=true;}
-                catch(Exception failure){PodTakeoverDiagnostics.warn("ADMISSION",failure);}
+                try {paths(context,reporter);ready=true;reporter.complete();}
+                catch(Exception failure){PodTakeoverDiagnostics.warn("ADMISSION",failure);reporter.failed("takeover_pending".equals(failure.getMessage())?"":"migration_admission_failed");}
+                catch(OutOfMemoryError failure){reporter.failed("migration_memory_limit");}
+                finally{running.set(false);}
                 PodStartupTrace.stage("admissionWorker",began);
                 running.set(false);
                 boolean result=ready;long posted=PodStartupTrace.now();
@@ -299,11 +344,12 @@ public final class PodTakeover {
         void render(JSONObject status,boolean running) {
             String phase=status.optString("progressPhase",status.optString("phase","CHECKING"));
             String durable=status.optString("phase",phase),reason=status.optString("reason","");int value=status.optInt("percent",0);long copied=status.optLong("copiedBytes",0);
-            boolean halted="PAUSED".equals(durable)||"BLOCKED".equals(durable);
-            title.setText(phaseLabel(halted?durable:phase));percent.setText(value+"%");
+            boolean halted="PAUSED".equals(durable)||"BLOCKED".equals(durable)||"PAUSED".equals(phase);
+            String displayPhase="PAUSED".equals(durable)||"BLOCKED".equals(durable)?durable:phase;
+            title.setText(phaseLabel(displayPhase));percent.setText(value+"%");
             ring.set(value/100f,running&&value==0,"BLOCKED".equals(durable)&&!running?ERROR:PRIMARY);
             detail.setText((copied>0?"已复制 "+bytes(copied):"")+(reason.isEmpty()?"":(copied>0?"\n":"")+"原因："+reason));detail.setVisibility(detail.length()>0?VISIBLE:GONE);
-            next.setText(nextStep(durable,reason));
+            next.setText(nextStep(displayPhase,reason));
             boolean canRetry=!running&&halted;retry.setVisibility(canRetry?VISIBLE:GONE);retry.setEnabled(canRetry);
             setContentDescription(title.getText()+" "+value+"%");
         }

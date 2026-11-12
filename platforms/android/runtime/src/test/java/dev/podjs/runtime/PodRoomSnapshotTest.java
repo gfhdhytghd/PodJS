@@ -43,7 +43,7 @@ public class PodRoomSnapshotTest {
                     PodRoomV18Converter.Db altered=new PodRoomV18Converter.Db() {
                         public void exec(String sql,Object... args){throw new AssertionError("read-only schema validation");}
                         public void close(){}
-                        public List<Map<String,Object>> query(String sql,Object... args) {
+                        public List<Map<String,Object>> query(String sql,Object... args)throws Exception {
                             List<Map<String,Object>> rows=db.query(sql,args);
                             if(sql.equals("PRAGMA table_info(\"rss_items\")")) {
                                 if(column.equals("missing"))rows.remove(rows.size()-1);

@@ -52,6 +52,7 @@ public final class PodTakeoverCoordinator {
         /** Sanitized release diagnostics are supplied by the Android host. */
         default void failed(Phase phase, Exception error) {}
         default void timed(String step,long nanos) {}
+        default void worked(String step,long done,long total) {}
     }
     public interface Publisher {
         default void beforeReclassification() throws Exception {}
@@ -75,9 +76,50 @@ public final class PodTakeoverCoordinator {
     }
     private PodActiveValidation activeValidation;
     PodTakeoverCoordinator withActiveValidation(PodActiveValidation validation){activeValidation=validation;return this;}
+    private long timeoutMillis=15L*60*1000;
+    PodTakeoverCoordinator withTimeout(long millis){if(millis<=0)throw new IllegalArgumentException();timeoutMillis=millis;return this;}
+    /** A single bounded attempt owns cancellation until all candidate I/O stops.
+     * Retrying never starts a concurrent writer or abandons a live worker. */
+    static final class Work implements AutoCloseable {
+        private static final ThreadLocal<Work> CURRENT=new ThreadLocal<>();
+        private static final java.util.concurrent.ScheduledThreadPoolExecutor TIMER=new java.util.concurrent.ScheduledThreadPoolExecutor(1,r->{Thread t=new Thread(r,"podjs-takeover-deadline");t.setDaemon(true);return t;});
+        static {TIMER.setRemoveOnCancelPolicy(true);}
+        final Work previous;final Checkpoint checkpoint;final Thread owner=Thread.currentThread();
+        final long deadline;volatile boolean expired;boolean interrupted,closed;
+        final java.util.Set<Runnable> cancellations=new java.util.HashSet<>();
+        final java.util.concurrent.ScheduledFuture<?> timer;
+        Work(long millis,Checkpoint checkpoint) {
+            this.checkpoint=checkpoint;previous=CURRENT.get();deadline=System.nanoTime()+java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(millis);CURRENT.set(this);
+            timer=TIMER.schedule(()->{synchronized(this){if(closed)return;expired=true;try{for(Runnable cancel:cancellations)cancel.run();}finally{owner.interrupt();}}},millis,java.util.concurrent.TimeUnit.MILLISECONDS);
+        }
+        static void check()throws IOException {
+            Work w=CURRENT.get();if(w==null)return;
+            if(Thread.interrupted())w.interrupted=true;
+            if(w.expired||System.nanoTime()>=w.deadline)throw new IOException("migration_timeout");
+            if(w.interrupted)throw new IOException("migration_interrupted");
+        }
+        static void worked(String step,long done,long total)throws IOException {
+            check();Work w=CURRENT.get();if(w!=null)w.checkpoint.worked(step,done,total);
+        }
+        static AutoCloseable cancellable(Runnable cancel)throws IOException {
+            check();Work w=CURRENT.get();if(w==null)return ()->{};
+            synchronized(w){if(w.expired){cancel.run();throw new IOException("migration_timeout");}w.cancellations.add(cancel);}
+            return ()->{synchronized(w){w.cancellations.remove(cancel);}};
+        }
+        String reason(Exception error) {
+            if(expired||System.nanoTime()>=deadline)return "migration_timeout";
+            if(error instanceof InterruptedException||interrupted||"migration_interrupted".equals(error.getMessage()))return "migration_interrupted";
+            return null;
+        }
+        public void close(){synchronized(this){closed=true;timer.cancel(false);}CURRENT.set(previous);if(expired)Thread.interrupted();else if(interrupted)owner.interrupt();}
+    }
     public Properties run() throws Exception {
+        try(Work work=new Work(timeoutMillis,checkpoint)){return runLocked(work);}
+    }
+    private Properties runLocked(Work work) throws Exception {
         long runBegan=System.nanoTime();
         synchronized (PROCESS_LOCK) {
+            Work.check();
             // Read-only preflight also covers an existing empty takeover directory
             // (or empty journal). A NONE result must never create even a lock file.
             if (read(new File(root,"journal")).isEmpty()) {
@@ -175,11 +217,13 @@ public final class PodTakeoverCoordinator {
                         p.setProperty("generation","g-"+java.util.UUID.randomUUID());
                         save(p,Phase.DETECTED);
                     }
+                    save(p,phase);
                 }
                 File generation=generation(p.getProperty("generation"));
                 try {
                     if (phase!=Phase.DETECTED) converter.resume(generation,phase);
                     while (true) {
+                        Work.check();
                         switch (phase) {
                             case DETECTED:
                                 Source source=probe.detect();
@@ -238,12 +282,22 @@ public final class PodTakeoverCoordinator {
                         save(p,phase);
                     }
                 } catch (Exception error) {
+                    // FileChannel cancellation consumes the interrupt before
+                    // writing PAUSED; otherwise even its journal write fails.
+                    if(Thread.interrupted())work.interrupted=true;
                     if(phase==Phase.ACTIVE)throw error; // committed generation is terminal, even if readback fails
                     checkpoint.failed(phase,error);
                     p.setProperty("resumePhase",phase.name());
                     // Converter exceptions can contain secrets or URLs; persist only fixed codes.
-                    p.setProperty("reason",error instanceof IOException && ("space_insufficient".equals(error.getMessage()) || "user_locked".equals(error.getMessage()))?error.getMessage():converter==EMPTY?"converter_unavailable":"stage_failed");
+                    String cancelled=work.reason(error);
+                    p.setProperty("reason",cancelled!=null?cancelled:error instanceof IOException && ("space_insufficient".equals(error.getMessage()) || "user_locked".equals(error.getMessage()) || "migration_row_too_large".equals(error.getMessage()))?error.getMessage():converter==EMPTY?"converter_unavailable":"stage_failed");
                     save(p,Phase.PAUSED); return p;
+                } catch(OutOfMemoryError memory) {
+                    if(Thread.interrupted())work.interrupted=true;
+                    if(phase==Phase.ACTIVE)throw memory;
+                    checkpoint.failed(phase,new IOException("migration_memory_limit"));
+                    p.setProperty("resumePhase",phase.name());p.setProperty("reason","migration_memory_limit");
+                    save(p,Phase.PAUSED);return p;
                 }
             }
         }
