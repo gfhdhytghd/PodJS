@@ -363,15 +363,15 @@ public final class PodTakeover {
         }
         private static String nextStep(String phase,String reason) {
             if("PAUSED".equals(phase)) {
-                if("migration_row_too_large".equals(reason)||"migration_storage_invalid".equals(reason)||"verification_scratch_invalid".equals(reason))return "原数据未改动，请截图联系支持。";
+                if("migration_row_too_large".equals(reason)||"migration_storage_invalid".equals(reason)||"verification_scratch_invalid".equals(reason))return "原数据未改动，\n请截图联系支持。";
                 return "已完成的部分会保留，可重试或重开应用继续。";
             }
-            if(!"BLOCKED".equals(phase))return "迁移期间不会修改原数据，请保持应用在前台。";
+            if(!"BLOCKED".equals(phase))return "迁移期间不会修改原数据，\n请保持应用在前台。";
             if("user_locked".equals(reason))return "请先解锁手表，再重试。";
             if("space_insufficient".equals(reason))return "请清理存储空间，再重试。";
-            if("store_needs_reauth_user_confirmation".equals(reason))return "原数据已保留，完成后请重新登录。";
-            if("active_validation_failed".equals(reason))return "数据已迁移但校验失败，请截图联系支持。";
-            return "原数据未改动，请截图联系支持。";
+            if("store_needs_reauth_user_confirmation".equals(reason))return "原数据已保留，\n完成后请重新登录。";
+            if("active_validation_failed".equals(reason))return "数据已迁移但校验失败，\n请截图联系支持。";
+            return "原数据未改动，\n请截图联系支持。";
         }
         void render(JSONObject status,boolean running) {
             String phase=status.optString("progressPhase",status.optString("phase","CHECKING"));

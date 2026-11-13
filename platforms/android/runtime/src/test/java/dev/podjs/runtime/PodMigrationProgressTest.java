@@ -70,7 +70,7 @@ public class PodMigrationProgressTest {
                 assertTrue(detail,detail.startsWith("原因：")&&detail.length()>3&&!detail.contains(code));
                 assertEquals(code,label(view,"code").getText().toString());
                 assertEquals(1,label(view,"code").getMaxLines());
-                assertEquals(java.util.Set.of("migration_row_too_large","migration_storage_invalid","verification_scratch_invalid").contains(code)?"原数据未改动，请截图联系支持。":"已完成的部分会保留，可重试或重开应用继续。",label(view,"next").getText().toString());
+                assertEquals(java.util.Set.of("migration_row_too_large","migration_storage_invalid","verification_scratch_invalid").contains(code)?"原数据未改动，\n请截图联系支持。":"已完成的部分会保留，可重试或重开应用继续。",label(view,"next").getText().toString());
                 assertEquals("重试迁移",label(view,"retry").getText().toString());
                 assertEquals(android.view.View.VISIBLE,label(view,"retry").getVisibility());
                 assertTrue(label(view,"retry").isEnabled());
