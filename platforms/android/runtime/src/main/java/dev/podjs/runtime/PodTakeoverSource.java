@@ -16,10 +16,16 @@ final class PodTakeoverSource {
     static final String[] PREFS={"reader_preset_state","home_entry_placement","app_resume_state","douyin_watch_history","douyin_recent_window","douyin_feed_cache","watchrss_announcement","watchrss_push","watch_device_identity","watchrss_installation_identity","watchrss_daily_telemetry","watchrss_download_telemetry","watchrss_cloud_state","watchrss_account_state","llm_secure_prefs","tts_secure_prefs","watchrss_cloud_keys","bili_account_store","douyin_account_store"};
     static final String[] FILES={"article_content","offline/rss","offline/bili","reader_assets","notes","watch-cloud-cache"};
     static boolean exists(File root,String path){return Files.exists(new File(root,path).toPath(),LinkOption.NOFOLLOW_LINKS);}
+    private static boolean accountDatabase(File sandbox) {
+        File root=new File(sandbox,"databases/accounts");if(Files.isSymbolicLink(root.toPath()))return false;
+        File[] scopes=root.listFiles();if(scopes==null)return false;
+        for(File scope:scopes)if(scope.getName().matches("[a-f0-9]{64}")&&Files.isDirectory(scope.toPath(),LinkOption.NOFOLLOW_LINKS)&&Files.exists(new File(scope,"watchrss.db").toPath(),LinkOption.NOFOLLOW_LINKS))return true;
+        return false;
+    }
     static boolean inventory(File sandbox,Properties inventory) {
         boolean database=exists(sandbox,"databases/watchrss.db"),wal=exists(sandbox,"databases/watchrss.db-wal");
         inventory.setProperty("source.database",Boolean.toString(database));inventory.setProperty("source.wal",Boolean.toString(wal));
-        boolean present=database||wal;
+        boolean present=database||wal||accountDatabase(sandbox);
         for(String name:DATASTORES){boolean found=exists(sandbox,"files/datastore/"+name);inventory.setProperty("source.store."+name,Boolean.toString(found));present|=found;}
         for(String name:PREFS){boolean found=exists(sandbox,"shared_prefs/"+name+".xml")||exists(sandbox,"shared_prefs/"+name+".xml.bak");inventory.setProperty("source.store."+name,Boolean.toString(found));present|=found;}
         for(String path:FILES){boolean found=exists(sandbox,"files/"+path);inventory.setProperty("source.files."+path.replace('/','.'),Boolean.toString(found));present|=found;}
@@ -31,12 +37,17 @@ final class PodTakeoverSource {
         File files=new File(sandbox,"files"),db=new File(sandbox,"databases/watchrss.db");
         // Live main header can lag a schema change in WAL. Resolve version only on the private captured DB.
         String block=null;int schema=0;
-        if(!db.isFile()){block="source_database_missing";schema=-1;}
+        if(!db.isFile()){
+            File domains=new File(sandbox,"databases/accounts");boolean scoped=false;
+            if(domains.isDirectory())for(File domain:children(domains))if(domain.getName().matches("[a-f0-9]{64}")&&new File(domain,"watchrss.db").isFile())scoped=true;
+            if(!scoped){block="source_database_missing";schema=-1;}
+        }
         if(new File(sandbox,"databases/podjs.sqlite").exists()||nonempty(new File(files,"podjs")))block="target_conflict";
         File backup=new File(sandbox,"no_backup");
         if(backup.exists())for(File child:children(backup))if(child.getName().startsWith("podjs-")&&nonempty(child))block="target_conflict";
         if(!unlocked)block="user_locked";
         long bytes=Math.addExact(Math.addExact(size(db),size(new File(db+"-wal"))),size(new File(sandbox,"shared_prefs")));
+        bytes=Math.addExact(bytes,size(new File(sandbox,"databases/accounts")));
         for(File parent:new File[]{files,new File(sandbox,"cache")})if(parent.exists())for(File child:children(parent))
             if(!child.getName().equals("package-takeover")&&!child.getName().equals("podjs")&&!child.getName().startsWith(".podjs-"))bytes=Math.addExact(bytes,size(child));
         bytes=Math.addExact(bytes,size(new File(sandbox,"no_backup")));

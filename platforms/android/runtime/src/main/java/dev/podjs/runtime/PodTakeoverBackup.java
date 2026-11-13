@@ -39,8 +39,9 @@ final class PodTakeoverBackup implements PodTakeoverCoordinator.Publisher {
         for(String path:PodFileConverter.names(stores))hashes.put(path,stores.getString(path));
         String[] database=PodTakeoverCoordinator.read(new File(g,"snapshot.properties")).getProperty("sourceDigest","").split(":");
         if(database.length!=2)throw new IOException("digest_source_missing");
-        hashes.put("databases/watchrss.db",database[0]);
-        if(!"absent".equals(database[1]))hashes.put("databases/watchrss.db-wal",database[1]);
+        String selectedDatabase=PodTakeoverProfile.load(g).database();
+        hashes.put(selectedDatabase,database[0]);
+        if(!"absent".equals(database[1]))hashes.put(selectedDatabase+"-wal",database[1]);
         Properties snapshot=TakeoverDigest.snapshot(sandbox,hashes);
         TakeoverDigest.digestManifest(snapshot,"SNAPSHOTTED",g.getName());
         PodTakeoverCoordinator.atomic(receipt,snapshot);return snapshot;

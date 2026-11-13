@@ -18,7 +18,7 @@ const reader=new ReaderPresetStore(storage).load();assert.equal(reader.selection
 const {TtsConfigStore}=await import(`${app}/src/tts/config-store.ts`);
 const tts=new TtsConfigStore(storage,secure);assert.equal(tts.read().engine,'minimax');assert.equal(await tts.apiKey('minimax'),'DO_NOT_LEAK_TTS');
 const {WatchAccountStore}=await import(`${app}/src/account/store.ts`);
-const account=await new WatchAccountStore(secure).read();assert.equal(account?.userId,'synthetic-user');assert.equal(account?.watchDeviceToken,'DO_NOT_LEAK_SECRET');
+const accountStore=new WatchAccountStore(secure);const account=await accountStore.read();assert.equal(account?.userId,'synthetic-user');assert.equal(account?.watchDeviceToken,'DO_NOT_LEAK_SECRET');assert.ok(account);await accountStore.assertLibraryOwner(account);await accountStore.ensureLibraryOwner(account,async()=>true);
 const {AppResumeStore}=await import(`${app}/src/navigation/resume-state.ts`);
 assert.deepEqual(new AppResumeStore(storage).read(),{version:1,kind:'home'});
 const {SyncAccountTelemetry}=await import(`${app}/src/sync/account-telemetry.ts`);

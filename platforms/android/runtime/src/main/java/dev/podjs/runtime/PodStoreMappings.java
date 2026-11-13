@@ -16,6 +16,8 @@ final class PodStoreMappings {
     static void convert(String store,Map<String,Object> p,Set<String> u,JSONObject kv,JSONObject secure,JSONObject report)throws Exception{
         switch(store){
             case "settings":settings(p,u,kv);break;
+            case "watchrss_transparency":for(String key:new String[]{"initial_app_disclosure_v1","bili_disclosure_v1","douyin_disclosure_v1"})if(p.containsKey(key)){kv.put("watchrss.transparency."+key,bool(p.get(key)));u.remove(key);}break;
+            case "watchrss_library_ownership":if(p.containsKey("legacy_owner"))require(text(p.get("legacy_owner")).matches("[a-f0-9]{64}"));break;
             case "WebViewChromiumPrefs":if(p.containsKey("lastVersionCodeUsed"))integer(p.get("lastVersionCodeUsed"),0,Integer.MAX_VALUE);break;
             case "bili_cache":bili(p,u,kv);break;
             case "app_resume_state":
@@ -50,7 +52,7 @@ final class PodStoreMappings {
                 }break;
             case "douyin_account_store":if(p.containsKey("cookie")){secure.put("douyin.cookie",text(p.get("cookie")));u.remove("cookie");}break;
             case "llm_secure_prefs":if(p.containsKey("llm_api_key"))require(text(p.get("llm_api_key")).length()<=4096);break;
-            case "watchrss_cloud_keys":for(String key:p.keySet()){if(key.matches("account_[a-f0-9]{24}(_v[1-9][0-9]*)?"))require(java.util.Base64.getDecoder().decode(text(p.get(key))).length==32);else if(key.matches("account_current_[a-f0-9]{24}"))integer(p.get(key),1,Integer.MAX_VALUE);}break;
+            case "watchrss_cloud_keys":JSONObject legacy=new JSONObject();for(String key:p.keySet()){if(key.matches("account_[a-f0-9]{24}(_v[1-9][0-9]*)?")){require(java.util.Base64.getDecoder().decode(text(p.get(key))).length==32);legacy.put(key,p.get(key));u.remove(key);}else if(key.matches("account_current_[a-f0-9]{24}"))integer(p.get(key),1,Integer.MAX_VALUE);}if(legacy.length()>0)secure.put("__takeover.cloud-legacy",legacy.toString());break;
             case "watchrss_account_state":
                 if(p.containsKey("state_json")){String raw=text(p.get("state_json"));JSONObject account=new JSONObject(raw);require(!text(account.get("userId")).trim().isEmpty());String token=account.has("watchAccessToken")?text(account.get("watchAccessToken")):"";if(token.isEmpty()&&account.has("watchDeviceToken"))token=text(account.get("watchDeviceToken"));require(!token.trim().isEmpty());for(String key:new String[]{"accessTokenExpiresAtMillis","tokenExpiresAtMillis","refreshTokenExpiresAtMillis","updatedAtMillis"})if(account.has(key))integer(account.get(key),0,9007199254740991L);secure.put("state_json",raw);u.remove("state_json");}break;
             case "tts_secure_prefs":for(String engine:new String[]{"minimax","azure","doubao"}){String key="tts_api_key_"+engine;if(p.containsKey(key)){String value=text(p.get(key));require(value.length()<=4096);secure.put("watchrss.tts.api-key."+engine,value);u.remove(key);}}break;
@@ -79,6 +81,9 @@ final class PodStoreMappings {
         String[][] booleans={{"phone_connection_enabled","phoneConnectionEnabled","true"},{"llm_enabled","llmEnabled","true"},{"llm_auto_summarize","llmAutoSummarize","false"},{"llm_show_token_usage","llmShowTokenUsage","false"},{"reader_auto_scroll_enabled","readerAutoStart","false"},{"media_volume_control_enabled","mediaVolumeControl","true"},{"media_volume_guard_enabled","mediaVolumeGuard","false"},{"sync_media_keep_alive_enabled","syncMediaKeepAlive","false"},{"share_use_system","shareUseSystem","false"}};
         for(String[] b:booleans)s.put(b[1],bool(take(p,u,b[0],Boolean.valueOf(b[2]))));
         long font=integer(take(p,u,"reading_font_size_sp",14),12,32);require(font%2==0);s.put("fontSizeSp",font);
+        s.put("readerPageMode",bool(take(p,u,"reader_page_mode",false)));
+        s.put("readerPageSeconds",integer(take(p,u,"reader_page_seconds",15),5,120));
+        boolean autoPage=bool(take(p,u,"reader_auto_page_enabled",false));if(s.getBoolean("readerPageMode"))s.put("readerAutoStart",autoPage);
         s.put("llmPromptPreset",integer(take(p,u,"llm_prompt_preset",0),0,3)+1);
         s.put("readerScrollSpeed",number(take(p,u,"reader_auto_scroll_lines_per_second",2.0),.5,10));
         double speed=number(take(p,u,"tts_speed",1.0),.5,2);s.put("speechRate",speed);
@@ -157,6 +162,25 @@ final class PodStoreMappings {
         secure.put(store.equals("douyin_recent_window")?"douyin.recent-window.v1":"douyin.feed.v1",out.toString());u.remove(key);
     }
     static void joint(java.io.File generation,JSONObject kv,JSONObject secure,JSONObject reports)throws Exception {
+        if(secure.has("state_json")){
+            JSONObject account=new JSONObject(secure.getString("state_json"));
+            if(account.opt("backendBaseUrl") instanceof String&&!account.getString("backendBaseUrl").trim().isEmpty()){
+            // WatchAccountStore compares this string with JSON.stringify, not parsed JSON.
+            // Android JSONStringer escapes '/', whereas JSON.stringify leaves it literal.
+            secure.put("watchrss.library.owner",new JSONArray().put(account.getString("backendBaseUrl").trim().replaceAll("/+$","")).put(account.getString("userId").trim()).toString().replace("\\/","/"));
+            }
+        }
+        Object legacyKeys=secure.remove("__takeover.cloud-legacy");
+        if(legacyKeys instanceof String&&secure.has("state_json")){
+            String user=new JSONObject(secure.getString("state_json")).getString("userId"),hash=PodStoreConverter.slot(user),prefix="account_"+hash.substring(0,24);
+            JSONObject source=new JSONObject((String)legacyKeys),versions=new JSONObject();
+            for(String key:PodFileConverter.names(source))if(key.equals(prefix)||key.matches(java.util.regex.Pattern.quote(prefix)+"_v[1-9][0-9]*")){
+                String version=key.equals(prefix)?"1":key.substring(prefix.length()+2);
+                if(versions.has(version))require(versions.getString(version).equals(source.getString(key)));
+                versions.put(version,source.getString(key));
+            }
+            if(versions.length()>0)secure.put("watchrss.cloud.keys."+hash,versions.toString());
+        }
         Object legacy=kv.remove("__takeover.reader-dark"),explicit=kv.remove("__takeover.reader-mode-explicit");
         JSONObject selection=kv.optJSONObject("watchrss.reader-presets.selection"),schedule=kv.optJSONObject("watchrss.reader-presets.schedule");
         java.io.File catalog=new java.io.File(generation,"reader-catalog.json");

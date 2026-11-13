@@ -34,7 +34,7 @@ public class StoreTest {
         xml(root,"bili_account_store","<string name=\"account_json\">{\"cookies\":{\"SESSDATA\":\"DO_NOT_LEAK_BILI\"},\"refreshToken\":\"DO_NOT_LEAK_REFRESH\",\"updatedAtMillis\":123,\"cookieRefreshCheckedAtMillis\":120,\"wbiImgKey\":\"synthetic-img\",\"wbiSubKey\":\"synthetic-sub\"}</string>");
         xml(root,"douyin_account_store","<string name=\"cookie\">DO_NOT_LEAK_DOUYIN</string>");
         xml(root,"watch_device_identity","<string name=\"device_id\">synthetic-device</string>");
-        xml(root,"watchrss_account_state","<string name=\"state_json\">{\"userId\":\"synthetic-user\",\"watchAccessToken\":\"DO_NOT_LEAK_SECRET\"}</string>");
+        xml(root,"watchrss_account_state","<string name=\"state_json\">{\"userId\":\"synthetic-user\",\"backendBaseUrl\":\"https://synthetic.invalid\",\"watchAccessToken\":\"DO_NOT_LEAK_SECRET\"}</string>");
         xml(root,"tts_secure_prefs","<string name=\"tts_api_key_minimax\">DO_NOT_LEAK_TTS</string>");
         xml(root,"llm_secure_prefs","<string name=\"llm_api_key\">DO_NOT_LEAK_LLM</string>");
         xml(root,"watchrss_push","<long name=\"last_seen_notification_id\" value=\"99\"/>");
@@ -101,7 +101,7 @@ public class StoreTest {
         }
         // Locking is retryable: no needs-reauth receipt is committed for a locked source.
         crypto.locked=true;g=generation();c.snapshot(g);try{c.copy(g);throw new AssertionError();}catch(PodStoreConverter.Locked expected){}crypto.locked=false;c.copy(g);c.verify(g);check(report(g,"watchrss_account_state").getString("status").equals("migrated"));remove(g);
-        crypto.binding=false;g=generation();c.snapshot(g);c.copy(g);check(report(g,"watchrss_cloud_keys").getString("status").equals("needs-reauth"));remove(g);crypto.binding=true;
+        crypto.binding=false;g=generation();c.snapshot(g);c.copy(g);check(!report(g,"watchrss_cloud_keys").getBoolean("bindingValid")&&report(g,"watchrss_cloud_keys").getString("activationDisposition").equals("known-difference"));remove(g);crypto.binding=true;
         // Crypto failure becomes explicit needs-reauth; source never reset and retry preserves report.
         crypto.unavailable=true;g=generation();c.snapshot(g);c.copy(g);check(report(g,"watchrss_account_state").getString("status").equals("needs-reauth"));c.verify(g);check(!PodStoreConverter.json(new File(g,"stores-report.json")).toString().contains("DO_NOT_LEAK"));remove(g);crypto.unavailable=false;
         // Authenticated receipt tampering and candidate ciphertext truncation fail closed.

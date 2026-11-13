@@ -27,6 +27,8 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
     public interface ProgressHook { void copied(long bytes); }
     public interface FontReader { void load(File file, int faces) throws Exception; }
     private final File sandbox;
+    private PodTakeoverProfile profile=new PodTakeoverProfile("",true);
+    private String logical(String path)throws IOException {String p=profile.logicalFile(path);if(p==null)throw new IOException("inactive_profile_asset");return p;}
     private final Set<String> packages;
     private final PodRoomV18Converter.Factory factory;
     private final FontReader fonts;
@@ -50,7 +52,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
             this.packages.add(name);
         }
     }
-    public String version(){return "watchrss-files-4";}
+    public String version(){return "watchrss-files-5";}
     // A file converter alone does not constitute a publishable storage bundle.
     public boolean complete(){return false;}
     static SortedSet<String> names(JSONObject object) {
@@ -133,6 +135,13 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
     static String category(String p) {
         // Cache is disposable platform storage. Preserve exact lock handling in classify().
         if(p.startsWith("cache/"))return "refetchable";
+        // Compose ArticleReceiveCheckpoint: verified but not-yet-committed phone
+        // article chunks. The manifest lives at the peer; never invent articles
+        // from these bytes. Retain exact files in the sealed native backup.
+        if(p.matches("files/phone-article-checkpoints/[a-f0-9]{64}/[a-f0-9]{64}/(0|[1-9][0-9]{0,9})\\.bin")) {
+            String index=p.substring(p.lastIndexOf('/')+1,p.length()-4);
+            if(Long.parseLong(index)<=Integer.MAX_VALUE)return "native-transfer-checkpoint";
+        }
         if(p.equals("files/androidx.appcompat.app.AppCompatDelegate.application_locales_record_file")||p.equals("files/activity_choser_model_history.xml"))return "private-platform-state";
         if(p.endsWith(".part")||p.endsWith(".part.meta")||p.endsWith(".tmp"))return "incomplete";
         if(p.matches("files/article_content/[^/]+")||p.matches("files/offline/rss/[^/]+/[^/]+")||p.matches("files/reader_assets/(fonts|backgrounds|variants)/[^/]+")||p.matches("files/notes/assets/[A-Za-z0-9][A-Za-z0-9._-]{0,159}"))return "asset";
@@ -169,7 +178,12 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
             for(String root:new String[]{"cache/data/user/0/"+name+"/","cache/data/data/"+name+"/"})
                 if(path.equals(root+"databases/watchrss.db.lck")||path.equals(root+"no_backup/androidx.work.workdb.lck"))return "database-lock";
         }
-        return category(path);
+        String mapped=profile.logicalFile(path);
+        if(mapped==null){
+            String base=path.replaceFirst("^files/accounts/[a-f0-9]{64}/","files/");
+            return category(base).equals("unknown-user-content")?"unknown-user-content":"inactive-profile-preserved";
+        }
+        return category(mapped);
     }
     private SortedMap<String,JSONObject> inventory()throws Exception {
         SortedMap<String,JSONObject> out=new TreeMap<>();
@@ -191,12 +205,13 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         if(Files.isDirectory(file.toPath(),LinkOption.NOFOLLOW_LINKS)) {
             File[] children=file.listFiles();if(children==null)throw new IOException("inventory_unreadable");
             for(File child:children){String p=path+"/"+child.getName();
-                if(p.equals("files/package-takeover")||p.equals("files/podjs")||p.equals("files/datastore")||p.startsWith("files/.podjs-"))continue;
+                if(p.equals("files/package-takeover")||p.equals("files/podjs")||p.equals("files/datastore")||p.matches("files/accounts/[a-f0-9]{64}/datastore")||p.startsWith("files/.podjs-"))continue;
                 walk(p,out);
             }
         }else out.put(path,measure(file).put("category",classify(path)));
     }
     public void snapshot(File g)throws Exception {
+        profile=PodTakeoverProfile.load(g);
         File manifest=new File(g,"files-snapshot.json");
         if(manifest.exists()){resume(g,PodTakeoverCoordinator.Phase.SNAPSHOTTED);return;}
         SortedMap<String,JSONObject> entries=inventory();
@@ -218,6 +233,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         if(!version().equals(m.getString("version")))throw new IOException("files_version_changed");return m.getJSONObject("entries");
     }
     public void resume(File g,PodTakeoverCoordinator.Phase phase)throws Exception {
+        profile=PodTakeoverProfile.load(g);
         JSONObject entries=entries(g);
         for(String p:names(entries))try {
             if(!classify(p).equals(entries.getJSONObject(p).getString("category"))||!same(measure(safe(new File(g,"files-source"),p)),entries.getJSONObject(p)))throw new IOException("file_snapshot_changed");
@@ -229,7 +245,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         long copied=0,total=0;for(String p:names(entries))if(classify(p).equals("asset"))total+=entries.getJSONObject(p).getLong("size");
         PodTakeoverCoordinator.Work.worked("files",0,total);
         for(String p:names(entries))if(classify(p).equals("asset")){
-            try {copyFile(safe(new File(g,"files-source"),p),safe(new File(g,"podjs/files"),p.substring(6)),entries.getJSONObject(p),"copy");}
+            try {copyFile(safe(new File(g,"files-source"),p),safe(new File(g,"podjs/files"),logical(p).substring(6)),entries.getJSONObject(p),"copy");}
             catch(Exception error){throw failure(p,error);}
             JSONObject receipt=new JSONObject().put("path",p).put("size",entries.getJSONObject(p).getLong("size")).put("sha256",entries.getJSONObject(p).getString("sha256")).put("complete",true);
             File record=safe(new File(g,"files-completed"),PodStoreConverter.slot(p)+".json");
@@ -266,10 +282,11 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
             if(c.equals("asset")){
                 JSONObject receipt=PodStoreConverter.json(safe(new File(g,"files-completed"),PodStoreConverter.slot(p)+".json"));
                 if(!receipt.getBoolean("complete")||!receipt.getString("path").equals(p)||!same(receipt,entries.getJSONObject(p)))throw new IOException("file_receipt_changed");
-                if(!same(measure(safe(new File(g,"podjs/files"),p.substring(6))),entries.getJSONObject(p)))throw new IOException("file_readback_mismatch");
+                if(!same(measure(safe(new File(g,"podjs/files"),logical(p).substring(6))),entries.getJSONObject(p)))throw new IOException("file_readback_mismatch");
             }
             else if(c.equals("private-test-state"))PodPreferenceReader.protobuf(safe(new File(g,"files-source"),p));
             else if(c.equals("platform-metadata")&&entries.getJSONObject(p).getLong("size")!=8)block(r,"platform_metadata_invalid");
+            else if(c.equals("native-transfer-checkpoint"))r.put("nativeTransferCheckpointPolicy","retain-uncommitted-chunks-in-native-backup; no-article-or-ack-created");
             else if(c.equals("unknown-user-content")) {
                 block(r,"unknown_user_files");unknownFiles++;
                 if(unknownPaths.length()<20)unknownPaths.put(redactedPath(p));
@@ -293,7 +310,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         try(PodRoomV18Converter.Db db=factory.open(new File(g,"podjs.sqlite"));PodRoomV18Converter.Db source=factory.open(new File(g,"room.sqlite"))) {
             for(Map<String,Object> row:source.query("SELECT localPath FROM offline_media WHERE localPath IS NOT NULL ORDER BY id")) {
                 String path=(String)row.get("localPath"),relative=PodRoomV18Converter.relative(path);
-                boolean own=ownSourcePath(path,relative);
+                boolean own=ownSourcePath(path,profile.filesPrefix()+relative);
                 if(!own)block(r,"offline_source_root_invalid");
             }
             for(Map<String,Object> row:db.query("SELECT relative_path FROM offline_media WHERE relative_path IS NOT NULL ORDER BY id")) {

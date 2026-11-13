@@ -1,0 +1,833 @@
+{
+  "sourceRevision": "bb2c8e7b288d8572032bc20bbf07897cc8badcc9",
+  "format": 1,
+  "files": {
+    "DataStore": "files/[accounts/<scope>/]datastore/{settings,bili_cache}.preferences_pb.preferences_pb (single suffix also accepted)",
+    "SharedPreferences": "shared_prefs/[account_<scope>_]<store>.xml",
+    "encryptedMetadata": [
+      "__androidx_security_crypto_encrypted_prefs_key_keyset__",
+      "__androidx_security_crypto_encrypted_prefs_value_keyset__"
+    ],
+    "testOnly": "Exact UUID test DataStores listed in PodFileConverter; preserved, never merged"
+  },
+  "scopedStores": [
+    "settings",
+    "bili_cache",
+    "reader_preset_state",
+    "home_entry_placement",
+    "douyin_watch_history",
+    "douyin_recent_window",
+    "douyin_feed_cache",
+    "douyin_request_cooldown",
+    "llm_secure_prefs",
+    "tts_secure_prefs",
+    "watchrss_cloud_keys",
+    "bili_account_store",
+    "douyin_account_store",
+    "watchrss_cloud_state",
+    "watchrss_cloud_controls",
+    "novel_reading_history"
+  ],
+  "sourceFiles": {
+    "app/src/main/java/com/lightningstudio/watchrss/AppResumeStateStore.kt": "1cb0ed6647664edb6ef098bf8d47fc7cd35b13d0d2a994af58dfef8937384e08",
+    "app/src/main/java/com/lightningstudio/watchrss/data/AppContainer.kt": "45b8fd7fbea6b1a2f3d8d6fae8d1418300cd2e7edb6d9b28b1eafbdc20317a54",
+    "app/src/main/java/com/lightningstudio/watchrss/data/account/WatchAccountStore.kt": "9fc1ff31d1ba175a07dd3c8ab42e0eaa7c3c0dc831e389297e6808b5b266fc0b",
+    "app/src/main/java/com/lightningstudio/watchrss/data/account/workspace/AccountDataContext.kt": "3313829ab209a44316342999bebd4c3bdc8fe6d7afddd412339af575b14b8848",
+    "app/src/main/java/com/lightningstudio/watchrss/data/announcement/AnnouncementRepository.kt": "9c0383e3c4a3cc20a4b827af32e69f36147926319a12d7fe2b6f8cb953b2e49f",
+    "app/src/main/java/com/lightningstudio/watchrss/data/bili/BiliRecommendationHistory.kt": "7767c98f5547578abdf561ca12c5bcd720323ceed08eaeeaf99f65a4b6374b7e",
+    "app/src/main/java/com/lightningstudio/watchrss/data/bili/BiliRepository.kt": "840b00582df821b2cd46af0575ac054da928d771451627eeb86ff6dd83346358",
+    "app/src/main/java/com/lightningstudio/watchrss/data/cloud/WatchCloudControls.kt": "7b6b5fb5a907f39ed26acc51d5b1c299cc3254f1431e597966301ed742f27e1f",
+    "app/src/main/java/com/lightningstudio/watchrss/data/cloud/WatchCloudKeyManager.kt": "679e6c370685e29c708e9efeb41e05c1437eb7334f66bf8b04be1c1c16bcf57b",
+    "app/src/main/java/com/lightningstudio/watchrss/data/cloud/WatchCloudStateStore.kt": "918a01ff82a3a5e80c4aab759e1d1fab1760f6aa5f33870f933320ddc5f5a061",
+    "app/src/main/java/com/lightningstudio/watchrss/data/douyin/DouyinFeedCacheStore.kt": "049b7adee0592ed3bdfcd4052c740b3801c411643f9694784d616101b7c58cc5",
+    "app/src/main/java/com/lightningstudio/watchrss/data/douyin/DouyinRecentWindowStore.kt": "d7089934c650007033dac6ad48c2babe537f957ac77060e0c7090835541a30a4",
+    "app/src/main/java/com/lightningstudio/watchrss/data/douyin/DouyinRepository.kt": "d844b9e3b257ba43e5942d6822c24162d90646d625143792a735db013ecbf90d",
+    "app/src/main/java/com/lightningstudio/watchrss/data/douyin/DouyinWatchHistoryStore.kt": "0f79720f06f9a46a661a8fa330542138eaf68648734fd48f73c2afaf8320bc18",
+    "app/src/main/java/com/lightningstudio/watchrss/data/home/HomeEntryPlacementStore.kt": "a94ac6f9d3aa9c97567324e1a309438da5c8ffff9fd20e20ce6a9db4e00678e8",
+    "app/src/main/java/com/lightningstudio/watchrss/data/novel/NovelReadingHistory.kt": "1c269508d01fd8c2a36d32811db8c6475c4b707f78b3d336ee334f6e1bb10615",
+    "app/src/main/java/com/lightningstudio/watchrss/data/push/PushNotificationRepository.kt": "7eeb5c5d85f19cbe9e491a027395cbd40fd403350f9b0707488312106808f2f2",
+    "app/src/main/java/com/lightningstudio/watchrss/data/reader/ReaderPresetRepository.kt": "70386900a2c45b73353f39f87a5e1bd9d0f3d574060fe91d6a42f6a6745874b7",
+    "app/src/main/java/com/lightningstudio/watchrss/data/settings/LlmApiKeyStore.kt": "284ad5e9ec751c12da82ec684d23fa1560766a6f39360eb3888db472084609e3",
+    "app/src/main/java/com/lightningstudio/watchrss/data/settings/SettingsRepository.kt": "612d177947120d05822feaeb892576a0632b175b4ff4437bae826fdef1ffa2fd",
+    "app/src/main/java/com/lightningstudio/watchrss/data/settings/TtsApiKeyStore.kt": "fb28baaa214e5e73d53d44f5dc286a86ae933fa719d1eddb6db20ad18473ec27",
+    "app/src/main/java/com/lightningstudio/watchrss/data/telemetry/DailyTelemetryStore.kt": "1e28c53c2ea49354d3d677646a8f090dd79a888e34fadc681c5195a7fe817cc1",
+    "app/src/main/java/com/lightningstudio/watchrss/data/telemetry/WatchInstallationIdentity.kt": "0eab0f2c7341a7510e8b893e3214b5f5c2a12def7dc2bd6c949abbaebf90dcf0",
+    "app/src/main/java/com/lightningstudio/watchrss/data/telemetry/WatchUsageTelemetry.kt": "80c83f2571d606876fc6b33d0e3be9104c85c802726b9241459dbbc204f952bb",
+    "app/src/main/java/com/lightningstudio/watchrss/phoneconnection/WatchDeviceIdentity.kt": "6897664f19902cd3c9bf6d7456715b3eceb6fe81f76afc0d229625d29e41265f",
+    "app/src/main/java/com/lightningstudio/watchrss/ui/components/ThirdPartyPlatformNotice.kt": "e403b44729bf5c8276aa0012b2cddfb42fef85bad9bae3a2b865db9bb666872a",
+    "sdk/bili/src/main/java/com/lightningstudio/watchrss/sdk/bili/EncryptedBiliAccountStore.kt": "e0bf1507584e8923e970d0b7922b6bb8e011dfcf7dc4d30c8d319463309f85e4",
+    "sdk/douyin/src/main/java/com/lightningstudio/watchrss/sdk/douyin/EncryptedDouyinCookieStore.kt": "37482794fdb72ec94ce36f3bef2b77a8693d861be7b55258fe6f95f4f7796d25",
+    "app/src/main/java/com/lightningstudio/watchrss/WebViewActivity.kt": "0ebba553eb1eb2cbccae6879994c136b63f1dbd9660a738df191462082824dd7"
+  },
+  "keys": [
+    {
+      "store": "settings",
+      "key": "cache_limit_bytes",
+      "type": "long",
+      "sample": 536870912,
+      "policy": "mapped",
+      "target": "watchrss.settings.cacheLimitMb"
+    },
+    {
+      "store": "settings",
+      "key": "oobe_seen_version",
+      "type": "int",
+      "sample": 1,
+      "policy": "mapped",
+      "target": "watchrss.onboarding.oobeSeenVersion"
+    },
+    {
+      "store": "settings",
+      "key": "privacy_policy_agreed_version",
+      "type": "int",
+      "sample": 1,
+      "policy": "mapped",
+      "target": "watchrss.onboarding.privacyPolicyAgreedVersion"
+    },
+    {
+      "store": "settings",
+      "key": "llm_prompt_preset",
+      "type": "int",
+      "sample": 1,
+      "policy": "mapped",
+      "target": "watchrss.settings.llmPromptPreset (+1)"
+    },
+    {
+      "store": "settings",
+      "key": "reading_font_size_sp",
+      "type": "int",
+      "sample": 18,
+      "policy": "mapped",
+      "target": "watchrss.settings.fontSizeSp"
+    },
+    {
+      "store": "settings",
+      "key": "media_playback_start_volume_limit_percent",
+      "type": "int",
+      "sample": 10,
+      "policy": "mapped",
+      "target": "watchrss.settings.playbackStartVolumeLimit"
+    },
+    {
+      "store": "settings",
+      "key": "rss_inline_image_prefetch_mode",
+      "type": "int",
+      "sample": 1,
+      "policy": "mapped",
+      "target": "watchrss.settings.mediaCacheMode"
+    },
+    {
+      "store": "settings",
+      "key": "reader_page_seconds",
+      "type": "int",
+      "sample": 20,
+      "policy": "mapped",
+      "target": "watchrss.settings.readerPageSeconds"
+    },
+    {
+      "store": "settings",
+      "key": "reader_page_mode",
+      "type": "bool",
+      "sample": true,
+      "policy": "mapped",
+      "target": "watchrss.settings.readerPageMode"
+    },
+    {
+      "store": "settings",
+      "key": "reading_theme_dark",
+      "type": "bool",
+      "sample": true,
+      "policy": "mapped",
+      "target": "watchrss.reader-presets.selection.mode (only when reader_theme_mode is absent)"
+    },
+    {
+      "store": "settings",
+      "key": "reader_auto_scroll_enabled",
+      "type": "bool",
+      "sample": true,
+      "policy": "mapped",
+      "target": "watchrss.settings.readerAutoStart (scroll mode)"
+    },
+    {
+      "store": "settings",
+      "key": "share_use_system",
+      "type": "bool",
+      "sample": true,
+      "policy": "mapped",
+      "target": "watchrss.settings.shareUseSystem"
+    },
+    {
+      "store": "settings",
+      "key": "phone_connection_enabled",
+      "type": "bool",
+      "sample": true,
+      "policy": "mapped",
+      "target": "watchrss.settings.phoneConnectionEnabled"
+    },
+    {
+      "store": "settings",
+      "key": "sync_media_keep_alive_enabled",
+      "type": "bool",
+      "sample": true,
+      "policy": "mapped",
+      "target": "watchrss.settings.syncMediaKeepAlive"
+    },
+    {
+      "store": "settings",
+      "key": "media_volume_control_enabled",
+      "type": "bool",
+      "sample": true,
+      "policy": "mapped",
+      "target": "watchrss.settings.mediaVolumeControl"
+    },
+    {
+      "store": "settings",
+      "key": "media_volume_guard_enabled",
+      "type": "bool",
+      "sample": true,
+      "policy": "mapped",
+      "target": "watchrss.settings.mediaVolumeGuard"
+    },
+    {
+      "store": "settings",
+      "key": "llm_enabled",
+      "type": "bool",
+      "sample": true,
+      "policy": "mapped",
+      "target": "watchrss.settings.llmEnabled"
+    },
+    {
+      "store": "settings",
+      "key": "llm_auto_summarize",
+      "type": "bool",
+      "sample": true,
+      "policy": "mapped",
+      "target": "watchrss.settings.llmAutoSummarize"
+    },
+    {
+      "store": "settings",
+      "key": "llm_show_token_usage",
+      "type": "bool",
+      "sample": true,
+      "policy": "mapped",
+      "target": "watchrss.settings.llmShowTokenUsage"
+    },
+    {
+      "store": "settings",
+      "key": "reader_auto_page_enabled",
+      "type": "bool",
+      "sample": true,
+      "policy": "mapped",
+      "target": "watchrss.settings.readerAutoStart (page mode)"
+    },
+    {
+      "store": "settings",
+      "key": "reader_tap_to_scroll",
+      "type": "bool",
+      "sample": true,
+      "policy": "retained",
+      "target": "Native reader gesture/start toggles have no matching PodJS settings; retain in NativeBackup; page mode/seconds/scroll start migrate independently"
+    },
+    {
+      "store": "settings",
+      "key": "reader_auto_scroll_lines_per_second",
+      "type": "float",
+      "sample": 1.0,
+      "policy": "mapped",
+      "target": "watchrss.settings.readerScrollSpeed"
+    },
+    {
+      "store": "settings",
+      "key": "tts_speed",
+      "type": "float",
+      "sample": 1.0,
+      "policy": "mapped",
+      "target": "watchrss.settings.speechRate and watchrss.tts.config.v1.speed"
+    },
+    {
+      "store": "settings",
+      "key": "llm_provider",
+      "type": "string",
+      "sample": "",
+      "policy": "mapped",
+      "target": "watchrss.settings.llmProvider"
+    },
+    {
+      "store": "settings",
+      "key": "llm_model",
+      "type": "string",
+      "sample": "",
+      "policy": "mapped",
+      "target": "watchrss.settings.llmModel"
+    },
+    {
+      "store": "settings",
+      "key": "llm_base_url",
+      "type": "string",
+      "sample": "",
+      "policy": "mapped",
+      "target": "watchrss.settings.llmBaseUrl"
+    },
+    {
+      "store": "settings",
+      "key": "llm_system_prompt",
+      "type": "string",
+      "sample": "",
+      "policy": "mapped",
+      "target": "watchrss.settings.llmSystemPrompt"
+    },
+    {
+      "store": "settings",
+      "key": "tts_model",
+      "type": "string",
+      "sample": "",
+      "policy": "mapped",
+      "target": "watchrss.tts.config.v1.model"
+    },
+    {
+      "store": "settings",
+      "key": "tts_voice_id",
+      "type": "string",
+      "sample": "",
+      "policy": "mapped",
+      "target": "watchrss.tts.config.v1.voiceId"
+    },
+    {
+      "store": "settings",
+      "key": "tts_base_url",
+      "type": "string",
+      "sample": "",
+      "policy": "mapped",
+      "target": "watchrss.tts.config.v1.baseUrl"
+    },
+    {
+      "store": "settings",
+      "key": "tts_engine",
+      "type": "string",
+      "sample": "local",
+      "policy": "mapped",
+      "target": "watchrss.tts.config.v1.engine"
+    },
+    {
+      "store": "settings",
+      "key": "temp_original_mode_hint_attempts_[1-9][0-9]*",
+      "type": "string",
+      "sample": "123,456",
+      "policy": "mapped",
+      "target": "watchrss.temporary-original-hints.v1",
+      "sampleKey": "temp_original_mode_hint_attempts_39"
+    },
+    {
+      "store": "settings",
+      "key": "temp_original_mode_hint_last_toast_[1-9][0-9]*",
+      "type": "long",
+      "sample": 789,
+      "policy": "mapped",
+      "target": "watchrss.temporary-original-hints.v1",
+      "sampleKey": "temp_original_mode_hint_last_toast_39"
+    },
+    {
+      "store": "bili_cache",
+      "key": "bili_search_history",
+      "type": "string",
+      "sample": "[]",
+      "policy": "mapped",
+      "target": "watchrss.bili.search-history.v1"
+    },
+    {
+      "store": "bili_cache",
+      "key": "bili_local_interaction_state_json",
+      "type": "string",
+      "sample": "[]",
+      "policy": "mapped",
+      "target": "watchrss.bili.interactions.v1"
+    },
+    {
+      "store": "bili_cache",
+      "key": "bili_playback_progress_json",
+      "type": "string",
+      "sample": "[]",
+      "policy": "mapped",
+      "target": "watchrss.bili.playback-progress.v1"
+    },
+    {
+      "store": "bili_cache",
+      "key": "bili_feed_cache_v2:.+",
+      "type": "string",
+      "sample": "[]",
+      "policy": "retained",
+      "target": "Derived recommendation cache/dedup for a native request session; retain, rebuild via PodJS API on explicit use",
+      "sampleKey": "bili_feed_cache_v2:synthetic"
+    },
+    {
+      "store": "bili_cache",
+      "key": "bili_feed_shown_v1:.+",
+      "type": "string",
+      "sample": "[]",
+      "policy": "retained",
+      "target": "Derived recommendation cache/dedup for a native request session; retain, rebuild via PodJS API on explicit use",
+      "sampleKey": "bili_feed_shown_v1:synthetic"
+    },
+    {
+      "store": "reader_preset_state",
+      "key": "active_preset_id",
+      "type": "string",
+      "sample": "",
+      "policy": "mapped",
+      "target": "watchrss.reader-presets.selection.lightPresetId fallback"
+    },
+    {
+      "store": "reader_preset_state",
+      "key": "light_preset_id",
+      "type": "string",
+      "sample": "",
+      "policy": "mapped",
+      "target": "watchrss.reader-presets.selection.lightPresetId"
+    },
+    {
+      "store": "reader_preset_state",
+      "key": "dark_preset_id",
+      "type": "string",
+      "sample": "",
+      "policy": "mapped",
+      "target": "watchrss.reader-presets.selection.darkPresetId"
+    },
+    {
+      "store": "reader_preset_state",
+      "key": "reader_theme_mode",
+      "type": "string",
+      "sample": "DARK",
+      "policy": "mapped",
+      "target": "watchrss.reader-presets.selection.mode"
+    },
+    {
+      "store": "reader_preset_state",
+      "key": "dark_follows_light",
+      "type": "bool",
+      "sample": true,
+      "policy": "mapped",
+      "target": "watchrss.reader-presets.selection.darkFollowsLight"
+    },
+    {
+      "store": "reader_preset_state",
+      "key": "watch_theme_schedule_mode",
+      "type": "string",
+      "sample": "FIXED_TIME",
+      "policy": "mapped",
+      "target": "watchrss.reader-presets.schedule.mode"
+    },
+    {
+      "store": "reader_preset_state",
+      "key": "watch_light_start_minutes",
+      "type": "int",
+      "sample": 420,
+      "policy": "mapped",
+      "target": "watchrss.reader-presets.schedule.lightStartMinutes"
+    },
+    {
+      "store": "reader_preset_state",
+      "key": "watch_dark_start_minutes",
+      "type": "int",
+      "sample": 420,
+      "policy": "mapped",
+      "target": "watchrss.reader-presets.schedule.darkStartMinutes"
+    },
+    {
+      "store": "reader_preset_state",
+      "key": "watch_sun_latitude",
+      "type": "string",
+      "sample": "0",
+      "policy": "mapped",
+      "target": "watchrss.reader-presets.schedule.latitude"
+    },
+    {
+      "store": "reader_preset_state",
+      "key": "watch_sun_longitude",
+      "type": "string",
+      "sample": "0",
+      "policy": "mapped",
+      "target": "watchrss.reader-presets.schedule.longitude"
+    },
+    {
+      "store": "reader_preset_state",
+      "key": "watch_sun_location_updated_at",
+      "type": "long",
+      "sample": 0,
+      "policy": "mapped",
+      "target": "watchrss.reader-presets.schedule.locationUpdatedAt"
+    },
+    {
+      "store": "home_entry_placement",
+      "key": "notes_sort_order",
+      "type": "long",
+      "sample": 123,
+      "policy": "mapped",
+      "target": "watchrss.home.notes-sort-order"
+    },
+    {
+      "store": "home_entry_placement",
+      "key": "notes_pinned",
+      "type": "bool",
+      "sample": true,
+      "policy": "mapped",
+      "target": "watchrss.home.notes-pinned"
+    },
+    {
+      "store": "app_resume_state",
+      "key": "intent_uri",
+      "type": "string",
+      "sample": "intent:#Intent;component=com.lightningstudio.watchrss/.HomeFeedListActivity;end",
+      "policy": "mapped",
+      "target": "watchrss.resume-state.v1 (known routes or explicit home fallback)"
+    },
+    {
+      "store": "watch_device_identity",
+      "key": "device_id",
+      "type": "string",
+      "sample": "synthetic-device",
+      "policy": "mapped",
+      "target": "Room snapshot device_identity"
+    },
+    {
+      "store": "watchrss_installation_identity",
+      "key": "install_id",
+      "type": "string",
+      "sample": "synthetic-install",
+      "policy": "mapped",
+      "target": "watchrss.telemetry.install-id"
+    },
+    {
+      "store": "watchrss_installation_identity",
+      "key": "first_installed_at",
+      "type": "long",
+      "sample": 123,
+      "policy": "retained",
+      "target": "NativeBackup installation metadata"
+    },
+    {
+      "store": "watchrss_daily_telemetry",
+      "key": "days",
+      "type": "set",
+      "sample": [
+        "2026-10-01"
+      ],
+      "policy": "mapped",
+      "target": "watchrss.sync.account-telemetry.v1 (JSON rows)"
+    },
+    {
+      "store": "watchrss_daily_telemetry",
+      "key": "day_[0-9]{4}-[0-9]{2}-[0-9]{2}",
+      "type": "string",
+      "sample": "{}",
+      "policy": "mapped",
+      "target": "watchrss.sync.account-telemetry.v1 (JSON rows)",
+      "sampleKey": "day_2026-10-01"
+    },
+    {
+      "store": "watchrss_download_telemetry",
+      "key": "release_oobe_recorded",
+      "type": "bool",
+      "sample": true,
+      "policy": "mapped",
+      "target": "watchrss.telemetry.release-oobe-recorded"
+    },
+    {
+      "store": "watchrss_library_ownership",
+      "key": "legacy_owner",
+      "type": "string",
+      "sample": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "policy": "retained",
+      "target": "Select current Compose workspace; preserve original binding in NativeBackup; no merging"
+    },
+    {
+      "store": "watchrss_transparency",
+      "key": "initial_app_disclosure_v1",
+      "type": "bool",
+      "sample": true,
+      "policy": "mapped",
+      "target": "watchrss.transparency.<key>; seen disclosures stay seen"
+    },
+    {
+      "store": "watchrss_transparency",
+      "key": "bili_disclosure_v1",
+      "type": "bool",
+      "sample": true,
+      "policy": "mapped",
+      "target": "watchrss.transparency.<key>; seen disclosures stay seen"
+    },
+    {
+      "store": "watchrss_transparency",
+      "key": "douyin_disclosure_v1",
+      "type": "bool",
+      "sample": true,
+      "policy": "mapped",
+      "target": "watchrss.transparency.<key>; seen disclosures stay seen"
+    },
+    {
+      "store": "watchrss_announcement",
+      "key": "dismissed_version",
+      "type": "string",
+      "sample": "1",
+      "policy": "mapped",
+      "target": "announcement.dismissed_version"
+    },
+    {
+      "store": "watchrss_push",
+      "key": "last_seen_notification_id",
+      "type": "int",
+      "sample": 1,
+      "policy": "mapped",
+      "target": "announcement.last_seen_notification_id"
+    },
+    {
+      "store": "watchrss_account_state",
+      "key": "state_json",
+      "type": "string",
+      "sample": "{\"userId\": \"synthetic-user\", \"watchAccessToken\": \"synthetic-token\", \"backendBaseUrl\": \"https://example.invalid\"}",
+      "policy": "mapped",
+      "target": "secure state_json and watchrss.library.owner; no refresh or account registration during migration"
+    },
+    {
+      "store": "bili_account_store",
+      "key": "account_json",
+      "type": "string",
+      "sample": "{\"cookies\":{}}",
+      "policy": "mapped",
+      "target": "secure watchrss.bili.session.v1; logical store name is source AES-SIV AAD"
+    },
+    {
+      "store": "douyin_account_store",
+      "key": "cookie",
+      "type": "string",
+      "sample": "",
+      "policy": "mapped",
+      "target": "secure douyin.cookie; empty initialized accounts preserve empty state"
+    },
+    {
+      "store": "llm_secure_prefs",
+      "key": "llm_api_key",
+      "type": "string",
+      "sample": "synthetic-api-key",
+      "policy": "retained",
+      "target": "Current PodJS LLM uses account backend, not native direct-provider key; retain sealed and in NativeBackup"
+    },
+    {
+      "store": "tts_secure_prefs",
+      "key": "tts_api_key_minimax",
+      "type": "string",
+      "sample": "synthetic-api-key",
+      "policy": "mapped",
+      "target": "secure watchrss.tts.api-key.minimax"
+    },
+    {
+      "store": "tts_secure_prefs",
+      "key": "tts_api_key_azure",
+      "type": "string",
+      "sample": "synthetic-api-key",
+      "policy": "mapped",
+      "target": "secure watchrss.tts.api-key.azure"
+    },
+    {
+      "store": "tts_secure_prefs",
+      "key": "tts_api_key_doubao",
+      "type": "string",
+      "sample": "synthetic-api-key",
+      "policy": "mapped",
+      "target": "secure watchrss.tts.api-key.doubao"
+    },
+    {
+      "store": "douyin_watch_history",
+      "key": "watched_ids",
+      "type": "set",
+      "sample": [],
+      "policy": "mapped",
+      "target": "douyin.watched.v1"
+    },
+    {
+      "store": "douyin_watch_history",
+      "key": "history_json",
+      "type": "string",
+      "sample": "[]",
+      "policy": "mapped",
+      "target": "douyin.history.v1"
+    },
+    {
+      "store": "douyin_recent_window",
+      "key": "recent_window_json",
+      "type": "string",
+      "sample": "{\"items\":[],\"savedAtMs\":0}",
+      "policy": "mapped",
+      "target": "douyin.recent-window.v1"
+    },
+    {
+      "store": "douyin_feed_cache",
+      "key": "feed_cache_json",
+      "type": "string",
+      "sample": "{\"items\":[],\"savedAtMs\":0}",
+      "policy": "mapped",
+      "target": "douyin.feed.v1"
+    },
+    {
+      "store": "douyin_request_cooldown",
+      "key": "feed.until",
+      "type": "long",
+      "sample": 0,
+      "policy": "retained",
+      "target": "Transient native endpoint backoff; no request made during migration"
+    },
+    {
+      "store": "douyin_request_cooldown",
+      "key": "detail.until",
+      "type": "long",
+      "sample": 0,
+      "policy": "retained",
+      "target": "Transient native endpoint backoff; no request made during migration"
+    },
+    {
+      "store": "douyin_request_cooldown",
+      "key": "feed.strikes",
+      "type": "int",
+      "sample": 0,
+      "policy": "retained",
+      "target": "Transient native endpoint backoff"
+    },
+    {
+      "store": "douyin_request_cooldown",
+      "key": "detail.strikes",
+      "type": "int",
+      "sample": 0,
+      "policy": "retained",
+      "target": "Transient native endpoint backoff"
+    },
+    {
+      "store": "watchrss_cloud_controls",
+      "key": "automatic",
+      "type": "bool",
+      "sample": false,
+      "policy": "retained",
+      "target": "Native cloud opt-in is not PodJS v2 authorization; preserve without enabling an online switch"
+    },
+    {
+      "store": "watchrss_cloud_controls",
+      "key": "network",
+      "type": "string",
+      "sample": "WIFI_BODIES_ANY_STATE",
+      "policy": "retained",
+      "target": "Native transfer policy has no equivalent current PodJS switch; preserve unchanged"
+    },
+    {
+      "store": "watchrss_cloud_state",
+      "key": "([a-f0-9]{64}_)?sequence",
+      "type": "long",
+      "sample": 0,
+      "policy": "retained",
+      "target": "Native per-workspace/per-user ACK and hashes must not seed a PodJS v2 ACK; preserve and rebuild under existing guards",
+      "sampleKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_sequence"
+    },
+    {
+      "store": "watchrss_cloud_state",
+      "key": "([a-f0-9]{64}_)?applied_full_notes_v3",
+      "type": "string",
+      "sample": "{}",
+      "policy": "retained",
+      "target": "Native per-workspace/per-user ACK and hashes must not seed a PodJS v2 ACK; preserve and rebuild under existing guards",
+      "sampleKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_applied_full_notes_v3"
+    },
+    {
+      "store": "watchrss_cloud_state",
+      "key": "([a-f0-9]{64}_)?applied_state",
+      "type": "string",
+      "sample": "{}",
+      "policy": "retained",
+      "target": "Native per-workspace/per-user ACK and hashes must not seed a PodJS v2 ACK; preserve and rebuild under existing guards",
+      "sampleKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_applied_state"
+    },
+    {
+      "store": "watchrss_cloud_state",
+      "key": "([a-f0-9]{64}_)?content_hash_full",
+      "type": "string",
+      "sample": "",
+      "policy": "retained",
+      "target": "Native per-workspace/per-user ACK and hashes must not seed a PodJS v2 ACK; preserve and rebuild under existing guards",
+      "sampleKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_content_hash_full"
+    },
+    {
+      "store": "watchrss_cloud_state",
+      "key": "([a-f0-9]{64}_)?content_hash_state",
+      "type": "string",
+      "sample": "",
+      "policy": "retained",
+      "target": "Native per-workspace/per-user ACK and hashes must not seed a PodJS v2 ACK; preserve and rebuild under existing guards",
+      "sampleKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_content_hash_state"
+    },
+    {
+      "store": "watchrss_cloud_state",
+      "key": "applied",
+      "type": "string",
+      "sample": "",
+      "policy": "retained",
+      "target": "Historical read compatibility; preserve; not a v2 ACK"
+    },
+    {
+      "store": "watchrss_cloud_state",
+      "key": "content_hash",
+      "type": "string",
+      "sample": "",
+      "policy": "retained",
+      "target": "Historical read compatibility; preserve; not a v2 ACK"
+    },
+    {
+      "store": "watchrss_cloud_keys",
+      "key": "account_[a-f0-9]{24}(_v[1-9][0-9]*)?",
+      "type": "string",
+      "sample": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "policy": "mapped",
+      "target": "secure watchrss.cloud.keys.<full user hash> untrusted legacy versions; authenticated commitments required before use",
+      "sampleKey": "account_aaaaaaaaaaaaaaaaaaaaaaaa_v2"
+    },
+    {
+      "store": "watchrss_cloud_keys",
+      "key": "account_current_[a-f0-9]{24}",
+      "type": "int",
+      "sample": 2,
+      "policy": "retained",
+      "target": "Native preferred version is not a verified PodJS key version",
+      "sampleKey": "account_current_aaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "store": "watchrss_cloud_keys",
+      "key": "device_private_watchrss_cloud_ecdh_[a-f0-9]{24}",
+      "type": "string",
+      "sample": "AQID",
+      "policy": "retained",
+      "target": "Preserve native device key material and original Android Keystore alias; no fabricated PodJS device authorization",
+      "sampleKey": "device_private_watchrss_cloud_ecdh_aaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "store": "watchrss_cloud_keys",
+      "key": "device_public_watchrss_cloud_ecdh_[a-f0-9]{24}",
+      "type": "string",
+      "sample": "AQID",
+      "policy": "retained",
+      "target": "Preserve native device key material and original Android Keystore alias; no fabricated PodJS device authorization",
+      "sampleKey": "device_public_watchrss_cloud_ecdh_aaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "store": "novel_reading_history",
+      "key": "chapter_[a-f0-9]{64}",
+      "type": "string",
+      "sample": "https://example.invalid/chapter/1",
+      "policy": "retained",
+      "target": "Native online novel continue-chapter URL; PodJS imported-book progress already migrates through Room; retain online-navigation hint without fabricating book identity",
+      "sampleKey": "chapter_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "store": "WebViewChromiumPrefs",
+      "key": "lastVersionCodeUsed",
+      "type": "int",
+      "sample": 123,
+      "policy": "retained",
+      "target": "Platform WebView version metadata, never business settings"
+    }
+  ]
+}

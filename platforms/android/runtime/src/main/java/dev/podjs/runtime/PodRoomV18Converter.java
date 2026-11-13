@@ -25,6 +25,13 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
     public interface BatchHook { void checkpoint(boolean committed) throws Exception; }
     public interface ProgressHook { void copied(long bytes); }
     private final File source;
+    private File profileSandbox;
+    PodRoomV18Converter withProfileSandbox(File sandbox){profileSandbox=sandbox;return this;}
+    private File selectedSource(File generation)throws IOException {
+        if(profileSandbox==null)return source;
+        try{return PodFileConverter.safe(profileSandbox,PodTakeoverProfile.load(generation).database());}
+        catch(IOException e){throw e;}catch(Exception e){throw new IOException("profile_invalid",e);}
+    }
     private final Factory factory;
     private Factory activeFactory;
     public interface IdentitySource { String read() throws Exception; }
@@ -57,10 +64,10 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
     private Db open(File f)throws Exception {checkDatabaseFamily(f);checkSourceAliases(f);return factory.open(f);}
     private void checkSourceAliases(File file)throws IOException {
         File g=file.getParentFile();if(g.getName().equals("verification-work")||g.getName().equals("capture-work"))g=g.getParentFile();
-        for(File protectedBase:new File[]{source,new File(g,"room.sqlite")})if(protectedBase!=null)
+        for(File protectedBase:new File[]{source,selectedSource(g),new File(g,"room.sqlite")})if(protectedBase!=null)
             for(String left:new String[]{"","-journal","-wal","-shm"})for(String right:new String[]{"","-journal","-wal","-shm"}) {
                 File candidate=new File(file+left),original=new File(protectedBase+right);
-                if((protectedBase==source||!candidate.getAbsoluteFile().equals(original.getAbsoluteFile()))&&Files.exists(candidate.toPath(),LinkOption.NOFOLLOW_LINKS)&&Files.exists(original.toPath(),LinkOption.NOFOLLOW_LINKS)&&Files.isSameFile(candidate.toPath(),original.toPath()))throw new IOException("migration_storage_invalid");
+                if(((protectedBase!=null&&!protectedBase.equals(new File(g,"room.sqlite")))||!candidate.getAbsoluteFile().equals(original.getAbsoluteFile()))&&Files.exists(candidate.toPath(),LinkOption.NOFOLLOW_LINKS)&&Files.exists(original.toPath(),LinkOption.NOFOLLOW_LINKS)&&Files.isSameFile(candidate.toPath(),original.toPath()))throw new IOException("migration_storage_invalid");
             }
     }
     static void checkDatabaseFamily(File database)throws IOException {
@@ -197,7 +204,7 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
         File scratch=new File(g,"capture-work");clearScratch(scratch,true);Files.createDirectories(scratch.toPath());
         File raw=new File(scratch,"room.sqlite");
         String sourceDigest;
-        try(Capture capture=new Capture(source)) {
+        try(Capture capture=new Capture(selectedSource(g))) {
             String before=capture.digest();sourceDigest=before;Capture.copy(capture.main,raw);Capture.copy(capture.wal,new File(raw+"-wal"));
             if(!before.equals(capture.digest()))throw new IOException("source_changed");
         }
@@ -383,7 +390,7 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
     static boolean nonempty(Object o){return o!=null&&!o.toString().isEmpty();}
     static String relative(Object o)throws Exception {
         if(o==null)return null;String p=o.toString();int i=p.indexOf("/files/");if(i<0)throw new IOException("offline_path_invalid");
-        p=p.substring(i+7);String[] bits=p.split("/",-1);
+        p=p.substring(i+7);if(p.matches("accounts/[a-f0-9]{64}/offline/rss/[^/]+/[^/]+"))p=p.substring(74);String[] bits=p.split("/",-1);
         if(bits.length!=4||!bits[0].equals("offline")||!bits[1].equals("rss")||p.contains("\\")||p.indexOf('\0')>=0)throw new IOException("offline_path_invalid");
         for(String bit:bits)if(bit.isEmpty()||bit.equals(".")||bit.equals(".."))throw new IOException("offline_path_invalid");return p;
     }

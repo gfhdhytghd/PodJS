@@ -5,6 +5,35 @@ import org.json.*;
 
 /** Narrow activation policy. A retained snapshot alone never justifies skipping user data. */
 final class PodStorePolicy {
+    /** Exact legacy-only values remain in NativeBackup and sealed per-store receipts.
+     * Never treat a new key as disposable merely because its store is recognized. */
+    static void retainKnown(String store,Map<String,Object> values,Set<String> unused,JSONObject report)throws Exception {
+        int retained=0;
+        for(String key:new TreeSet<>(unused)) {
+            Object value=values.get(key);boolean known=false;
+            if(store.equals("watchrss_library_ownership")&&key.equals("legacy_owner")){PodStoreMappings.require(PodStoreMappings.text(value).matches("[a-f0-9]{64}"));known=true;}
+            if(store.equals("settings")&&key.equals("reader_tap_to_scroll")){PodStoreMappings.bool(value);known=true;}
+            if(store.equals("llm_secure_prefs")&&key.equals("llm_api_key")){PodStoreMappings.require(PodStoreMappings.text(value).length()<=4096);known=true;}
+            if(store.equals("bili_cache")&&(key.matches("bili_feed_cache_v2:.+")||key.matches("bili_feed_shown_v1:.+"))){PodStoreMappings.text(value);known=true;}
+            if(store.equals("douyin_request_cooldown")&&key.matches("(feed|detail)\\.(until|strikes)")){PodStoreMappings.integer(value,0,Long.MAX_VALUE);known=true;}
+            if(store.equals("watchrss_cloud_controls")){
+                if(key.equals("automatic")){PodStoreMappings.bool(value);known=true;}
+                if(key.equals("network")){PodStoreMappings.require(Arrays.asList("WIFI_BODIES_ANY_STATE","WIFI_AND_CHARGING","ANY_NETWORK").contains(PodStoreMappings.text(value)));known=true;}
+            }
+            if(store.equals("watchrss_cloud_state")){
+                if(key.matches("([a-f0-9]{64}_)?sequence")){PodStoreMappings.integer(value,0,Long.MAX_VALUE);known=true;}
+                if(key.matches("([a-f0-9]{64}_)?(applied|applied_full_notes_v3|applied_state|content_hash|content_hash_full|content_hash_state)")){PodStoreMappings.text(value);known=true;}
+            }
+            if(store.equals("novel_reading_history")&&key.matches("chapter_[a-f0-9]{64}")){PodStoreMappings.text(value);known=true;}
+            if(store.equals("watchrss_cloud_keys")){
+                if(key.matches("account_current_[a-f0-9]{24}")){PodStoreMappings.integer(value,1,Integer.MAX_VALUE);known=true;}
+                if(key.matches("device_(private|public)_watchrss_cloud_ecdh_[a-f0-9]{24}")){PodStoreMappings.require(java.util.Base64.getDecoder().decode(PodStoreMappings.text(value)).length>0);known=true;}
+            }
+            if(known){unused.remove(key);retained++;}
+        }
+        if(retained>0)report.put("retainedKnownKeyCount",retained).put("retention","native-backup-no-delete");
+    }
+
     static boolean nativeAccount(String store){return Arrays.asList("watchrss_account_state","bili_account_store","douyin_account_store").contains(store);}
     static boolean knownRetention(String store,JSONObject r)throws Exception {
         JSONArray keys=r.optJSONArray("unknownKeys");if(keys==null||keys.length()==0)return false;
@@ -21,7 +50,7 @@ final class PodStorePolicy {
         for(String store:PodFileConverter.names(reports)){
             JSONObject r=reports.getJSONObject(store);String status=r.getString("status"),reason=r.getString("reason"),d="blocked";
             if(status.equals("migrated")||status.equals("absent"))d="ready";
-            else if(status.equals("retained-unsupported")&&knownRetention(store,r))d="known-difference";
+            else if(status.equals("retained-unsupported")&&((r.optInt("retainedKnownKeyCount",0)>0&&r.optInt("unknownKeyCount",0)==0&&(!r.has("unknownKeys")||r.getJSONArray("unknownKeys").length()==0))||knownRetention(store,r)))d="known-difference";
             else if(status.equals("needs-reauth")){
                 if(rehearsal&&PodStoreConverter.encrypted(store)&&reason.equals("isolated_uid_keystore_unavailable"))d="known-difference";
                 else if(nativeAccount(store)&&Arrays.asList("source_master_key_missing","source_authentication_failed").contains(reason))d="needs-reauth";

@@ -17,6 +17,28 @@ import static org.junit.Assert.*;
  * NEVER uses the native MasterKey alias, native store name or a real user context. */
 public final class PodStoreCryptoTest {
     private KeyStore keys()throws Exception{KeyStore k=KeyStore.getInstance("AndroidKeyStore");k.load(null);return k;}
+    @Test public void accountContextPrefixesTheFileButKeepsLogicalAndroidxAad()throws Exception {
+        Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
+        assertNotEquals("com.lightningstudio.watchrss",context.getPackageName());
+        String id="pod-takeover-scoped-"+UUID.randomUUID(),master=id+"-master",target=id+"-target";
+        String logical="douyin_account_store",physical="account_"+PodStoreConverter.slot(id)+"_"+logical;
+        Context workspace=new android.content.ContextWrapper(context){
+            public Context getApplicationContext(){return this;}
+            public SharedPreferences getSharedPreferences(String name,int mode){return context.getSharedPreferences("account_"+uncheckedScope()+"_"+name,mode);}
+            private String uncheckedScope(){return physical.substring(8,72);}
+        };
+        File source=new File(context.getApplicationInfo().dataDir,"shared_prefs/"+physical+".xml").getCanonicalFile();
+        try {
+            MasterKey key=new MasterKey.Builder(context,master).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build();
+            SharedPreferences fixture=EncryptedSharedPreferences.create(workspace,logical,key,EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM);
+            assertTrue(fixture.edit().putString("cookie","synthetic-nonempty-cookie").commit());
+            byte[] before=Files.readAllBytes(source.toPath());PodStoreAndroidCrypto crypto=new PodStoreAndroidCrypto(master,target);
+            Map<String,Object> values=crypto.decrypt(logical,PodPreferenceReader.xml(source));assertEquals("synthetic-nonempty-cookie",values.get("cookie"));
+            try{crypto.decrypt(physical,PodPreferenceReader.xml(source));fail("physical filename accepted as logical AAD");}catch(PodStoreConverter.SourceKeyUnavailable expected){assertFalse(expected.missing);}
+            Set<String> unused=new TreeSet<>(values.keySet());JSONObject secret=new JSONObject();PodStoreMappings.convert(logical,values,unused,new JSONObject(),secret,new JSONObject());
+            assertTrue(unused.isEmpty());assertEquals("synthetic-nonempty-cookie",secret.getString("douyin.cookie"));assertArrayEquals(before,Files.readAllBytes(source.toPath()));
+        }finally{context.deleteSharedPreferences(physical);keys().deleteEntry(master);keys().deleteEntry(target);}
+    }
     @Test public void readsAndroidXFixturesWithoutRepairAndUsesProductionSecureReader()throws Exception{
         Context context=InstrumentationRegistry.getInstrumentation().getTargetContext();
         String id="pod-takeover-test-"+UUID.randomUUID(),master=id+"-master",target=id+"-target";

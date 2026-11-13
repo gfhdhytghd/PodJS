@@ -22,7 +22,7 @@ public final class PodStoreConverter implements PodTakeoverCoordinator.Converter
         default boolean cloudBindingValid(String userId,String deviceId)throws Exception{return false;}
     }
     public interface Hook { void checkpoint(String store,String boundary)throws Exception; }
-    static final String[] STORES={"settings","bili_cache","reader_preset_state","home_entry_placement","app_resume_state","douyin_watch_history","douyin_recent_window","douyin_feed_cache","watchrss_announcement","watchrss_push","watch_device_identity","watchrss_installation_identity","watchrss_daily_telemetry","watchrss_download_telemetry","watchrss_cloud_state","watchrss_account_state","llm_secure_prefs","tts_secure_prefs","watchrss_cloud_keys","bili_account_store","douyin_account_store"};
+    static final String[] STORES={"settings","bili_cache","reader_preset_state","home_entry_placement","app_resume_state","douyin_watch_history","douyin_recent_window","douyin_feed_cache","watchrss_announcement","watchrss_push","watch_device_identity","watchrss_installation_identity","watchrss_daily_telemetry","watchrss_download_telemetry","watchrss_cloud_state","watchrss_account_state","llm_secure_prefs","tts_secure_prefs","watchrss_cloud_keys","bili_account_store","douyin_account_store","watchrss_library_ownership","watchrss_transparency","watchrss_cloud_controls","douyin_request_cooldown","novel_reading_history"};
     private final File sandbox;private final Crypto crypto;private final Hook hook;private final boolean rehearsal;
     public PodStoreConverter(File sandbox,Crypto crypto){this(sandbox,crypto,(s,b)->{});}
     public PodStoreConverter(File sandbox,Crypto crypto,boolean rehearsal){this(sandbox,crypto,(s,b)->{},rehearsal);}
@@ -42,7 +42,7 @@ public final class PodStoreConverter implements PodTakeoverCoordinator.Converter
         validateSecure(crypto.open(PodPreferenceReader.bytes(new File(g,"podjs/secure.store"))));
         timings.accept("activeSecure",System.nanoTime()-began);
     }
-    public String version(){return "watchrss-stores-3"+(rehearsal?"-isolated":"");}public boolean complete(){return false;}
+    public String version(){return "watchrss-stores-4"+(rehearsal?"-isolated":"");}public boolean complete(){return false;}
     static boolean encrypted(String s){return Arrays.asList("watchrss_account_state","llm_secure_prefs","tts_secure_prefs","watchrss_cloud_keys","bili_account_store","douyin_account_store").contains(s);}
     static void write(File f,byte[] b)throws Exception{if(!f.getCanonicalFile().equals(f.getAbsoluteFile()))throw new IOException("candidate_symlink");Files.createDirectories(f.getParentFile().toPath());File tmp=new File(f+".tmp");if(Files.isSymbolicLink(tmp.toPath()))throw new IOException("candidate_symlink");PodTakeoverCoordinator.requirePrivateFile(f);PodTakeoverCoordinator.requirePrivateFile(tmp);try(FileOutputStream out=new FileOutputStream(tmp)){out.write(b);out.getFD().sync();}Files.move(tmp.toPath(),f.toPath(),StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);PodTakeoverCoordinator.syncDirectory(f.getParentFile());}
     static void json(File f,JSONObject j)throws Exception{write(f,j.toString().getBytes(StandardCharsets.UTF_8));}
@@ -50,8 +50,11 @@ public final class PodStoreConverter implements PodTakeoverCoordinator.Converter
     static String hash(File f)throws Exception{return PodRoomV18Converter.hash(f);}
     private SortedMap<String,File> inventory()throws Exception {
         SortedMap<String,File> result=new TreeMap<>();
-        for(String dir:new String[]{"files/datastore","shared_prefs"}){
-            File root=new File(sandbox,dir);if(!root.exists())continue;
+        List<String> directories=new ArrayList<>(Arrays.asList("files/datastore","shared_prefs"));
+        File accounts=PodFileConverter.safe(sandbox,"files/accounts");
+        if(accounts.exists()){File[] scopes=accounts.listFiles();if(scopes==null)throw new IOException("inventory_unreadable");for(File scope:scopes){if(!scope.getName().matches("[a-f0-9]{64}")||Files.isSymbolicLink(scope.toPath())||!scope.isDirectory())throw new IOException("profile_invalid");directories.add("files/accounts/"+scope.getName()+"/datastore");}}
+        for(String dir:directories){
+            File root=PodFileConverter.safe(sandbox,dir);if(!root.exists())continue;
             if(!root.getCanonicalFile().equals(root.getAbsoluteFile()))throw new IOException("source_symlink");
             File[] files=root.listFiles();if(files==null)throw new IOException("inventory_unreadable");
             for(File f:files){if(!f.isFile()||Files.isSymbolicLink(f.toPath()))throw new IOException("source_not_regular");result.put(dir+"/"+f.getName(),f);}
@@ -66,19 +69,21 @@ public final class PodStoreConverter implements PodTakeoverCoordinator.Converter
         }
         if(!source.keySet().equals(inventory().keySet()))throw new IOException("inventory_changed");
         for(String path:source.keySet())if(!entries.getString(path).equals(hash(source.get(path))))throw new IOException("source_changed");
-        json(manifest,new JSONObject().put("version",version()).put("entries",entries));
+        json(manifest,new JSONObject().put("version",version()).put("entries",entries).put("profile",PodTakeoverProfile.capture(g,crypto).json()));
     }
     public void resume(File g,PodTakeoverCoordinator.Phase phase)throws Exception {
         JSONObject m=json(new File(g,"stores-snapshot.json"));if(!m.getString("version").equals(version()))throw new IOException("version_changed");
-        JSONObject entries=m.getJSONObject("entries");for(Iterator<String> it=entries.keys();it.hasNext();){String p=it.next();if(!p.matches("(files/datastore|shared_prefs)/[^/]+")||p.endsWith("/..")||p.endsWith("/."))throw new IOException("snapshot_path_invalid");if(!entries.getString(p).equals(hash(new File(g,"stores-source/"+p))))throw new IOException("snapshot_changed");}
+        JSONObject entries=m.getJSONObject("entries");for(Iterator<String> it=entries.keys();it.hasNext();){String p=it.next();if(!p.matches("(files/(accounts/[a-f0-9]{64}/)?datastore|shared_prefs)/[^/]+")||p.endsWith("/..")||p.endsWith("/."))throw new IOException("snapshot_path_invalid");if(!entries.getString(p).equals(hash(new File(g,"stores-source/"+p))))throw new IOException("snapshot_changed");}
     }
     private SortedMap<String,List<String>> stores(File g)throws Exception {
         JSONObject entries=json(new File(g,"stores-snapshot.json")).getJSONObject("entries");SortedMap<String,List<String>> out=new TreeMap<>();for(String s:STORES)out.put(s,new ArrayList<>());
+        PodTakeoverProfile profile=PodTakeoverProfile.load(g);
         for(Iterator<String> it=entries.keys();it.hasNext();){String path=it.next(),name=path.substring(path.lastIndexOf('/')+1),store;
-            if(path.startsWith("files/datastore/")&&(name.equals("settings.preferences_pb")||name.equals("settings.preferences_pb.preferences_pb")))store="settings";
-            else if(path.startsWith("files/datastore/")&&(name.equals("bili_cache.preferences_pb")||name.equals("bili_cache.preferences_pb.preferences_pb")))store="bili_cache";
-            else if(path.startsWith("shared_prefs/")&&(name.endsWith(".xml")||name.endsWith(".xml.bak"))){store=name.substring(0,name.length()-(name.endsWith(".bak")?8:4));if(store.equals("settings")||store.equals("bili_cache"))store="shared_prefs:"+store;}
+            if(path.matches("files/(accounts/[a-f0-9]{64}/)?datastore/.+")&&(name.equals("settings.preferences_pb")||name.equals("settings.preferences_pb.preferences_pb")))store="settings";
+            else if(path.matches("files/(accounts/[a-f0-9]{64}/)?datastore/.+")&&(name.equals("bili_cache.preferences_pb")||name.equals("bili_cache.preferences_pb.preferences_pb")))store="bili_cache";
+            else if(path.startsWith("shared_prefs/")&&(name.endsWith(".xml")||name.endsWith(".xml.bak"))){store=PodTakeoverProfile.preferenceBase(PodTakeoverProfile.physicalName(path));if(store.equals("settings")||store.equals("bili_cache"))store="shared_prefs:"+store;}
             else store="unrecognized:"+path;
+            if(!profile.selectedStore(path,store))store="inactive:"+store+":"+slot(path);
             out.computeIfAbsent(store,k->new ArrayList<>()).add(path);
         }return out;
     }
@@ -88,7 +93,7 @@ public final class PodStoreConverter implements PodTakeoverCoordinator.Converter
         int done=0;SortedMap<String,List<String>> inventory=stores(g);
         for(Map.Entry<String,List<String>> entry:inventory.entrySet()){
             PodTakeoverCoordinator.Work.worked("stores",done++,inventory.size());
-            String store=entry.getKey();File dir=new File(g,"store-results/"+slot(store)),receipt=new File(dir,"receipt.json");
+            String slotName=entry.getKey(),store=slotName.startsWith("inactive:")?slotName.substring(9,slotName.lastIndexOf(':')):slotName;boolean inactive=slotName.startsWith("inactive:");File dir=new File(g,"store-results/"+slot(slotName)),receipt=new File(dir,"receipt.json");
             if(receipt.exists()){validateResult(dir);continue;}
             Files.createDirectories(dir.toPath());hook.checkpoint(store,"before");
             JSONObject kv=new JSONObject(),secret=new JSONObject(),report=new JSONObject().put("version",1).put("converterVersion",version()).put("store",store).put("status","absent").put("reason","source_absent").put("keyCount",entry.getValue().isEmpty()?0:-1).put("inventoryComplete",entry.getValue().isEmpty()).put("unknownKeys",new JSONArray());
@@ -111,17 +116,19 @@ public final class PodStoreConverter implements PodTakeoverCoordinator.Converter
                     if(values!=null){
                         Set<String> unused=new TreeSet<>(values.keySet());report.put("keyCount",values.size()).put("inventoryComplete",true);
                         PodStoreMappings.convert(store,values,unused,kv,secret,report);
+                        PodStorePolicy.retainKnown(store,values,unused,report);
+                        if(inactive){kv=new JSONObject();secret=new JSONObject();report.put("inactiveProfilePreserved",true);}
                         validateKv(kv);
                         report.put("unknownKeys",new JSONArray(unused));
-                        if(!report.getString("status").equals("needs-reauth"))report.put("status",unused.isEmpty()?"migrated":"retained-unsupported").put("reason",unused.isEmpty()?"schema_valid":unsupportedReason(store));
+                        if(!report.getString("status").equals("needs-reauth"))report.put("status",unused.isEmpty()&&report.optInt("retainedKnownKeyCount",0)==0?"migrated":"retained-unsupported").put("reason",unused.isEmpty()?"schema_valid":unsupportedReason(store));
                         if(encrypted(store))report.put("semanticValid",report.getString("status").equals("migrated"));
                     }
                 }catch(Exception invalid){if(invalid instanceof Locked)throw invalid;kv=new JSONObject();secret=new JSONObject();report.put("status","failed").put("reason",encrypted(store)?"encrypted_schema_invalid":"kv_quota".equals(invalid.getMessage())?"kv_quota_exceeded":"store_schema_invalid");if(values!=null)report.put("keyCount",values.size()).put("inventoryComplete",true).put("unknownKeys",new JSONArray(new TreeSet<>(values.keySet())));if(encrypted(store))report.put("semanticValid",false);}
             }
-            if(store.equals("watchrss_cloud_keys")&&values!=null&&!values.isEmpty()&&!report.getString("status").equals("failed")){
+            if(!inactive&&store.equals("watchrss_cloud_keys")&&values!=null&&!values.isEmpty()&&!report.getString("status").equals("failed")){
                 boolean valid=false;try{valid=cloudBinding(g);}catch(Exception unavailable){if(unavailable instanceof Locked)throw unavailable;}
                 report.put("bindingValid",valid);
-                if(!valid)report.put("status","needs-reauth").put("reason","cloud_binding_unavailable").put("semanticValid",false);
+                if(!valid&&report.getString("status").equals("migrated"))report.put("reason","legacy_keys_pending_authenticated_upgrade");
             }
             // Key names for encrypted stores stay in an encrypted inventory, never reports.
             if(encrypted(store)){secret.put("__takeover_inventory__",report.getJSONArray("unknownKeys").toString());if(values!=null)secret.put("__takeover_retained__",new JSONObject(values).toString());report.put("unknownKeyCount",report.getJSONArray("unknownKeys").length()).remove("unknownKeys");}

@@ -178,7 +178,7 @@ public final class PodTakeoverCoordinator {
                     save(p,Phase.ACTIVE);publisher.afterActive(published);return p;
                 }
                 if (phase==Phase.BLOCKED) {
-                    if(!"unknown_user_files".equals(p.getProperty("reason")))return p;
+                    if(!"unknown_user_files".equals(p.getProperty("reason"))&&!"store_unsupported_or_failed".equals(p.getProperty("reason")))return p;
                     File previous=generation(p.getProperty("generation"));
                     if(!converter.reclassifies(previous,p.getProperty("converter","")))return p;
                     // A verification blocker cannot authorize replay after publication started.
