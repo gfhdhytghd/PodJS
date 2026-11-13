@@ -10,7 +10,7 @@ const emitted: Record<string, unknown>[] = [];
 };
 
 const api = await import("../src/watch.ts");
-const { secureStorage, battery, debugPerformance, application, sharing, displayPower, silencePlayback, HostServiceError, hostOperation, sqlite, browser, browserAuth, mediaVolume, speech, timeInput, textInput, textLayout, fileChunks, uri, rfcomm, tcp, byteStreams, webSockets, discovery, onNetworkChange } = await import("../src/services.ts");
+const { secureStorage, device, battery, debugPerformance, application, sharing, displayPower, silencePlayback, HostServiceError, hostOperation, sqlite, browser, browserAuth, mediaVolume, speech, timeInput, textInput, textLayout, fileChunks, uri, rfcomm, tcp, byteStreams, webSockets, discovery, onNetworkChange } = await import("../src/services.ts");
 const host = (globalThis as unknown as { pod: { capabilities: () => string } }).pod;
 
 beforeEach(() => {
@@ -19,6 +19,16 @@ beforeEach(() => {
 afterEach(() => { events.length = 0; emitted.length = 0; });
 
 describe("host services", () => {
+ test('device metadata is gated and exposes only public Build fields',async()=>{
+  await expect(device.info()).rejects.toMatchObject({code:'unsupported'});expect(emitted).toHaveLength(0);
+  host.capabilities=()=>JSON.stringify(['device.info']);
+  const result=device.info(),request=emitted.at(-1)!;
+  expect(request).toMatchObject({method:'device.info',args:{}});
+  const value={brand:'OnePlus',manufacturer:'OPLUS',model:'OPWWE231',device:'OPWWE231',product:'OPWWE231'};
+  events.push({t:'service.result',id:request.id,ok:true,value});api.__pumpPodEvents();
+  expect(await result).toEqual(value);
+ });
+
  test('diagnostic controls stay private and real status callbacks retain settlement/order with slow labels',async()=>{
   const realClock=Date.now;let now=0;const seen:string[]=[];
   const remove=api.__onHostEvent(event=>seen.push(String(event.t)));

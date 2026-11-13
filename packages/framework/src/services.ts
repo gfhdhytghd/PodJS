@@ -101,6 +101,7 @@ const methods: Record<string, PodCapabilityId> = {
   "input.time": "input.time",
   "location.current": "device.location",
   "battery.percent": "device.battery",
+  "device.info": "device.info",
   "crypto.verifyP256": "crypto.basic", "crypto.ecdhPublicKey": "crypto.basic", "crypto.ecdhUnwrap": "crypto.basic", "crypto.ecdhPossessionProof": "crypto.basic", "crypto.hkdfSha256": "crypto.basic",
   "crypto.gunzipSealedParts": "crypto.basic", "crypto.closeSealedGzip": "crypto.basic", "crypto.openSealedParts": "crypto.basic", "crypto.largeAesGcmEncrypt": "crypto.basic", "crypto.largeAesGcmDecrypt": "crypto.basic", "crypto.gzip": "crypto.basic", "crypto.gunzip": "crypto.basic",
   "crypto.rsaOaepSha256": "crypto.basic", "crypto.random": "crypto.basic", "crypto.hash": "crypto.basic", "crypto.hmacSha256": "crypto.basic", "crypto.aesGcmEncrypt": "crypto.basic", "crypto.aesGcmDecrypt": "crypto.basic", "crypto.encrypt": "crypto.basic", "crypto.decrypt": "crypto.basic",
@@ -909,3 +910,7 @@ export function onVideoAudioChanged(listener:(state:VideoState & {sessionId?:str
 /** Explicit post-commit invalidation across foreground/background VMs. No timer
  * or payload polling; reopen views from persistent storage when notified. */
 export function onSqlChanged(topic:string,listener:()=>void){return __onHostEvent(event=>{if(event.t==='sql.changed'&&event.topic===topic)listener();});}
+
+/** Public product metadata only; contains no hardware identifiers. */
+export interface DeviceInfo {brand:string;manufacturer:string;model:string;device:string;product:string}
+export const device=Object.freeze({info:():Promise<DeviceInfo>=>hostOperation<DeviceInfo>("device.info",{}).result});
