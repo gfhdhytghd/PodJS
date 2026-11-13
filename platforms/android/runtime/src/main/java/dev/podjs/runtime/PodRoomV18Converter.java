@@ -259,10 +259,24 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
     private Db target(File g)throws Exception {
         checkGenerationStorage(g);
         File database=new File(g,"podjs.sqlite");checkSourceAliases(database);checkSourceAliases(new File(g,"room-progress.sqlite"));
+        ScratchIdentity directoryIdentity=null,progressIdentity=null;
+        if(g.getName().equals("verification-work")) {
+            directoryIdentity=ScratchIdentity.capture(g,true);
+            File progress=new File(g,"room-progress.sqlite");
+            // Establish an inode even for the first ATTACH of an empty verifier.
+            try{Files.createFile(progress.toPath());}catch(FileAlreadyExistsException existing){}
+            progressIdentity=ScratchIdentity.capture(progress,false);
+        }
         Db d=open(database);
         try {
         d.query("PRAGMA journal_mode=DELETE");d.exec("PRAGMA synchronous=FULL");d.exec("PRAGMA foreign_keys=ON");
         d.exec("ATTACH DATABASE ? AS migration",new File(g,"room-progress.sqlite").getAbsolutePath());
+        if(directoryIdentity!=null)try{directoryIdentity.requireSame();progressIdentity.requireSame();}
+        catch(IOException changed) {
+            IOException invalid=new IOException("verification_scratch_invalid",changed);
+            PodTakeoverCoordinator.closeAfterFailure(()->d.exec("DETACH DATABASE migration"),invalid);
+            throw invalid;
+        }
         d.query("PRAGMA migration.journal_mode=DELETE");d.exec("PRAGMA migration.synchronous=FULL");
         d.exec("CREATE TABLE IF NOT EXISTS migration.cursor(table_name TEXT PRIMARY KEY,key_json TEXT NOT NULL,rows_done INTEGER NOT NULL)");
         d.exec("CREATE TABLE IF NOT EXISTS migration.catalog(table_name TEXT NOT NULL,key_json TEXT NOT NULL,value_json TEXT NOT NULL,PRIMARY KEY(table_name,key_json))");
@@ -454,20 +468,47 @@ public class PodRoomV18Converter implements PodTakeoverCoordinator.Converter {
         for(String t:new String[]{"migration.cursor","migration.catalog","migration.content_reference"})h.update(tableDigest(d,t).getBytes(StandardCharsets.UTF_8));return hex(h.digest());
     }
     static void seal(Db d)throws Exception{d.exec("INSERT OR REPLACE INTO migration.receipt VALUES(1,?)",fingerprint(d));}
-    private static void validateScratch(File directory,boolean capture)throws IOException {
+    /** Object identities are rechecked under the existing private-sandbox migration lock. */
+    private static final class ScratchIdentity {
+        final File file;final boolean directory;final long device,inode;
+        private ScratchIdentity(File file,boolean directory,Map<String,Object> attributes) {
+            this.file=file;this.directory=directory;
+            device=((Number)attributes.get("dev")).longValue();inode=((Number)attributes.get("ino")).longValue();
+        }
+        static ScratchIdentity capture(File file,boolean directory)throws IOException {
+            if(directory)PodTakeoverCoordinator.requirePrivateDirectory(file);else PodTakeoverCoordinator.requirePrivateFile(file);
+            Map<String,Object> attributes=Files.readAttributes(file.toPath(),"unix:dev,ino,isDirectory,isRegularFile,isSymbolicLink",LinkOption.NOFOLLOW_LINKS);
+            if(Boolean.TRUE.equals(attributes.get("isSymbolicLink"))||!Boolean.TRUE.equals(attributes.get(directory?"isDirectory":"isRegularFile")))throw new IOException("verification_scratch_invalid");
+            return new ScratchIdentity(file,directory,attributes);
+        }
+        void requireSame()throws IOException {
+            ScratchIdentity current=capture(file,directory);
+            if(device!=current.device||inode!=current.inode)throw new IOException("verification_scratch_invalid");
+        }
+    }
+    private static final class ScratchListing {
+        final ScratchIdentity directory;final List<ScratchIdentity> entries=new ArrayList<>();
+        ScratchListing(ScratchIdentity directory){this.directory=directory;}
+    }
+    private static ScratchListing validateScratch(File directory,boolean capture)throws IOException {
         PodTakeoverCoordinator.requirePrivateDirectory(directory);
-        if(!Files.exists(directory.toPath(),LinkOption.NOFOLLOW_LINKS))return;
+        if(!Files.exists(directory.toPath(),LinkOption.NOFOLLOW_LINKS))return null;
+        ScratchListing checked=new ScratchListing(ScratchIdentity.capture(directory,true));
         Set<String> names=new HashSet<>();
         for(String base:capture?new String[]{"room.sqlite"}:new String[]{"podjs.sqlite","room-progress.sqlite","snapshot.properties"})
             for(String suffix:new String[]{"","-journal","-wal","-shm",".tmp"})names.add(base+suffix);
         File[] children=directory.listFiles();if(children==null)throw new IOException("candidate_unreadable");
-        for(File child:children){if(!names.contains(child.getName()))throw new IOException("verification_scratch_invalid");PodTakeoverCoordinator.requirePrivateFile(child);}
+        for(File child:children){if(!names.contains(child.getName()))throw new IOException("verification_scratch_invalid");checked.entries.add(ScratchIdentity.capture(child,false));}
+        return checked;
     }
     private static void clearScratch(File directory,boolean capture)throws Exception {
-        validateScratch(directory,capture);
-        if(!Files.exists(directory.toPath(),LinkOption.NOFOLLOW_LINKS))return;
-        File[] children=directory.listFiles();if(children==null)throw new IOException("migration_storage_invalid");
-        for(File child:children)Files.delete(child.toPath());Files.delete(directory.toPath());
+        ScratchListing checked=validateScratch(directory,capture);if(checked==null)return;
+        try {
+            for(ScratchIdentity child:checked.entries) {
+                checked.directory.requireSame();child.requireSame();Files.delete(child.file.toPath());
+            }
+            checked.directory.requireSame();Files.delete(directory.toPath());
+        }catch(IOException changed){throw new IOException("verification_scratch_invalid",changed);}
     }
     private static void pruneScratch(File generation,String prefix)throws Exception {
         File[] children=generation.listFiles();if(children==null)throw new IOException("candidate_unreadable");
