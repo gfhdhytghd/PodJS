@@ -559,6 +559,21 @@ final class PodServices implements Closeable {
             } catch (Exception error) { failure(id, "lifecycle_error", error.getMessage()); }
             return;
         }
+        if ("settings.openWifi".equals(method)) {
+            main.post(() -> {
+                if (closed || !requests.remove(id, request)) return;
+                try {
+                    request.cancellation.throwIfCanceled();
+                    PodSystemSettings.openWifi(context);
+                    reply(id, true, JSONObject.NULL, null, null);
+                } catch (android.content.ActivityNotFoundException error) {
+                    failure(id, "settings_unavailable", "Network settings unavailable");
+                } catch (Exception error) {
+                    failure(id, "settings_error", "Cannot open network settings");
+                }
+            });
+            return;
+        }
         if ("app.finishTask".equals(method)) {
             main.post(() -> {
                 if (closed || !requests.remove(id, request)) return;

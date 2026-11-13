@@ -49,6 +49,7 @@ const methods: Record<string, PodCapabilityId> = {
   "acoustic.requestPermission":"debug.acoustic", "acoustic.pcm.open":"debug.acoustic", "acoustic.pcm.read":"debug.acoustic", "acoustic.pcm.write":"debug.acoustic", "acoustic.pcm.drain":"debug.acoustic", "acoustic.pcm.stop":"debug.acoustic",
   "acoustic.wifi.connect":"debug.acoustic", "acoustic.wifi.request":"debug.acoustic", "acoustic.wifi.close":"debug.acoustic",
   "app.finishTask": "host.lifecycle",
+  "settings.openWifi": "host.lifecycle",
   "takeover.status": "host.takeover",
   "debug.external.subscribe":"host.lifecycle", "debug.external.unsubscribe":"host.lifecycle", "debug.external.reply":"host.lifecycle",
   "app.buildInfo": "host.lifecycle",
@@ -106,6 +107,10 @@ const methods: Record<string, PodCapabilityId> = {
   "crypto.rsaOaepSha256": "crypto.basic", "crypto.random": "crypto.basic", "crypto.hash": "crypto.basic", "crypto.hmacSha256": "crypto.basic", "crypto.aesGcmEncrypt": "crypto.basic", "crypto.aesGcmDecrypt": "crypto.basic", "crypto.encrypt": "crypto.basic", "crypto.decrypt": "crypto.basic",
   "uri.parse": "data.uri", "file.htmlText": "data.files.chunks", "file.gzip": "data.files.chunks", "file.gzipBytes": "data.files.chunks", "file.gunzip": "data.files.chunks", "file.openText": "data.files.chunks", "file.readTextChunk": "data.files.chunks", "file.closeText": "data.files.chunks", "file.createTemp": "data.files.chunks", "file.hash": "data.files.chunks", "file.commit": "data.files.chunks", "file.compose": "data.files.chunks", "file.read": "data.files.chunks", "log.append": "data.files.chunks", "file.write": "data.files.chunks", "file.list": "data.files.chunks", "file.touch": "data.files.chunks", "file.stat": "data.files.chunks", "file.delete": "data.files.chunks",
 };
+/** User-initiated Android settings navigation. Requires host.lifecycle. */
+export const systemSettings = Object.freeze({
+  openWifi: ():Promise<void> => hostOperation<void>("settings.openWifi",{}).result,
+});
 export interface ActivityState { saved:Record<string,unknown>; retained:Record<string,unknown> }
 /** Android Activity lifecycle operations. Saved state follows the system Bundle;
  * retained state survives configuration recreation only. Neither is app KV. */
