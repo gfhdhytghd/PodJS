@@ -62,13 +62,15 @@ public class PodMigrationProgressTest {
     @Test public void pausedCodesUseTheExistingRecoveryCopyAndRetry()throws Exception {
         try(org.robolectric.android.controller.ActivityController<android.app.Activity> activity=Robolectric.buildActivity(android.app.Activity.class).setup()) {
             PodTakeover.RecoveryController controller=new PodTakeover.RecoveryController(activity.get(),()->fail("failed migration admitted"));
-            for(String code:new String[]{"migration_timeout","migration_memory_limit","migration_interrupted","migration_row_too_large","stage_failed","space_insufficient","user_locked","migration_admission_failed"}) {
+            for(String code:new String[]{"migration_timeout","migration_memory_limit","migration_interrupted","migration_row_too_large","stage_failed","space_insufficient","user_locked","migration_admission_failed","migration_storage_invalid","verification_scratch_invalid"}) {
                 controller.show(new org.json.JSONObject().put("phase","PAUSED").put("progressPhase","PAUSED").put("reason",code).put("percent",80));
                 Object view=controller.view;
                 assertEquals("迁移已暂停",label(view,"title").getText().toString());
                 String detail=label(view,"detail").getText().toString();
-                assertTrue(detail,detail.startsWith("原因：")&&detail.endsWith("（"+code+"）")&&detail.length()>code.length()+5);
-                assertEquals("migration_row_too_large".equals(code)?"原数据未改动，请截图联系支持。":"已完成的部分会保留，可重试或重开应用继续。",label(view,"next").getText().toString());
+                assertTrue(detail,detail.startsWith("原因：")&&detail.length()>3&&!detail.contains(code));
+                assertEquals(code,label(view,"code").getText().toString());
+                assertEquals(1,label(view,"code").getMaxLines());
+                assertEquals(java.util.Set.of("migration_row_too_large","migration_storage_invalid","verification_scratch_invalid").contains(code)?"原数据未改动，请截图联系支持。":"已完成的部分会保留，可重试或重开应用继续。",label(view,"next").getText().toString());
                 assertEquals("重试迁移",label(view,"retry").getText().toString());
                 assertEquals(android.view.View.VISIBLE,label(view,"retry").getVisibility());
                 assertTrue(label(view,"retry").isEnabled());

@@ -277,7 +277,7 @@ public final class PodTakeover {
      * WatchRSS-palette text (titleMedium 21sp, bodyMedium 14sp, bodySmall 12sp) and an M3 pill retry. */
     private static final class RecoveryView extends android.widget.FrameLayout {
         static final int FOREGROUND=0xfff5f5f5,SECONDARY=0xffb6b6b6,PRIMARY=0xffff6026,TRACK=0xff2a2a2a,ERROR=0xffff8a80;
-        final android.widget.TextView title,percent,detail,next;final Ring ring;final android.widget.TextView retry;
+        final android.widget.TextView title,percent,detail,code,next;final Ring ring;final android.widget.TextView retry;
         RecoveryView(Context context) {
             super(context);setBackgroundColor(0xff000000);float dp=getResources().getDisplayMetrics().density;
             ring=new Ring(context,dp);addView(ring,new LayoutParams(LayoutParams.MATCH_PARENT,LayoutParams.MATCH_PARENT));
@@ -286,6 +286,9 @@ public final class PodTakeover {
             title=text(context,column,21,FOREGROUND,0);title.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
             percent=text(context,column,34,FOREGROUND,(int)(4*dp));
             detail=text(context,column,12,SECONDARY,(int)(2*dp));
+            // Support code on its own single line, shrunk to fit, so long codes never add rows on the round screen.
+            code=text(context,column,11,SECONDARY,(int)(2*dp));code.setMaxLines(1);
+            code.setAutoSizeTextTypeUniformWithConfiguration(7,11,1,android.util.TypedValue.COMPLEX_UNIT_SP);
             next=text(context,column,12,SECONDARY,(int)(8*dp));
             retry=new android.widget.TextView(context);retry.setText("重试迁移");retry.setTextSize(14);retry.setTextColor(0xff000000);retry.setGravity(android.view.Gravity.CENTER);
             android.graphics.drawable.GradientDrawable pill=new android.graphics.drawable.GradientDrawable();pill.setColor(PRIMARY);pill.setCornerRadius(20*dp);retry.setBackground(pill);
@@ -356,7 +359,7 @@ public final class PodTakeover {
         private static String reasonLine(String reason) {
             if(reason.isEmpty())return "";
             String text=reasonText(reason);
-            return text.isEmpty()?"原因："+reason:"原因："+text+"（"+reason+"）";
+            return "原因："+(text.isEmpty()?"未分类错误":text);
         }
         private static String nextStep(String phase,String reason) {
             if("PAUSED".equals(phase)) {
@@ -381,6 +384,7 @@ public final class PodTakeover {
             percent.setVisibility(halted?GONE:VISIBLE);
             String bytesLine=!halted&&copied>0?"已复制 "+bytes(copied):"";
             detail.setText(bytesLine+(reason.isEmpty()?"":(bytesLine.isEmpty()?"":"\n")+reasonLine(reason)));detail.setVisibility(detail.length()>0?VISIBLE:GONE);
+            code.setText(reason);code.setVisibility(reason.isEmpty()?GONE:VISIBLE);
             next.setText(nextStep(displayPhase,reason));
             boolean canRetry=!running&&halted;retry.setVisibility(canRetry?VISIBLE:GONE);retry.setEnabled(canRetry);
             setContentDescription(title.getText()+" "+value+"%");
