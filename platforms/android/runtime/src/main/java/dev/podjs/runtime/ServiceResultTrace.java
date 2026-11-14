@@ -111,8 +111,8 @@ final class ServiceResultTrace {
         "uri.parse", "video.captureBackdrop", "video.pause", "video.play", "video.prepare",
         "video.seek", "video.session.capabilities", "video.session.pause", "video.session.play", "video.session.prepare",
         "video.session.promote", "video.session.release", "video.session.seek", "video.session.setBounds", "video.session.setTransform",
-        "video.frame.clear", "video.frame.capture", "video.frame.restore", "video.session.captureFrame", "video.session.setLoop", "video.session.setVolume", "video.session.state", "video.session.stop", "video.session.transition", "video.setBounds",
-        "video.setTransform", "video.setLoop", "video.setVolume", "video.state", "video.stop", "video.surface.close",
+        "video.frame.clear", "video.frame.capture", "video.frame.restore", "video.session.captureFrame", "video.session.setLoop", "video.session.setSpeed", "video.session.setVolume", "video.session.state", "video.session.stop", "video.session.transition", "video.setBounds",
+        "video.setTransform", "video.setLoop", "video.setSpeed", "video.setVolume", "video.state", "video.stop", "video.surface.close",
         "video.surface.open", "video.surface.state", "video.surface.update", "websocket.close", "websocket.connect",
         "websocket.readText", "websocket.writeText"
     )));

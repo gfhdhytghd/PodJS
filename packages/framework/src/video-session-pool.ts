@@ -19,6 +19,7 @@ export interface VideoSessionPort {
   setVolume(sessionId:string,volume:number,crownDirection?:-1|1):Promise<VideoSessionState>;
   setMuted?(sessionId:string,muted:boolean):Promise<VideoSessionState>;
   setLoop(sessionId:string,loop:boolean):Promise<VideoSessionState>;
+  setSpeed?(sessionId:string,speed:number):Promise<VideoSessionState>;
   promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean;loop?:boolean;adoptPreparing?:boolean;benchmark?:VideoBenchmarkAction}):Promise<VideoSessionState>;
   transition(options:{fromSessionId:string;toSessionId:string;progress:number;direction:VideoPagerDirection;bounds?:VideoBounds;benchmark?:VideoBenchmarkAction;trackPointer?:boolean}):Promise<VideoSessionTransitionState>;
 }
@@ -32,7 +33,7 @@ let nextPoolId=1;
 const state=(value:VideoSessionState):VideoState=>({
   appliedVolume:value.appliedVolume,audioTrackSelected:value.audioTrackSelected,bufferedMs:value.bufferedMs,networkStalled:value.networkStalled,presented:value.presented,metrics:value.metrics,ok:value.ok,state:value.state,positionMs:value.positionMs,durationMs:value.durationMs,completedLoops:value.completedLoops,loop:value.loop,
   width:value.width,height:value.height,volume:value.volume,volumeMax:value.volumeMax??15,volumeIndex:value.volumeIndex,muted:value.muted,
-  hasCachedFirstFrame:value.hasCachedFirstFrame,sourceGeneration:value.sourceGeneration,errorCode:value.errorCode,hasRenderedFirstFrame:value.hasRenderedFirstFrame,
+  hasCachedFirstFrame:value.hasCachedFirstFrame,sourceGeneration:value.sourceGeneration,errorCode:value.errorCode,hasRenderedFirstFrame:value.hasRenderedFirstFrame,speed:value.speed,
 });
 
 /** Retained surfaces, bounded by native codec and byte budgets. Three slots retain immediate neighbours; five retain two on each side.
@@ -367,6 +368,8 @@ export class VideoSessionPool<Source extends {key:string}> {
     void work.catch(async()=>{if(slot.revision===revision&&slot.id===id)await this.evict(slot,'failure');}).catch(()=>{});
   }
   async setLoop(loop:boolean):Promise<void>{this.loop=loop;for(const slot of this.slots.filter(s=>s.ready))this.neighbourUpdate(slot,this.syncLoop(slot.id));if(this.activeKey)await this.syncLoop(this.activeId);}
+  /** Active session only; neighbours start at 1x and the caller re-applies its speed after a page change. */
+  setSpeed(speed:number):Promise<VideoState>{if(!this.port.setSpeed)return Promise.reject(Object.assign(new Error("video.session.setSpeed is unavailable"),{code:"unsupported"}));return this.port.setSpeed(this.activeId,speed).then(state);}
   play():Promise<VideoState>{return this.port.play(this.activeId).then(state);}
   retire(handoff=false):Promise<VideoState>{this.cancelNeighbourhood();return this.port.retire(this.activeId,handoff).then(state);}
   pause(benchmark?:VideoBenchmarkAction,handoff=false):Promise<VideoState>{return this.port.pause(this.activeId,benchmark,handoff).then(state);}

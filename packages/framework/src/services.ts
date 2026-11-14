@@ -89,8 +89,8 @@ const methods: Record<string, PodCapabilityId> = {
   "video.cache.local.present":"media.video","video.cache.local.hide":"media.video","video.cache.local.configure":"media.video","video.cache.local.prepare":"media.video","video.cache.local.list":"media.video","video.cache.local.lookup":"media.video","video.cache.local.watched":"media.video","video.cache.local.cancel":"media.video","video.cache.local.clear":"media.video","video.cache.stopTraffic":"media.video",
   "video.cache.prepare":"media.video", "video.cache.inspect":"media.video", "video.cache.remove":"media.video", "video.cache.register":"media.video", "video.cache.window":"media.video", "video.cache.stats":"media.video", "video.cache.clear":"media.video",
   "video.prepare": "media.video", "video.play": "media.video", "video.retire": "media.video", "video.pause": "media.video", "video.seek": "media.video", "video.stop": "media.video", "video.setBounds": "media.video", "video.state": "media.video",
-  "video.frame.clear":"media.video", "video.frame.capture":"media.video", "video.frame.restore":"media.video", "video.captureBackdrop": "media.video", "video.setTransform": "media.video", "video.setVolume": "media.video", "video.setLoop": "media.video",
-  "video.session.captureFrame":"media.video.sessions", "video.session.capabilities": "media.video.sessions", "video.session.prepare": "media.video.sessions", "video.session.play": "media.video.sessions", "video.session.retire": "media.video.sessions", "video.session.pause": "media.video.sessions", "video.session.seek": "media.video.sessions", "video.session.stop": "media.video.sessions", "video.session.release": "media.video.sessions", "video.session.setBounds": "media.video.sessions", "video.session.setTransform": "media.video.sessions", "video.session.setVolume": "media.video.sessions", "video.session.setLoop": "media.video.sessions", "video.session.state": "media.video.sessions", "video.session.promote": "media.video.sessions", "video.session.transition": "media.video.sessions",
+  "video.frame.clear":"media.video", "video.frame.capture":"media.video", "video.frame.restore":"media.video", "video.captureBackdrop": "media.video", "video.setTransform": "media.video", "video.setVolume": "media.video", "video.setLoop": "media.video", "video.setSpeed": "media.video",
+  "video.session.captureFrame":"media.video.sessions", "video.session.capabilities": "media.video.sessions", "video.session.prepare": "media.video.sessions", "video.session.play": "media.video.sessions", "video.session.retire": "media.video.sessions", "video.session.pause": "media.video.sessions", "video.session.seek": "media.video.sessions", "video.session.stop": "media.video.sessions", "video.session.release": "media.video.sessions", "video.session.setBounds": "media.video.sessions", "video.session.setTransform": "media.video.sessions", "video.session.setVolume": "media.video.sessions", "video.session.setLoop": "media.video.sessions", "video.session.setSpeed": "media.video.sessions", "video.session.state": "media.video.sessions", "video.session.promote": "media.video.sessions", "video.session.transition": "media.video.sessions",
   "image.surface.open":"data.images", "image.surface.update":"data.images", "image.surface.state":"data.images", "image.surface.close":"data.images",
   "video.surface.open":"media.video", "video.surface.update":"media.video", "video.surface.state":"media.video", "video.surface.close":"media.video",
   "share.environment": "system.share", "share.text": "system.share",
@@ -355,7 +355,9 @@ export interface VideoFrameSource {url?:string;videoUrl?:string;audioUrl?:string
 export interface VideoFrame {available:true;kind:"actual_frame";path:string;width:number;height:number;positionMs:number;capturedAt:number;capturedGeneration:number}
 export interface VideoFrameCapture {key:string;source:VideoFrameSource;sourceGeneration:number}
 export interface VideoPlaybackMetrics { bytesLoaded:number; droppedFrames:number; rebufferCount:number; rebufferMs:number; firstByteMs?:number; firstFrameMs?:number; throughputBps?:number; [key:string]:number|undefined }
-export interface VideoState { ringerMode?:"normal"|"vibrate"|"silent"|"unknown";silenced?:boolean; volumeIndex?:number; muted?:boolean; appliedVolume?:number; audioTrackSelected?:boolean; bufferedMs?:number; networkStalled?:boolean; presented?:boolean; metrics?:VideoPlaybackMetrics; sourceGeneration?:number; /** Completed native repeats since prepare; seeks do not increment it. */ completedLoops?:number; loop?:boolean; hasCachedFirstFrame?:boolean; hasRenderedFirstFrame?:boolean; errorCode?:string; ok:boolean; state:string; positionMs:number; durationMs:number; width:number; height:number; volume:number; volumeMax:number }
+export interface VideoState { /** Playback speed; hosts without video.setSpeed omit it. */speed?:number; ringerMode?:"normal"|"vibrate"|"silent"|"unknown";silenced?:boolean; volumeIndex?:number; muted?:boolean; appliedVolume?:number; audioTrackSelected?:boolean; bufferedMs?:number; networkStalled?:boolean; presented?:boolean; metrics?:VideoPlaybackMetrics; sourceGeneration?:number; /** Completed native repeats since prepare; seeks do not increment it. */ completedLoops?:number; loop?:boolean; hasCachedFirstFrame?:boolean; hasRenderedFirstFrame?:boolean; errorCode?:string; ok:boolean; state:string; positionMs:number; durationMs:number; width:number; height:number; volume:number; volumeMax:number }
+export const VIDEO_SPEED_RANGE={min:.5,max:2} as const;
+function checkVideoSpeed(speed:number):void{if(!Number.isFinite(speed)||speed<VIDEO_SPEED_RANGE.min||speed>VIDEO_SPEED_RANGE.max)throw new HostServiceError("invalid_argument","Video speed must be between 0.5 and 2");}
 export const video = {
   /** Capture only a rendered frame from the exact still-current source generation. */
   clearFrames():Promise<{removedFiles:number}> {return hostOperation<{removedFiles:number}>("video.frame.clear",{}).result;},
@@ -374,6 +376,8 @@ export const video = {
   setTransform(transform:{rotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}): Promise<VideoState> { return hostOperation<VideoState>("video.setTransform", transform as Record<string,unknown>).result; },
   /** Change repeat mode on the current player without preparing or seeking. */
   setLoop(loop:boolean): Promise<VideoState> { return hostOperation<VideoState>("video.setLoop", {loop}).result; },
+  /** 0.5..2; supported when VideoState reports `speed`. */
+  setSpeed(speed:number): Promise<VideoState> { checkVideoSpeed(speed); return hostOperation<VideoState>("video.setSpeed", {speed}).result; },
   setMuted(muted:boolean):Promise<VideoState> { return hostOperation<VideoState>("video.setVolume",{muted}).result; },
   setVolume(volume:number,crownDirection?:-1|1): Promise<VideoState> { return hostOperation<VideoState>("video.setVolume", {volume,...(crownDirection?{crownDirection}:{})}).result; },
 };
@@ -395,6 +399,7 @@ export interface VideoSessionPrepare extends Omit<VideoPrepare,"backgroundPlayba
   keyframeOnly?:boolean;
 }
 export interface VideoSessionState {
+  speed?:number;
   ringerMode?:VideoState["ringerMode"];silenced?:boolean;
   volumeIndex?:number; volumeMax?:number;
   appliedVolume?:number; audioTrackSelected?:boolean;
@@ -437,6 +442,7 @@ export const videoSessions = {
   state(sessionId:string):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.state",{sessionId}).result; },
   setTransform(sessionId:string,transform:{rotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setTransform",{sessionId,...transform}).result; },
   setLoop(sessionId:string,loop:boolean):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setLoop",{sessionId,loop}).result; },
+  setSpeed(sessionId:string,speed:number):Promise<VideoSessionState> { checkVideoSpeed(speed); return hostOperation<VideoSessionState>("video.session.setSpeed",{sessionId,speed}).result; },
   setMuted(sessionId:string,muted:boolean):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setVolume",{sessionId,muted}).result; },
   setVolume(sessionId:string,volume:number,crownDirection?:-1|1):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setVolume",{sessionId,volume,...(crownDirection?{crownDirection}:{})}).result; },
   /** Reveals the retained target first frame before hiding the replaced session. */

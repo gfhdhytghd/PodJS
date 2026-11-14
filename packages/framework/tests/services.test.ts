@@ -745,6 +745,20 @@ test('pure codec scheduler yields without a runtime.timer host capability',async
  const before=emitted.length;await (globalThis as any).__podYieldCodecTurn();expect(emitted).toHaveLength(before);
 });
 
+test("video speed is range checked, capability gated and targets the player/session",async()=>{
+ const {video,videoSessions}=await import('../src/services.ts');
+ await expect(video.setSpeed(1.5)).rejects.toMatchObject({code:'unsupported'});
+ expect(emitted).toHaveLength(0);host.capabilities=()=>JSON.stringify(['media.video','media.video.sessions']);
+ for(const bad of [.25,2.5,Number.NaN])expect(()=>video.setSpeed(bad)).toThrow();
+ expect(emitted).toHaveLength(0);
+ for(const sessionId of [undefined,'active']){
+  const task=sessionId?videoSessions.setSpeed(sessionId,1.25):video.setSpeed(1.25),request=emitted.at(-1)!;
+  expect(request).toMatchObject({method:sessionId?'video.session.setSpeed':'video.setSpeed',args:sessionId?{sessionId,speed:1.25}:{speed:1.25}});
+  const value={state:'playing',positionMs:10,speed:1.25};events.push({t:'service.result',id:request.id,ok:true,value});api.__pumpPodEvents();
+  expect(await task).toMatchObject(value);
+ }
+});
+
 test("video repeat changes are capability gated and target the retained player/session",async()=>{
  const {video,videoSessions}=await import('../src/services.ts');
  await expect(video.setLoop(true)).rejects.toMatchObject({code:'unsupported'});
