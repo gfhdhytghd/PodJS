@@ -16,6 +16,7 @@ trap cleanup EXIT HUP INT TERM
 export DEVELOPER_DIR="$developer_dir"
 export PATH="$HOME/.cargo/bin:$PATH"
 export WATCHOS_DEPLOYMENT_TARGET=11.0
+export PODJS_POCKETJS_REVISION=$(git -C "$repo_dir/vendor/pocketjs" rev-parse HEAD)
 
 rustup target add aarch64-apple-watchos aarch64-apple-watchos-sim
 rustup toolchain install nightly --profile minimal --component rust-src
