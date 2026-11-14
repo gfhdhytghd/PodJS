@@ -174,6 +174,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                     case "video.session.setBounds": setBounds(args, callback); break;
                     case "video.session.setTransform": setTransform(args, callback); break;
                     case "video.session.setLoop": setLoop(args, callback); break;
+                    case "video.session.setSpeed": setSpeed(args, callback); break;
                     case "video.session.setVolume": setVolume(args, callback); break;
                     case "video.session.state": callback.complete(require(args).snapshot()); break;
                     case "video.session.promote": promote(args, callback); break;
@@ -660,6 +661,13 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         if(!(loop instanceof Boolean))throw new IllegalArgumentException("loop_must_be_boolean");
         if(session.frameSource!=null)session.frameSource.put("loop",loop);
         if(session.player!=null)session.player.setRepeatMode((Boolean)loop ? Player.REPEAT_MODE_ONE : Player.REPEAT_MODE_OFF);
+        callback.complete(session.snapshot());
+    }
+
+    private void setSpeed(JSONObject args, Callback callback) throws Exception {
+        Session session = require(args);
+        float speed=PodVideoSpeed.parse(args);
+        if(session.player!=null)session.player.setPlaybackSpeed(speed);
         callback.complete(session.snapshot());
     }
 
@@ -1438,7 +1446,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                     .put("presented", presented)
                     .put("hasCachedFirstFrame",hasCachedFrame()).put("keyframeAvailable",frameBinding!=null&&keyframes.get(frameBinding)!=null)
                     .put("hasRenderedFirstFrame", hasRenderedFirstFrame)
-                    .put("sourceGeneration",generation).put("completedLoops", completedLoops).put("loop", player!=null && player.getRepeatMode()==Player.REPEAT_MODE_ONE)
+                    .put("sourceGeneration",generation).put("completedLoops", completedLoops).put("loop", player!=null && player.getRepeatMode()==Player.REPEAT_MODE_ONE).put("speed", player==null?1:player.getPlaybackParameters().speed)
                     .put("targetBufferBytes", TARGET_BUFFER_BYTES));
         }
 
