@@ -4,7 +4,7 @@ import {encodeUtf8} from './byte-codecs.ts';
 export interface JsonJournalFiles {
  /** Bounded decoded chunks; chunk boundaries must preserve Unicode scalars. */
  chunks?(path:string):AsyncIterable<string>;
- /** Atomically keep the verified prefix, optionally adding a missing newline. */
+ /** Atomically publish the verified decoded UTF-8 prefix (bytes), optionally adding a newline. */
  repair?(path:string,bytes:number,newline:boolean):Promise<void>;
  yieldTurn?():Promise<void>;
 sha256?(bytes:Uint8Array):Promise<string>;read(path:string):Promise<string|undefined>;replace(path:string,text:string):Promise<void>;append(path:string,text:string,offset:number):Promise<void>;fingerprint?(path:string,raw:string):Promise<string>}
@@ -57,6 +57,9 @@ export class JsonDeltaJournal {
     catch{/* Stop at an invalid edit, exactly as the legacy reader. */}
    }
    if(!accepted){repair=true;break;}
+   // Replacement characters can represent malformed source bytes. Canonicalize
+   // accepted text before appending, as the legacy byte-length check did.
+   if(line.includes('\ufffd'))repair=true;
    if(!terminated){repair=true;newline=true;}
    spentBytes+=bytes+1;frames++;
    if(spentBytes>=128*1024||frames>=32||Date.now()-started>=8){await this.pause();spentBytes=0;frames=0;started=Date.now();}
