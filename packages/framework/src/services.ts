@@ -348,6 +348,10 @@ export const speech = {
 export function onVideoFirstFrame(listener:(state:VideoState & {sessionId?:string})=>void):()=>void {
   return __onHostEvent(event=>{if(event.t==='video.firstFrame'&&event.value&&typeof event.value==='object')listener(event.value as VideoState & {sessionId?:string});});
 }
+/** Native state transitions and visible playback progress; no guest polling. */
+export function onVideoStateChanged(listener:(state:VideoState & {sessionId?:string})=>void):()=>void {
+ return __onHostEvent(event=>{if(event.t==='video.stateChanged'&&event.value&&typeof event.value==='object')listener(event.value as VideoState & {sessionId?:string});});
+}
 export interface VideoBounds { benchmark?:VideoBenchmarkAction; x:number; y:number; width:number; height:number; translateX?:number; translateY?:number; visible?:boolean; roundClip?:{cx:number;cy:number;radius:number} }
 export interface VideoTransform {rotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}
 export interface VideoPrepare {/** Apply system ringer/zen silence to player gain. Override is process-local. */ respectSilentMode?:boolean;transform?:VideoTransform;sourceOrdinal?:number;slotOrdinal?:number; startupSeq?:number; benchmark?:VideoBenchmarkAction; url?:string; videoUrl?:string; audioUrl?:string; type?:string; videoMime?:string; videoWidth?:number; videoHeight?:number; headers?:Record<string,string>; bounds:VideoBounds; autoplay?:boolean; muted?:boolean; loop?:boolean; backgroundPlayback?:boolean }

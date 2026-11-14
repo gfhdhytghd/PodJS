@@ -1,7 +1,13 @@
 import {cpuWork,cpuWorkAsync,cpuJsonParse,cpuJsonStringify} from './cpu-work';
 import {sha256Hex} from './crypto.ts';
 import {encodeUtf8} from './byte-codecs.ts';
-export interface JsonJournalFiles {sha256?(bytes:Uint8Array):Promise<string>;read(path:string):Promise<string|undefined>;replace(path:string,text:string):Promise<void>;append(path:string,text:string,offset:number):Promise<void>;fingerprint?(path:string,raw:string):Promise<string>}
+export interface JsonJournalFiles {
+ /** Bounded decoded chunks; chunk boundaries must preserve Unicode scalars. */
+ chunks?(path:string):AsyncIterable<string>;
+ /** Atomically keep the verified prefix, optionally adding a missing newline. */
+ repair?(path:string,bytes:number,newline:boolean):Promise<void>;
+ yieldTurn?():Promise<void>;
+sha256?(bytes:Uint8Array):Promise<string>;read(path:string):Promise<string|undefined>;replace(path:string,text:string):Promise<void>;append(path:string,text:string,offset:number):Promise<void>;fingerprint?(path:string,raw:string):Promise<string>}
 type ObjectValue=Record<string,any>;
 type Edit={field:string;key?:string;remove?:true;value?:any};
 const object=(v:any):v is ObjectValue=>!!v&&typeof v==='object'&&!Array.isArray(v);
@@ -12,20 +18,66 @@ const put=(v:ObjectValue,k:string,x:any)=>Object.defineProperty(v,k,{value:x,wri
  * Dictionary entries are immutable JSON values: replace an entry to edit it.
  * This is not authentication, a remote ACK, or an application transaction. */
 export class JsonDeltaJournal {
- private value:ObjectValue={};private snapshot:ObjectValue={};private base='';private sequence=0;private offset=0;private loaded=false;
+ private value:ObjectValue={};private snapshot:ObjectValue={};private base='';private sequence=0;private offset=0;private loaded=false;private loading:Promise<ObjectValue>|undefined;private writes:Promise<unknown>=Promise.resolve();
  constructor(private files:JsonJournalFiles,private path:string,private maps:readonly string[],private normalize:(v:ObjectValue)=>ObjectValue=v=>v,private denormalize:(v:ObjectValue)=>ObjectValue=v=>v,private maximum=32*1024*1024){}
  private digest(s:string){const bytes=encodeUtf8(s);return this.files.sha256?cpuWorkAsync('sha256','bytes',bytes.length,()=>this.files.sha256!(bytes)):Promise.resolve(sha256Hex(bytes));}
  private remember(value:ObjectValue){this.snapshot={...value};for(const field of this.maps)if(object(value[field]))this.snapshot[field]={...value[field]};}
- async load():Promise<ObjectValue>{if(this.loaded)return this.denormalize(this.value);
-  const raw=await this.files.read(this.path)??'{}';this.base=this.files.fingerprint?await this.files.fingerprint(this.path,raw):await this.digest(raw);let parsed:ObjectValue={};try{const value=cpuJsonParse(raw);if(object(value))parsed=value;}catch{/* Derived cache loss restarts from its immutable source, never SQL cleanup. */}this.value=this.normalize(parsed);const tail=await this.files.read(this.path+'.delta')??'';let end=0,valid='';
-  await cpuWorkAsync('journal-rebuild','chars',tail.length,async()=>{for(const line of tail.split('\n')){if(!line)break;try{const f=cpuJsonParse(line),payload=cpuJsonStringify([f.base,f.sequence,f.edits]);if(f.base!==this.base||f.sequence!==this.sequence+1||!Array.isArray(f.edits)||f.edits.length>100000||await this.digest(payload)!==f.digest)break;
-   this.apply(f.edits);this.sequence++;end+=encodeUtf8(line+'\n').length;valid+=line+'\n';
-  }catch{break;}}
-  });this.offset=end;if(end!==encodeUtf8(tail).length)await this.files.replace(this.path+'.delta',valid);
-  this.loaded=true;this.remember(this.value);return this.denormalize(this.value);
+ private pause(){return this.files.yieldTurn?.()??new Promise<void>(resolve=>setTimeout(resolve,0));}
+ private async *lines():AsyncGenerator<{text:string;terminated:boolean}>{
+  const path=this.path+'.delta';
+  const chunks=this.files.chunks?this.files.chunks(path):(async function*(files:JsonJournalFiles){yield await files.read(path)??'';})(this.files);
+  let pending='';
+  for await(const chunk of chunks){let start=0,end:number;
+   while((end=chunk.indexOf('\n',start))>=0){yield {text:pending+chunk.slice(start,end),terminated:true};pending='';start=end+1;}
+   pending+=chunk.slice(start);
+  }
+  if(pending)yield {text:pending,terminated:false};
+ }
+ load():Promise<ObjectValue>{
+  if(this.loading)return this.loading;
+  if(this.loaded)return Promise.resolve(this.denormalize(this.value));
+  const task=this.replay();this.loading=task;
+  void task.finally(()=>{if(this.loading===task)this.loading=undefined;}).catch(()=>{});return task;
+ }
+ private async replay():Promise<ObjectValue>{
+  // A failed IO/repair may be retried on the same instance.
+  this.sequence=0;this.offset=0;
+  const raw=await this.files.read(this.path)??'{}';this.base=this.files.fingerprint?await this.files.fingerprint(this.path,raw):await this.digest(raw);
+  await this.pause();let parsed:ObjectValue={};try{const value=cpuJsonParse(raw);if(object(value))parsed=value;}catch{/* Derived cache loss never authorizes business cleanup. */}
+  this.value=this.normalize(parsed);await this.pause();
+  let repair=false,newline=false,sourceBytes=0,spentBytes=0,frames=0,started=Date.now();
+  await cpuWorkAsync('journal-rebuild','chars',0,async()=>{for await(const {text:line,terminated} of this.lines()){
+   if(!line){repair=true;break;}
+   const bytes=encodeUtf8(line).length;let accepted=false;
+   try{const f=cpuJsonParse(line),payload=cpuJsonStringify([f.base,f.sequence,f.edits]);
+    if(f.base===this.base&&f.sequence===this.sequence+1&&Array.isArray(f.edits)&&f.edits.length<=100000&&await this.digest(payload)===f.digest){
+     this.apply(f.edits);this.sequence++;sourceBytes+=bytes+(terminated?1:0);this.offset+=bytes+1;accepted=true;
+    }
+   }catch{/* Stop at the first invalid frame, exactly as the legacy reader. */}
+   if(!accepted){repair=true;break;}
+   if(!terminated){repair=true;newline=true;}
+   spentBytes+=bytes+1;frames++;
+   if(spentBytes>=128*1024||frames>=32||Date.now()-started>=8){await this.pause();spentBytes=0;frames=0;started=Date.now();}
+  }});
+  if(repair){
+   if(this.files.repair)await this.files.repair(this.path+'.delta',sourceBytes,newline);
+   else{let valid='',n=0;for await(const {text} of this.lines()){if(n++>=this.sequence)break;valid+=text+'\n';}await this.files.replace(this.path+'.delta',valid);}
+  }
+  // No caller has received a mutable value yet: this is a safe checkpoint.
+  if(this.offset>=this.maximum||this.sequence>=2048){await this.pause();await this.compact(this.value);}
+  this.remember(this.value);this.loaded=true;return this.denormalize(this.value);
+ }
+ private async compact(value:ObjectValue){
+  const raw=cpuJsonStringify(this.denormalize(value));
+  // Compute before publication, so a failed digest cannot leave a live instance
+  // using the previous base identity after replacement.
+  const digest=await this.digest(raw);await this.pause();await this.files.replace(this.path,raw);
+  this.base=digest;this.offset=0;this.sequence=0;
+  await this.files.replace(this.path+'.delta','');
  }
  private apply(edits:Edit[]){for(const e of edits)if(!e||typeof e.field!=='string'||e.field.length>1024||e.key!==undefined&&(typeof e.key!=='string'||e.key.length>2048))throw Error('json_journal_invalid');for(const e of edits){const target=e.key===undefined?this.value:(own(this.value,e.field)&&this.value[e.field]&&typeof this.value[e.field]==='object'?this.value[e.field]:put(this.value,e.field,{} as ObjectValue)[e.field]);const key=e.key??e.field;if(e.remove)delete target[key];else put(target,key,e.value);}}
- async commit(input:ObjectValue){if(!this.loaded)await this.load();const next=this.normalize(input),edits:Edit[]=[];
+ commit(input:ObjectValue){const task=this.writes.then(()=>this.commitValue(input));this.writes=task.catch(()=>{});return task;}
+ private async commitValue(input:ObjectValue){if(!this.loaded)await this.load();const next=this.normalize(input),edits:Edit[]=[];
   const count=this.maps.reduce((n,field)=>n+(object(next[field])?Object.keys(next[field]).length:0),0);cpuWork('journal-diff','items',count,()=>{for(const field of new Set([...Object.keys(this.snapshot),...Object.keys(next)])){
    if(!own(next,field)||next[field]===undefined){if(own(this.snapshot,field))edits.push({field,remove:true});continue;}
    if(this.maps.includes(field)&&object(next[field])){const value=next[field],before=this.snapshot[field],old=object(before)?before:{};if(!object(before))edits.push({field,value:{}});
@@ -34,10 +86,10 @@ export class JsonDeltaJournal {
   }
   });if(!edits.length)return {bytes:0,edits:0};
   const payload=cpuJsonStringify([this.base,this.sequence+1,edits]),frame=cpuJsonStringify({base:this.base,sequence:this.sequence+1,edits,digest:await this.digest(payload)})+'\n',bytes=encodeUtf8(frame).length;
-  if(this.offset+bytes>this.maximum){
+  if(this.offset+bytes>this.maximum||this.sequence>=2048){
    // Normal committed data remains recoverable if replacement or truncation is
    // interrupted. Old frames cannot apply to the new base's digest.
-   const raw=cpuJsonStringify(this.denormalize(next));await this.files.replace(this.path,raw);this.base=this.files.fingerprint?await this.files.fingerprint(this.path,raw):await this.digest(raw);await this.files.replace(this.path+'.delta','');this.offset=0;this.sequence=0;
+   await this.compact(next);
   }else{await this.files.append(this.path+'.delta',frame,this.offset);this.offset+=bytes;this.sequence++;}
   this.value=next;this.remember(next);return {bytes,edits:edits.length};
  }

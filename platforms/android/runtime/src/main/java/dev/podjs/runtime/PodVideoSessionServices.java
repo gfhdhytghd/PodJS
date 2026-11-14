@@ -452,6 +452,15 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                 if(own.matches(player, generation) && reason==Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT)own.completedLoops++;
             }
 
+            { own.progressObserver=this::changed; }
+            private boolean pendingProgress=false;
+            private void changed(){
+                if(!own.matches(player,generation)||own.prewarming)return;
+                try{callback.stateChanged(own.snapshot());}catch(Exception ignored){}
+                if(!pendingProgress&&player.isPlaying()&&(own.bounds!=null&&own.bounds.visible)){pendingProgress=true;main.postDelayed(()->{pendingProgress=false;if(own.matches(player,generation)&&!own.prewarming&&(own.bounds!=null&&own.bounds.visible)&&player.isPlaying())changed();},400);}
+            }
+            @Override public void onEvents(Player ignored,Player.Events events){changed();}
+
             @Override public void onPlaybackStateChanged(int playbackState) {
                 if(own.matches(player,generation)&&!own.prewarming&&mediaPrefixCache!=null)mediaPrefixCache.foregroundBusy(PodVideoSessionServices.this,playbackState==Player.STATE_BUFFERING||!own.hasRenderedFirstFrame);
                 if(own.matches(player,generation)&&!own.prewarming&&playbackState==Player.STATE_BUFFERING)
@@ -488,6 +497,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                         || error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED
                         || error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED;
                 String code = PodVideoAnalytics.errorCode(error);
+                own.errorCode=code;own.state="error";try{callback.stateChanged(own.snapshot());}catch(Exception ignored){}
                 PodVideoFailure.record("sessions",own.prepareCallback==null?"playback":"prepare",code,error,own.frameSource,decoderBudget.inUse(),lastMemoryLimit,own.videoView==null?"missing":own.videoView.isAttachedToWindow()?"attached":"detached",own.analytics==null?"unknown":own.analytics.contentKind());
                 if ("network_error".equals(code) && own.prepareCallback == null) {
                     // Retain the terminal state for polling, but release decoder/player resources.
@@ -694,7 +704,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                 .put("bounds",args.optJSONObject("bounds")).put("autoplay",args.optBoolean("autoplay",true)).put("benchmark",args.optJSONObject("benchmark"));
             if(args.has("loop"))live.put("loop",args.optBoolean("loop"));
             Callback result=new Callback(){public void complete(JSONObject value){try{callback.complete(value.put("replacedHasRenderedFirstFrame",rendered).put("replacedHasCachedFirstFrame",cached));}catch(Exception ignored){}}
-                public void fail(String code,String message){callback.fail(code,message);}public void firstFrame(JSONObject value){callback.firstFrame(value);}};
+                public void fail(String code,String message){callback.fail(code,message);}public void firstFrame(JSONObject value){callback.firstFrame(value);}public void stateChanged(JSONObject value){callback.stateChanged(value);}};
             if(!target.hasCachedFrame()){prepare(live,result);return;}
             // Reveal the retained decoded pixels before releasing a standby or
             // constructing Media3. Those operations can block the UI thread.
@@ -1058,6 +1068,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         PodMediaAudioPolicy audioPolicy;
         PodVideoAudioStop audioStop;
         Bounds bounds;
+        Runnable progressObserver=()->{};
         Callback prepareCallback;
         Runnable prewarmTimeout;
         PodVideoDecoderCapabilities.Profile profile;
@@ -1223,7 +1234,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                 if(keyframeView!=null)keyframeView.setLayoutParams(new FrameLayout.LayoutParams(params));
             }
             if(translate) setTranslation(value.translateXPx, value.translateYPx);
-            if(layout)fitVideo();
+            if(layout)fitVideo();progressObserver.run();
         }
 
         private int clipLeft, clipTop, clipRight, clipBottom;

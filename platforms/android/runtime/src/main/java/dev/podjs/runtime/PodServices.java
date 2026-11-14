@@ -431,6 +431,7 @@ final class PodServices implements Closeable {
         if (method.startsWith("video.session.")) {
             request.videoSessionId=args.optString("sessionId",null);
             videoSessions.dispatch(method,args,new PodVideoSessionServices.Callback(){
+                public void stateChanged(JSONObject value) { try { if(!closed)sink.complete(new JSONObject().put("t","video.stateChanged").put("value",value).toString()); } catch(Exception ignored) {} }
                 public void volumeChanged(JSONObject value) { try { if(!closed)sink.complete(new JSONObject().put("t","video.audioChanged").put("value",value).toString()); } catch(Exception ignored) {} }
                 public void firstFrame(JSONObject value) { try { if(!closed)sink.complete(new JSONObject().put("t","video.firstFrame").put("value",value).toString()); } catch(Exception error) { android.util.Log.w("PodJS","Video first frame event unavailable"); } }
                 public void complete(JSONObject value){if(requests.remove(id,request))reply(id,true,value,null,null);}
@@ -447,6 +448,7 @@ final class PodServices implements Closeable {
         }
         if (method.startsWith("video.")) {
             video.dispatch(method, args, new PodVideoServices.Callback() {
+                public void stateChanged(JSONObject value) { try { if(!closed)sink.complete(new JSONObject().put("t","video.stateChanged").put("value",value).toString()); } catch(Exception ignored) {} }
                 public void volumeChanged(JSONObject value) { try { if(!closed)sink.complete(new JSONObject().put("t","video.audioChanged").put("value",value).toString()); } catch(Exception ignored) {} }
                 public void firstFrame(JSONObject value) { try { if(!closed)sink.complete(new JSONObject().put("t","video.firstFrame").put("value",value).toString()); } catch(Exception error) { android.util.Log.w("PodJS","Video first frame event unavailable"); } }
                 public void complete(JSONObject value) { if (requests.remove(id,request)) reply(id,true,value,null,null); }
