@@ -867,3 +867,9 @@ test('numeric idle diagnostics preserve SQL arguments and cannot change settleme
   await expect(failed.result).rejects.toMatchObject({code:'original_failure'});
  }finally{setServiceDiagnostics(undefined);}
 });
+
+test('native playback transitions and progress remain session-scoped payloads and unsubscribe',async()=>{
+ const {onVideoStateChanged}=await import('../src/services');const seen:unknown[]=[];const remove=onVideoStateChanged(value=>seen.push(value));
+ const value={state:'ended',positionMs:1000,sessionId:'active',sourceGeneration:9};events.push({t:'video.stateChanged',value});api.__pumpPodEvents();expect(seen).toEqual([value]);
+ remove();events.push({t:'video.stateChanged',value});api.__pumpPodEvents();expect(seen).toHaveLength(1);
+});

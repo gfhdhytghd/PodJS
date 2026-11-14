@@ -42,3 +42,11 @@ test('network total/connect/read timeouts fit the remaining window',async()=>{
  await host('http.download',{callTimeoutMs:120000,timeoutMs:15000,readTimeoutMs:30000});
  expect(received).toEqual({callTimeoutMs:9000,timeoutMs:9000,readTimeoutMs:9000});
 });
+
+test('journal readers close in the cleanup reserve after replay admission stops',async()=>{
+ let now=289500;const calls:string[]=[];const w=new WorkWindow({deadlineMs:300000,reserveMillis:10000,now:()=>now,expired:()=>Error('expired')});
+ const host=windowedHost(async<T>(method:string)=>{calls.push(method);return null as T;},w);
+ await expect(host('file.readTextChunk',{id:'reader',maxChars:32768})).rejects.toThrow('expired');
+ await host('file.closeText',{id:'reader'});expect(calls).toEqual(['file.closeText']);
+ now=299000;await expect(host('file.closeText',{id:'reader'})).rejects.toThrow('expired');expect(calls).toHaveLength(1);
+});

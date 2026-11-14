@@ -457,7 +457,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             private void changed(){
                 if(!own.matches(player,generation)||own.prewarming)return;
                 try{callback.stateChanged(own.snapshot());}catch(Exception ignored){}
-                if(!pendingProgress&&player.isPlaying()&&(own.bounds!=null&&own.bounds.visible)){pendingProgress=true;main.postDelayed(()->{pendingProgress=false;if(own.matches(player,generation)&&!own.prewarming&&(own.bounds!=null&&own.bounds.visible)&&player.isPlaying())changed();},400);}
+                if(!pendingProgress&&(player.isPlaying()||player.getPlaybackState()==Player.STATE_BUFFERING)&&(own.bounds!=null&&own.bounds.visible)){pendingProgress=true;main.postDelayed(()->{pendingProgress=false;if(own.matches(player,generation)&&!own.prewarming&&(own.bounds!=null&&own.bounds.visible)&&(player.isPlaying()||player.getPlaybackState()==Player.STATE_BUFFERING))changed();},400);}
             }
             @Override public void onEvents(Player ignored,Player.Events events){changed();}
 
@@ -1162,6 +1162,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         }
 
         void lendDecoder() {
+            progressObserver=()->{};
             if(player==null)return;
             if(!hasCachedFrame())revealKeyframe();
             if(!hasCachedFrame())return;
@@ -1174,6 +1175,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         }
 
         void resetPlayer() {
+            progressObserver=()->{};
             if(this == dragFrom || this == dragTo || presented) endDrag();
             if(frameCompletionCancel!=null){frameCompletionCancel.run();frameCompletionCancel=null;}
             clearKeyframe();

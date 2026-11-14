@@ -244,7 +244,7 @@ public final class PodVideoServices implements AutoCloseable {
             private void changed(){
                 if(player!=session)return;
                 try{if(frameCallback!=null)frameCallback.stateChanged(state());}catch(Exception ignored){}
-                if(!pendingProgress&&session.isPlaying()&&boundsVisible){pendingProgress=true;main.postDelayed(()->{pendingProgress=false;if(player==session&&boundsVisible&&session.isPlaying())changed();},400);}
+                if(!pendingProgress&&(session.isPlaying()||session.getPlaybackState()==Player.STATE_BUFFERING)&&boundsVisible){pendingProgress=true;main.postDelayed(()->{pendingProgress=false;if(player==session&&boundsVisible&&(session.isPlaying()||session.getPlaybackState()==Player.STATE_BUFFERING))changed();},400);}
             }
             @Override public void onEvents(Player ignored,Player.Events events){changed();}
 
@@ -354,6 +354,7 @@ public final class PodVideoServices implements AutoCloseable {
             +" decoderRendered="+(counters==null?-1:counters.renderedOutputBufferCount)+" decoderDropped="+(counters==null?-1:counters.droppedBufferCount)+" decoderSkipped="+(counters==null?-1:counters.skippedOutputBufferCount));
     }
     private void detachPlayer(boolean keepPlaying){
+        progressObserver=()->{};
         PodBenchmark.cancelVideo(videoView);
         if(!statsWindowLogged)logFrameStats("end");frameStats=null;
         ExoPlayer previous=player;player=null;audioPolicy=null;audioStop=null;

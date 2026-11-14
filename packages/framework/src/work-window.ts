@@ -37,7 +37,7 @@ export function windowedHost<T extends <R>(method:string,args:Record<string,unkn
   // Releasing a held lease and one bounded diagnostic flush must unwind even
   // after admission closes. They cannot start application work.
   if(['cloud.release','secure.release','log.append'].includes(method))return host<R>(method,args);
-  if(method==='file.delete'||method==='crypto.closeSealedGzip'){try{return await window.cleanup(()=>host<R>(method,args));}finally{sizes.delete(String(args.path));}}
+  if(method==='file.delete'||method==='file.closeText'||method==='crypto.closeSealedGzip'){try{return await window.cleanup(()=>host<R>(method,args));}finally{sizes.delete(String(args.path));}}
   const stage:WorkStage=method==='http.download'?'network':method==='secure.get'?'secure-read':method.startsWith('secure.')?'secure-write':(/aesgcmdecrypt/i.test(method)||method==='crypto.openSealedParts')?'decrypt':/aesgcmencrypt/i.test(method)?'encrypt':method==='file.read'?'file-read':method==='file.write'?'file-write':(method==='file.commit'||method==='file.compose')?'file-commit':/gzip|gunzip/.test(method)?'transform':'host';
   const input=typeof args.inputPath==='string'?args.inputPath:typeof args.path==='string'?args.path:'';
   const bytes=method==='crypto.openSealedParts'&&typeof args.length==='number'?args.length:sizes.get(input)??0;
