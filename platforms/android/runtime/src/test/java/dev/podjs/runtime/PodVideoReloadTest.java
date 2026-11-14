@@ -18,6 +18,12 @@ public class PodVideoReloadTest {
    assertEquals("source_expired",PodVideoAnalytics.errorCode(new PlaybackException("PRIVATE",cause,PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS)));
   }
  }
+ @Test public void mediaReloadDoesNotReclassifyAuthenticationRateLimitsOrServerErrors(){
+  for(int status:new int[]{401,412,429,500,502}){
+   Throwable cause=new HttpDataSource.InvalidResponseCodeException(status,"synthetic",null,java.util.Collections.emptyMap(),new DataSpec(Uri.parse("https://fixture.invalid/video")),new byte[0]);
+   assertEquals(status<500?"restricted":"cdn_error",PodVideoAnalytics.errorCode(new PlaybackException("synthetic",cause,PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS)));
+  }
+ }
  @Test public void lifecycleDoesNotEraseAnErrorWithNoLivePlayer()throws Exception{
   PodVideoServices service=new PodVideoServices(androidx.test.core.app.ApplicationProvider.getApplicationContext());
   try{
