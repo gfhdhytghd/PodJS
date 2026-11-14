@@ -17,6 +17,18 @@ public class PodJournalTextTest {
  @After public void cleanup()throws Exception{try(java.util.stream.Stream<Path> paths=Files.walk(root)){for(Path p:paths.sorted(Comparator.reverseOrder()).collect(java.util.stream.Collectors.toList()))Files.deleteIfExists(p);}}
  private PodDeviceServices service(){return new PodDeviceServices(root.toFile(),()->{throw new IOException("no key");});}
  private JSONObject path(String name)throws Exception{return new JSONObject().put("path",name);}
+ @Test public void overlongSlashUsesReplacementAndPreservesFollowingFrame()throws Exception{
+  ByteArrayOutputStream raw=new ByteArrayOutputStream();raw.write("{\"value\":\"".getBytes(StandardCharsets.UTF_8));raw.write(new byte[]{(byte)0xc0,(byte)0xaf});raw.write("\"}\n{\"after\":\"last valid\"}\n".getBytes(StandardCharsets.UTF_8));
+  Files.write(root.resolve("overlong"),raw.toByteArray());
+  try(PodDeviceServices s=service()){
+   for(int max:new int[]{1,2,3,7,32768}){
+    String id=s.execute("file.openText",path("overlong")).getString("id");StringBuilder text=new StringBuilder();
+    for(;;){JSONObject part=s.execute("file.readTextChunk",new JSONObject().put("id",id).put("maxChars",max));text.append(part.getString("text"));if(part.getBoolean("eof"))break;}
+    assertEquals("{\"value\":\"\ufffd\ufffd\"}\n{\"after\":\"last valid\"}\n",text.toString());
+    assertFalse(s.execute("file.closeText",new JSONObject().put("id",id)).getBoolean("closed"));
+   }
+  }
+ }
  @Test public void failedStrictReadClosesHandleBeforeClientCleanup()throws Exception{
   Files.write(root.resolve("invalid"),new byte[]{(byte)0xff});
   try(PodDeviceServices s=service()){

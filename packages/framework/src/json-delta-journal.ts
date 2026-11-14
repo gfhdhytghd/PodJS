@@ -4,6 +4,9 @@ import {encodeUtf8} from './byte-codecs.ts';
 export interface JsonJournalFiles {
  /** Bounded decoded chunks; chunk boundaries must preserve Unicode scalars. */
  chunks?(path:string):AsyncIterable<string>;
+ /** Optional historical decoding of each raw LF-delimited frame, without LF.
+  * Consulted only after the primary interpretation fails validation. */
+ legacyLines?(path:string):AsyncIterable<string>;
  /** Atomically publish the verified decoded UTF-8 prefix (bytes), optionally adding a newline. */
  repair?(path:string,bytes:number,newline:boolean):Promise<void>;
  yieldTurn?():Promise<void>;
@@ -45,14 +48,27 @@ export class JsonDeltaJournal {
   let raw=await this.files.read(this.path)??'{}';this.basePrefixed=raw.startsWith('\n');this.base=this.files.fingerprint?await this.files.fingerprint(this.path,raw):await this.digest(raw);
   await this.pause();let parsed:ObjectValue={};try{const value=cpuJsonParse(raw);if(object(value))parsed=value;}catch{/* Derived cache loss never authorizes business cleanup. */}
   this.value=this.normalize(parsed);raw='';await this.pause();
-  let repair=false,newline=false,sourceBytes=0,spentBytes=0,frames=0,started=Date.now();
-  await cpuWorkAsync('journal-rebuild','chars',0,async()=>{for await(const {text:line,terminated} of this.lines()){
-   if(!line){repair=true;break;}
-   const bytes=encodeUtf8(line).length;let accepted=false;
+  let repair=false,newline=false,legacyAccepted=false,sourceBytes=0,spentBytes=0,frames=0,started=Date.now();
+  let legacy:AsyncIterator<string>|undefined,legacyIndex=0,lineIndex=0;
+  const validated=async(line:string)=>{
    let f:any,payload:string|undefined;
    try{f=cpuJsonParse(line);if(f.base===this.base&&f.sequence===this.sequence+1&&Array.isArray(f.edits)&&f.edits.length<=100000)payload=cpuJsonStringify([f.base,f.sequence,f.edits]);}
    catch{/* Invalid JSON is a corrupt frame; host digest failures are not. */}
-   if(payload!==undefined&&await this.digest(payload)===f.digest){
+   return payload!==undefined&&await this.digest(payload)===f.digest?f:undefined;
+  };
+  try{await cpuWorkAsync('journal-rebuild','chars',0,async()=>{for await(const {text:line,terminated} of this.lines()){
+   lineIndex++;
+   if(!line){repair=true;break;}
+   const bytes=encodeUtf8(line).length;let accepted=false;
+   let f=await validated(line);
+   if(!f&&this.files.legacyLines){
+    legacy??=this.files.legacyLines(this.path+'.delta')[Symbol.asyncIterator]();
+    let alternate:IteratorResult<string>|undefined;
+    while(legacyIndex<lineIndex){alternate=await legacy.next();legacyIndex++;if(alternate.done)throw Error('json_journal_legacy_incomplete');if(legacyIndex%32===0)await this.pause();}
+    f=await validated(alternate!.value!);
+    if(f)legacyAccepted=true;
+   }
+   if(f){
     try{this.apply(f.edits);this.sequence++;sourceBytes+=bytes+(terminated?1:0);this.offset+=bytes+1;accepted=true;}
     catch{/* Stop at an invalid edit, exactly as the legacy reader. */}
    }
@@ -63,13 +79,16 @@ export class JsonDeltaJournal {
    if(!terminated){repair=true;newline=true;}
    spentBytes+=bytes+1;frames++;
    if(spentBytes>=128*1024||frames>=32||Date.now()-started>=8){await this.pause();spentBytes=0;frames=0;started=Date.now();}
-  }});
-  if(repair){
+  }});}finally{await legacy?.return?.();}
+  // Historical decoding can change byte lengths. Publish the authenticated
+  // state at this safe checkpoint, never a prefix re-encoded by the other
+  // decoder. This also canonicalizes the legacy frame before future appends.
+  if(repair&&!legacyAccepted){
    if(this.files.repair)await this.files.repair(this.path+'.delta',sourceBytes,newline);
    else{let valid='',n=0;for await(const {text} of this.lines()){if(n++>=this.sequence)break;valid+=text+'\n';}await this.files.replace(this.path+'.delta',valid);}
   }
   // No caller has received a mutable value yet: this is a safe checkpoint.
-  if(this.offset>=this.maximum||this.sequence>=2048){await this.pause();await this.compact(this.value);}
+  if(legacyAccepted||this.offset>=this.maximum||this.sequence>=2048){await this.pause();await this.compact(this.value);}
   this.remember(this.value);this.loaded=true;return this.denormalize(this.value);
  }
  private async compact(value:ObjectValue){

@@ -70,3 +70,36 @@ test('independent 259042d oracle agrees across scalar chunk boundaries and corru
   }
  }
 });
+
+test('historical retry authenticates each frame, closes its iterator and canonicalizes before append',async()=>{
+ for(const mode of ['valid','bad-digest','hash-failure','read-failure','publish-failure','invalid-json'] as const){
+  const f=memory({rows:{seed:''}}),writer=f.make(f.io,100000);await writer.load();
+  await writer.commit({rows:{first:'汉😀'}});await writer.commit({rows:{first:'汉😀',problem:'/'}});await writer.commit({rows:{first:'汉😀',problem:'/',after:'last valid'}});
+  const original=f.files.get('state.delta')!,legacy=original.trimEnd().split('\n');
+  f.files.set('state.delta',mode==='invalid-json'?original.replace('"value":"/"','"value":?'):original.replace('"value":"/"','"value":"��"'));
+  if(mode==='bad-digest')legacy[1]=legacy[1]!.replace(/"digest":"[a-f0-9]+"/,'"digest":"'+'0'.repeat(64)+'"');
+  const before=new Map(f.files);let closed=0,reads=0,fail=true,failedHash=false;
+  const io={...f.io,async *chunks(p:string){yield f.files.get(p)??'';},async *legacyLines(){try{for(const line of legacy){reads++;if(mode==='read-failure'&&fail)throw Error('legacy IO');yield line;}}finally{closed++;}},
+   sha256:async(bytes:Uint8Array)=>{const s=Buffer.from(bytes).toString();if(mode==='hash-failure'&&fail&&s.includes('"value":"/"')){failedHash=true;throw Error('legacy digest IO');}return digest(s);},
+   replace:async(p:string,s:string)=>{await f.io.replace(p,s);if(mode==='publish-failure'&&fail&&p==='state')throw Error('publish IO');}};
+  const journal=f.make(io,100000);
+  if(['hash-failure','read-failure','publish-failure'].includes(mode)){
+   await expect(journal.load()).rejects.toThrow('IO');expect(closed).toBe(1);
+   if(mode!=='publish-failure')expect(f.files).toEqual(before);
+   if(mode==='hash-failure')expect(failedHash).toBe(true);
+   fail=false;
+  }
+  const expected=mode==='bad-digest'?{rows:{first:'汉😀'}}:{rows:{first:'汉😀',problem:'/',after:'last valid'}};
+  expect(await journal.load()).toEqual(expected);expect(closed).toBeGreaterThan(0);
+  if(mode!=='bad-digest')expect(f.files.get('state.delta')).toBe('');
+  await journal.commit({rows:{...expected.rows,next:'appended'}});
+  expect(await f.make(f.io,100000).load()).toEqual({rows:{...expected.rows,next:'appended'}});
+  expect(reads).toBeGreaterThan(0);
+ }
+});
+test('primary authenticated frames never consult the optional historical decoder',async()=>{
+ const f=memory(),writer=f.make(f.io,100000);await writer.load();await writer.commit({rows:{literal:'�'}});
+ const before=new Map(f.files);let reads=0;
+ const io={...f.io,async *legacyLines(){reads++;throw Error('must stay lazy');yield '';}};
+ expect(await f.make(io,100000).load()).toEqual({rows:{literal:'�'}});expect(reads).toBe(0);expect(f.files).toEqual(before);
+});
