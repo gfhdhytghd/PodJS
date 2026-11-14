@@ -353,7 +353,7 @@ export function onVideoStateChanged(listener:(state:VideoState & {sessionId?:str
  return __onHostEvent(event=>{if(event.t==='video.stateChanged'&&event.value&&typeof event.value==='object')listener(event.value as VideoState & {sessionId?:string});});
 }
 export interface VideoBounds { benchmark?:VideoBenchmarkAction; x:number; y:number; width:number; height:number; translateX?:number; translateY?:number; visible?:boolean; roundClip?:{cx:number;cy:number;radius:number} }
-export interface VideoTransform {rotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}
+export interface VideoTransform {rotationDeg?:number;/** Destination angle used for scale; defaults to rotationDeg. */ scaleRotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}
 export interface VideoPrepare {/** Apply system ringer/zen silence to player gain. Override is process-local. */ respectSilentMode?:boolean;transform?:VideoTransform;sourceOrdinal?:number;slotOrdinal?:number; startupSeq?:number; benchmark?:VideoBenchmarkAction; url?:string; videoUrl?:string; audioUrl?:string; type?:string; videoMime?:string; videoWidth?:number; videoHeight?:number; headers?:Record<string,string>; bounds:VideoBounds; autoplay?:boolean; muted?:boolean; loop?:boolean; backgroundPlayback?:boolean }
 export interface VideoFrameSource {url?:string;videoUrl?:string;audioUrl?:string;headers?:Record<string,string>}
 export interface VideoFrame {available:true;kind:"actual_frame";path:string;width:number;height:number;positionMs:number;capturedAt:number;capturedGeneration:number}
@@ -377,7 +377,7 @@ export const video = {
   setBounds(bounds:VideoBounds): Promise<VideoState> { return hostOperation<VideoState>("video.setBounds", bounds as unknown as Record<string,unknown>).result; },
   state(): Promise<VideoState> { return hostOperation<VideoState>("video.state", {}).result; },
   captureBackdrop(options: {opaque?:boolean} = {}): Promise<{ok:boolean}> { return hostOperation<{ok:boolean}>("video.captureBackdrop", options).result; },
-  setTransform(transform:{rotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}): Promise<VideoState> { return hostOperation<VideoState>("video.setTransform", transform as Record<string,unknown>).result; },
+  setTransform(transform:{rotationDeg?:number;/** Destination angle used for scale; defaults to rotationDeg. */ scaleRotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}): Promise<VideoState> { return hostOperation<VideoState>("video.setTransform", transform as Record<string,unknown>).result; },
   /** Change repeat mode on the current player without preparing or seeking. */
   setLoop(loop:boolean): Promise<VideoState> { return hostOperation<VideoState>("video.setLoop", {loop}).result; },
   /** 0.5..2; supported when VideoState reports `speed`. */
@@ -444,7 +444,7 @@ export const videoSessions = {
   release(sessionId:string):Promise<{sessionId:string;released:boolean}> { return hostOperation<{sessionId:string;released:boolean}>("video.session.release",{sessionId}).result; },
   setBounds(sessionId:string,bounds:VideoBounds):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setBounds",{sessionId,bounds}).result; },
   state(sessionId:string):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.state",{sessionId}).result; },
-  setTransform(sessionId:string,transform:{rotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setTransform",{sessionId,...transform}).result; },
+  setTransform(sessionId:string,transform:{rotationDeg?:number;/** Destination angle used for scale; defaults to rotationDeg. */ scaleRotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setTransform",{sessionId,...transform}).result; },
   setLoop(sessionId:string,loop:boolean):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setLoop",{sessionId,loop}).result; },
   setSpeed(sessionId:string,speed:number):Promise<VideoSessionState> { checkVideoSpeed(speed); return hostOperation<VideoSessionState>("video.session.setSpeed",{sessionId,speed}).result; },
   setMuted(sessionId:string,muted:boolean):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setVolume",{sessionId,muted}).result; },

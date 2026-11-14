@@ -662,6 +662,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         Session session = require(args);
         session.readTransform(args);
         if(session.frameSource!=null)session.frameSource.put("transform",new JSONObject(args.toString()));
+        session.appliedVideoMatrix=null;session.appliedKeyframeMatrix=null;
         session.fitVideo(); callback.complete(session.snapshot());
     }
 
@@ -876,9 +877,13 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         if(changedPair) { showPagerBackground(bounds); hideStandbys(); }
         // The strip uses one display transform for every page, including
         // a retained paused texture and a cold target without decoded pixels.
-        to.scaleMode=from.scaleMode;to.rotationDeg=from.rotationDeg;to.panX=from.panX;to.panY=from.panY;
-        if(to.frameSource!=null)to.frameSource.put("transform",new JSONObject().put("scaleMode",to.scaleMode)
-                .put("rotationDeg",to.rotationDeg).put("panX",to.panX).put("panY",to.panY));
+        boolean transformChanged=!to.scaleMode.equals(from.scaleMode)||to.rotationDeg!=from.rotationDeg
+                ||to.scaleRotationDeg!=from.scaleRotationDeg||to.panX!=from.panX||to.panY!=from.panY;
+        if(transformChanged) {
+            to.scaleMode=from.scaleMode;to.rotationDeg=from.rotationDeg;to.scaleRotationDeg=from.scaleRotationDeg;to.panX=from.panX;to.panY=from.panY;
+            if(to.frameSource!=null)to.frameSource.put("transform",new JSONObject().put("scaleMode",to.scaleMode)
+                    .put("rotationDeg",to.rotationDeg).put("scaleRotationDeg",to.scaleRotationDeg).put("panX",to.panX).put("panY",to.panY));
+        }
         from.bounds = bounds; to.bounds = bounds; from.applyBounds(bounds, false); to.applyBounds(bounds, false);
         to.fitVideo();
         if(changedPair) { to.raisePresented(); from.raisePresented(); }
@@ -1075,7 +1080,11 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         String state = "idle";
         String errorCode;
         String scaleMode = "standard";
-        float rotationDeg, panX, panY;
+        float rotationDeg, scaleRotationDeg, panX, panY;
+        final PodVideoTransformCache liveGeometry=new PodVideoTransformCache(), keyframeGeometry=new PodVideoTransformCache();
+        TextureView transformedVideo;
+        android.widget.ImageView transformedKeyframe;
+        android.graphics.Matrix appliedVideoMatrix, appliedKeyframeMatrix;
         boolean decoderLease, prewarming, autoplay, presented, hasRenderedFirstFrame, disposed, keyframeOnly;
         long generation, completedLoops;
         JSONObject frameSource;
@@ -1420,16 +1429,20 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             if(!mode.equals("standard")&&!mode.equals("expanded")&&!mode.equals("shrunk"))throw new IllegalArgumentException("invalid_scale_mode");
             float rotation=finite(args,"rotationDeg",0,-100000,100000);
             float x=finite(args,"panX",0,-4096,4096),y=finite(args,"panY",0,-4096,4096);
-            scaleMode=mode;rotationDeg=Math.round(rotation*100f)/100f;panX=x;panY=y;
+            float scaleRotation=finite(args,"scaleRotationDeg",rotation,-100000,100000);
+            scaleMode=mode;rotationDeg=Math.round(rotation*100f)/100f;scaleRotationDeg=Math.round(scaleRotation*100f)/100f;panX=x;panY=y;
         }
 
         void fitKeyframe() {
             if(keyframeView==null||cachedFrame==null||bounds==null)return;
             android.graphics.drawable.Drawable image=keyframeView.getDrawable();
             if(image==null)return;
-            android.graphics.Matrix transform=PodVideoServices.videoTransform(bounds.widthPx,bounds.heightPx,
+            android.graphics.Matrix geometry=keyframeGeometry.get(bounds.widthPx,bounds.heightPx,
                     cachedFrame.pixels.getWidth()*cachedFrame.pixelAspectRatio,cachedFrame.pixels.getHeight(),
-                    rotationDeg,scaleMode,Math.round(panX*density),Math.round(panY*density));
+                    rotationDeg,scaleRotationDeg,scaleMode,Math.round(panX*density),Math.round(panY*density));
+            if(transformedKeyframe==keyframeView&&appliedKeyframeMatrix==geometry)return;
+            transformedKeyframe=keyframeView;appliedKeyframeMatrix=geometry;
+            android.graphics.Matrix transform=new android.graphics.Matrix(geometry);
             transform.preScale(bounds.widthPx/(float)image.getIntrinsicWidth(),bounds.heightPx/(float)image.getIntrinsicHeight());
             keyframeView.setImageMatrix(transform);
         }
@@ -1439,7 +1452,10 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             androidx.media3.common.VideoSize size = player.getVideoSize();
             if (size.width <= 0 || size.height <= 0 || bounds.widthPx <= 0 || bounds.heightPx <= 0) return;
             float width = size.width * size.pixelWidthHeightRatio, height = size.height;
-            videoView.setTransform(PodVideoServices.videoTransform(bounds.widthPx, bounds.heightPx, width, height, rotationDeg, scaleMode, Math.round(panX * density), Math.round(panY * density)));
+            android.graphics.Matrix matrix=liveGeometry.get(bounds.widthPx,bounds.heightPx,width,height,rotationDeg,scaleRotationDeg,scaleMode,Math.round(panX*density),Math.round(panY*density));
+            if(transformedVideo==videoView&&appliedVideoMatrix==matrix)return;
+            transformedVideo=videoView;appliedVideoMatrix=matrix;
+            videoView.setTransform(matrix);
             // setTransform only invalidates the parent. A paused retained page
             // also needs its own display list rebuilt before it enters a drag.
             videoView.invalidate();

@@ -15,7 +15,7 @@ export interface VideoSessionPort {
   release(sessionId:string):Promise<{sessionId:string;released:boolean}>;
   setBounds(sessionId:string,bounds:VideoBounds):Promise<VideoSessionState>;
   state(sessionId:string):Promise<VideoSessionState>;
-  setTransform(sessionId:string,transform:{rotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}):Promise<VideoSessionState>;
+  setTransform(sessionId:string,transform:{rotationDeg?:number;/** Destination angle used for scale; defaults to rotationDeg. */ scaleRotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}):Promise<VideoSessionState>;
   setVolume(sessionId:string,volume:number,crownDirection?:-1|1):Promise<VideoSessionState>;
   setMuted?(sessionId:string,muted:boolean):Promise<VideoSessionState>;
   setLoop(sessionId:string,loop:boolean):Promise<VideoSessionState>;

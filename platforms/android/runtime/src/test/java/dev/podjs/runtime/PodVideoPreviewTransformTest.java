@@ -37,17 +37,17 @@ public class PodVideoPreviewTransformTest {
     field(player.getClass(),"videoSize").set(player,new VideoSize(size[0],size[1]));
     Bitmap bitmap=Bitmap.createBitmap(size[0],size[1],Bitmap.Config.ARGB_8888);ImageView image=new ImageView(c);image.setScaleType(ImageView.ScaleType.MATRIX);image.setImageBitmap(bitmap);image.setLayoutParams(new FrameLayout.LayoutParams(texture.getLayoutParams()));parent.addView(image);image.layout(0,0,texture.getLayoutParams().width,texture.getLayoutParams().height);
     PodVideoKeyframes.Frame pixels=new PodVideoKeyframes.Frame(bitmap);pixels.pins=1;field(t,"cachedFrame").set(next,pixels);field(t,"keyframeView").set(next,image);
-    for(String direction:new String[]{"up","down"})for(double progress:new double[]{0,.25,.5,1})for(String mode:new String[]{"standard","expanded","shrunk"}){
-     call(s,"setTransform",new JSONObject().put("sessionId","old").put("scaleMode",mode));
+    for(int angle:new int[]{0,90,180,270})for(String direction:new String[]{"up","down"})for(double progress:new double[]{0,.25,.5,1})for(String mode:new String[]{"standard","expanded","shrunk"}){
+     call(s,"setTransform",new JSONObject().put("sessionId","old").put("scaleMode",mode).put("rotationDeg",angle));
      call(s,"transition",new JSONObject().put("fromSessionId","old").put("toSessionId","next").put("direction",direction).put("progress",progress).put("bounds",bounds));
      assertEquals(mode,field(t,"scaleMode").get(next));
      float y=image.getTranslationY();long generation=field(t,"generation").getLong(next);
      int paints=texture.paints;
-     call(s,"setTransform",new JSONObject().put("sessionId","next").put("scaleMode",mode));
+     call(s,"setTransform",new JSONObject().put("sessionId","next").put("scaleMode",mode).put("rotationDeg",angle));
      assertTrue("paused TextureView must redraw without a new decoder buffer",texture.paints>paints);
      assertSame(pixels,field(t,"cachedFrame").get(next));assertEquals(generation,field(t,"generation").getLong(next));assertEquals(y,image.getTranslationY(),0);assertEquals(y,texture.getTranslationY(),0);
      Matrix live=new Matrix();texture.getTransform(live);int w=texture.getLayoutParams().width,h=texture.getLayoutParams().height;
-     RectF settled=mapped(PodVideoServices.videoTransform(w,h,size[0],size[1],0,mode,0,0),w,h);
+     RectF settled=mapped(PodVideoServices.videoTransform(w,h,size[0],size[1],angle,mode,0,0),w,h);
      assertEquals(size[0],player.getVideoSize().width);
      rect(settled,mapped(live,w,h));
      rect(settled,mapped(image.getImageMatrix(),image.getDrawable().getIntrinsicWidth(),image.getDrawable().getIntrinsicHeight()));
