@@ -322,6 +322,9 @@ public final class PodVideoServices implements AutoCloseable {
         float vw=size.width*size.pixelWidthHeightRatio, vh=size.height;
         Matrix transform=geometry.get(w,h,vw,vh,rotationDeg,scaleRotationDeg,scaleMode,dp(panX),dp(panY));
         videoView.setTransform(transform);
+        // A paused single-player fallback has no decoder buffer to invalidate
+        // its display list. Match retained sessions when applying a transform.
+        videoView.invalidate();
     }
     static Matrix videoTransform(float w,float h,float vw,float vh,float rotation,String mode,float panX,float panY) {
         return videoTransform(w,h,vw,vh,rotation,rotation,mode,panX,panY);
