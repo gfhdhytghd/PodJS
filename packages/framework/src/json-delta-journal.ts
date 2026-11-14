@@ -18,7 +18,7 @@ const put=(v:ObjectValue,k:string,x:any)=>Object.defineProperty(v,k,{value:x,wri
  * Dictionary entries are immutable JSON values: replace an entry to edit it.
  * This is not authentication, a remote ACK, or an application transaction. */
 export class JsonDeltaJournal {
- private value:ObjectValue={};private snapshot:ObjectValue={};private base='';private sequence=0;private offset=0;private loaded=false;private loading:Promise<ObjectValue>|undefined;private writes:Promise<unknown>=Promise.resolve();
+ private value:ObjectValue={};private snapshot:ObjectValue={};private base='';private basePrefixed=false;private sequence=0;private offset=0;private loaded=false;private loading:Promise<ObjectValue>|undefined;private writes:Promise<unknown>=Promise.resolve();
  constructor(private files:JsonJournalFiles,private path:string,private maps:readonly string[],private normalize:(v:ObjectValue)=>ObjectValue=v=>v,private denormalize:(v:ObjectValue)=>ObjectValue=v=>v,private maximum=32*1024*1024){}
  private digest(s:string){const bytes=encodeUtf8(s);return this.files.sha256?cpuWorkAsync('sha256','bytes',bytes.length,()=>this.files.sha256!(bytes)):Promise.resolve(sha256Hex(bytes));}
  private remember(value:ObjectValue){this.snapshot={...value};for(const field of this.maps)if(object(value[field]))this.snapshot[field]={...value[field]};}
@@ -42,18 +42,20 @@ export class JsonDeltaJournal {
  private async replay():Promise<ObjectValue>{
   // A failed IO/repair may be retried on the same instance.
   this.sequence=0;this.offset=0;
-  let raw=await this.files.read(this.path)??'{}';this.base=this.files.fingerprint?await this.files.fingerprint(this.path,raw):await this.digest(raw);
+  let raw=await this.files.read(this.path)??'{}';this.basePrefixed=raw.startsWith('\n');this.base=this.files.fingerprint?await this.files.fingerprint(this.path,raw):await this.digest(raw);
   await this.pause();let parsed:ObjectValue={};try{const value=cpuJsonParse(raw);if(object(value))parsed=value;}catch{/* Derived cache loss never authorizes business cleanup. */}
   this.value=this.normalize(parsed);raw='';await this.pause();
   let repair=false,newline=false,sourceBytes=0,spentBytes=0,frames=0,started=Date.now();
   await cpuWorkAsync('journal-rebuild','chars',0,async()=>{for await(const {text:line,terminated} of this.lines()){
    if(!line){repair=true;break;}
    const bytes=encodeUtf8(line).length;let accepted=false;
-   try{const f=cpuJsonParse(line),payload=cpuJsonStringify([f.base,f.sequence,f.edits]);
-    if(f.base===this.base&&f.sequence===this.sequence+1&&Array.isArray(f.edits)&&f.edits.length<=100000&&await this.digest(payload)===f.digest){
-     this.apply(f.edits);this.sequence++;sourceBytes+=bytes+(terminated?1:0);this.offset+=bytes+1;accepted=true;
-    }
-   }catch{/* Stop at the first invalid frame, exactly as the legacy reader. */}
+   let f:any,payload:string|undefined;
+   try{f=cpuJsonParse(line);if(f.base===this.base&&f.sequence===this.sequence+1&&Array.isArray(f.edits)&&f.edits.length<=100000)payload=cpuJsonStringify([f.base,f.sequence,f.edits]);}
+   catch{/* Invalid JSON is a corrupt frame; host digest failures are not. */}
+   if(payload!==undefined&&await this.digest(payload)===f.digest){
+    try{this.apply(f.edits);this.sequence++;sourceBytes+=bytes+(terminated?1:0);this.offset+=bytes+1;accepted=true;}
+    catch{/* Stop at an invalid edit, exactly as the legacy reader. */}
+   }
    if(!accepted){repair=true;break;}
    if(!terminated){repair=true;newline=true;}
    spentBytes+=bytes+1;frames++;
@@ -68,14 +70,17 @@ export class JsonDeltaJournal {
   this.remember(this.value);this.loaded=true;return this.denormalize(this.value);
  }
  private async compact(value:ObjectValue){
-  const raw=cpuJsonStringify(this.denormalize(value));
+  // Alternate a JSON whitespace prefix so even a revert to the previous base
+  // has a new content identity. A crash before delta cleanup must reject the
+  // previous generation's frames. JSON readers (including legacy) accept it.
+  const raw=(this.basePrefixed?'':'\n')+cpuJsonStringify(this.denormalize(value));
   try{
    // A host fingerprint may include more than the content hash. Preserve its
    // identity contract against the published base, as the legacy writer did.
    const digest=this.files.fingerprint?undefined:await this.digest(raw);
    await this.pause();await this.files.replace(this.path,raw);
    this.base=this.files.fingerprint?await this.files.fingerprint(this.path,raw):digest!;
-   this.offset=0;this.sequence=0;await this.files.replace(this.path+'.delta','');
+   this.basePrefixed=raw.startsWith('\n');this.offset=0;this.sequence=0;await this.files.replace(this.path+'.delta','');
   }catch(error){
    // Publication may already have succeeded. Reopen before any later append.
    this.loaded=false;throw error;
@@ -96,7 +101,7 @@ export class JsonDeltaJournal {
    // Normal committed data remains recoverable if replacement or truncation is
    // interrupted. Old frames cannot apply to the new base's digest.
    await this.compact(next);
-  }else{await this.files.append(this.path+'.delta',frame,this.offset);this.offset+=bytes;this.sequence++;}
+  }else{try{await this.files.append(this.path+'.delta',frame,this.offset);}catch(error){this.loaded=false;throw error;}this.offset+=bytes;this.sequence++;}
   this.value=next;this.remember(next);return {bytes,edits:edits.length};
  }
 }

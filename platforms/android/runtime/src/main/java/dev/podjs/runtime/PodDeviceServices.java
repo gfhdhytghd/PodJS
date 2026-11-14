@@ -706,13 +706,19 @@ public final class PodDeviceServices implements AutoCloseable {
         long requested = a.has("maxChars") ? exactFileSize(a,"maxChars") : 16384;
         if (requested < 1 || requested > 32768) throw new IllegalArgumentException("invalid_max_chars");
         int max=(int)requested;
-        char[] buffer = new char[max+1];int count = reader.read(buffer,0,max);
-        if (count < 0) { reader.close();textReaders.remove(id);return new JSONObject().put("text","").put("eof",true); }
-        // InputStreamReader produces valid pairs; keep a pair in one bridge reply.
-        if (count > 0 && Character.isHighSurrogate(buffer[count-1])) {
-            int next = reader.read();if (next >= 0) buffer[count++]=(char)next;
+        try {
+            char[] buffer = new char[max+1];int count = reader.read(buffer,0,max);
+            if (count < 0) { textReaders.remove(id);reader.close();return new JSONObject().put("text","").put("eof",true); }
+            // InputStreamReader produces valid pairs; keep a pair in one bridge reply.
+            if (count > 0 && Character.isHighSurrogate(buffer[count-1])) {
+                int next = reader.read();if (next >= 0) buffer[count++]=(char)next;
+            }
+            return new JSONObject().put("text",new String(buffer,0,count)).put("eof",false);
+        } catch (Exception error) {
+            textReaders.remove(id);
+            try { reader.close(); } catch (IOException closing) { error.addSuppressed(closing); }
+            throw error;
         }
-        return new JSONObject().put("text",new String(buffer,0,count)).put("eof",false);
     }
     private JSONObject fileCloseText(JSONObject a) throws Exception {
         java.io.Reader reader = textReaders.remove(required(a,"id"));
