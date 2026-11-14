@@ -33,7 +33,7 @@ test('queued commits serialize sequence and recover after an uncertain complete 
 test('stream iterator closes on a corrupt frame and retries a read failure without publishing repair',async()=>{
  const f=memory();const j=f.make();await j.load();await j.commit({rows:{a:'durable'}});const original=f.files.get('state.delta')!;let closed=0,fail=true,repairs=0;
  const io={...f.io,async *chunks(){try{yield original;if(fail){fail=false;throw Error('chunk IO');}yield '{bad';}finally{closed++;}},repair:async(p:string,n:number)=>{repairs++;f.files.set(p,Buffer.from(f.files.get(p)!).subarray(0,n).toString());}};
- const reader=f.make(io);await expect(reader.load()).rejects.toThrow('chunk IO');expect(repairs).toBe(0);expect(await reader.load()).toEqual({rows:{a:'durable'}});expect(closed).toBe(2);expect(repairs).toBe(1);
+ const reader=f.make(io);await expect(reader.load()).rejects.toThrow('chunk IO');expect(repairs).toBe(0);expect(await reader.load()).toEqual({rows:{a:'durable'}});expect(closed).toBe(2);expect(repairs).toBe(0);
 });
 
 test('SIGKILL at each atomic compaction publication boundary preserves the committed state',async()=>{
@@ -71,35 +71,38 @@ test('independent 259042d oracle agrees across scalar chunk boundaries and corru
  }
 });
 
-test('historical retry authenticates each frame, closes its iterator and canonicalizes before append',async()=>{
+test('whole-file historical replay resets streamed state and propagates faults before repair',async()=>{
  for(const mode of ['valid','bad-digest','hash-failure','read-failure','publish-failure','invalid-json'] as const){
   const f=memory({rows:{seed:''}}),writer=f.make(f.io,100000);await writer.load();
   await writer.commit({rows:{first:'汉😀'}});await writer.commit({rows:{first:'汉😀',problem:'/'}});await writer.commit({rows:{first:'汉😀',problem:'/',after:'last valid'}});
-  const original=f.files.get('state.delta')!,legacy=original.trimEnd().split('\n');
-  f.files.set('state.delta',mode==='invalid-json'?original.replace('"value":"/"','"value":?'):original.replace('"value":"/"','"value":"��"'));
-  if(mode==='bad-digest')legacy[1]=legacy[1]!.replace(/"digest":"[a-f0-9]+"/,'"digest":"'+'0'.repeat(64)+'"');
-  const before=new Map(f.files);let closed=0,reads=0,fail=true,failedHash=false;
-  const io={...f.io,async *chunks(p:string){yield f.files.get(p)??'';},async *legacyLines(){try{for(const line of legacy){reads++;if(mode==='read-failure'&&fail)throw Error('legacy IO');yield line;}}finally{closed++;}},
-   sha256:async(bytes:Uint8Array)=>{const s=Buffer.from(bytes).toString();if(mode==='hash-failure'&&fail&&s.includes('"value":"/"')){failedHash=true;throw Error('legacy digest IO');}return digest(s);},
-   replace:async(p:string,s:string)=>{await f.io.replace(p,s);if(mode==='publish-failure'&&fail&&p==='state')throw Error('publish IO');}};
-  const journal=f.make(io,100000);
+  let original=f.files.get('state.delta')!;
+  if(mode==='bad-digest')original=original.replace(/("sequence":2.*?"digest":")[a-f0-9]+"/,'$1'+'0'.repeat(64)+'"');
+  f.files.set('state.delta',original);const before=new Map(f.files);let closed=0,reads=0,fail=true,failedHash=false;
+  const io={...f.io,async *chunks(){try{yield mode==='invalid-json'?original.replace('"value":"/"','"value":?'):original.replace('"value":"/"','"value":"��"');}finally{closed++;}},
+   read:async(p:string)=>{if(p.endsWith('.delta')){reads++;if(mode==='read-failure'&&fail)throw Error('legacy IO');}return f.io.read(p);},
+   sha256:async(bytes:Uint8Array)=>{const text=Buffer.from(bytes).toString();if(mode==='hash-failure'&&fail&&text.includes('"value":"/"')){failedHash=true;throw Error('legacy digest IO');}return digest(text);},
+   replace:async(p:string,text:string)=>{await f.io.replace(p,text);if(mode==='publish-failure'&&fail&&p==='state')throw Error('publish IO');}};
+  const journal=f.make(io,mode==='publish-failure'?1:100000);
   if(['hash-failure','read-failure','publish-failure'].includes(mode)){
    await expect(journal.load()).rejects.toThrow('IO');expect(closed).toBe(1);
    if(mode!=='publish-failure')expect(f.files).toEqual(before);
-   if(mode==='hash-failure')expect(failedHash).toBe(true);
-   fail=false;
+   if(mode==='hash-failure')expect(failedHash).toBe(true);fail=false;
   }
   const expected=mode==='bad-digest'?{rows:{first:'汉😀'}}:{rows:{first:'汉😀',problem:'/',after:'last valid'}};
-  expect(await journal.load()).toEqual(expected);expect(closed).toBeGreaterThan(0);
-  if(mode!=='bad-digest')expect(f.files.get('state.delta')).toBe('');
+  expect(await journal.load()).toEqual(expected);expect(closed).toBeGreaterThan(0);expect(reads).toBeGreaterThan(0);
   await journal.commit({rows:{...expected.rows,next:'appended'}});
   expect(await f.make(f.io,100000).load()).toEqual({rows:{...expected.rows,next:'appended'}});
-  expect(reads).toBeGreaterThan(0);
  }
 });
-test('primary authenticated frames never consult the optional historical decoder',async()=>{
- const f=memory(),writer=f.make(f.io,100000);await writer.load();await writer.commit({rows:{literal:'�'}});
- const before=new Map(f.files);let reads=0;
- const io={...f.io,async *legacyLines(){reads++;throw Error('must stay lazy');yield '';}};
- expect(await f.make(io,100000).load()).toEqual({rows:{literal:'�'}});expect(reads).toBe(0);expect(f.files).toEqual(before);
+test('healthy frames keep streaming without reading the whole delta',async()=>{
+ const f=memory(),writer=f.make(f.io,100000);await writer.load();await writer.commit({rows:{literal:'汉😀'}});const before=new Map(f.files);let reads=0;
+ const io={...f.io,read:async(p:string)=>{if(p.endsWith('.delta')){reads++;throw Error('must stay lazy');}return f.io.read(p);},async *chunks(p:string){yield f.files.get(p)??'';}};
+ expect(await f.make(io,100000).load()).toEqual({rows:{literal:'汉😀'}});expect(reads).toBe(0);expect(f.files).toEqual(before);
+});
+test('whole-file fallback keeps host yield budgets while using the historical replay loop',async()=>{
+ const f=memory({rows:{seed:''}}),writer=f.make(f.io,1e9);let value:any={rows:{}};
+ await writer.load();for(let i=0;i<96;i++){value={rows:{...value.rows,[i]:'汉😀'}};await writer.commit(value);}
+ let pauses=0,deltaReads=0;
+ const io={...f.io,async *chunks(){yield '�';},read:async(p:string)=>{if(p.endsWith('.delta'))deltaReads++;return f.io.read(p);},yieldTurn:async()=>{pauses++;}};
+ expect(await f.make(io,1e9).load()).toEqual(value);expect(deltaReads).toBe(1);expect(pauses).toBeGreaterThanOrEqual(6);
 });

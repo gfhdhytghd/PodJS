@@ -1,12 +1,10 @@
+import {LegacyJsonDeltaJournal} from './json-delta-journal-legacy';
 import {cpuWork,cpuWorkAsync,cpuJsonParse,cpuJsonStringify} from './cpu-work';
 import {sha256Hex} from './crypto.ts';
 import {encodeUtf8} from './byte-codecs.ts';
 export interface JsonJournalFiles {
  /** Bounded decoded chunks; chunk boundaries must preserve Unicode scalars. */
  chunks?(path:string):AsyncIterable<string>;
- /** Optional historical decoding of each raw LF-delimited frame, without LF.
-  * Consulted only after the primary interpretation fails validation. */
- legacyLines?(path:string):AsyncIterable<string>;
  /** Atomically publish the verified decoded UTF-8 prefix (bytes), optionally adding a newline. */
  repair?(path:string,bytes:number,newline:boolean):Promise<void>;
  yieldTurn?():Promise<void>;
@@ -21,7 +19,7 @@ const put=(v:ObjectValue,k:string,x:any)=>Object.defineProperty(v,k,{value:x,wri
  * Dictionary entries are immutable JSON values: replace an entry to edit it.
  * This is not authentication, a remote ACK, or an application transaction. */
 export class JsonDeltaJournal {
- private value:ObjectValue={};private snapshot:ObjectValue={};private base='';private basePrefixed=false;private sequence=0;private offset=0;private loaded=false;private loading:Promise<ObjectValue>|undefined;private writes:Promise<unknown>=Promise.resolve();
+ private value:ObjectValue={};private snapshot:ObjectValue={};private base='';private basePrefixed=false;private sequence=0;private offset=0;private loaded=false;private recovered=false;private loading:Promise<ObjectValue>|undefined;private writes:Promise<unknown>=Promise.resolve();
  constructor(private files:JsonJournalFiles,private path:string,private maps:readonly string[],private normalize:(v:ObjectValue)=>ObjectValue=v=>v,private denormalize:(v:ObjectValue)=>ObjectValue=v=>v,private maximum=32*1024*1024){}
  private digest(s:string){const bytes=encodeUtf8(s);return this.files.sha256?cpuWorkAsync('sha256','bytes',bytes.length,()=>this.files.sha256!(bytes)):Promise.resolve(sha256Hex(bytes));}
  private remember(value:ObjectValue){this.snapshot={...value};for(const field of this.maps)if(object(value[field]))this.snapshot[field]={...value[field]};}
@@ -45,51 +43,48 @@ export class JsonDeltaJournal {
  private async replay():Promise<ObjectValue>{
   // A failed IO/repair may be retried on the same instance.
   this.sequence=0;this.offset=0;
-  let raw=await this.files.read(this.path)??'{}';this.basePrefixed=raw.startsWith('\n');this.base=this.files.fingerprint?await this.files.fingerprint(this.path,raw):await this.digest(raw);
-  await this.pause();let parsed:ObjectValue={};try{const value=cpuJsonParse(raw);if(object(value))parsed=value;}catch{/* Derived cache loss never authorizes business cleanup. */}
+  this.recovered=false;let raw=await this.files.read(this.path)??'{}';this.basePrefixed=raw.startsWith('\n');this.base=this.files.fingerprint?await this.files.fingerprint(this.path,raw):await this.digest(raw);
+  await this.pause();let baseAnomaly=raw.includes('\ufffd'),parsed:ObjectValue={};try{const value=cpuJsonParse(raw);if(object(value))parsed=value;}catch{baseAnomaly=true;}
   this.value=this.normalize(parsed);raw='';await this.pause();
-  let repair=false,newline=false,legacyAccepted=false,sourceBytes=0,spentBytes=0,frames=0,started=Date.now();
-  let legacy:AsyncIterator<string>|undefined,legacyIndex=0,lineIndex=0;
-  const validated=async(line:string)=>{
+  let anomaly=baseAnomaly,spentBytes=0,frames=0,started=Date.now();
+  await cpuWorkAsync('journal-rebuild','chars',0,async()=>{for await(const {text:line,terminated} of this.lines()){
+   // Any uncertainty delegates the WHOLE file to the historical loader. Never
+   // infer a repair prefix from Java's replacement text or physical LF rows.
+   if(anomaly||!line||!terminated||line.includes('\ufffd')){anomaly=true;break;}
    let f:any,payload:string|undefined;
    try{f=cpuJsonParse(line);if(f.base===this.base&&f.sequence===this.sequence+1&&Array.isArray(f.edits)&&f.edits.length<=100000)payload=cpuJsonStringify([f.base,f.sequence,f.edits]);}
-   catch{/* Invalid JSON is a corrupt frame; host digest failures are not. */}
-   return payload!==undefined&&await this.digest(payload)===f.digest?f:undefined;
-  };
-  try{await cpuWorkAsync('journal-rebuild','chars',0,async()=>{for await(const {text:line,terminated} of this.lines()){
-   lineIndex++;
-   if(!line){repair=true;break;}
-   const bytes=encodeUtf8(line).length;let accepted=false;
-   let f=await validated(line);
-   if(!f&&this.files.legacyLines){
-    legacy??=this.files.legacyLines(this.path+'.delta')[Symbol.asyncIterator]();
-    let alternate:IteratorResult<string>|undefined;
-    while(legacyIndex<lineIndex){alternate=await legacy.next();legacyIndex++;if(alternate.done)throw Error('json_journal_legacy_incomplete');if(legacyIndex%32===0)await this.pause();}
-    f=await validated(alternate!.value!);
-    if(f)legacyAccepted=true;
-   }
-   if(f){
-    try{this.apply(f.edits);this.sequence++;sourceBytes+=bytes+(terminated?1:0);this.offset+=bytes+1;accepted=true;}
-    catch{/* Stop at an invalid edit, exactly as the legacy reader. */}
-   }
-   if(!accepted){repair=true;break;}
-   // Replacement characters can represent malformed source bytes. Canonicalize
-   // accepted text before appending, as the legacy byte-length check did.
-   if(line.includes('\ufffd'))repair=true;
-   if(!terminated){repair=true;newline=true;}
-   spentBytes+=bytes+1;frames++;
+   catch{/* Content errors trigger historical replay; digest IO errors propagate. */}
+   if(payload===undefined||await this.digest(payload)!==f.digest){anomaly=true;break;}
+   try{this.apply(f.edits);}catch{anomaly=true;break;}
+   const bytes=encodeUtf8(line).length+1;this.sequence++;this.offset+=bytes;
+   spentBytes+=bytes;frames++;
    if(spentBytes>=128*1024||frames>=32||Date.now()-started>=8){await this.pause();spentBytes=0;frames=0;started=Date.now();}
-  }});}finally{await legacy?.return?.();}
-  // Historical decoding can change byte lengths. Publish the authenticated
-  // state at this safe checkpoint, never a prefix re-encoded by the other
-  // decoder. This also canonicalizes the legacy frame before future appends.
-  if(repair&&!legacyAccepted){
-   if(this.files.repair)await this.files.repair(this.path+'.delta',sourceBytes,newline);
-   else{let valid='',n=0;for await(const {text} of this.lines()){if(n++>=this.sequence)break;valid+=text+'\n';}await this.files.replace(this.path+'.delta',valid);}
-  }
+  }});
+  if(anomaly)await this.replayLegacy();
   // No caller has received a mutable value yet: this is a safe checkpoint.
-  if(legacyAccepted||this.offset>=this.maximum||this.sequence>=2048){await this.pause();await this.compact(this.value);}
+  if(this.offset>=this.maximum||this.sequence>=2048){await this.pause();await this.compact(this.value);}
   this.remember(this.value);this.loaded=true;return this.denormalize(this.value);
+ }
+ private async replayLegacy(){
+  await this.pause();let failed=false,failure:unknown,baseRaw='',spentBytes=0,frames=0,started=Date.now();
+  const check=()=>{if(failed)throw failure;};
+  const legacy=new LegacyJsonDeltaJournal({
+   read:async p=>{check();const text=await this.files.read(p);if(p===this.path)baseRaw=text??'{}';return text;},
+   ...(this.files.fingerprint?{fingerprint:this.files.fingerprint.bind(this.files)}:{}),
+   sha256:async bytes=>{try{
+    spentBytes+=bytes.length;frames++;
+    if(spentBytes>=128*1024||frames>=32||Date.now()-started>=8){await this.pause();spentBytes=0;frames=0;started=Date.now();}
+    return this.files.sha256?await this.files.sha256(bytes):sha256Hex(bytes);
+   }catch(error){failed=true;failure=error;throw error;}},
+   replace:async(p,text)=>{check();await this.files.replace(p,text);},
+   append:this.files.append.bind(this.files),
+  },this.path,this.maps,this.normalize,this.denormalize,this.maximum);
+  await legacy.load();check();
+  const state=legacy.replayState();this.value=state.value;this.base=state.base;this.sequence=state.sequence;this.offset=state.offset;this.basePrefixed=baseRaw.startsWith('\n');
+  // Raw and historical decoded byte lengths can differ. Keep the old loader's
+  // decision on disk; canonicalize at the next committing checkpoint before an
+  // append could use an offset derived from the historical text.
+  this.recovered=true;
  }
  private async compact(value:ObjectValue){
   // Alternate a JSON whitespace prefix so even a revert to the previous base
@@ -102,7 +97,7 @@ export class JsonDeltaJournal {
    const digest=this.files.fingerprint?undefined:await this.digest(raw);
    await this.pause();await this.files.replace(this.path,raw);
    this.base=this.files.fingerprint?await this.files.fingerprint(this.path,raw):digest!;
-   this.basePrefixed=raw.startsWith('\n');this.offset=0;this.sequence=0;await this.files.replace(this.path+'.delta','');
+   this.basePrefixed=raw.startsWith('\n');this.recovered=false;this.offset=0;this.sequence=0;await this.files.replace(this.path+'.delta','');
   }catch(error){
    // Publication may already have succeeded. Reopen before any later append.
    this.loaded=false;throw error;
@@ -119,7 +114,7 @@ export class JsonDeltaJournal {
   }
   });if(!edits.length)return {bytes:0,edits:0};
   const payload=cpuJsonStringify([this.base,this.sequence+1,edits]),frame=cpuJsonStringify({base:this.base,sequence:this.sequence+1,edits,digest:await this.digest(payload)})+'\n',bytes=encodeUtf8(frame).length;
-  if(this.offset+bytes>this.maximum||this.sequence>=2048){
+  if(this.recovered||this.offset+bytes>this.maximum||this.sequence>=2048){
    // Normal committed data remains recoverable if replacement or truncation is
    // interrupted. Old frames cannot apply to the new base's digest.
    await this.compact(next);
