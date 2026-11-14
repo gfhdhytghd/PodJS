@@ -70,3 +70,7 @@ integer (0..100), including zero. Missing or out-of-range system values return
 No synthetic capacity or additional permission is used. This is a point sample,
 not an energy measurement. `ActiveBatterySession` can group actual active-playback
 segments; applications own endpoint, validation, and reporting policy.
+
+## Product metadata
+
+`device.info()` requires `device.info` and returns only Android Build brand, manufacturer, model, device and product strings. It never reads serial numbers, Android ID, IMEI or network hardware identifiers. Android-watch and Wear OS expose this capability; other/older hosts reject with `unsupported`. Applications own consent and reporting policy.
