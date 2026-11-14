@@ -924,7 +924,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         if (!videoUrl.isEmpty()) videoUrl = sourceValue(videoUrl);
         Map<String, String> headers = headers(args.optJSONObject("headers"));
         androidx.media3.datasource.DataSource.Factory http = PodVideoHttpDataSources.create(headers,null);
-        androidx.media3.datasource.DataSource.Factory sources=mediaPrefixCache==null?new DefaultDataSource.Factory(context,http):mediaPrefixCache.factory(new DefaultDataSource.Factory(context,http));
+        androidx.media3.datasource.DataSource.Factory sources=mediaPrefixCache==null||args.optBoolean("bypassCache",false)?new DefaultDataSource.Factory(context,http):mediaPrefixCache.factory(new DefaultDataSource.Factory(context,http));
         DefaultMediaSourceFactory factory = new DefaultMediaSourceFactory(()->{androidx.media3.datasource.DataSource data=sources.createDataSource();data.addTransferListener(analytics);return data;});
         if (!videoUrl.isEmpty() && !audioUrl.isEmpty()) {
             return new MergingMediaSource(factory.createMediaSource(item(videoUrl, args.optString("type", ""))), factory.createMediaSource(item(audioUrl, "")));
@@ -1463,7 +1463,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
 
         JSONObject snapshot() throws Exception {
             return PodVideoSystemAudio.snapshot(context,new JSONObject()
-                    .put("silenced",audioPolicy!=null&&audioPolicy.silenced()).put("appliedVolume",player==null?null:player.getVolume()).put("audioTrackSelected",player!=null&&player.getAudioFormat()!=null).put("metrics",analytics==null?null:analytics.snapshot()).put("ok", true).put("sessionId", id).put("state", state).put("errorCode", "error".equals(state) ? errorCode : null)
+                    .put("silenced",audioPolicy!=null&&audioPolicy.silenced()).put("appliedVolume",player==null?null:player.getVolume()).put("audioTrackSelected",player!=null&&player.getAudioFormat()!=null).put("metrics",analytics==null?null:analytics.snapshot()).put("ok", true).put("isBuffering",player!=null&&player.getPlaybackState()==Player.STATE_BUFFERING).put("sessionId", id).put("state", state).put("errorCode", "error".equals(state) ? errorCode : null)
                     .put("positionMs", player == null ? 0 : player.getCurrentPosition())
                     .put("bufferedMs",player==null?0:Math.max(0,player.getBufferedPosition()-player.getCurrentPosition()))
                     .put("networkStalled",analytics!=null&&analytics.networkStalled())

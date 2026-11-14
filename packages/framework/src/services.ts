@@ -354,12 +354,12 @@ export function onVideoStateChanged(listener:(state:VideoState & {sessionId?:str
 }
 export interface VideoBounds { benchmark?:VideoBenchmarkAction; x:number; y:number; width:number; height:number; translateX?:number; translateY?:number; visible?:boolean; roundClip?:{cx:number;cy:number;radius:number} }
 export interface VideoTransform {rotationDeg?:number;/** Destination angle used for scale; defaults to rotationDeg. */ scaleRotationDeg?:number;scaleMode?:"standard"|"expanded"|"shrunk";panX?:number;panY?:number}
-export interface VideoPrepare {/** Apply system ringer/zen silence to player gain. Override is process-local. */ respectSilentMode?:boolean;transform?:VideoTransform;sourceOrdinal?:number;slotOrdinal?:number; startupSeq?:number; benchmark?:VideoBenchmarkAction; url?:string; videoUrl?:string; audioUrl?:string; type?:string; videoMime?:string; videoWidth?:number; videoHeight?:number; headers?:Record<string,string>; bounds:VideoBounds; autoplay?:boolean; muted?:boolean; loop?:boolean; backgroundPlayback?:boolean }
+export interface VideoPrepare {/** Force upstream reads after releasing an obsolete media session. */ bypassCache?:boolean;/** Apply system ringer/zen silence to player gain. Override is process-local. */ respectSilentMode?:boolean;transform?:VideoTransform;sourceOrdinal?:number;slotOrdinal?:number; startupSeq?:number; benchmark?:VideoBenchmarkAction; url?:string; videoUrl?:string; audioUrl?:string; type?:string; videoMime?:string; videoWidth?:number; videoHeight?:number; headers?:Record<string,string>; bounds:VideoBounds; autoplay?:boolean; muted?:boolean; loop?:boolean; backgroundPlayback?:boolean }
 export interface VideoFrameSource {url?:string;videoUrl?:string;audioUrl?:string;headers?:Record<string,string>}
 export interface VideoFrame {available:true;kind:"actual_frame";path:string;width:number;height:number;positionMs:number;capturedAt:number;capturedGeneration:number}
 export interface VideoFrameCapture {key:string;source:VideoFrameSource;sourceGeneration:number}
 export interface VideoPlaybackMetrics { bytesLoaded:number; droppedFrames:number; rebufferCount:number; rebufferMs:number; firstByteMs?:number; firstFrameMs?:number; throughputBps?:number; [key:string]:number|undefined }
-export interface VideoState { /** Playback speed; hosts without video.setSpeed omit it. */speed?:number; ringerMode?:"normal"|"vibrate"|"silent"|"unknown";silenced?:boolean; volumeIndex?:number; muted?:boolean; appliedVolume?:number; audioTrackSelected?:boolean; bufferedMs?:number; networkStalled?:boolean; presented?:boolean; metrics?:VideoPlaybackMetrics; sourceGeneration?:number; /** Completed native repeats since prepare; seeks do not increment it. */ completedLoops?:number; loop?:boolean; hasCachedFirstFrame?:boolean; hasRenderedFirstFrame?:boolean; errorCode?:string; ok:boolean; state:string; positionMs:number; durationMs:number; width:number; height:number; volume:number; volumeMax:number }
+export interface VideoState {/** Native buffering also covers preparation with autoplay disabled. */ isBuffering?:boolean; /** Playback speed; hosts without video.setSpeed omit it. */speed?:number; ringerMode?:"normal"|"vibrate"|"silent"|"unknown";silenced?:boolean; volumeIndex?:number; muted?:boolean; appliedVolume?:number; audioTrackSelected?:boolean; bufferedMs?:number; networkStalled?:boolean; presented?:boolean; metrics?:VideoPlaybackMetrics; sourceGeneration?:number; /** Completed native repeats since prepare; seeks do not increment it. */ completedLoops?:number; loop?:boolean; hasCachedFirstFrame?:boolean; hasRenderedFirstFrame?:boolean; errorCode?:string; ok:boolean; state:string; positionMs:number; durationMs:number; width:number; height:number; volume:number; volumeMax:number }
 export const VIDEO_SPEED_RANGE={min:.5,max:2} as const;
 function checkVideoSpeed(speed:number):void{if(!Number.isFinite(speed)||speed<VIDEO_SPEED_RANGE.min||speed>VIDEO_SPEED_RANGE.max)throw new HostServiceError("invalid_argument","Video speed must be between 0.5 and 2");}
 export const video = {
@@ -402,7 +402,7 @@ export interface VideoSessionPrepare extends Omit<VideoPrepare,"backgroundPlayba
   /** Decode frame zero into the bounded native cache and release this codec. */
   keyframeOnly?:boolean;
 }
-export interface VideoSessionState {
+export interface VideoSessionState { isBuffering?:boolean;
   speed?:number;
   ringerMode?:VideoState["ringerMode"];silenced?:boolean;
   volumeIndex?:number; volumeMax?:number;

@@ -31,7 +31,7 @@ const defaultSessionPort:VideoSessionPort={
 
 let nextPoolId=1;
 const state=(value:VideoSessionState):VideoState=>({
-  appliedVolume:value.appliedVolume,audioTrackSelected:value.audioTrackSelected,bufferedMs:value.bufferedMs,networkStalled:value.networkStalled,presented:value.presented,metrics:value.metrics,ok:value.ok,state:value.state,positionMs:value.positionMs,durationMs:value.durationMs,completedLoops:value.completedLoops,loop:value.loop,
+  isBuffering:value.isBuffering,appliedVolume:value.appliedVolume,audioTrackSelected:value.audioTrackSelected,bufferedMs:value.bufferedMs,networkStalled:value.networkStalled,presented:value.presented,metrics:value.metrics,ok:value.ok,state:value.state,positionMs:value.positionMs,durationMs:value.durationMs,completedLoops:value.completedLoops,loop:value.loop,
   width:value.width,height:value.height,volume:value.volume,volumeMax:value.volumeMax??15,volumeIndex:value.volumeIndex,muted:value.muted,
   hasCachedFirstFrame:value.hasCachedFirstFrame,sourceGeneration:value.sourceGeneration,errorCode:value.errorCode,hasRenderedFirstFrame:value.hasRenderedFirstFrame,speed:value.speed,
 });
@@ -42,7 +42,7 @@ const state=(value:VideoSessionState):VideoState=>({
 interface WarmSlot<S> {direction?:'next'|'prev';id:string;source?:S;identity?:string;ready:boolean;revision:number;recentlyActive?:boolean;prepareSeq?:number;operation?:HostOperation<VideoSessionState>;pending?:Promise<VideoState>}
 export class VideoSessionPool<Source extends {key:string}> {
   private initialPreparation?:{key:string;identity:string;generation:number;operation:HostOperation<VideoState>};
-  private prepareIdentity(options:VideoPrepare){return JSON.stringify([options.url,options.videoUrl,options.audioUrl,options.type,options.videoMime,options.videoWidth,options.videoHeight,Object.entries(options.headers??{}).sort()]);}
+  private prepareIdentity(options:VideoPrepare){return JSON.stringify([options.bypassCache,options.url,options.videoUrl,options.audioUrl,options.type,options.videoMime,options.videoWidth,options.videoHeight,Object.entries(options.headers??{}).sort()]);}
   /** Begin a user-requested foreground prepare while navigation is being saved.
    * Hidden bounds retain the surface. The first visible prepare adopts it once. */
   prime(source:Source,options:VideoPrepare):HostOperation<VideoState>{
@@ -57,6 +57,7 @@ export class VideoSessionPool<Source extends {key:string}> {
   traceNeighbour(key:string,index:number,anchor:number){benchmark.begin('pool_stage',{pool_stage:'neighbour',source_ordinal:this.ordinal(key),queue_index:index,anchor_index:anchor,pool_generation:this.generation});}
   private loop=false;
   private transform:VideoTransform={};
+  private readonly poolId=nextPoolId++;
   private activeId:string;
   private activeKey:string|undefined;
   private activeSource:Source|undefined;
@@ -78,7 +79,7 @@ export class VideoSessionPool<Source extends {key:string}> {
   private nativeDragKey:string|undefined;
   private latestTransition:{slot:WarmSlot<Source>;trackPointer:boolean;dragEpoch:number;key:string;epoch:number;revision:number;fromId:string;toId:string;progress:number;direction:VideoPagerDirection;bounds:VideoBounds;benchmark?:VideoBenchmarkAction}|undefined;
   constructor(private readonly port:VideoSessionPort=defaultSessionPort){
-    const id=nextPoolId++;
+    const id=this.poolId;
     this.activeId=`vp${id}a`;this.slots=Array.from({length:7},(_,i)=>({id:`vp${id}${String.fromCharCode(98+i)}`,ready:false,revision:0}));
   }
   async diagnostics(){
@@ -390,5 +391,5 @@ export class VideoSessionPool<Source extends {key:string}> {
   }
   setMuted(muted:boolean):Promise<VideoState>{if(!this.port.setMuted)return Promise.reject(new Error("unsupported"));return this.port.setMuted(this.activeId,muted).then(state);}
   setVolume(volume:number,crownDirection?:-1|1):Promise<VideoState>{return this.port.setVolume(this.activeId,volume,crownDirection).then(state);}
-  async releaseAll():Promise<void>{this.endDrag();this.cancelNeighbourhood();this.initialPreparation?.operation.cancel();this.initialPreparation=undefined;this.generation++;this.latestTransition=undefined;this.activeKey=undefined;this.activeSource=undefined;this.activeIdentity=undefined;await Promise.allSettled([this.port.release(this.activeId),...this.slots.map(s=>this.evict(s,'release'))]);}
+  async releaseAll():Promise<void>{this.endDrag();this.cancelNeighbourhood();this.initialPreparation?.operation.cancel();this.initialPreparation=undefined;this.generation++;this.latestTransition=undefined;this.activeKey=undefined;this.activeSource=undefined;this.activeIdentity=undefined;const retiredId=this.activeId;this.activeId=`vp${this.poolId}r${this.generation}a`;await Promise.allSettled([this.port.release(retiredId),...this.slots.map(s=>this.evict(s,'release'))]);}
 }

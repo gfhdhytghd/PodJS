@@ -84,8 +84,8 @@ final class PodVideoAnalytics implements AnalyticsListener, TransferListener {
         for (int i = 0; current != null && i < 16; i++, current = current.getCause()) {
             if (current instanceof HttpDataSource.InvalidResponseCodeException) {
                 int status = ((HttpDataSource.InvalidResponseCodeException) current).responseCode;
-                if (status == 401 || status == 403 || status == 412 || status == 429) return "restricted";
-                if (status == 404 || status == 410) return "source_expired";
+                if (status == 401 || status == 412 || status == 429) return "restricted";
+                if (status == 403 || status == 404 || status == 410) return "source_expired";
                 return "cdn_error";
             }
         }

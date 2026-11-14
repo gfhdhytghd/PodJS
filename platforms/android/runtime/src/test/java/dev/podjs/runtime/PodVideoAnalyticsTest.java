@@ -43,7 +43,7 @@ public class PodVideoAnalyticsTest {
   for(int status:new int[]{401,403,412,429,404,410,503}){
    androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException cause=new androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException(status,"private",null,java.util.Collections.emptyMap(),new DataSpec(Uri.parse("https://fixture.invalid/?signature=private")),new byte[0]);
    String code=PodVideoAnalytics.errorCode(new PlaybackException("private",cause,PlaybackException.ERROR_CODE_IO_UNSPECIFIED));
-   assertEquals(status==401||status==403||status==412||status==429?"restricted":status==404||status==410?"source_expired":"cdn_error",code);
+   assertEquals(status==401||status==412||status==429?"restricted":status==403||status==404||status==410?"source_expired":"cdn_error",code);
   }
  }
 
