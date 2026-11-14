@@ -517,6 +517,19 @@ final class PodServices implements Closeable {
             } catch(Exception error) { failure(id,"unavailable","Debug external interface unavailable"); }
             return;
         }
+        if ("device.info".equals(method)) {
+            if (!requests.remove(id, request)) return;
+            try {
+                request.cancellation.throwIfCanceled();
+                reply(id, true, new JSONObject()
+                    .put("brand", android.os.Build.BRAND)
+                    .put("manufacturer", android.os.Build.MANUFACTURER)
+                    .put("model", android.os.Build.MODEL)
+                    .put("device", android.os.Build.DEVICE)
+                    .put("product", android.os.Build.PRODUCT), null, null);
+            } catch (Exception error) { failure(id, "device_info_error", "Device information unavailable"); }
+            return;
+        }
         if ("battery.percent".equals(method)) {
             try {
                 android.os.BatteryManager manager = (android.os.BatteryManager)context.getSystemService(Context.BATTERY_SERVICE);
@@ -557,6 +570,21 @@ final class PodServices implements Closeable {
                     reply(id, true, JSONObject.NULL, null, null);
                 } else reply(id, true, activityState.read(), null, null);
             } catch (Exception error) { failure(id, "lifecycle_error", error.getMessage()); }
+            return;
+        }
+        if ("settings.openWifi".equals(method)) {
+            main.post(() -> {
+                if (closed || !requests.remove(id, request)) return;
+                try {
+                    request.cancellation.throwIfCanceled();
+                    PodSystemSettings.openWifi(context);
+                    reply(id, true, JSONObject.NULL, null, null);
+                } catch (android.content.ActivityNotFoundException error) {
+                    failure(id, "settings_unavailable", "Network settings unavailable");
+                } catch (Exception error) {
+                    failure(id, "settings_error", "Cannot open network settings");
+                }
+            });
             return;
         }
         if ("app.finishTask".equals(method)) {
