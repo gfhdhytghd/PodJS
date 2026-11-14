@@ -1,6 +1,6 @@
 import {test,expect} from 'bun:test';
 import {createHash} from 'node:crypto';
-import {JsonDeltaJournal,type JsonJournalFiles} from '../src/json-delta-journal';
+import {JsonDeltaJournal,JsonJournalDecodeError,type JsonJournalFiles} from '../src/json-delta-journal';
 const digest=(s:string)=>createHash('sha256').update(s).digest('hex');
 function memory(initial={rows:{seed:'x'.repeat(800)}}){
  const files=new Map<string,string>([['state',JSON.stringify(initial)]]);
@@ -103,6 +103,12 @@ test('whole-file fallback keeps host yield budgets while using the historical re
  const f=memory({rows:{seed:''}}),writer=f.make(f.io,1e9);let value:any={rows:{}};
  await writer.load();for(let i=0;i<96;i++){value={rows:{...value.rows,[i]:'汉😀'}};await writer.commit(value);}
  let pauses=0,deltaReads=0;
- const io={...f.io,async *chunks(){yield '�';},read:async(p:string)=>{if(p.endsWith('.delta'))deltaReads++;return f.io.read(p);},yieldTurn:async()=>{pauses++;}};
+ const io={...f.io,async *chunks(){throw new JsonJournalDecodeError();yield '';},read:async(p:string)=>{if(p.endsWith('.delta'))deltaReads++;return f.io.read(p);},yieldTurn:async()=>{pauses++;}};
  expect(await f.make(io,1e9).load()).toEqual(value);expect(deltaReads).toBe(1);expect(pauses).toBeGreaterThanOrEqual(6);
+});
+
+test('explicit invalid-byte signal triggers whole-file replay even after a complete primary prefix',async()=>{
+ const f=memory({rows:{seed:''}}),writer=f.make(f.io,1e9);await writer.load();await writer.commit({rows:{literal:'�',after:'kept'}});let reads=0,closed=0;
+ const io={...f.io,async *chunks(p:string){try{yield f.files.get(p)??'';throw new JsonJournalDecodeError();}finally{closed++;}},read:async(p:string)=>{if(p.endsWith('.delta'))reads++;return f.io.read(p);}};
+ expect(await f.make(io,1e9).load()).toEqual({rows:{literal:'�',after:'kept'}});expect(reads).toBe(1);expect(closed).toBe(1);
 });

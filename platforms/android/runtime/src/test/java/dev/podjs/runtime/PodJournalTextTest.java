@@ -29,6 +29,41 @@ public class PodJournalTextTest {
    }
   }
  }
+ @Test public void literalReplacementAndMultibyteBoundariesNeverSignalMalformedBytes()throws Exception{
+  try(PodDeviceServices service=service()){
+   for(int padding:new int[]{0,8189,8190,8191,8192,32767}){
+    String expected="x".repeat(padding)+"汉😀\ufffd尾";Files.write(root.resolve("valid"),expected.getBytes(StandardCharsets.UTF_8));
+    for(int max:new int[]{1,2,3,7,32768}){
+     String id=service.execute("file.openText",path("valid")).getString("id");StringBuilder out=new StringBuilder();
+     for(;;){JSONObject part=service.execute("file.readTextChunk",new JSONObject().put("id",id).put("maxChars",max));assertFalse(part.getBoolean("invalidUtf8"));out.append(part.getString("text"));if(part.getBoolean("eof"))break;}
+     assertEquals(expected,out.toString());assertFalse(service.execute("file.closeText",new JSONObject().put("id",id)).getBoolean("closed"));
+    }
+   }
+  }
+ }
+ @Test public void flagsFollowActualDecoderErrorsRatherThanReplacementCharacters()throws Exception{
+  ByteArrayOutputStream bytes=new ByteArrayOutputStream();bytes.write("a\ufffd".getBytes(StandardCharsets.UTF_8));bytes.write(new byte[]{(byte)0xc0,(byte)0xaf});bytes.write('z');
+  Files.write(root.resolve("mixed"),bytes.toByteArray());
+  try(PodDeviceServices service=service()){
+   String id=service.execute("file.openText",path("mixed")).getString("id");StringBuilder out=new StringBuilder();
+   boolean[] expected={false,false,true,true,false};
+   for(boolean invalid:expected){JSONObject part=service.execute("file.readTextChunk",new JSONObject().put("id",id).put("maxChars",1));assertEquals(invalid,part.getBoolean("invalidUtf8"));out.append(part.getString("text"));}
+   assertEquals("a\ufffd\ufffd\ufffdz",out.toString());JSONObject end=service.execute("file.readTextChunk",new JSONObject().put("id",id));assertTrue(end.getBoolean("eof"));assertFalse(end.getBoolean("invalidUtf8"));
+  }
+ }
+ @Test public void incompleteSequenceOnlySignalsAtActualEofAndErrorsMatchJavaReplacement()throws Exception{
+  byte[][] invalids={{(byte)0xff},{(byte)0xc0,(byte)0x8a},{(byte)0xe0,(byte)0x80,(byte)0x8a},{(byte)0xf0,(byte)0x80,(byte)0x80,(byte)0x8a},{(byte)0xf0,(byte)0x9f}};
+  try(PodDeviceServices service=service()){
+   for(byte[] invalid:invalids){
+    ByteArrayOutputStream bytes=new ByteArrayOutputStream();bytes.write("x".repeat(8191).getBytes(StandardCharsets.UTF_8));bytes.write(invalid);byte[] raw=bytes.toByteArray();Files.write(root.resolve("bad"),raw);
+    for(int max:new int[]{1,2,3,7,32768}){
+     String id=service.execute("file.openText",path("bad")).getString("id");StringBuilder text=new StringBuilder();boolean detected=false;
+     for(;;){JSONObject part=service.execute("file.readTextChunk",new JSONObject().put("id",id).put("maxChars",max));String chunk=part.getString("text");boolean flag=part.getBoolean("invalidUtf8");if(flag){assertTrue(text.length()+chunk.length()>8191);detected=true;}text.append(chunk);if(part.getBoolean("eof"))break;}
+     assertTrue(detected);assertEquals(new String(raw,StandardCharsets.UTF_8),text.toString());
+    }
+   }
+  }
+ }
  @Test public void failedStrictReadClosesHandleBeforeClientCleanup()throws Exception{
   Files.write(root.resolve("invalid"),new byte[]{(byte)0xff});
   try(PodDeviceServices s=service()){

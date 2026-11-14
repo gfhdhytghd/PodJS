@@ -658,7 +658,7 @@ export const fileChunks = {
     return hostOperation<{path:string;size:number;sha256:string}>("file.gunzip",{path,maxOutputBytes,allowPlain}).result;
   },
   openText(path:string,options:{strictUtf8?:boolean}={}):Promise<{id:string}> {return hostOperation<{id:string}>("file.openText",{path,...options}).result;},
-  readTextChunk(id:string,maxChars=16384):Promise<{text:string;eof:boolean}> {return hostOperation<{text:string;eof:boolean}>("file.readTextChunk",{id,maxChars}).result;},
+  readTextChunk(id:string,maxChars=16384):Promise<{text:string;eof:boolean;invalidUtf8:boolean}> {return hostOperation<{text:string;eof:boolean;invalidUtf8:boolean}>("file.readTextChunk",{id,maxChars}).result;},
   closeText(id:string):Promise<{closed:boolean}> {return hostOperation<{closed:boolean}>("file.closeText",{id}).result;},
   createTemp(directory:string):Promise<{path:string}> {
     return hostOperation<{path:string}>("file.createTemp",{directory}).result;

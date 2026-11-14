@@ -252,7 +252,7 @@ describe("host services", () => {
       {call:()=>fileChunks.gzip("plain",32),method:"file.gzip",args:{path:"plain",maxOutputBytes:32},value:{path:"temporary",size:32,sha256:"h"}},
       {call:()=>fileChunks.gzipBytes("YQ=="),method:"file.gzipBytes",args:{dataBase64:"YQ=="},value:{dataBase64:"eA=="}},
       {call:()=>fileChunks.openText("temporary"),method:"file.openText",args:{path:"temporary"},value:{id:"text-1"}},
-      {call:()=>fileChunks.readTextChunk("text-1",7),method:"file.readTextChunk",args:{id:"text-1",maxChars:7},value:{text:"汉😀",eof:false}},
+      {call:()=>fileChunks.readTextChunk("text-1",7),method:"file.readTextChunk",args:{id:"text-1",maxChars:7},value:{text:"汉😀",eof:false,invalidUtf8:false}},
       {call:()=>fileChunks.closeText("text-1"),method:"file.closeText",args:{id:"text-1"},value:{closed:true}},
     ];
     for(const row of calls)await expect(row.call()).rejects.toMatchObject({code:"unsupported"});

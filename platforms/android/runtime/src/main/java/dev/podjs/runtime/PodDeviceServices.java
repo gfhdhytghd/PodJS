@@ -66,7 +66,7 @@ public final class PodDeviceServices implements AutoCloseable {
     synchronized void enableServiceTrace(boolean enabled){secureTrace=new DeviceServiceTrace(enabled,line->android.util.Log.i("PodJSService",line));}
     boolean hasWarmSecureStore(){return secureMemory.snapshot!=null;}
     private long nextTextReader;
-    private final java.util.Map<String,java.io.BufferedReader> textReaders = new java.util.HashMap<>();
+    private final java.util.Map<String,Utf8TextReader> textReaders = new java.util.HashMap<>();
     private final java.util.Set<File> temporaryFiles = new java.util.HashSet<>();
 
     public PodDeviceServices(Context context) {
@@ -688,32 +688,82 @@ public final class PodDeviceServices implements AutoCloseable {
         else try (FileOutputStream out = new FileOutputStream(f)) { out.write(data); out.getFD().sync(); }
         return new JSONObject().put("size", f.length());
     }
+    /** One REPORT decoder owns both text and its error provenance. Incomplete
+     * byte sequences remain in bytes until the next read (or actual EOF).
+     * Error marks travel with inserted characters, never with literal U+FFFD. */
+    private static final class Utf8TextReader extends java.io.Reader {
+        private final FileInputStream input;
+        private final boolean strict;
+        private final java.nio.charset.CharsetDecoder decoder=StandardCharsets.UTF_8.newDecoder()
+            .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+            .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT);
+        private final java.nio.ByteBuffer bytes=java.nio.ByteBuffer.allocate(8192);
+        private final java.nio.CharBuffer chars=java.nio.CharBuffer.allocate(8192);
+        private final java.util.BitSet errors=new java.util.BitSet(8192);
+        private boolean ended,finished,invalid,closed;
+        Utf8TextReader(File file,boolean strict)throws IOException {
+            this.input=new FileInputStream(file);this.strict=strict;bytes.limit(0);chars.limit(0);
+        }
+        private void fill()throws IOException {
+            chars.clear();errors.clear();
+            while(!finished){
+                java.nio.charset.CoderResult result=decoder.decode(bytes,chars,ended);
+                if(result.isError()){
+                    if(strict)result.throwException();
+                    if(!chars.hasRemaining())break;
+                    errors.set(chars.position());chars.put('\ufffd');
+                    bytes.position(bytes.position()+result.length());
+                }else if(result.isOverflow())break;
+                else if(ended){decoder.flush(chars);finished=true;break;}
+                else{
+                    bytes.compact();int at=bytes.position();
+                    int count=input.read(bytes.array(),at,bytes.remaining());
+                    if(count<0)ended=true;else bytes.position(at+count);
+                    bytes.flip();
+                }
+            }
+            chars.flip();
+        }
+        @Override public int read(char[] target,int offset,int length)throws IOException {
+            if(closed)throw new IOException("text_reader_closed");
+            if(offset<0||length<0||offset>target.length-length)throw new IndexOutOfBoundsException();
+            if(length==0)return 0;
+            int total=0;
+            while(total<length){
+                if(!chars.hasRemaining())fill();
+                if(!chars.hasRemaining())break;
+                int start=chars.position(),count=Math.min(length-total,chars.remaining()),bad=errors.nextSetBit(start);
+                if(bad>=0&&bad<start+count)invalid=true;
+                chars.get(target,offset+total,count);total+=count;
+            }
+            return total==0?-1:total;
+        }
+        boolean takeInvalidUtf8(){boolean value=invalid;invalid=false;return value;}
+        @Override public void close()throws IOException {closed=true;input.close();}
+    }
     private JSONObject fileOpenText(JSONObject a) throws Exception {
         if (textReaders.size() >= 8) throw new IllegalStateException("too_many_text_readers");
         File file = safeFile(required(a,"path"));
         if (!file.isFile()) throw new IOException("file_not_found");
         String id = "text-" + (++nextTextReader);
-        java.nio.charset.CharsetDecoder decoder=StandardCharsets.UTF_8.newDecoder();
-        java.nio.charset.CodingErrorAction errors=a.optBoolean("strictUtf8",false)?java.nio.charset.CodingErrorAction.REPORT:java.nio.charset.CodingErrorAction.REPLACE;
-        decoder.onMalformedInput(errors).onUnmappableCharacter(errors);
-        textReaders.put(id,new java.io.BufferedReader(new java.io.InputStreamReader(new FileInputStream(file),decoder)));
+        textReaders.put(id,new Utf8TextReader(file,a.optBoolean("strictUtf8",false)));
         return new JSONObject().put("id",id);
     }
     private JSONObject fileReadTextChunk(JSONObject a) throws Exception {
         String id = required(a,"id");
-        java.io.BufferedReader reader = textReaders.get(id);
+        Utf8TextReader reader = textReaders.get(id);
         if (reader == null) throw new IllegalArgumentException("unknown_text_reader");
         long requested = a.has("maxChars") ? exactFileSize(a,"maxChars") : 16384;
         if (requested < 1 || requested > 32768) throw new IllegalArgumentException("invalid_max_chars");
         int max=(int)requested;
         try {
             char[] buffer = new char[max+1];int count = reader.read(buffer,0,max);
-            if (count < 0) { textReaders.remove(id);reader.close();return new JSONObject().put("text","").put("eof",true); }
-            // InputStreamReader produces valid pairs; keep a pair in one bridge reply.
+            if (count < 0) { textReaders.remove(id);reader.close();return new JSONObject().put("text","").put("eof",true).put("invalidUtf8",reader.takeInvalidUtf8()); }
+            // Keep a Unicode pair in one bridge reply, including maxChars=1.
             if (count > 0 && Character.isHighSurrogate(buffer[count-1])) {
                 int next = reader.read();if (next >= 0) buffer[count++]=(char)next;
             }
-            return new JSONObject().put("text",new String(buffer,0,count)).put("eof",false);
+            return new JSONObject().put("text",new String(buffer,0,count)).put("eof",false).put("invalidUtf8",reader.takeInvalidUtf8());
         } catch (Exception error) {
             textReaders.remove(id);
             try { reader.close(); } catch (IOException closing) { error.addSuppressed(closing); }

@@ -2,8 +2,11 @@ import {LegacyJsonDeltaJournal} from './json-delta-journal-legacy';
 import {cpuWork,cpuWorkAsync,cpuJsonParse,cpuJsonStringify} from './cpu-work';
 import {sha256Hex} from './crypto.ts';
 import {encodeUtf8} from './byte-codecs.ts';
+/** A streaming decoder detected malformed source bytes, not literal text. */
+export class JsonJournalDecodeError extends Error {constructor(){super('json_journal_invalid_utf8');this.name='JsonJournalDecodeError';}}
 export interface JsonJournalFiles {
- /** Bounded decoded chunks; chunk boundaries must preserve Unicode scalars. */
+ /** Bounded decoded chunks; preserve Unicode scalars. A decoder that replaces
+  * illegal bytes must throw JsonJournalDecodeError, regardless of text content. */
  chunks?(path:string):AsyncIterable<string>;
  /** Atomically publish the verified decoded UTF-8 prefix (bytes), optionally adding a newline. */
  repair?(path:string,bytes:number,newline:boolean):Promise<void>;
@@ -44,13 +47,13 @@ export class JsonDeltaJournal {
   // A failed IO/repair may be retried on the same instance.
   this.sequence=0;this.offset=0;
   this.recovered=false;let raw=await this.files.read(this.path)??'{}';this.basePrefixed=raw.startsWith('\n');this.base=this.files.fingerprint?await this.files.fingerprint(this.path,raw):await this.digest(raw);
-  await this.pause();let baseAnomaly=raw.includes('\ufffd'),parsed:ObjectValue={};try{const value=cpuJsonParse(raw);if(object(value))parsed=value;}catch{baseAnomaly=true;}
+  await this.pause();let baseAnomaly=false,parsed:ObjectValue={};try{const value=cpuJsonParse(raw);if(object(value))parsed=value;}catch{baseAnomaly=true;}
   this.value=this.normalize(parsed);raw='';await this.pause();
   let anomaly=baseAnomaly,spentBytes=0,frames=0,started=Date.now();
-  await cpuWorkAsync('journal-rebuild','chars',0,async()=>{for await(const {text:line,terminated} of this.lines()){
+  try{await cpuWorkAsync('journal-rebuild','chars',0,async()=>{for await(const {text:line,terminated} of this.lines()){
    // Any uncertainty delegates the WHOLE file to the historical loader. Never
    // infer a repair prefix from Java's replacement text or physical LF rows.
-   if(anomaly||!line||!terminated||line.includes('\ufffd')){anomaly=true;break;}
+   if(anomaly||!line||!terminated){anomaly=true;break;}
    let f:any,payload:string|undefined;
    try{f=cpuJsonParse(line);if(f.base===this.base&&f.sequence===this.sequence+1&&Array.isArray(f.edits)&&f.edits.length<=100000)payload=cpuJsonStringify([f.base,f.sequence,f.edits]);}
    catch{/* Content errors trigger historical replay; digest IO errors propagate. */}
@@ -59,7 +62,7 @@ export class JsonDeltaJournal {
    const bytes=encodeUtf8(line).length+1;this.sequence++;this.offset+=bytes;
    spentBytes+=bytes;frames++;
    if(spentBytes>=128*1024||frames>=32||Date.now()-started>=8){await this.pause();spentBytes=0;frames=0;started=Date.now();}
-  }});
+  }});}catch(error){if(error instanceof JsonJournalDecodeError)anomaly=true;else throw error;}
   if(anomaly)await this.replayLegacy();
   // No caller has received a mutable value yet: this is a safe checkpoint.
   if(this.offset>=this.maximum||this.sequence>=2048){await this.pause();await this.compact(this.value);}
