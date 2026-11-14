@@ -69,7 +69,8 @@ public final class PodVideoServices implements AutoCloseable {
     private ViewGroup parent;
     private ImageView backdrop;
     private Bitmap backdropBitmap;
-    private float rotationDeg;
+    private float rotationDeg, scaleRotationDeg;
+    private final PodVideoTransformCache geometry=new PodVideoTransformCache();
     private String scaleMode = "standard";
     private float panX, panY;
     private Callback prepareCallback;
@@ -299,7 +300,7 @@ public final class PodVideoServices implements AutoCloseable {
         c.complete(new JSONObject().put("ok",true));
     }
     private void clearBackdrop(){opaqueBackdrop=false;if(backdrop!=null){backdrop.setImageDrawable(null);backdrop.setVisibility(View.GONE);}if(backdropBitmap!=null&&!backdropBitmap.isRecycled())backdropBitmap.recycle();backdropBitmap=null;}
-    private void transform(JSONObject a, Callback c)throws Exception { String mode=a.optString("scaleMode","standard");if(!mode.equals("standard")&&!mode.equals("expanded")&&!mode.equals("shrunk"))throw new IllegalArgumentException("invalid_scale_mode");float rot=(float)a.optDouble("rotationDeg",0);if(!Float.isFinite(rot)||Math.abs(rot)>100000)throw new IllegalArgumentException("invalid_rotation");rotationDeg=Math.round(rot*100f)/100f;scaleMode=mode;panX=(float)a.optDouble("panX",0);panY=(float)a.optDouble("panY",0);if(!Float.isFinite(panX)||!Float.isFinite(panY))throw new IllegalArgumentException("invalid_pan");fitVideo();c.complete(state()); }
+    private void transform(JSONObject a, Callback c)throws Exception { String mode=a.optString("scaleMode","standard");if(!mode.equals("standard")&&!mode.equals("expanded")&&!mode.equals("shrunk"))throw new IllegalArgumentException("invalid_scale_mode");float rot=(float)a.optDouble("rotationDeg",0);if(!Float.isFinite(rot)||Math.abs(rot)>100000)throw new IllegalArgumentException("invalid_rotation");float scaleRot=(float)a.optDouble("scaleRotationDeg",rot);if(!Float.isFinite(scaleRot)||Math.abs(scaleRot)>100000)throw new IllegalArgumentException("invalid_scale_rotation");rotationDeg=Math.round(rot*100f)/100f;scaleRotationDeg=Math.round(scaleRot*100f)/100f;scaleMode=mode;panX=(float)a.optDouble("panX",0);panY=(float)a.optDouble("panY",0);if(!Float.isFinite(panX)||!Float.isFinite(panY))throw new IllegalArgumentException("invalid_pan");fitVideo();c.complete(state()); }
     private void setLoop(JSONObject a, Callback c)throws Exception { require(); Object loop=a.opt("loop"); if(!(loop instanceof Boolean))throw new IllegalArgumentException("loop_must_be_boolean"); player.setRepeatMode((Boolean)loop?Player.REPEAT_MODE_ONE:Player.REPEAT_MODE_OFF); c.complete(state()); }
     private void setSpeed(JSONObject a, Callback c)throws Exception { require(); player.setPlaybackSpeed(PodVideoSpeed.parse(a)); c.complete(state()); }
     private void setVolume(JSONObject a, Callback c)throws Exception {PodVideoSystemAudio.update(context,a);if(audioPolicy!=null)audioPolicy.refresh();c.complete(state());}
@@ -319,14 +320,23 @@ public final class PodVideoServices implements AutoCloseable {
         androidx.media3.common.VideoSize size=player.getVideoSize();int w=videoView.getLayoutParams().width,h=videoView.getLayoutParams().height;
         if(size.width<=0||size.height<=0||w<=0||h<=0)return;
         float vw=size.width*size.pixelWidthHeightRatio, vh=size.height;
-        Matrix transform=videoTransform(w,h,vw,vh,rotationDeg,scaleMode,dp(panX),dp(panY));
+        Matrix transform=geometry.get(w,h,vw,vh,rotationDeg,scaleRotationDeg,scaleMode,dp(panX),dp(panY));
         videoView.setTransform(transform);
     }
     static Matrix videoTransform(float w,float h,float vw,float vh,float rotation,String mode,float panX,float panY) {
-        double angle=Math.toRadians(rotation),ca=Math.abs(Math.cos(angle)),sa=Math.abs(Math.sin(angle));
+        return videoTransform(w,h,vw,vh,rotation,rotation,mode,panX,panY);
+    }
+    static Matrix videoTransform(float w,float h,float vw,float vh,float rotation,float scaleRotation,String mode,float panX,float panY) {
+        return videoTransformWithScale(w,h,vw,vh,rotation,videoScale(w,h,vw,vh,scaleRotation,mode),panX,panY);
+    }
+    static float videoScale(float w,float h,float vw,float vh,float scaleRotation,String mode) {
+        double angle=Math.toRadians(scaleRotation),ca=Math.abs(Math.cos(angle)),sa=Math.abs(Math.sin(angle));
         float rotatedW=(float)(vw*ca+vh*sa),rotatedH=(float)(vw*sa+vh*ca);
         float factor="expanded".equals(mode)?Math.max(w/rotatedW,h/rotatedH):Math.min(w/rotatedW,h/rotatedH);
         if("shrunk".equals(mode))factor=Math.min(factor,(float)(Math.min(w,h)/Math.hypot(vw,vh)));
+        return factor;
+    }
+    static Matrix videoTransformWithScale(float w,float h,float vw,float vh,float rotation,float factor,float panX,float panY) {
         Matrix matrix=new Matrix(); matrix.setScale(vw*factor/w,vh*factor/h,w/2,h/2);
         matrix.postRotate(rotation,w/2,h/2); matrix.postTranslate(panX,panY); return matrix;
     }
