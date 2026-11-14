@@ -3,12 +3,15 @@ package dev.podjs.runtime;
 import android.app.ActivityManager;
 import android.content.Context;
 import android.graphics.Color;
+import android.os.Handler;
+import android.os.Looper;
 import android.graphics.drawable.GradientDrawable;
 import android.text.TextUtils;
 import android.util.DisplayMetrics;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
+import android.view.WindowManager;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -25,17 +28,62 @@ final class PodToast {
     static final int BACKGROUND = 0xdb1c1f21; // #1c1f21 at 86%, as the app's own overlays
     private static final float TEXT_SP = 14, PAD_X_DP = 14, PAD_Y_DP = 8, MARGIN_DP = 4, TOP_FRACTION = .17f;
 
+    static final int DEFAULT_DURATION_MS = 3000;
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
+    // Main-thread ownership only. The timeout clears both references after cancellation.
+    private static Toast current;
+    private static Runnable expiry;
+
     private PodToast() {}
 
-    static void show(Context context, CharSequence message, int duration) {
-        show(context, message, duration, foreground());
+    static void show(Context context, CharSequence message) {
+        show(context, message, DEFAULT_DURATION_MS);
     }
 
-    static Toast show(Context context, CharSequence message, int duration, boolean foreground) {
-        Toast toast = roundView(context.getResources().getConfiguration().isScreenRound(), foreground)
-            ? round(context, message, duration) : Toast.makeText(context, message, duration);
+    static void show(Context context, CharSequence message, int durationMs) {
+        // Neither a queued dispatch nor the active Toast may keep an Activity alive.
+        Context application = context.getApplicationContext();
+        String text = message.toString();
+        Runnable display = () -> show(application, text, durationMs, foreground());
+        if (Looper.myLooper() == Looper.getMainLooper()) display.run();
+        else MAIN.post(display);
+    }
+
+    static Toast show(Context context, CharSequence message, int durationMs, boolean foreground) {
+        if (Looper.myLooper() != Looper.getMainLooper())
+            throw new IllegalStateException("Toast display must run on the main thread");
+        if (expiry != null) MAIN.removeCallbacks(expiry);
+        if (current != null) cancel(current);
+        expiry = null;
+        current = null;
+        Context application = context.getApplicationContext();
+        Toast toast = roundView(application.getResources().getConfiguration().isScreenRound(), foreground)
+            ? round(application, message.toString(), Toast.LENGTH_LONG)
+            : Toast.makeText(application, message.toString(), Toast.LENGTH_LONG);
         toast.show();
+        current = toast;
+        expiry = () -> {
+            cancel(toast);
+            current = null;
+            expiry = null;
+        };
+        MAIN.postDelayed(expiry, Math.max(1000, Math.min(10000, durationMs)));
         return toast;
+    }
+
+    @SuppressWarnings("deprecation") // Only custom foreground toasts have a view.
+    private static void cancel(Toast toast) {
+        View view = toast.getView();
+        if (view != null) {
+            // Android's exit animation otherwise keeps a cancelled pill visible past its deadline.
+            if (view.isAttachedToWindow() && view.getLayoutParams() instanceof WindowManager.LayoutParams) {
+                WindowManager.LayoutParams params = (WindowManager.LayoutParams) view.getLayoutParams();
+                params.windowAnimations = 0;
+                ((WindowManager) view.getContext().getSystemService(Context.WINDOW_SERVICE)).updateViewLayout(view, params);
+            }
+            view.setVisibility(View.INVISIBLE);
+        }
+        toast.cancel();
     }
 
     /** Custom views are only safe in the foreground, and only needed on a round screen. */

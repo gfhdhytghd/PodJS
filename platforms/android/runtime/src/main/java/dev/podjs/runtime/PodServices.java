@@ -604,9 +604,10 @@ final class PodServices implements Closeable {
         }
         if ("ui.toast".equals(method)) {
             String message = args.optString("message", "");
+            int durationMs = (int) Math.max(1000L, Math.min(10000L, args.optLong("durationMs", PodToast.DEFAULT_DURATION_MS)));
             main.post(() -> {
                 if (closed || !requests.remove(id, request)) return;
-                PodToast.show(context, message, android.widget.Toast.LENGTH_SHORT);
+                PodToast.show(context, message, durationMs);
                 reply(id, true, JSONObject.NULL, null, null);
             });
             return;

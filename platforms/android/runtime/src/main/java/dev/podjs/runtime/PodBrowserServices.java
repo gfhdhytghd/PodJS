@@ -49,7 +49,7 @@ final class PodBrowserServices {
         catch (RuntimeException | LinkageError error) {
             close();
             String message = PodInAppBrowser.UNAVAILABLE;
-            PodToast.show(context, message, android.widget.Toast.LENGTH_LONG);
+            PodToast.show(context, message);
             throw new BrowserFailure("webview_unavailable", message);
         }
     }
