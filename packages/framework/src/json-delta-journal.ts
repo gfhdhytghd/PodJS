@@ -42,9 +42,9 @@ export class JsonDeltaJournal {
  private async replay():Promise<ObjectValue>{
   // A failed IO/repair may be retried on the same instance.
   this.sequence=0;this.offset=0;
-  const raw=await this.files.read(this.path)??'{}';this.base=this.files.fingerprint?await this.files.fingerprint(this.path,raw):await this.digest(raw);
+  let raw=await this.files.read(this.path)??'{}';this.base=this.files.fingerprint?await this.files.fingerprint(this.path,raw):await this.digest(raw);
   await this.pause();let parsed:ObjectValue={};try{const value=cpuJsonParse(raw);if(object(value))parsed=value;}catch{/* Derived cache loss never authorizes business cleanup. */}
-  this.value=this.normalize(parsed);await this.pause();
+  this.value=this.normalize(parsed);raw='';await this.pause();
   let repair=false,newline=false,sourceBytes=0,spentBytes=0,frames=0,started=Date.now();
   await cpuWorkAsync('journal-rebuild','chars',0,async()=>{for await(const {text:line,terminated} of this.lines()){
    if(!line){repair=true;break;}

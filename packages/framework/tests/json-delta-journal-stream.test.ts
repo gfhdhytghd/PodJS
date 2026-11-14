@@ -38,3 +38,11 @@ test('streamed and legacy replay agree for corruption, truncation, blank lines, 
  const large=fixture(512,11500);large.set('state',JSON.stringify({rows:{initial:'x'.repeat(15*1024*1024)},cursor:'0'}));const id=digest(large.get('state')!);large.set('state.delta',large.get('state.delta')!.split('\n').filter(Boolean).map(line=>{const f=JSON.parse(line);f.base=id;f.digest=digest(JSON.stringify([id,f.sequence,f.edits]));return JSON.stringify(f);}).join('\n')+'\n');
  const a=new Map(large),b=new Map(large);expect(Buffer.byteLength(a.get('state.delta')!)).toBeGreaterThan(17*1024*1024-1024*1024);expect(await new JsonDeltaJournal(port(b),'state',['rows']).load()).toEqual(await legacy(a));
 });
+
+test('bounded repair publishes exactly the legacy verified prefix including a missing newline',async()=>{
+ for(const suffix of ['bad','missing-newline']){const original=fixture(5,50),a=new Map(original),b=new Map(original);let text=a.get('state.delta')!;text=suffix==='bad'?text+'{torn':text.slice(0,-1);a.set('state.delta',text);b.set('state.delta',text);const io={...port(b),repair:async(p:string,n:number,newline:boolean)=>{const bytes=Buffer.from(b.get(p)??'');b.set(p,bytes.subarray(0,n).toString()+(newline?'\n':''));}};expect(await new JsonDeltaJournal(io,'state',['rows']).load()).toEqual(await legacy(a));expect(b.get('state.delta')).toBe(a.get('state.delta'));}
+});
+test('failed readonly compaction reloads the published base without replaying stale frames',async()=>{
+ const files=fixture(10,100),expected=await legacy(new Map(files)),io=port(files);let crash=true;const broken={...io,replace:async(p:string,s:string)=>{if(p.endsWith('.delta')&&crash){crash=false;throw Error('interrupted');}await io.replace(p,s);}};
+ const j=new JsonDeltaJournal(broken,'state',['rows'],v=>v,v=>v,200);await expect(j.load()).rejects.toThrow('interrupted');expect(await j.load()).toEqual(expected);
+});
