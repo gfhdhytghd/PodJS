@@ -100,14 +100,14 @@ final class PodInAppBrowser extends Dialog implements Application.ActivityLifecy
     }
     static void checkAvailable(Context context, String url) {
         if (needsInternet(url) && !online(context)) {
-            Toast.makeText(context, OFFLINE, Toast.LENGTH_LONG).show();
+            PodToast.show(context, OFFLINE, Toast.LENGTH_LONG);
             throw new PodBrowserServices.BrowserFailure("offline", OFFLINE);
         }
         boolean available;
         try { available = WebView.getCurrentWebViewPackage() != null; }
         catch (RuntimeException | LinkageError error) { available = false; }
         if (!available) {
-            Toast.makeText(context, UNAVAILABLE, Toast.LENGTH_LONG).show();
+            PodToast.show(context, UNAVAILABLE, Toast.LENGTH_LONG);
             throw new PodBrowserServices.BrowserFailure("webview_unavailable", UNAVAILABLE);
         }
     }
@@ -221,14 +221,14 @@ final class PodInAppBrowser extends Dialog implements Application.ActivityLifecy
                 boolean allowed = needsInternet(request.getUrl().toString()) || ("file".equalsIgnoreCase(Uri.parse(options.url).getScheme()) && "file".equalsIgnoreCase(scheme));
                 if (!allowed) return true;
                 if (request.isForMainFrame()) { canRestore = "GET".equalsIgnoreCase(request.getMethod()); restoreScroll=false; }
-                if (request.isForMainFrame() && needsInternet(request.getUrl().toString()) && !online(owner)) { Toast.makeText(owner, OFFLINE, Toast.LENGTH_LONG).show(); return true; }
+                if (request.isForMainFrame() && needsInternet(request.getUrl().toString()) && !online(owner)) { PodToast.show(owner, OFFLINE, Toast.LENGTH_LONG); return true; }
                 return false;
             }
             @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) { setProgress(0, false); }
             @Override public void onPageFinished(WebView view, String url) { setProgress(1, true); if(restoreScroll){restoreDeadline=android.os.SystemClock.uptimeMillis()+5000; view.removeCallbacks(restoreTimeout);view.post(restoreTimeout);view.postDelayed(restoreTimeout,5000);} }
             @Override public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
                 if (request.isForMainFrame()) {
-                    if (!online(owner) && needsInternet(request.getUrl().toString())) Toast.makeText(owner, OFFLINE, Toast.LENGTH_LONG).show();
+                    if (!online(owner) && needsInternet(request.getUrl().toString())) PodToast.show(owner, OFFLINE, Toast.LENGTH_LONG);
                     if (progressAnimator != null) progressAnimator.cancel();
                     ring.setVisibility(View.GONE);
                 }

@@ -606,7 +606,7 @@ final class PodServices implements Closeable {
             String message = args.optString("message", "");
             main.post(() -> {
                 if (closed || !requests.remove(id, request)) return;
-                android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show();
+                PodToast.show(context, message, android.widget.Toast.LENGTH_SHORT);
                 reply(id, true, JSONObject.NULL, null, null);
             });
             return;
