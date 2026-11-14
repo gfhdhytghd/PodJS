@@ -606,7 +606,7 @@ final class PodServices implements Closeable {
             String message = args.optString("message", "");
             main.post(() -> {
                 if (closed || !requests.remove(id, request)) return;
-                showToast(message);
+                PodToast.show(context, message, android.widget.Toast.LENGTH_SHORT);
                 reply(id, true, JSONObject.NULL, null, null);
             });
             return;
@@ -768,39 +768,6 @@ final class PodServices implements Closeable {
             if (request.priority != null) request.priority.cancel();
             if (requests.remove(id,request)) failure(id,"service_closed","Host service worker is closed");
         }
-    }
-    /** Keep short messages inside a round watch display and let longer messages wrap. */
-    private void showToast(String message) {
-        android.util.DisplayMetrics metrics = context.getResources().getDisplayMetrics();
-        float density = metrics.density;
-        int screenWidth = metrics.widthPixels;
-        int screenHeight = metrics.heightPixels;
-        int diameter = Math.min(screenWidth, screenHeight);
-        float toastCenterY = screenHeight * 0.21f;
-        float circleCenterY = screenHeight / 2f;
-        float dy = toastCenterY - circleCenterY;
-        int chordWidth = diameter >= screenHeight * 0.9f && Math.abs(screenWidth - screenHeight) < diameter * 0.15f
-            ? (int)(2f * Math.sqrt(Math.max(0f, diameter * diameter / 4f - dy * dy)))
-            : screenWidth;
-        int horizontalPadding = Math.round(12 * density);
-        int maxWidth = Math.max(Math.round(96 * density), chordWidth - Math.round(20 * density));
-        android.widget.TextView text = new android.widget.TextView(context);
-        text.setText(message);
-        text.setTextColor(android.graphics.Color.WHITE);
-        text.setTextSize(14);
-        text.setGravity(android.view.Gravity.CENTER);
-        text.setPadding(horizontalPadding, Math.round(8 * density), horizontalPadding, Math.round(8 * density));
-        text.setMaxWidth(maxWidth);
-        text.setMaxLines(4);
-        android.graphics.drawable.GradientDrawable background = new android.graphics.drawable.GradientDrawable();
-        background.setColor(0xff512234);
-        background.setCornerRadius(Math.round(24 * density));
-        text.setBackground(background);
-        android.widget.Toast toast = new android.widget.Toast(context);
-        toast.setDuration(android.widget.Toast.LENGTH_SHORT);
-        toast.setGravity(android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL, 0, Math.round(screenHeight * 0.16f));
-        toast.setView(text);
-        toast.show();
     }
     private void openBrowser(int id, Request request, JSONObject args) {
         main.post(() -> {
