@@ -46,3 +46,16 @@ test('failed readonly compaction reloads the published base without replaying st
  const files=fixture(10,100),expected=await legacy(new Map(files)),io=port(files);let crash=true;const broken={...io,replace:async(p:string,s:string)=>{if(p.endsWith('.delta')&&crash){crash=false;throw Error('interrupted');}await io.replace(p,s);}};
  const j=new JsonDeltaJournal(broken,'state',['rows'],v=>v,v=>v,200);await expect(j.load()).rejects.toThrow('interrupted');expect(await j.load()).toEqual(expected);
 });
+
+test('compaction retains the host fingerprint identity for subsequent frames and cold reload',async()=>{
+ const files=new Map([['state','{"rows":{}}']]),io={...port(files),fingerprint:async(_p:string,raw:string)=>'host:'+digest(raw)};
+ const make=()=>new JsonDeltaJournal(io,'state',['rows'],v=>v,v=>v,400);
+ const j=make();await j.load();await j.commit({rows:{a:'x'.repeat(500)}});await j.commit({rows:{a:'x'.repeat(500),b:'next'}});
+ expect(await make().load()).toEqual({rows:{a:'x'.repeat(500),b:'next'}});
+});
+
+test('a failed compacting commit reopens its already-published base before another load',async()=>{
+ const files=new Map([['state','{"rows":{}}']]),io=port(files);let fail=true;
+ const j=new JsonDeltaJournal({...io,replace:async(p:string,s:string)=>{if(p.endsWith('.delta')&&fail){fail=false;throw Error('cleanup interrupted');}await io.replace(p,s);}},'state',['rows'],v=>v,v=>v,400);
+ await j.load();const next={rows:{a:'x'.repeat(500)}};await expect(j.commit(next)).rejects.toThrow('cleanup interrupted');expect(await j.load()).toEqual(next);
+});

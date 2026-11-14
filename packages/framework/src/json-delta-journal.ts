@@ -69,11 +69,17 @@ export class JsonDeltaJournal {
  }
  private async compact(value:ObjectValue){
   const raw=cpuJsonStringify(this.denormalize(value));
-  // Compute before publication, so a failed digest cannot leave a live instance
-  // using the previous base identity after replacement.
-  const digest=await this.digest(raw);await this.pause();await this.files.replace(this.path,raw);
-  this.base=digest;this.offset=0;this.sequence=0;
-  await this.files.replace(this.path+'.delta','');
+  try{
+   // A host fingerprint may include more than the content hash. Preserve its
+   // identity contract against the published base, as the legacy writer did.
+   const digest=this.files.fingerprint?undefined:await this.digest(raw);
+   await this.pause();await this.files.replace(this.path,raw);
+   this.base=this.files.fingerprint?await this.files.fingerprint(this.path,raw):digest!;
+   this.offset=0;this.sequence=0;await this.files.replace(this.path+'.delta','');
+  }catch(error){
+   // Publication may already have succeeded. Reopen before any later append.
+   this.loaded=false;throw error;
+  }
  }
  private apply(edits:Edit[]){for(const e of edits)if(!e||typeof e.field!=='string'||e.field.length>1024||e.key!==undefined&&(typeof e.key!=='string'||e.key.length>2048))throw Error('json_journal_invalid');for(const e of edits){const target=e.key===undefined?this.value:(own(this.value,e.field)&&this.value[e.field]&&typeof this.value[e.field]==='object'?this.value[e.field]:put(this.value,e.field,{} as ObjectValue)[e.field]);const key=e.key??e.field;if(e.remove)delete target[key];else put(target,key,e.value);}}
  commit(input:ObjectValue){const task=this.writes.then(()=>this.commitValue(input));this.writes=task.catch(()=>{});return task;}
