@@ -9,9 +9,12 @@ trap 'rm -rf "$work"' EXIT
 sqlite=${SQLITE_JDBC_JAR:-$(find "$HOME/.gradle/caches/modules-2/files-2.1/org.xerial/sqlite-jdbc/3.46.1.3" -name '*.jar' -print -quit)}
 json=${JSON_JAR:-$(find "$HOME/.gradle/caches/modules-2/files-2.1/org.json/json/20240303" -name '*.jar' -print -quit)}
 slf4j=${SLF4J_JAR:-$(find "$HOME/.gradle/caches/modules-2/files-2.1/org.slf4j/slf4j-api/1.7.30" -name '*.jar' -print -quit)}
-cp="$sqlite:$json:$slf4j:$work/classes:platforms/android/runtime/src/main/resources"
+sdk=${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}
+cp="$sqlite:$json:$slf4j:$work/classes:platforms/android/runtime/src/main/resources:$sdk/platforms/android-36/android.jar"
 mkdir -p "$work/classes"
-javac -cp "$cp" -d "$work/classes" platforms/android/runtime/src/main/java/dev/podjs/runtime/PodActiveValidation.java platforms/android/runtime/src/main/java/dev/podjs/takeover/NativeBackup.java platforms/android/runtime/src/main/java/dev/podjs/runtime/PodInactiveGenerationCollector.java platforms/android/runtime/src/main/java/dev/podjs/runtime/PodTakeoverCoordinator.java platforms/android/runtime/src/main/java/dev/podjs/runtime/PodRoomV18Converter.java platforms/android/runtime/src/main/java/dev/podjs/runtime/PodRoomV19Converter.java platforms/android/runtime/src/main/java/dev/podjs/runtime/PodRoomVersionsConverter.java tests/java/dev/podjs/runtime/RoomV18Test.java tests/java/dev/podjs/runtime/RoomV19Test.java tests/java/dev/podjs/runtime/MigrationRecoveryTest.java tests/java/dev/podjs/runtime/MigrationPathSafetyTest.java tests/java/dev/podjs/runtime/MigrationMetadataSafetyTest.java
+# Profile selection shares the file/store helpers. Resolve their transitive
+# sources as well, so this standalone JVM entry tests the production converter.
+javac -sourcepath platforms/android/runtime/src/main/java -implicit:class -cp "$cp" -d "$work/classes" platforms/android/runtime/src/main/java/dev/podjs/runtime/PodActiveValidation.java platforms/android/runtime/src/main/java/dev/podjs/takeover/NativeBackup.java platforms/android/runtime/src/main/java/dev/podjs/runtime/PodInactiveGenerationCollector.java platforms/android/runtime/src/main/java/dev/podjs/runtime/PodTakeoverCoordinator.java platforms/android/runtime/src/main/java/dev/podjs/runtime/PodRoomV18Converter.java platforms/android/runtime/src/main/java/dev/podjs/runtime/PodRoomV19Converter.java platforms/android/runtime/src/main/java/dev/podjs/runtime/PodRoomVersionsConverter.java tests/java/dev/podjs/runtime/RoomV18Test.java tests/java/dev/podjs/runtime/RoomV19Test.java tests/java/dev/podjs/runtime/MigrationRecoveryTest.java tests/java/dev/podjs/runtime/MigrationPathSafetyTest.java tests/java/dev/podjs/runtime/MigrationMetadataSafetyTest.java
 java -ea -cp "$cp" dev.podjs.runtime.MigrationRecoveryTest
 java -ea -cp "$cp" dev.podjs.runtime.MigrationPathSafetyTest
 java -ea -cp "$cp" dev.podjs.runtime.MigrationMetadataSafetyTest
