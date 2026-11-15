@@ -93,6 +93,7 @@ public final class PodVideoServices implements AutoCloseable {
     private boolean autoplay;
     private boolean backgroundPlayback, lifecyclePaused;
     private ServiceConnection connection;
+    private PodVideoPlaybackService playbackService;
     private Player.Listener playerListener;
     private float density;
 
@@ -214,6 +215,7 @@ public final class PodVideoServices implements AutoCloseable {
                 if(connection!=this||closed)return;
                 try {
                     PodVideoPlaybackService service=((PodVideoPlaybackService.LocalBinder)binder).service();
+                    playbackService=service;
                     player=service.player();
                     audioPolicy=service.audioPolicy();audioStop=service.audioStop();
                     configurePlayer(a,preparedSource);
@@ -256,9 +258,10 @@ public final class PodVideoServices implements AutoCloseable {
             @Override public void onIsPlayingChanged(boolean playing) { if(player!=session)return; if(frameStats!=null)frameStats.playing(playing&&hasRenderedFirstFrame,android.os.SystemClock.elapsedRealtimeNanos()); if (playing) state="playing"; else if (state.equals("playing")) state="paused"; }
             @Override public void onPlayerError(PlaybackException error) { if(player!=session)return; PodVideoFailure.record("legacy",prepareCallback==null?"playback":"prepare",PodVideoAnalytics.errorCode(error),error,a,decoderBudget.inUse(),decoderBudget.limit(),videoView==null?"missing":videoView.isAttachedToWindow()?"attached":"detached",analytics==null?"unknown":analytics.contentKind()); state="error"; playbackErrorCode=PodVideoAnalytics.errorCode(error); try{if(frameCallback!=null)frameCallback.stateChanged(state());}catch(Exception ignored){} Callback c=prepareCallback; prepareCallback=null; releasePlayer(); if(c!=null)c.fail(playbackErrorCode,"Video playback failed"); if(videoView!=null)videoView.setVisibility(View.GONE); }
         };
-        player.addAnalyticsListener(analytics);player.addAnalyticsListener(analytics.playbackStats);
         player.addListener(playerListener);
-        state=lifecyclePaused?"paused":"preparing"; if(videoView!=null)videoView.setKeepScreenOn(true); player.setMediaSource(source); player.setVideoTextureView(videoView); android.util.Log.i("PodVideoTiming","prepareCall seq="+prepareSequence+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-prepareStartedMs));player.prepare();
+        state=lifecyclePaused?"paused":"preparing"; if(videoView!=null)videoView.setKeepScreenOn(true); player.setMediaSource(source);
+        playbackService.observeVideo(analytics);
+        player.setVideoTextureView(videoView); android.util.Log.i("PodVideoTiming","prepareCall seq="+prepareSequence+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-prepareStartedMs));player.prepare();
         if (autoplay && !lifecyclePaused) player.play(); else player.pause();
     }
     private MediaItem item(String url, String type) { MediaItem.Builder b=new MediaItem.Builder().setUri(Uri.parse(url)); if(!type.isEmpty()) b.setMimeType(type); return b.build(); }
@@ -370,8 +373,19 @@ public final class PodVideoServices implements AutoCloseable {
         progressObserver=()->{};
         PodBenchmark.cancelVideo(videoView);
         if(!statsWindowLogged)logFrameStats("end");frameStats=null;
+        if(audioPolicy!=null)audioPolicy.observeVolume(()->{});
         ExoPlayer previous=player;player=null;audioPolicy=null;audioStop=null;
-        if(previous!=null){if(analytics!=null){analytics.retireDecoder();previous.removeAnalyticsListener(analytics);previous.removeAnalyticsListener(analytics.playbackStats);}if(playerListener!=null)previous.removeListener(playerListener);previous.clearVideoSurface();if(!keepPlaying){previous.stop();previous.clearMediaItems();}}
+        if(previous!=null){
+            if(playerListener!=null)previous.removeListener(playerListener);
+            previous.clearVideoSurface();
+            if(!keepPlaying){
+                previous.stop();previous.clearMediaItems();
+                if(playbackService!=null)playbackService.observeVideo(null);
+                else if(analytics!=null){analytics.retireDecoder();previous.removeAnalyticsListener(analytics);previous.removeAnalyticsListener(analytics.playbackStats);}
+            }
+        }
+        // The service keeps the observer attached across a background handoff.
+        analytics=null;playbackService=null;
         playerListener=null;
         ServiceConnection previousConnection=connection;connection=null;
         if(previousConnection!=null){try{context.unbindService(previousConnection);}catch(IllegalArgumentException ignored){}}

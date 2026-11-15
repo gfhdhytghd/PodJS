@@ -63,6 +63,9 @@ explicit field projections instead of serializing route/source/session objects.
 The numeric `shellDiagnostics()` facade reports SQL worker totals, process PSS,
 observed video decoder lifetimes and explicit video session counters; it exposes
 no SQL text or row contents. `sql.gzipJson` has its own category.
+The playback service owns the legacy video observer across background handoff.
+Detaching the foreground view does not retire that observer. Decoder release or
+actual player termination ends its count, without retaining Activity callbacks.
 
 Focused checks: `bash scripts/test-shell-commands.sh`,
 `bun --conditions=browser test ./packages/framework/tests/shell.isolated.ts`, and

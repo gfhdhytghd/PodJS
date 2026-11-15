@@ -18,6 +18,17 @@ public final class PodVideoPlaybackService extends MediaSessionService {
     public static final String ACTION_STOP = "dev.podjs.runtime.STOP_VIDEO";
     private MediaSession session;
     private ExoPlayer player;
+    // Service-owned numeric observer; never hold the foreground host or its callbacks.
+    private PodVideoAnalytics videoAnalytics;
+    void observeVideo(PodVideoAnalytics next) {
+        if(videoAnalytics==next)return;
+        if(videoAnalytics!=null){
+            if(player!=null){player.removeAnalyticsListener(videoAnalytics);player.removeAnalyticsListener(videoAnalytics.playbackStats);}
+            videoAnalytics.retireDecoder();
+        }
+        videoAnalytics=next;
+        if(player!=null&&next!=null){player.addAnalyticsListener(next);player.addAnalyticsListener(next.playbackStats);}
+    }
     private PodMediaAudioPolicy audioPolicy;
     private PodVideoAudioStop audioStop;
     PodVideoAudioStop audioStop() { return audioStop; }
@@ -51,6 +62,6 @@ public final class PodVideoPlaybackService extends MediaSessionService {
         super.onStartCommand(intent,flags,id);
         return Service.START_NOT_STICKY; }
     @Override public void onTaskRemoved(Intent rootIntent) { if(player==null||!player.getPlayWhenReady()) stopSelf(); }
-    @Override public void onDestroy() { stopForeground(true);if(audioPolicy!=null)audioPolicy.close();audioPolicy=null;if(session!=null)session.release(); if(player!=null)player.release(); session=null;player=null;super.onDestroy(); }
+    @Override public void onDestroy() { stopForeground(true);if(audioPolicy!=null)audioPolicy.close();audioPolicy=null;if(session!=null)session.release(); if(player!=null)player.release();observeVideo(null); session=null;player=null;super.onDestroy(); }
     @Override public IBinder onBind(Intent intent) { if (!PodTakeover.ready(this)) return null; if ("dev.podjs.runtime.BIND_VIDEO".equals(intent.getAction())) return localBinder; return super.onBind(intent); }
 }
