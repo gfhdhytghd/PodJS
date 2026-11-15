@@ -19,6 +19,13 @@ const base = { entry: "main.tsx", appId: "com.example.demo", versionName: "1.2.3
 const defaults = { fontRegular: "font.ttf", fontBold: "font.ttf", outputRoot: "/tmp/pod-dist" };
 
 describe("external project config", () => {
+  test('launcher icons reject invalid types, resource kinds and XML injection', () => {
+    for (const field of ['icon','roundIcon']) {
+      for (const value of [null, true, 1, {}, [], '', 'icon.png', '@string/icon', '@android:drawable/icon', '@mipmap/', '@mipmap/Bad', '@mipmap/icon\n', '@mipmap/icon\r\n', '@drawable/icon" android:debuggable="true', '@drawable/icon<item>']) {
+        expect(() => resolvePodProject(fixture({...base,android:{[field]:value}}), POD_TARGETS, defaults)).toThrow(`android.${field}`);
+      }
+    }
+  });
   test('system font source is explicit and does not require packaged font files',()=>{
     const system={...base,resources:{fontSource:'system',fontRegular:'missing.ttf',fontBold:'missing-bold.ttf',fontSlots:[{slot:33,px:14}]}};
     const resolved=resolvePodProject(fixture(system),POD_TARGETS,defaults);

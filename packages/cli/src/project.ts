@@ -1,4 +1,5 @@
 import {validateAndroidSplash,type AndroidSplash} from './android-splash.ts';
+import {validateAndroidIcon,type AndroidLauncherIcons} from './android-manifest.ts';
 import {validateWorkManagerTakeover,type WorkManagerTakeoverConfig} from './workmanager-takeover.ts';
 import {validateDebugExternal,type DebugExternalConfig} from './debug-external.ts';
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -56,7 +57,7 @@ export interface PodProjectConfig {
   /** Omit duplicate function source strings, retaining error locations.
    * Opt in only if Function.toString source introspection is unused. */
   bytecode?: { stripSource: boolean };
-  android?: { release?: { minify?: boolean; shrinkResources?: boolean; proguardRules?: string }; splash?: AndroidSplash; workManagerTakeover?: WorkManagerTakeoverConfig; debugExternal?: DebugExternalConfig; resources?: string; theme?: string; cleartextTraffic?: boolean; bleProvisioning?: boolean; signing?: AndroidSigning; takeover?: { sourceVersionCode: number; purgeBackupAfter?: number; inactiveGenerationGc?: string } };
+  android?: AndroidLauncherIcons & { release?: { minify?: boolean; shrinkResources?: boolean; proguardRules?: string }; splash?: AndroidSplash; workManagerTakeover?: WorkManagerTakeoverConfig; debugExternal?: DebugExternalConfig; resources?: string; theme?: string; cleartextTraffic?: boolean; bleProvisioning?: boolean; signing?: AndroidSigning; takeover?: { sourceVersionCode: number; purgeBackupAfter?: number; inactiveGenerationGc?: string } };
 }
 
 export interface ResolvedPodProject {
@@ -213,6 +214,9 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
     if (!value.android || typeof value.android !== "object" || Array.isArray(value.android)) invalid("android must be an object");
     const candidate = value.android as Record<string, unknown>;
     android = {};
+    for (const field of ['icon', 'roundIcon'] as const) {
+      if (candidate[field] !== undefined) android[field] = validateAndroidIcon(candidate[field], field);
+    }
     if (candidate.release !== undefined) {
       const r = candidate.release as Record<string, unknown>;
       if (!r || typeof r !== "object" || Array.isArray(r) || Object.keys(r).some(k => !["minify", "shrinkResources", "proguardRules"].includes(k))) invalid("android.release has unsupported options");

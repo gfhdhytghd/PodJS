@@ -184,7 +184,7 @@ async function build(target: Target, project?: ResolvedPodProject, diagnosticJsS
   writeAndroidSplash(out,project?.config.android?.splash,project?.androidTheme);
   if (target === "android-watch" || target === "wearos-watch") {
     const platform = target === "android-watch" ? "android" : "wearos";
-    writeAndroidManifest(out, readFileSync(join(ROOT, "platforms", platform, "app/src/main/AndroidManifest.xml"), "utf8"), project?.config.capabilities ?? []);
+    writeAndroidManifest(out, readFileSync(join(ROOT, "platforms", platform, "app/src/main/AndroidManifest.xml"), "utf8"), project?.config.capabilities ?? [], project?.config.android);
   }
   console.log(`pod: built ${profile.id} -> ${out}`);
   return project;

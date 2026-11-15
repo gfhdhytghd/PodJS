@@ -1,5 +1,7 @@
 # Android system splash
 
+For the application launcher icon, use [android.icon and android.roundIcon](android-launcher-icons.md).
+
 Declare a host splash in pod.config.json:
 
 ```json
