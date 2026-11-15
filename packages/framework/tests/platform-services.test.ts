@@ -29,7 +29,7 @@ test("notification inbox acknowledges only successful subscriber delivery", asyn
 test("unimplemented native capabilities are not advertised by any target", () => {
   for (const target of Object.values(POD_TARGETS)) {
     for (const capability of Object.values(platformMethods)) {
-      if (["background.scheduled", "notification.local", "companion.sync.state", "companion.sync.message", "companion.sync.file"].includes(capability) && ["android-watch", "wearos-watch"].includes(target.id)) {
+      if (["background.scheduled", "notification.local", "companion.sync.state", "companion.sync.message", "companion.sync.file", "data.files.resumable"].includes(capability) && ["android-watch", "wearos-watch"].includes(target.id)) {
         expect(target.capabilities).toContain(capability);
       } else expect(target.capabilities).not.toContain(capability);
     }

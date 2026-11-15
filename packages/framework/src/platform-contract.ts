@@ -1,6 +1,11 @@
 /** Declaring a method does not grant it: the native host must advertise its capability. */
 import type { PodCapabilityId } from "./targets.ts";
 export const platformMethods: Readonly<Record<string, PodCapabilityId>> = Object.freeze({
+  "file.resumable.stage": "data.files.resumable",
+  "file.resumable.status": "data.files.resumable",
+  "file.resumable.missing": "data.files.resumable",
+  "file.resumable.finalize": "data.files.resumable",
+  "file.resumable.release": "data.files.resumable",
   "sync.state.get": "companion.sync.state",
   "sync.state.set": "companion.sync.state",
   "sync.state.delete": "companion.sync.state",

@@ -7,7 +7,7 @@ export function literalHostMethods(sources:readonly {path:string;text:string}[])
   const visit=(node:ts.Node)=>{if(ts.isCallExpression(node)){
    const name=(ts.isIdentifier(node.expression)?node.expression.text:ts.isPropertyAccessExpression(node.expression)?node.expression.name.text:'').replace(/\d+$/,'');
    const index=ports.get(name),arg=index===undefined?undefined:node.arguments[index];
-   if(arg&&(ts.isStringLiteral(arg)||ts.isNoSubstitutionTemplateLiteral(arg))&&/^[a-z][a-zA-Z0-9]*\.[a-zA-Z][a-zA-Z0-9]*$/.test(arg.text))methods.add(arg.text);
+   if(arg&&(ts.isStringLiteral(arg)||ts.isNoSubstitutionTemplateLiteral(arg))&&/^[a-z][a-zA-Z0-9]*(?:\.[a-zA-Z][a-zA-Z0-9]*)+$/.test(arg.text))methods.add(arg.text);
   }ts.forEachChild(node,visit);};visit(source);
  }return methods;
 }

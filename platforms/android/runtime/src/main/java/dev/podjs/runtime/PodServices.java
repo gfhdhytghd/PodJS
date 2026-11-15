@@ -97,6 +97,7 @@ final class PodServices implements Closeable {
     private final ExecutorService worker = serviceExecutor("Device");
     private final ExecutorService contentWorker = serviceExecutor("Content");
     private PodDeviceServices contentDevice;
+    private PodResumableObjects resumableObjects;
     private PodContentFiles contentFiles;
     private volatile PodHttpServices contentHttp;
     // Secure UI actions bypass this guest's file/cache queue as well as headless work.
@@ -706,7 +707,10 @@ final class PodServices implements Closeable {
                 request.cancellation.throwIfCanceled();
                 workAt=System.nanoTime();
                 Object value;
-                if ("content.http".equals(method) || "content.http.release".equals(method)) {
+                if (method.startsWith("file.resumable.")) {
+                    if(resumableObjects==null)resumableObjects=new PodResumableObjects(context);
+                    value=resumableObjects.execute(method,args);
+                } else if ("content.http".equals(method) || "content.http.release".equals(method)) {
                     if(contentHttp==null)contentHttp=new PodHttpServices(context);
                     value=contentHttp.execute("content.http.release".equals(method)?"http.release":"http.download",args);
                 } else if (method.startsWith("content.files.")) {

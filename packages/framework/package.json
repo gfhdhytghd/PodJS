@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "type": "module",
   "exports": {
+    "./verified-chunk-store": "./src/verified-chunk-store.ts",
+    "./resumable-object": "./src/resumable-object.ts",
     ".": "./src/index.ts",
     "./watch": "./src/watch.ts",
     "./testing/bun-runtime": "./testing/bun-runtime.ts",
