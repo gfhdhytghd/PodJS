@@ -12,6 +12,17 @@ function fixture(source: string) {
   writeFileSync(join(root,"helper.ts"),"export const outcome = 'success' as const;");
   return { root, entry };
 }
+test('headless content transport and authenticated SQL helpers use only caller-owned ports',async()=>{
+ const {root,entry}=fixture(`import {ContentSha256} from '@podjs/framework/content-sha256';
+ import {createContentTransport} from '@podjs/framework/content-http';
+ import {SqlStateJournal} from '@podjs/framework/sql-state-journal';
+ import {contentRecordCipher} from '@podjs/framework/content-record';
+ export default async()=>{const calls=[];const http=createContentTransport(async(method,args)=>{calls.push(method);if(method==='content.http')return {path:'sync2-content-http/slot-0/response-ab.data',size:0,status:200,headers:{}};if(method==='content.http.release')return {};throw Error('unexpected host');},url=>url==='https://fixture.invalid/body');const out=await http.request({url:'https://fixture.invalid/body',method:'GET',headers:{}});const hash=new ContentSha256();hash.update(Uint8Array.of(97,98,99));return {hash:hash.finish(),status:out.status,calls,journal:typeof SqlStateJournal,record:typeof contentRecordCipher};};`);
+ mkdirSync(join(root,'node_modules/@podjs'),{recursive:true});symlinkSync(new URL('../packages/framework',import.meta.url).pathname,join(root,'node_modules/@podjs/framework'),'dir');
+ const artifacts=await buildBackground({content:entry},root),context:Record<string,any>={};runInNewContext(readFileSync(join(root,artifacts.content!.file),'utf8'),context);
+ expect(JSON.parse(JSON.stringify(await context.backgroundHandler()))).toEqual({hash:'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',status:200,calls:['content.http','content.http.release'],journal:'function',record:'function'});expect(context.pod).toBeUndefined();expect(context.frame).toBeUndefined();
+ const denied=fixture("import * as api from '@podjs/framework/content-http/unsafe';export default ()=>api;");await expect(buildBackground({denied:denied.entry},denied.root)).rejects.toThrow('Background');
+});
 test('headless bounded sort uses caller yield ports without UI or host bootstrap',async()=>{
  const {root,entry}=fixture("import {runWorkSteps,stableSortSteps} from '@podjs/framework/async';export default async()=>{let turns=0;return {rows:await runWorkSteps(stableSortSteps([3,1,2],(a,b)=>a-b),{yieldTurn:async()=>{turns++;},stepLimit:2}),turns};};");
  mkdirSync(join(root,'node_modules/@podjs'),{recursive:true});symlinkSync(new URL('../packages/framework',import.meta.url).pathname,join(root,'node_modules/@podjs/framework'),'dir');
@@ -30,6 +41,11 @@ test("builds a separate headless IIFE with exact artifact hash",async () => {
   const context: Record<string,any>={}; runInNewContext(bytes.toString(),context);
   expect(context.frame).toBeUndefined();
   expect(await context.backgroundHandler({taskId:"refresh"})).toBe("success");
+});
+test('headless minification retains function and class diagnostic names',async()=>{
+ const {root,entry}=fixture("function accountWindowAdmission(){return 'success'};class DurableBodyQueue{};export default ()=>({functionName:accountWindowAdmission.name,className:DurableBodyQueue.name,result:accountWindowAdmission()});");
+ const artifact=(await buildBackground({names:entry},root)).names!,context:Record<string,any>={};runInNewContext(readFileSync(join(root,artifact.file),'utf8'),context);
+ expect(JSON.parse(JSON.stringify(context.backgroundHandler()))).toEqual({functionName:'accountWindowAdmission',className:'DurableBodyQueue',result:'success'});
 });
 test("rejects UI and unrestricted imports and static dynamic imports",async () => {
   for (const source of ["import { Text } from '@podjs/framework'; export default () => Text;","import fs from 'node:fs'; export default () => fs;","export default async () => import('./helper.ts');"]) {
@@ -140,4 +156,11 @@ test('headless CPU work telemetry is pure and does not grant host or unsafe subp
  const artifacts=await buildBackground({cpu:entry},root),context:Record<string,any>={};runInNewContext(readFileSync(join(root,artifacts.cpu!.file),'utf8'),context);
  const result=JSON.parse(JSON.stringify(context.backgroundHandler()));expect(result.result).toBe(7);expect(result.rows.map((r:any)=>r.outcome)).toEqual(['started','complete']);expect(context.pod).toBeUndefined();expect(context.frame).toBeUndefined();
  for(const denied of ['@podjs/framework/cpu-work/unsafe','@podjs/framework/services','@podjs/framework/startup']){const f=fixture(`import * as api from '${denied}';export default ()=>api;`);await expect(buildBackground({denied:f.entry},f.root)).rejects.toThrow('Background');}
+});
+
+test('large handlers compact under the unchanged size cap and oversized data stays rejected',async()=>{
+ const rows=Array.from({length:12000},(_,i)=>`const independentBackgroundValue${i}=${i};`),names=Array.from({length:12000},(_,i)=>`independentBackgroundValue${i}`);
+ const {root,entry}=fixture(rows.join('')+`export default ()=>[${names.join(',')}];`);
+ const artifact=(await buildBackground({compact:entry},root)).compact!,context:Record<string,any>={};expect(artifact.bytes).toBeLessThanOrEqual(1024*1024);runInNewContext(readFileSync(join(root,artifact.file),'utf8'),context);expect(context.backgroundHandler().length).toBe(12000);expect(context.backgroundHandler()[11999]).toBe(11999);
+ const oversized=fixture(`export default ()=>${JSON.stringify('x'.repeat(1024*1024+1))};`);await expect(buildBackground({large:oversized.entry},oversized.root)).rejects.toThrow('exceeds 1 MiB');
 });

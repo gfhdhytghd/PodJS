@@ -1,4 +1,6 @@
 import {p256} from './vendor/noble-p256.js';
+import {validateP256PublicKey} from './p256-public-key';
+export {validateP256PublicKey} from './p256-public-key';
 
 /** Independent, opt-in P-256 module. No import-time IO or browser crypto globals.
  * Randomness must come from a host CSPRNG. SHA-256 returns a raw 32-byte digest.
@@ -18,11 +20,7 @@ export interface P256KeyPair {
  dispose():void;
 }
 const prefix=Uint8Array.from([0x30,0x59,0x30,0x13,0x06,0x07,0x2a,0x86,0x48,0xce,0x3d,0x02,0x01,0x06,0x08,0x2a,0x86,0x48,0xce,0x3d,0x03,0x01,0x07,0x03,0x42,0x00]);
-function publicPoint(spki:Uint8Array){
- if(!(spki instanceof Uint8Array)||spki.length!==91||prefix.some((v,i)=>spki[i]!==v)||spki[26]!==4)throw Error('invalid_p256_spki');
- const point=spki.slice(26);p256.ProjectivePoint.fromHex(point).assertValidity();return point;
-}
-export function validateP256PublicKey(spki:Uint8Array):void {publicPoint(spki);}
+function publicPoint(spki:Uint8Array){validateP256PublicKey(spki);return spki.slice(26);}
 export function createP256(ports:P256Ports){
  return {
   async generateKeyPair():Promise<P256KeyPair>{
