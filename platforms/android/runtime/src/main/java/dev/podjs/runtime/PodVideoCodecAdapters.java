@@ -14,11 +14,13 @@ final class PodVideoCodecAdapters implements MediaCodecAdapter.Factory {
     private final MediaCodecAdapter.Factory delegate;
     private final String owner;
     private final IntSupplier priority;
-    PodVideoCodecAdapters(MediaCodecAdapter.Factory delegate,String owner,IntSupplier priority){this.delegate=delegate;this.owner=owner;this.priority=priority;}
+    private final Object identity;private final java.util.function.LongSupplier generation;
+    PodVideoCodecAdapters(MediaCodecAdapter.Factory delegate,String owner,IntSupplier priority){this(delegate,owner,owner,()->0,priority);}
+    PodVideoCodecAdapters(MediaCodecAdapter.Factory delegate,String purpose,Object identity,java.util.function.LongSupplier generation,IntSupplier priority){this.delegate=delegate;this.owner=purpose;this.identity=identity;this.generation=generation;this.priority=priority;}
     public MediaCodecAdapter createAdapter(MediaCodecAdapter.Configuration config)throws java.io.IOException {
         String mime=config.mediaFormat.getString(MediaFormat.KEY_MIME);
         if(mime==null||!mime.startsWith("video/"))return delegate.createAdapter(config);
-        PodVideoCodecGate.Permit permit=PodVideoCodecGate.PROCESS.await(owner,priority.getAsInt());
+        PodVideoCodecGate.Permit permit=PodVideoCodecGate.PROCESS.await(identity,generation.getAsLong(),owner,priority.getAsInt());
         try{return new Counted(delegate.createAdapter(config),permit);}
         catch(java.io.IOException|RuntimeException|Error e){permit.close();throw e;}
     }

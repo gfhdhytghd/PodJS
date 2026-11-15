@@ -243,8 +243,9 @@ final class PodMediaSurfaceServices implements AutoCloseable {
         }
         void createPlayer(){
             if(player!=null||disposed)return;
+            final long decodeGeneration=playerGeneration+1;
             try {
-                player=new ExoPlayer.Builder(context,new PodVideoAudioStop().renderers(context,"surface_"+id,()->PodVideoCodecGate.OTHER)).build();PodVideoCodecGate.PROCESS.register(this,()->PodVideoCodecGate.OTHER,this::releasePlayer);playerGeneration++;final ExoPlayer own=player;ready=false;failed=false;
+                player=new ExoPlayer.Builder(context,new PodVideoAudioStop().renderers(context,"surface_"+id,this,()->decodeGeneration,()->PodVideoCodecGate.OTHER)).build();PodVideoCodecGate.PROCESS.register(this,()->PodVideoCodecGate.OTHER,this::releasePlayer);playerGeneration++;final ExoPlayer own=player;ready=false;failed=false;
                 player.setVolume(0f);player.setRepeatMode(style.loop?Player.REPEAT_MODE_ONE:Player.REPEAT_MODE_OFF);player.setPlaybackSpeed(style.speed);
                 player.addListener(new Player.Listener(){
                     @Override public void onVideoSizeChanged(androidx.media3.common.VideoSize size){if(player!=own)return;render(Timing.VIDEO_STATE);}

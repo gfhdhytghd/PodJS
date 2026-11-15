@@ -75,7 +75,7 @@ final class PodMediaPrefixPreparation {
             }
             public void close(){}
         }){
-            PodVideoCodecGate.Permit permit=PodVideoCodecGate.PROCESS.acquire("stock_frame",PodVideoCodecGate.OTHER);
+            PodVideoCodecGate.Permit permit=PodVideoCodecGate.PROCESS.acquire(entry,0,"stock_frame",PodVideoCodecGate.OTHER);
             if(permit==null)return null;
             MediaMetadataRetriever decoder;try{decoder=new MediaMetadataRetriever();}catch(RuntimeException|Error e){permit.close();throw e;}
             try{

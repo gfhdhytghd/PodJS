@@ -43,4 +43,15 @@ public class PodVideoCodecAdaptersTest {
   int baseline=PodVideoCodecGate.PROCESS.live();MediaCodecAdapter adapter=new PodVideoCodecAdapters(c->fake(()->{}),"test",()->1).createAdapter(config("audio/mp4a-latm"));
   assertEquals(baseline,PodVideoCodecGate.PROCESS.live());adapter.release();assertEquals(baseline,PodVideoCodecGate.PROCESS.live());
  }
+ @Test public void failedFactoryRollsBackTheSameTypedReservation()throws Exception {
+  PodVideoCodecGate gate=PodVideoCodecGate.PROCESS;Object owner=new Object();java.util.List<PodVideoCodecGate.Allocation> reserved=new java.util.ArrayList<>(),released=new java.util.ArrayList<>();
+  AutoCloseable subscription=gate.observe(new PodVideoCodecGate.LifecycleListener(){
+   public void reserved(PodVideoCodecGate.Allocation a){reserved.add(a);}
+   public void released(PodVideoCodecGate.Allocation a){released.add(a);}
+  });
+  try{
+   try{new PodVideoCodecAdapters(c->{throw new java.io.IOException("fixture");},"session",owner,()->29,()->1).createAdapter(config("video/avc"));fail();}catch(java.io.IOException expected){}
+   assertEquals(1,reserved.size());assertEquals(1,released.size());assertSame(reserved.get(0),released.get(0));assertSame(owner,released.get(0).owner);assertEquals(29,released.get(0).generation);assertEquals(0,gate.live());
+  }finally{subscription.close();}
+ }
 }

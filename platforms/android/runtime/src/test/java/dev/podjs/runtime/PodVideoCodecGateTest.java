@@ -39,4 +39,30 @@ public class PodVideoCodecGateTest {
   PodVideoCodecGate.Permit current=gate.acquire("current",2);assertNotNull(current);assertNull(gate.acquire("fourth",2));
   software.close();cover.close();current.close();assertEquals(0,gate.live());
  }
+ @Test public void typedLifecycleReplaysSameOwnerAndGenerationAndReleasesExactlyOnce()throws Exception {
+  PodVideoCodecGate gate=new PodVideoCodecGate();Object owner=new Object();List<PodVideoCodecGate.Allocation> reserved=new ArrayList<>(),released=new ArrayList<>();
+  PodVideoCodecGate.Permit permit=gate.acquire(owner,17,"session",1);
+  AutoCloseable subscription=gate.observe(new PodVideoCodecGate.LifecycleListener(){
+   public void reserved(PodVideoCodecGate.Allocation a){reserved.add(a);}
+   public void released(PodVideoCodecGate.Allocation a){released.add(a);}
+  });
+  assertEquals(1,reserved.size());assertSame(owner,reserved.get(0).owner);assertEquals(17,reserved.get(0).generation);
+  permit.close();permit.close();assertEquals(1,released.size());assertSame(reserved.get(0),released.get(0));
+  subscription.close();subscription.close();PodVideoCodecGate.Permit next=gate.acquire(owner,18,"session",1);next.close();assertEquals(1,reserved.size());
+ }
+ @Test public void failingObserverCannotLeakOrReturnADecoderPermitEarly()throws Exception {
+  PodVideoCodecGate gate=new PodVideoCodecGate();AutoCloseable subscription=gate.observe(new PodVideoCodecGate.LifecycleListener(){
+   public void reserved(PodVideoCodecGate.Allocation a){throw new IllegalStateException("fixture");}
+   public void released(PodVideoCodecGate.Allocation a){throw new IllegalStateException("fixture");}
+  });
+  PodVideoCodecGate.Permit permit=gate.acquire(new Object(),3,"prefix",0);assertEquals(1,gate.live());permit.close();assertEquals(0,gate.live());subscription.close();
+ }
+ @Test @org.robolectric.annotation.LooperMode(org.robolectric.annotation.LooperMode.Mode.PAUSED)
+ public void budgetReclaimUsesMainLaneAndProtectsCurrentAndKeep()throws Exception {
+  PodVideoCodecGate gate=new PodVideoCodecGate();Object current=new Object(),next=new Object(),other=new Object();List<String> order=new ArrayList<>();
+  gate.register(current,()->2,()->fail("current stolen"));gate.register(next,()->1,()->fail("keep stolen"));
+  gate.register(other,()->0,()->{assertSame(android.os.Looper.getMainLooper(),android.os.Looper.myLooper());order.add("other");});
+  Thread request=new Thread(()->gate.requestReclaim(next,1));request.start();request.join();assertTrue(order.isEmpty());
+  org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();assertEquals(Collections.singletonList("other"),order);
+ }
 }

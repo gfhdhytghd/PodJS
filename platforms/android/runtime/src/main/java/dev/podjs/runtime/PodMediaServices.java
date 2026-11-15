@@ -174,7 +174,7 @@ public final class PodMediaServices implements AutoCloseable {
         // MediaPlayer accepts containers with a video track even on the audio API.
         // Reserve conservatively before its opaque prepare path can allocate one.
         PodVideoCodecGate.PROCESS.reclaim(this,PodVideoCodecGate.PREWARM);
-        containerPermit=PodVideoCodecGate.PROCESS.acquire("audio_container",PodVideoCodecGate.CURRENT);
+        containerPermit=PodVideoCodecGate.PROCESS.acquire(this,0,"audio_container",PodVideoCodecGate.CURRENT);
         if(containerPermit==null)throw new IllegalStateException("video_decoder_limit");
         try{player = new MediaPlayer();}catch(RuntimeException|Error e){containerPermit.close();containerPermit=null;throw e;}
         player.setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)

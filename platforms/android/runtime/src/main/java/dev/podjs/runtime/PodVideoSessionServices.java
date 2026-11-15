@@ -394,7 +394,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             final Session audioSession=session;
             PodVideoCodecGate.PROCESS.register(session,()->sessionPriority(audioSession),audioSession::reclaimDecoder);
             session.audioStop=new PodVideoAudioStop();
-            player = new ExoPlayer.Builder(context,session.audioStop.renderers(context,"session_"+audioSession.id,()->sessionPriority(audioSession))).setLoadControl(loadControl).build();
+            player = new ExoPlayer.Builder(context,session.audioStop.renderers(context,"session_"+audioSession.id,audioSession,()->generation,()->sessionPriority(audioSession))).setLoadControl(loadControl).build();
             session.player = player;
             PodBenchmark.startup(analytics.startupSeq,"player_constructed");
             session.audioPolicy = new PodMediaAudioPolicy(context, player);

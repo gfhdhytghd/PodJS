@@ -193,7 +193,7 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
                 if(hardware)reader=android.media.ImageReader.newInstance(width,height,ImageFormat.PRIVATE,2,android.hardware.HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE);
                 else format.setInteger(MediaFormat.KEY_COLOR_FORMAT,MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible);
                 android.util.Log.i("PodMediaCache","frame_backend entry="+entry.ordinal+" hardware="+(hardware?1:0)+" live="+(decoderBudget==null?0:decoderBudget.inUse()));
-                physical=PodVideoCodecGate.PROCESS.acquire("prefix",PodVideoCodecGate.OTHER);if(physical==null)return null;
+                physical=PodVideoCodecGate.PROCESS.acquire(entry,0,"prefix",PodVideoCodecGate.OTHER);if(physical==null)return null;
                 backend=true;codec=MediaCodec.createByCodecName(name);codec.configure(format,reader==null?null:reader.getSurface(),null,0);codec.start();
                 long deadline=SystemClock.uptimeMillis()+800;boolean sample=false,eos=false;
                 MediaCodec.BufferInfo info=new MediaCodec.BufferInfo();
