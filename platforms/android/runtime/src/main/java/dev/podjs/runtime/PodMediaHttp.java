@@ -81,9 +81,15 @@ final class PodMediaHttp implements DataSource.Factory, AutoCloseable {
         int status=PodMediaPrefixCache.httpStatus(error);if(status!=403&&status!=429)return;
         long retry=0;for(Throwable e=error;e!=null;e=e.getCause())if(e instanceof HttpDataSource.InvalidResponseCodeException)retry=PodDouyinRequest.retryAfter(((HttpDataSource.InvalidResponseCodeException)e).headerFields);
         synchronized(POLICY){
-            // A blocked attempt cannot shorten or extend an existing server cooldown.
-            Cooldown previous=cooldowns.get(scope(spec));if(previous!=null&&previous.clock.getAsLong()<previous.until)return;
-            cooldowns.put(scope(spec),new Cooldown(error,now.getAsLong()+Math.max(30_000,retry),retry>0,now));
+            // Only real HTTP responses reach here. Local admission refusals do not renew a deadline.
+            Cooldown previous=cooldowns.get(scope(spec));
+            java.util.function.LongSupplier clock=previous==null?now:previous.clock;
+            long received=clock.getAsLong();boolean active=previous!=null&&received<previous.until;
+            if(!active){clock=now;received=clock.getAsLong();}
+            long deadline=received+Math.max(30_000,retry);
+            boolean server=retry>0||active&&previous.server;
+            if(active&&previous.until>deadline){deadline=previous.until;error=previous.error;}
+            cooldowns.put(scope(spec),new Cooldown(error,deadline,server,clock));
             while(cooldowns.size()>64)cooldowns.remove(cooldowns.keySet().iterator().next());
         }
     }
@@ -99,14 +105,14 @@ final class PodMediaHttp implements DataSource.Factory, AutoCloseable {
         }
     }
     private final class Stream implements DataSource {
-        private DataSpec spec;private PodMediaRequestPolicy.Binding credentials;private volatile Call call;private volatile boolean closed,busy;private boolean disposed;private final Object io=new Object();
+        private PodMediaRequestPolicy.Binding credentials;private volatile Call call;private volatile boolean closed,busy;private boolean disposed;private final Object io=new Object();
         private final DataSource source=PodDouyinRequest.factory(new OkHttpDataSource.Factory(request->{
             Request bound=request.newBuilder().tag(PodMediaRequestPolicy.Binding.class,credentials).build();
             Call next=client.newCall(bound);call=next;if(closed||PodMediaHttp.this.closed)next.cancel();return next;
         }),Collections.emptyMap()).createDataSource();
         public void addTransferListener(TransferListener listener){source.addTransferListener(listener);}
-        public long open(DataSpec spec)throws IOException{synchronized(io){credentials=PodMediaRequestPolicy.bind(HttpUrl.get(spec.uri.toString()),Headers.of(spec.httpRequestHeaders),direct);credentials.check(HttpUrl.get(spec.uri.toString()),Headers.of(spec.httpRequestHeaders));check(spec);this.spec=spec;if(closed)throw new InterruptedIOException("media_cancelled");busy=true;try{return source.open(spec);}finally{busy=false;}}}
-        public int read(byte[] bytes,int offset,int length)throws IOException{synchronized(io){check(spec);if(closed)throw new InterruptedIOException("media_cancelled");busy=true;try{return source.read(bytes,offset,length);}finally{busy=false;}}}
+        public long open(DataSpec spec)throws IOException{synchronized(io){credentials=PodMediaRequestPolicy.bind(HttpUrl.get(spec.uri.toString()),Headers.of(spec.httpRequestHeaders),direct);credentials.check(HttpUrl.get(spec.uri.toString()),Headers.of(spec.httpRequestHeaders));check(spec);if(closed)throw new InterruptedIOException("media_cancelled");busy=true;try{return source.open(spec);}finally{busy=false;}}}
+        public int read(byte[] bytes,int offset,int length)throws IOException{synchronized(io){check();if(closed)throw new InterruptedIOException("media_cancelled");busy=true;try{return source.read(bytes,offset,length);}finally{busy=false;}}}
         public Uri getUri(){return source.getUri();}
         public Map<String,List<String>> getResponseHeaders(){return source.getResponseHeaders();}
         int responseCode(){return ((PodDouyinRequest)source).responseCode();}
