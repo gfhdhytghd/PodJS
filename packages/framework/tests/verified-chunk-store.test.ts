@@ -37,3 +37,14 @@ test('native structured failures preserve the closed error code without guessing
  await expect(store.check({scope:'a'.repeat(64),connectionId:'b'.repeat(32),epoch:1})).rejects.toThrow('STALE_EPOCH');
  expect(await store.runtime()).toBeUndefined();
 });
+
+test('RVRESUMEC-IMPL-06 facade reserves four copies within unchanged 32 MiB core quota',async()=>{
+ const calls:Record<string,unknown>[]=[];const store=new VerifiedChunkStore(async<T>(_m,a)=>{calls.push(a);return {epoch:1} as T;});
+ await store.acquire('a'.repeat(64),'b'.repeat(32));expect(calls[0]!.maxStagingBytes).toBe(64*1024*1024);
+ const native=readFileSync(new URL('../../../platforms/android/runtime/src/main/java/dev/podjs/runtime/PodResumableObjects.java',import.meta.url),'utf8'),core=readFileSync(new URL('../../../platforms/android/runtime/src/main/java/dev/podjs/runtime/PodSyncFileReceiver.java',import.meta.url),'utf8');
+ expect(native).toContain('maxStagingBytes",64*1024*1024');expect(native).toContain('budget=67108864');expect(native).toContain('reserved+m.getLong("size")*4>budget');expect(native).toContain('catch(PodSyncFileReceiver.QuotaException capacity){throw new IOException("WINDOW_FULL");}');
+ expect(core).toContain('reserved > 32L * 1024 * 1024');expect(core).toContain('throw new QuotaException("Application file quota exceeded")');
+ // Two maximum-size objects require 128 MiB four-copy reservation. The native
+ // AVD regression exercises these actual interleaved offers and WINDOW_FULL.
+ expect(2*16777216*4).toBeGreaterThan(Number(calls[0]!.maxStagingBytes));
+});

@@ -30,7 +30,7 @@ export class VerifiedChunkStore {
    return r;
   }catch{return;}
  }
- async acquire(scope:string,connectionId:string,readOnly=false,bounds={maxInFlightObjects:4,maxStagingBytes:134217728}):Promise<ObjectLease>{
+ async acquire(scope:string,connectionId:string,readOnly=false,bounds={maxInFlightObjects:4,maxStagingBytes:67108864}):Promise<ObjectLease>{
   if(!hex(scope)||!/^[0-9a-f]{32}$/.test(connectionId))throw Error('invalid_object_authorization');
   const r=await this.invoke<{epoch:number}>('file.resumable.status',{operation:'acquire',scope,connectionId,readOnly,...bounds});
   if(!Number.isSafeInteger(r.epoch)||r.epoch<1)throw Error('invalid_object_epoch');

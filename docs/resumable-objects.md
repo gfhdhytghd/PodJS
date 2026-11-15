@@ -47,8 +47,10 @@ The application-wide limit is four active objects, including retained native
 orphans. Negotiated smaller windows apply across active scopes. Each active
 object reserves four times its declared bytes for blocks, assembly, immutable
 publication and copy temporary; total reservation is at most the negotiated
-staging bound (hard maximum 128 MiB). The reused core retains its stricter 32 MiB
-reservation limit. Public `sync.files` quotas are unchanged. The private journal
+staging bound (hard maximum 64 MiB). The four-copy bound limits admitted object bytes to 16 MiB, so even two-copy
+core reservations fit its unchanged 32 MiB limit. A second partial 16 MiB
+object waits until the first is applied and released. Typed legacy-host
+QuotaException failures also become WINDOW_FULL. Public `sync.files` quotas are unchanged. The private journal
 uses at most 8 MiB of SQLite pages and reserves another 8 MiB for rollback files.
 
 Valid activity extends retention to at least 24 hours. Collection only visits an

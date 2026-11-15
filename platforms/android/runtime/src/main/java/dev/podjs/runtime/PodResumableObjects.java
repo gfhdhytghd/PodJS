@@ -50,7 +50,8 @@ final class PodResumableObjects {
         return new JSONObject().put("transfer_id",oid).put("size",size).put("sha256",digest).put("chunk_hashes",frozen).put("mime","application/octet-stream");
     }
     private static JSONObject core(PodSyncFileReceiver receiver,JSONObject command)throws Exception {
-        JSONObject reply=new JSONObject(receiver.command(command.toString()));
+        JSONObject reply;try{reply=new JSONObject(receiver.command(command.toString()));}
+        catch(PodSyncFileReceiver.QuotaException capacity){throw new IOException("WINDOW_FULL");}
         if(!reply.getBoolean("ok")){
             String text=reply.optString("message");
             if(text.contains("quota"))throw new IOException("WINDOW_FULL");
@@ -77,7 +78,7 @@ final class PodResumableObjects {
         }
     }
     private JSONObject executeUnchecked(String method,JSONObject a)throws Exception {
-        if("file.resumable.status".equals(method)&&"probe".equals(a.optString("operation")))return new JSONObject().put("version",1).put("elapsedMillis",SystemClock.elapsedRealtime()).put("chunkBytes",65536).put("maxObjectBytes",16777216).put("maxInFlightObjects",4).put("maxStagingBytes",128*1024*1024).put("maxJournalBytes",JOURNAL_BYTES).put("durable",true).put("fencing",true).put("methods",new JSONArray(new String[]{"file.resumable.stage","file.resumable.status","file.resumable.missing","file.resumable.finalize","file.resumable.release"}));
+        if("file.resumable.status".equals(method)&&"probe".equals(a.optString("operation")))return new JSONObject().put("version",1).put("elapsedMillis",SystemClock.elapsedRealtime()).put("chunkBytes",65536).put("maxObjectBytes",16777216).put("maxInFlightObjects",4).put("maxStagingBytes",64*1024*1024).put("maxJournalBytes",JOURNAL_BYTES).put("durable",true).put("fencing",true).put("methods",new JSONArray(new String[]{"file.resumable.stage","file.resumable.status","file.resumable.missing","file.resumable.finalize","file.resumable.release"}));
         String scope=id(a,"scope",64);
         try(RandomAccessFile lf=new RandomAccessFile(lock,"rw")){
             FileLock held;try{held=lf.getChannel().tryLock();}catch(OverlappingFileLockException e){throw new IOException("BUSY");}if(held==null)throw new IOException("BUSY");
@@ -133,7 +134,7 @@ final class PodResumableObjects {
             }
             // Count the actual durable core, including a crash after the native
             // side effect but before this journal's transaction committed.
-            long window=4,budget=134217728;try(Cursor c=db.rawQuery("SELECT MIN(max_window),MIN(max_staging) FROM scopes WHERE scope=? OR scope IN (SELECT scope FROM objects WHERE phase='active')",new String[]{scope})){if(c.moveToFirst()){window=Math.min(window,c.getLong(0));budget=Math.min(budget,c.getLong(1));}}
+            long window=4,budget=67108864;try(Cursor c=db.rawQuery("SELECT MIN(max_window),MIN(max_staging) FROM scopes WHERE scope=? OR scope IN (SELECT scope FROM objects WHERE phase='active')",new String[]{scope})){if(c.moveToFirst()){window=Math.min(window,c.getLong(0));budget=Math.min(budget,c.getLong(1));}}
             if(!existing.isDirectory()&&(count>=window||reserved+m.getLong("size")*4>budget))throw new IOException("WINDOW_FULL");
             // Persist intent before the side effect. A crash leaves a verifiable
             // Rust manifest that the next identical call re-adopts under lock.

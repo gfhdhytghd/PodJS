@@ -13,6 +13,8 @@ import java.nio.charset.StandardCharsets;
  */
 public final class PodSyncFileReceiver implements AutoCloseable {
     static { System.loadLibrary("podjs_android"); }
+    /** Typed capacity signal; public quotas and existing error text are unchanged. */
+    static final class QuotaException extends IOException {QuotaException(String message){super(message);}}
     private long handle;
     private final RandomAccessFile lockFile;
     private final FileLock lock;
@@ -84,7 +86,7 @@ public final class PodSyncFileReceiver implements AutoCloseable {
         Object value = manifest.get("size");
         if (!(value instanceof Number)) throw new IOException("Invalid file size");
         long size = ((Number)value).longValue();
-        if (size < 0 || size > 16L * 1024 * 1024 || ((Number)value).doubleValue() != size) throw new IOException("File quota exceeded");
+        if (size < 0 || size > 16L * 1024 * 1024 || ((Number)value).doubleValue() != size) throw new QuotaException("File quota exceeded");
         return size;
     }
     /** The native receiver enforces its own directory quota. This additional
@@ -113,12 +115,12 @@ public final class PodSyncFileReceiver implements AutoCloseable {
                 for (File child : contents) {
                     if (!java.nio.file.Files.isRegularFile(child.toPath(),java.nio.file.LinkOption.NOFOLLOW_LINKS)) throw new IOException("Invalid transfer data");
                     if (!child.getName().equals("manifest.json") && !child.getName().equals("manifest.tmp")) {
-                        long length = child.length(); if (length > 32L * 1024 * 1024 || bytes > 32L * 1024 * 1024 - length) throw new IOException("Application file quota exceeded");
+                        long length = child.length(); if (length > 32L * 1024 * 1024 || bytes > 32L * 1024 * 1024 - length) throw new QuotaException("Application file quota exceeded");
                         bytes += length;
                     }
                 }
                 reserved += Math.max(bytes,verified(complete,fileSize,saved.getString("sha256")) ? fileSize : fileSize * 2);
-                if (reserved > 32L * 1024 * 1024 || ++count >= 128) throw new IOException("Application file quota exceeded");
+                if (reserved > 32L * 1024 * 1024 || ++count >= 128) throw new QuotaException("Application file quota exceeded");
             }
         }
     }
