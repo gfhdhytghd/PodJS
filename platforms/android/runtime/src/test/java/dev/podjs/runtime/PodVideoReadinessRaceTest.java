@@ -42,6 +42,8 @@ public class PodVideoReadinessRaceTest {
             JSONObject bounds=new JSONObject().put("width",233).put("height",233).put("visible",true);
             PodVideoKeyframes frames=(PodVideoKeyframes)field(PodVideoSessionServices.class,"keyframes").get(service);frames.onStored(null);
             String targetBinding=null;Reply targetReady=null;
+            // Force the pixel-only fallback; ordinary cache hits now keep a live prewarm.
+            for(int i=0;i<3;i++)assertTrue(budget.acquire());
             for(String id:new String[]{"from","to"}){
                 String uri=cache.register(id,"https://fixture.invalid/"+id+".mp4",Collections.emptyMap());
                 JSONObject args=new JSONObject().put("sessionId",id).put("url",uri).put("prewarm",true).put("bounds",bounds);
@@ -51,6 +53,7 @@ public class PodVideoReadinessRaceTest {
                 Reply ready=new Reply();service.dispatch("video.session.prepare",args,ready);Shadows.shadowOf(Looper.getMainLooper()).idle();assertNull(ready.error);
                 if(id.equals("to")){targetReady=ready;assertTrue(ready.value.getBoolean("hasCachedFirstFrame"));}
             }
+            for(int i=0;i<3;i++)budget.release();
             Map<?,?> sessions=(Map<?,?>)field(PodVideoSessionServices.class,"sessions").get(service);Object to=sessions.get("to");
             Method clear=to.getClass().getDeclaredMethod("clearKeyframe");clear.setAccessible(true);clear.invoke(to);frames.trim();
             Reply drag=new Reply();service.dispatch("video.session.transition",new JSONObject().put("fromSessionId","from").put("toSessionId","to").put("progress",.5).put("direction","up").put("bounds",bounds),drag);Shadows.shadowOf(Looper.getMainLooper()).idle();assertNull(drag.error);
@@ -62,6 +65,30 @@ public class PodVideoReadinessRaceTest {
             assertTrue(targetReady.value.getBoolean("hasCachedFirstFrame"));assertEquals(0,budget.inUse());assertEquals(2,frames.size());
         }finally{service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();cache.close();}
     }
+    @Test public void decoderReclamationPreservesIdentityForAnOutstandingPromotion()throws Exception {
+        Context context=ApplicationProvider.getApplicationContext();
+        PodMediaPrefixCache cache=new PodMediaPrefixCache(new File(context.getCacheDir(),"reclaimed-identity"));
+        PodVideoDecoderBudget budget=new PodVideoDecoderBudget(3);
+        PodVideoSessionServices service=new PodVideoSessionServices(context,budget,cache);
+        service.attachToParent(new FrameLayout(context));Shadows.shadowOf(Looper.getMainLooper()).idle();
+        try{
+            String uri=cache.register("old","https://fixture.invalid/old.mp4",Collections.emptyMap());
+            JSONObject args=new JSONObject().put("sessionId","old").put("url",uri).put("prewarm",true)
+                .put("bounds",new JSONObject().put("width",233).put("height",233));
+            PodVideoKeyframes frames=(PodVideoKeyframes)field(PodVideoSessionServices.class,"keyframes").get(service);
+            frames.put(PodVideoFrameCache.binding(args,cache),Bitmap.createBitmap(8,8,Bitmap.Config.ARGB_8888));
+            for(int i=0;i<3;i++)assertTrue(budget.acquire());
+            Reply ready=new Reply();service.dispatch("video.session.prepare",args,ready);Shadows.shadowOf(Looper.getMainLooper()).idle();assertNull(ready.error);
+            for(int i=0;i<3;i++)budget.release();
+            Map<?,?> sessions=(Map<?,?>)field(PodVideoSessionServices.class,"sessions").get(service);Object old=sessions.get("old");
+            ExoPlayer player=new ExoPlayer.Builder(context).build();assertTrue(budget.acquire());
+            field(old.getClass(),"player").set(old,player);field(old.getClass(),"decoderLease").setBoolean(old,true);
+            Method reclaim=old.getClass().getDeclaredMethod("reclaimDecoder");reclaim.setAccessible(true);reclaim.invoke(old);
+            assertEquals(0,budget.inUse());assertSame(old,sessions.get("old"));
+            assertNull(field(old.getClass(),"player").get(old));assertNotNull(field(old.getClass(),"frameSource").get(old));
+        }finally{service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();cache.close();}
+    }
+
     private void exercise(boolean live)throws Exception {
         Context context=ApplicationProvider.getApplicationContext();
         PodMediaPrefixCache cache=new PodMediaPrefixCache(new File(context.getCacheDir(),"readiness-race"));
@@ -72,6 +99,8 @@ public class PodVideoReadinessRaceTest {
             JSONObject bounds=new JSONObject().put("width",233).put("height",233).put("visible",true);
             PodVideoKeyframes frames=(PodVideoKeyframes)field(PodVideoSessionServices.class,"keyframes").get(service);
             frames.onStored(null);
+            // Force the pixel-only fallback; ordinary cache hits now keep a live prewarm.
+            for(int i=0;i<3;i++)assertTrue(budget.acquire());
             for(String id:new String[]{"from","to"}){
                 String uri=cache.register(id,"https://fixture.invalid/"+id+".mp4",Collections.emptyMap());
                 JSONObject args=new JSONObject().put("sessionId",id).put("url",uri).put("prewarm",true).put("bounds",bounds);
@@ -79,6 +108,7 @@ public class PodVideoReadinessRaceTest {
                 Reply ready=new Reply();service.dispatch("video.session.prepare",args,ready);Shadows.shadowOf(Looper.getMainLooper()).idle();
                 assertNull(ready.error);assertTrue(ready.value.getBoolean("hasCachedFirstFrame"));
             }
+            for(int i=0;i<3;i++)budget.release();
             Map<?,?> sessions=(Map<?,?>)field(PodVideoSessionServices.class,"sessions").get(service);Object to=sessions.get("to");
             Method clear=to.getClass().getDeclaredMethod("clearKeyframe");clear.setAccessible(true);clear.invoke(to);frames.retainWindow(Collections.emptySet());
             ShadowLog.clear();

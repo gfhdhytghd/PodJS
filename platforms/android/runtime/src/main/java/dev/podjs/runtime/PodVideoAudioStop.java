@@ -44,8 +44,10 @@ final class PodVideoAudioStop {
         try{PodBenchmark.emit(stop.action.event("previous_audio_stopped").put("backend","audiotrack")
             .put("audio_ack",ack).put("audio_track_state",state==AudioTrack.PLAYSTATE_PAUSED?"paused":"stopped"),now);}catch(Exception ignored){}
     }
-    DefaultRenderersFactory renderers(Context context) {
+    DefaultRenderersFactory renderers(Context context) { return renderers(context,"video",()->PodVideoCodecGate.CURRENT); }
+    DefaultRenderersFactory renderers(Context context,String owner,java.util.function.IntSupplier priority) {
         return new DefaultRenderersFactory(context){
+            @Override protected androidx.media3.exoplayer.mediacodec.MediaCodecAdapter.Factory getCodecAdapterFactory(){return new PodVideoCodecAdapters(super.getCodecAdapterFactory(),owner,priority);}
             @Override protected AudioSink buildAudioSink(Context c,boolean floating,boolean playbackParams) {
                 AudioSink delegate=new DefaultAudioSink.Builder(c).setEnableFloatOutput(floating)
                     .setEnableAudioTrackPlaybackParams(playbackParams)

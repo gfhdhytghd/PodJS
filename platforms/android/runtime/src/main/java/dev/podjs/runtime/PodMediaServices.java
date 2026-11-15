@@ -62,6 +62,7 @@ public final class PodMediaServices implements AutoCloseable {
     private final File mediaRoot;
     private final ArrayList<Callback> ttsInitCallbacks = new ArrayList<>();
     private MediaPlayer player;
+    private PodVideoCodecGate.Permit containerPermit;
     private Callback pendingAudioCallback;
     private TextToSpeech tts;
     private String audioState = AUDIO_IDLE;
@@ -145,7 +146,7 @@ public final class PodMediaServices implements AutoCloseable {
                         callback.complete(new JSONObject().put("enabled", args.getBoolean("enabled"))); break;
                     default: callback.fail("unsupported_method", "Unsupported media method: " + method);
                 }
-            } catch (Exception e) { callback.fail(errorCode(e), message(e)); }
+            } catch (Exception e) { if("audio.start".equals(method)){pendingAudioCallback=null;releasePlayer();audioState=AUDIO_ERROR;} callback.fail(errorCode(e), message(e)); }
         });
     }
 
@@ -170,7 +171,12 @@ public final class PodMediaServices implements AutoCloseable {
         if (source == null || source.isEmpty()) throw new IllegalArgumentException("missing_url");
         if (pendingAudioCallback != null) { pendingAudioCallback.fail("cancelled", "Audio preparation replaced"); pendingAudioCallback = null; }
         releasePlayer();
-        player = new MediaPlayer();
+        // MediaPlayer accepts containers with a video track even on the audio API.
+        // Reserve conservatively before its opaque prepare path can allocate one.
+        PodVideoCodecGate.PROCESS.reclaim(this,PodVideoCodecGate.PREWARM);
+        containerPermit=PodVideoCodecGate.PROCESS.acquire("audio_container",PodVideoCodecGate.CURRENT);
+        if(containerPermit==null)throw new IllegalStateException("video_decoder_limit");
+        try{player = new MediaPlayer();}catch(RuntimeException|Error e){containerPermit.close();containerPermit=null;throw e;}
         player.setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build());
         player.setLooping(args.optBoolean("loop", false));
@@ -381,7 +387,7 @@ public final class PodMediaServices implements AutoCloseable {
     private void complete(Callback c, JSONObject value) { if (!closed) c.complete(value); }
     private boolean requestFocus() { return audioManager.requestAudioFocus(focusRequest) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED; }
     private void abandonFocus() { audioManager.abandonAudioFocusRequest(focusRequest); }
-    private void releasePlayer() { if (player != null) { try { player.reset(); } catch (Exception ignored) {} player.release(); player = null; } }
+    private void releasePlayer() { if (player != null) { try { player.reset(); } catch (Exception ignored) {} player.release(); player = null; } if(containerPermit!=null){containerPermit.close();containerPermit=null;} }
     private void onAudioFocusChange(int change) { main.post(() -> { if (player == null) return; if (change == AudioManager.AUDIOFOCUS_LOSS) { if (player.isPlaying()) player.pause(); audioState = AUDIO_PAUSED; abandonFocus(); } else if (change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) { if (player.isPlaying()) player.pause(); audioState = AUDIO_PAUSED; } else if (change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK) { player.setVolume(.2f, .2f); } else if (change == AudioManager.AUDIOFOCUS_GAIN) player.setVolume(1f, 1f); }); }
     @Override public void close() { closed = true; spectrum.close(); main.post(() -> { silence.close(); if (pendingAudioCallback != null) { pendingAudioCallback.fail("service_closed", "Media service is closed"); pendingAudioCallback = null; } finishTtsInit("service_closed", "Media service is closed"); releasePlayer(); abandonFocus(); if (tts != null) { tts.stop(); tts.shutdown(); tts = null; } ttsInitialized = false; ttsSpeaking = false; audioState = AUDIO_IDLE; }); }
     private static String errorCode(Exception e) { return e instanceof SecurityException ? "permission_denied" : e instanceof IllegalArgumentException ? "invalid_argument" : "media_error"; }

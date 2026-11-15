@@ -244,7 +244,7 @@ final class PodMediaSurfaceServices implements AutoCloseable {
         void createPlayer(){
             if(player!=null||disposed)return;
             try {
-                player=new ExoPlayer.Builder(context).build();playerGeneration++;final ExoPlayer own=player;ready=false;failed=false;
+                player=new ExoPlayer.Builder(context,new PodVideoAudioStop().renderers(context,"surface_"+id,()->PodVideoCodecGate.OTHER)).build();PodVideoCodecGate.PROCESS.register(this,()->PodVideoCodecGate.OTHER,this::releasePlayer);playerGeneration++;final ExoPlayer own=player;ready=false;failed=false;
                 player.setVolume(0f);player.setRepeatMode(style.loop?Player.REPEAT_MODE_ONE:Player.REPEAT_MODE_OFF);player.setPlaybackSpeed(style.speed);
                 player.addListener(new Player.Listener(){
                     @Override public void onVideoSizeChanged(androidx.media3.common.VideoSize size){if(player!=own)return;render(Timing.VIDEO_STATE);}
@@ -297,7 +297,7 @@ final class PodMediaSurfaceServices implements AutoCloseable {
             .put("presentationFrame",style.presentationFrame==null?JSONObject.NULL:style.presentationFrame.toJson())
             .put("state",failed?"error":video?(ready?(player!=null&&player.isPlaying()?"playing":"paused"):"loading"):(imageLoading?"loading":image!=null||source==null?"ready":"fallback"))
             .put("error",error==null?JSONObject.NULL:error).put("frames",renderedFrames).put("playerGeneration",playerGeneration).put("positionMs",player==null?0:player.getCurrentPosition()).put("speed",style.speed).put("loop",style.loop).put("muted",true);}
-        void releasePlayer(){ExoPlayer old=player;player=null;if(old!=null)old.release();ready=false;}
+        void releasePlayer(){PodVideoCodecGate.PROCESS.unregister(this);ExoPlayer old=player;player=null;if(old!=null)old.release();ready=false;}
         @Override public void close(){if(disposed)return;disposed=true;revision++;releasePlayer();if(view!=null){view.setSurfaceTextureListener(null);if(view.getParent() instanceof ViewGroup)((ViewGroup)view.getParent()).removeView(view);view=null;}if(handle>=0)sink.free(handle);handle=-1;if(image!=null)image.recycle();if(frame!=null)frame.recycle();renderer.close();}
     }
     static int powerOfTwo(int n){int x=1;while(x<n)x*=2;return x;}

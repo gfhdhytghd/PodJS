@@ -173,7 +173,7 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
             }
             public void close(){}
         }){
-            MediaExtractor extractor=new MediaExtractor();MediaCodec codec=null;android.media.ImageReader reader=null;boolean hardware=false,decoded=false,backend=false;
+            MediaExtractor extractor=new MediaExtractor();MediaCodec codec=null;android.media.ImageReader reader=null;boolean hardware=false,decoded=false,backend=false;PodVideoCodecGate.Permit physical=null;
             try{
                 extractor.setDataSource(bytes);MediaFormat format=null;
                 for(int i=0;i<extractor.getTrackCount();i++){
@@ -193,6 +193,7 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
                 if(hardware)reader=android.media.ImageReader.newInstance(width,height,ImageFormat.PRIVATE,2,android.hardware.HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE);
                 else format.setInteger(MediaFormat.KEY_COLOR_FORMAT,MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible);
                 android.util.Log.i("PodMediaCache","frame_backend entry="+entry.ordinal+" hardware="+(hardware?1:0)+" live="+(decoderBudget==null?0:decoderBudget.inUse()));
+                physical=PodVideoCodecGate.PROCESS.acquire("prefix",PodVideoCodecGate.OTHER);if(physical==null)return null;
                 backend=true;codec=MediaCodec.createByCodecName(name);codec.configure(format,reader==null?null:reader.getSurface(),null,0);codec.start();
                 long deadline=SystemClock.uptimeMillis()+800;boolean sample=false,eos=false;
                 MediaCodec.BufferInfo info=new MediaCodec.BufferInfo();
@@ -230,11 +231,12 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
                 if(hardware){if(!current(entry)||decoderBudget.spareCancelled())return null;throw new PodVideoHardwarePixels.Unavailable(error);}
                 throw error;
             }finally{
-                try{if(codec!=null){try{codec.stop();}finally{codec.release();}}}
+                boolean codecReleased=codec==null;
+                try{if(codec!=null){try{codec.stop();}finally{codec.release();}}codecReleased=true;}
                 finally{
                     try{if(reader!=null)reader.close();}finally{
                         boolean cancelled=hardware&&decoderBudget.spareCancelled();decodeCancelled=cancelled;
-                        try{if(hardware)decoderBudget.releaseSpare();}finally{extractor.release();}
+                        try{if(codecReleased&&physical!=null)physical.close();if(hardware)decoderBudget.releaseSpare();}finally{extractor.release();}
                         if(backend)android.util.Log.i("PodMediaCache","frame_decode entry="+entry.ordinal+" hardware="+(hardware?1:0)+" success="+(decoded?1:0)+" cancelled="+(cancelled?1:0)+" duration_ms="+(SystemClock.uptimeMillis()-decodeStarted));
                     }
                 }

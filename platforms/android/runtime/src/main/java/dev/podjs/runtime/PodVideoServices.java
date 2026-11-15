@@ -193,6 +193,7 @@ public final class PodVideoServices implements AutoCloseable {
         if (!videoUrl.isEmpty()) videoUrl = sourceValue(videoUrl);
         if (prepareCallback != null) { prepareCallback.fail("cancelled", "Video preparation replaced"); prepareCallback=null; }
         releasePlayer();
+        PodVideoCodecGate.PROCESS.reclaim(this,PodVideoCodecGate.PREWARM);
         if(!decoderBudget.acquire())throw new IllegalStateException("video_decoder_limit");
         decoderLease=true;
         applyBounds(a.optJSONObject("bounds")); autoplay=a.optBoolean("autoplay", true); mediaGate(true); backgroundPlayback=a.optBoolean("backgroundPlayback",false); lifecyclePaused=false; density=context.getResources().getDisplayMetrics().density;

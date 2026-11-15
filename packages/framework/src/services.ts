@@ -391,6 +391,8 @@ export const video = {
 
 export interface VideoSessionCapabilities {
   capability:"media.video.sessions"; maxSessions:number; decoderLimit:number; decoderInUse:number;
+  /** Process-wide reservations include transient codecs and opaque container decoders. */
+  physicalDecoderInUse?:number; physicalDecoderPeak?:number; maxPrewarm?:number;
   targetBufferBytesPerSession:number; targetBufferBytesTotal:number; prewarmTimeoutMs:number;prewarmIdleTimeoutMs?:number;
   prewarmMode:"hidden_first_frame"; surfacePromotion:boolean; verticalTransition:boolean;
   surfaceComposition:"android_texture_view"; backgroundPlayback:boolean;

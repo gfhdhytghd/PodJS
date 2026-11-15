@@ -12,8 +12,8 @@ final class PodVideoDecoderBudget {
 
     PodVideoDecoderBudget(int limit) {
         if (limit < 1) throw new IllegalArgumentException("invalid_decoder_limit");
-        maximum = limit;
-        this.limit = limit;
+        maximum = Math.min(limit, PodVideoCodecGate.MAXIMUM);
+        this.limit = maximum;
     }
 
     synchronized boolean acquire() {

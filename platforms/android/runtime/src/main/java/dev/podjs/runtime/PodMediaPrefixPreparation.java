@@ -75,14 +75,16 @@ final class PodMediaPrefixPreparation {
             }
             public void close(){}
         }){
-            MediaMetadataRetriever decoder=new MediaMetadataRetriever();
+            PodVideoCodecGate.Permit permit=PodVideoCodecGate.PROCESS.acquire("stock_frame",PodVideoCodecGate.OTHER);
+            if(permit==null)return null;
+            MediaMetadataRetriever decoder;try{decoder=new MediaMetadataRetriever();}catch(RuntimeException|Error e){permit.close();throw e;}
             try{
                 decoder.setDataSource(bytes);Bitmap frame=decoder.getScaledFrameAtTime(0,MediaMetadataRetriever.OPTION_CLOSEST_SYNC,320,320);
                 if(gap.get()&&frame!=null){frame.recycle();return null;}
                 return frame;
             }
             catch(RuntimeException unavailable){trace("decode","decoder_failure",kind(unavailable),entry);return null;}
-            finally{decoder.release();}
+            finally{decoder.release();permit.close();}
         }
     }
 }

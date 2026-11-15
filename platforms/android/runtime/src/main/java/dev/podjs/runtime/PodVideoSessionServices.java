@@ -220,10 +220,10 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         int limit = Math.min(enforceMemoryBudget(requested),capability == null ? decoderBudget.limit() : capability.limit);
         JSONObject value = new JSONObject()
                 .put("capability", CAPABILITY)
-                .put("maxSessions", prefixFrames==null?MAX_SESSIONS:4).put("independentKeyframes",prefixFrames!=null)
+                .put("maxSessions", MAX_SESSIONS).put("independentKeyframes",prefixFrames!=null)
                 .put("keyframeCache", true).put("keyframeEntries",keyframes.size()).put("keyframeBytes",keyframes.bytes).put("keyframeMaxBytes",PodVideoKeyframes.MAX_BYTES).put("decoderPeak",decoderBudget.peakInUse())
                 .put("decoderLimit", limit)
-                .put("decoderInUse", decoderBudget.inUse())
+                .put("decoderInUse", decoderBudget.inUse()).put("physicalDecoderInUse",PodVideoCodecGate.PROCESS.live()).put("physicalDecoderPeak",PodVideoCodecGate.PROCESS.peak()).put("maxPrewarm",1)
                 .put("targetBufferBytesPerSession", TARGET_BUFFER_BYTES)
                 .put("targetBufferBytesTotal", (long) TARGET_BUFFER_BYTES * limit)
                 .put("prewarmTimeoutMs", PREWARM_MAX_LIFETIME_MS)
@@ -241,6 +241,8 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         return value;
     }
 
+    private static int sessionPriority(Session slot){return slot.prewarming?(slot.keyframeOnly?PodVideoCodecGate.OTHER:PodVideoCodecGate.PREWARM):PodVideoCodecGate.CURRENT;}
+
     private void prefixFrameReady(String binding) {
         for(Session slot:new java.util.ArrayList<>(sessions.values()))if(binding.equals(slot.frameBinding)&&!slot.hasCachedFrame()&&!slot.hasRenderedFirstFrame){
             slot.revealKeyframe();
@@ -250,7 +252,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     /** A pixel standby has no player and occupies no live codec slot. */
     private void preparePixels(JSONObject args,Bounds bounds,Callback callback)throws Exception {
         String id=sessionId(args,"sessionId");Session slot=sessions.get(id);
-        if(slot==null){if(sessions.size()>=4)throw new IllegalStateException("video_session_limit");slot=new Session(id);sessions.put(id,slot);}
+        if(slot==null){if(sessions.size()>=MAX_SESSIONS)throw new IllegalStateException("video_session_limit");slot=new Session(id);sessions.put(id,slot);}
         if(slot.prepareCallback!=null)slot.takePrepareCallback().fail("cancelled","Video session preparation replaced");
         slot.resetPlayer();slot.generation++;slot.bounds=bounds;slot.prewarming=true;slot.presented=false;
         slot.frameSource=new JSONObject(args.toString());slot.readTransform(args.optJSONObject("transform"));slot.frameBinding=keyframeBinding(args,bounds);
@@ -276,13 +278,17 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         Bounds bounds = Bounds.read(args.optJSONObject("bounds"), density, true);
         long admissionStarted=android.os.SystemClock.uptimeMillis();
         boolean prewarming = args.optBoolean("prewarm", false);
+        // Reclaim lower-priority purposes before older warm neighbours.
+        // Current playback is never an eviction candidate.
+        PodVideoCodecGate.PROCESS.reclaim(sessions.get(id),prewarming&&args.optBoolean("keyframeOnly",false)?PodVideoCodecGate.OTHER:PodVideoCodecGate.PREWARM);
+        for(Session other:new java.util.ArrayList<>(sessions.values()))if(!other.id.equals(id)&&other.prewarming&&other.player!=null&&(!args.optBoolean("keyframeOnly",false)||other.keyframeOnly)){other.reclaimDecoder();}
         String requestedBinding=keyframeBinding(args,bounds);
         if(prewarming&&args.optBoolean("keyframeOnly",false)&&keyframes.get(requestedBinding)!=null){
             callback.complete(new JSONObject().put("ok",true).put("sessionId",id).put("state","cached").put("keyframeAvailable",true));return;
         }
-        // A decoded cache hit is already a complete standby. Do not wait for a
-        // second Media3 decode merely because a live lease is available.
-        if(prefixFrames!=null&&prewarming&&(args.optBoolean("keyframeOnly",false)||keyframes.contains(requestedBinding))){preparePixels(args,bounds,callback);return;}
+        // Only explicit frame-only work can settle on cached pixels. The next
+        // playback neighbour still owns one live prewarm decoder when admitted.
+        if(prefixFrames!=null&&prewarming&&args.optBoolean("keyframeOnly",false)){preparePixels(args,bounds,callback);return;}
         if(prewarming&&args.optBoolean("keyframeOnly",false)){
             for(Session foreground:sessions.values())if(!foreground.prewarming&&foreground.player!=null&&
                 (!foreground.hasRenderedFirstFrame||foreground.player.getPlaybackState()==Player.STATE_BUFFERING||
@@ -305,7 +311,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             // The pending callback belongs to the session, so release/reuse
             // cancels it and cannot resurrect an obsolete foreground player.
             Session waiting=existing;
-            if(waiting==null){if(sessions.size()>=4)throw new IllegalStateException("video_session_limit");waiting=new Session(id);sessions.put(id,waiting);}
+            if(waiting==null){if(sessions.size()>=MAX_SESSIONS)throw new IllegalStateException("video_session_limit");waiting=new Session(id);sessions.put(id,waiting);}
             if(waiting.prepareCallback!=null)waiting.takePrepareCallback().fail("cancelled","Video session preparation replaced");
             waiting.prepareCallback=callback;
             final Session pendingSession=waiting;
@@ -330,7 +336,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         Session session = sessions.get(id);
         boolean created = false;
         if (session == null) {
-            if (sessions.size() >= (prefixFrames==null?MAX_SESSIONS:4)) throw new IllegalStateException("video_session_limit");
+            if (sessions.size() >= (MAX_SESSIONS)) throw new IllegalStateException("video_session_limit");
             session = new Session(id);
             sessions.put(id, session);
             created = true;
@@ -385,8 +391,10 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                 .build();
         ExoPlayer player;
         try {
+            final Session audioSession=session;
+            PodVideoCodecGate.PROCESS.register(session,()->sessionPriority(audioSession),audioSession::reclaimDecoder);
             session.audioStop=new PodVideoAudioStop();
-            player = new ExoPlayer.Builder(context,session.audioStop.renderers(context)).setLoadControl(loadControl).build();
+            player = new ExoPlayer.Builder(context,session.audioStop.renderers(context,"session_"+audioSession.id,()->sessionPriority(audioSession))).setLoadControl(loadControl).build();
             session.player = player;
             PodBenchmark.startup(analytics.startupSeq,"player_constructed");
             session.audioPolicy = new PodMediaAudioPolicy(context, player);
@@ -1097,7 +1105,8 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         android.widget.ImageView transformedKeyframe;
         android.graphics.Matrix appliedVideoMatrix, appliedKeyframeMatrix;
         boolean backgroundPlayback;
-        boolean decoderLease, prewarming, autoplay, presented, hasRenderedFirstFrame, disposed, keyframeOnly;
+        volatile boolean prewarming, keyframeOnly;
+        boolean decoderLease, autoplay, presented, hasRenderedFirstFrame, disposed;
         long generation, completedLoops;
         JSONObject frameSource;
         String frameBinding, decoderName;
@@ -1191,12 +1200,25 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             }else{if(hasUpdatedFrame&&hasCachedFrame())finishDecodedFrame();completePrepare();}
         }
 
+        // Decoder eviction must preserve the authorized session identity. A
+        // promotion receipt can still refer to this retired page while JS
+        // publishes the next neighbour. Destroying it breaks replaceSessionId.
+        void reclaimDecoder() {
+            if(!prewarming||player==null)return;
+            Callback pending=takePrepareCallback();
+            if(!hasCachedFrame())revealKeyframe();
+            if(hasCachedFrame())lendDecoder();else resetPlayer();
+            state="prewarmed";hideOffscreen();
+            if(pending!=null)pending.fail("cancelled","Speculative decoder reclaimed");
+        }
+
         void lendDecoder() {
             PodSessionPlaybackService.detach(context,this);
             progressObserver=()->{};
             if(player==null)return;
             if(!hasCachedFrame())revealKeyframe();
             if(!hasCachedFrame())return;
+            PodVideoCodecGate.PROCESS.unregister(this);
             cancelFrameCompletion();
             if(audioPolicy!=null){audioPolicy.close();audioPolicy=null;}
             ExoPlayer previous=player;player=null;
@@ -1207,6 +1229,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
 
         void resetPlayer() {
             PodSessionPlaybackService.detach(context,this);
+            PodVideoCodecGate.PROCESS.unregister(this);
             progressObserver=()->{};
             if(this == dragFrom || this == dragTo || presented) endDrag();
             cancelFrameCompletion();

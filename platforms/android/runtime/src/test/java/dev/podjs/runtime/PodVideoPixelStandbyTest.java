@@ -25,7 +25,7 @@ public class PodVideoPixelStandbyTest {
         public void fail(String code,String message){error=code;}
     }
     @Test public void cachedStandbyUsesNoFourthLiveLeaseAndNeedsNoPlayerForLoop()throws Exception {exercise(3);}
-    @Test public void existingPixelsBecomeReadyWithoutASecondDecodeWhenLiveLeasesAreAvailable()throws Exception {exercise(0);}
+    @Test public void explicitFrameOnlyCacheHitDoesNotAcquireALiveDecoder()throws Exception {exercise(0);}
     private void exercise(int live)throws Exception {
         Context context=ApplicationProvider.getApplicationContext();
         PodMediaPrefixCache cache=new PodMediaPrefixCache(new File(context.getCacheDir(),"pixel-standby"));
@@ -35,13 +35,15 @@ public class PodVideoPixelStandbyTest {
         service.attachToParent(new FrameLayout(context));Shadows.shadowOf(Looper.getMainLooper()).idle();
         try{
             String uri=cache.register("fixture","https://fixture.invalid/video.mp4",Collections.emptyMap());
-            JSONObject args=new JSONObject().put("sessionId","cached").put("url",uri).put("prewarm",true)
+            JSONObject args=new JSONObject().put("sessionId","cached").put("url",uri).put("prewarm",true).put("keyframeOnly",live==0)
                 .put("bounds",new JSONObject().put("width",233).put("height",233));
             Field field=PodVideoSessionServices.class.getDeclaredField("keyframes");field.setAccessible(true);
             PodVideoKeyframes frames=(PodVideoKeyframes)field.get(service);
             frames.put(PodVideoFrameCache.binding(args,cache),Bitmap.createBitmap(100,200,Bitmap.Config.ARGB_8888));
             Reply prepared=new Reply();service.dispatch("video.session.prepare",args,prepared);Shadows.shadowOf(Looper.getMainLooper()).idle();
-            assertNull(prepared.error);assertNotNull(prepared.value);assertTrue(prepared.value.getBoolean("hasCachedFirstFrame"));
+            assertNull(prepared.error);assertNotNull(prepared.value);
+            if(live==0){assertTrue(prepared.value.getBoolean("keyframeAvailable"));assertEquals("cached",prepared.value.getString("state"));assertEquals(0,budget.inUse());return;}
+            assertTrue(prepared.value.getBoolean("hasCachedFirstFrame"));
             assertFalse(prepared.value.getBoolean("hasRenderedFirstFrame"));assertEquals(live,budget.inUse());assertEquals(live,budget.peakInUse());
             Reply loop=new Reply();service.dispatch("video.session.setLoop",new JSONObject().put("sessionId","cached").put("loop",true),loop);Shadows.shadowOf(Looper.getMainLooper()).idle();assertNull(loop.error);
         }finally{service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();cache.close();for(int i=0;i<live;i++)budget.release();}

@@ -150,7 +150,7 @@ public class PodVideoPagerTest {
   service.onTrimMemory(15);Shadows.shadowOf(Looper.getMainLooper()).idle();
   java.io.File fixture=new java.io.File(PodTakeover.filesRoot(c),"offline-fixture.mp4");fixture.getParentFile().mkdirs();try(java.io.FileOutputStream out=new java.io.FileOutputStream(fixture)){out.write(0);}
   Result result=new Result();service.dispatch("video.session.prepare",new JSONObject().put("sessionId","foreground").put("url","offline-fixture.mp4").put("autoplay",false).put("bounds",new JSONObject().put("x",0).put("y",0).put("width",233).put("height",233)),result);
-  assertNull(result.error);assertFalse("warm survived",warmSlots.containsKey("warm"));assertTrue("foreground missing",warmSlots.containsKey("foreground"));assertEquals(1,budget.inUse());
+  assertNull(result.error);assertNull("warm decoder survived",f(type,"player").get(warm));assertFalse(f(type,"decoderLease").getBoolean(warm));assertTrue("foreground missing",warmSlots.containsKey("foreground"));assertEquals(1,budget.inUse());
   service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();assertEquals(0,budget.inUse());fixture.delete();
  }
  @Test public void legacyRetireMutesAndPausesBeforeAnyReply()throws Exception{

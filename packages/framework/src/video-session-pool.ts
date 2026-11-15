@@ -36,9 +36,9 @@ const state=(value:VideoSessionState):VideoState=>({
   hasCachedFirstFrame:value.hasCachedFirstFrame,sourceGeneration:value.sourceGeneration,errorCode:value.errorCode,hasRenderedFirstFrame:value.hasRenderedFirstFrame,speed:value.speed,
 });
 
-/** Retained surfaces, bounded by native codec and byte budgets. Three slots retain immediate neighbours; five retain two on each side.
- * Two-slot hosts retain the selected/likely neighbour.
- * Slot-local revisions prevent one neighbour cancelling the other. */
+/** One active player and one next/selected neighbour. Native admission bounds
+ * physical codecs across every purpose, including transient replacements.
+ * Slot-local revisions reject stale preparation and release receipts. */
 interface WarmSlot<S> {direction?:'next'|'prev';id:string;source?:S;identity?:string;ready:boolean;revision:number;recentlyActive?:boolean;prepareSeq?:number;operation?:HostOperation<VideoSessionState>;pending?:Promise<VideoState>}
 export class VideoSessionPool<Source extends {key:string}> {
   private initialPreparation?:{key:string;identity:string;generation:number;operation:HostOperation<VideoState>};
@@ -93,7 +93,7 @@ export class VideoSessionPool<Source extends {key:string}> {
   async supportsPrewarm(profile:VideoDecoderProfile={}):Promise<boolean>{
     const c=await this.port.capabilities(profile);
     this.independentKeyframes=c.independentKeyframes===true;
-    this.capacity=Math.max(1,Math.min(8,this.independentKeyframes?4:c.decoderLimit,c.maxSessions??2));
+    this.capacity=Math.max(1,Math.min(2,c.decoderLimit,c.maxSessions??2));
     this.keyframeCache=c.keyframeCache===true;
     this.slots.sort((a,b)=>Number(b===this.selected)-Number(a===this.selected)||Number(b.direction==='next')-Number(a.direction==='next'));
     await Promise.all(this.slots.slice(this.capacity-1).filter(s=>s.source||s.operation).map(s=>this.evict(s,'capacity')));
@@ -142,7 +142,7 @@ export class VideoSessionPool<Source extends {key:string}> {
     if(warming)return this.adoptPreparing(warming,source,options);
     const own=++this.generation;this.activePrepareSeq=undefined;this.loop=options.loop===true;this.activeKey=source.key;this.activeSource=source;this.activeIdentity=this.prepareIdentity(options);
     const retired=this.slots.filter(slot=>slot.source||slot.operation).map(slot=>({slot,revision:slot.revision}));
-    if(!this.keyframeCache)for(const {slot} of retired)void this.evict(slot,'stale');
+    for(const {slot} of retired)void this.evict(slot,'stale');
     const foreground=options;
     const operation=this.port.prepare({...foreground,sessionId:this.activeId,sourceOrdinal:this.ordinal(source.key),slotOrdinal:this.slotOrdinal(this.activeId),prewarm:false,autoplay:options.autoplay===true});
     return {cancel:()=>operation.cancel(),result:operation.result.then(value=>{
@@ -239,7 +239,7 @@ export class VideoSessionPool<Source extends {key:string}> {
    * Loaders run serially and must use already-authorized media (no detail fetch).
    * The nearest two live standbys are restored last on small codec budgets. */
   async warmNeighbourhood(loaders:readonly (()=>Promise<{source:Source;options:VideoPrepare;direction:'next'|'prev'}|undefined>)[]):Promise<void>{
-    if(this.independentKeyframes||!this.keyframeCache||this.capacity<2)return;
+    if(this.capacity<=2||this.independentKeyframes||!this.keyframeCache)return;
     this.cancelNeighbourhood();const revision=this.neighbourhoodRevision,generation=this.generation;
     const current=()=>revision===this.neighbourhoodRevision&&generation===this.generation;
     const nearest:{source:Source;options:VideoPrepare;direction:'next'|'prev'}[]=[];
