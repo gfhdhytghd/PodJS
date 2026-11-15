@@ -10,16 +10,42 @@ cp="$work:$json:$sqlite:$slf4j:platforms/android/runtime/src/main/resources"
 # SecureStoreLimits folds constants from SecureStoreCipher; resolve that source against android.jar and emit its classes.
 sdk=${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}
 javac -cp "$cp:$sdk/platforms/android-36/android.jar" -sourcepath platforms/android/runtime/src/main/java -implicit:class -d "$work" platforms/android/runtime/src/main/java/dev/podjs/runtime/SecureStoreLimits.java
-javac -cp "$cp" -d "$work" platforms/android/runtime/src/main/java/dev/podjs/takeover/NativeBackup.java platforms/android/runtime/src/main/java/dev/podjs/takeover/TakeoverDigest.java platforms/android/runtime/src/main/java/dev/podjs/runtime/{PodActiveValidation,PodTakeoverSource,PodTakeoverAdmission,PodInactiveGenerationCollector,PodTakeoverCoordinator,PodRoomV18Converter,PodTakeoverConverters,PodFileConverter,PodPreferenceReader,PodStoreConverter,PodTakeoverProfile,PodStoreMappings,PodNativeResume,PodStorePolicy}.java tests/java/dev/podjs/runtime/{StoreTest,NativeResumeTest,RoomV18Test,StoreRoomTest,FileTakeoverTest,CanonicalTakeoverTest,StorePolicyTest}.java
-java -ea -cp "$cp" dev.podjs.runtime.StoreTest "$work/oracle"
-bun scripts/store-consumer-oracle.ts "$work/oracle"
-java -ea -cp "$cp" dev.podjs.runtime.StoreRoomTest
+javac -cp "$cp" -d "$work" platforms/android/runtime/src/main/java/dev/podjs/takeover/NativeBackup.java platforms/android/runtime/src/main/java/dev/podjs/takeover/TakeoverDigest.java platforms/android/runtime/src/main/java/dev/podjs/runtime/{PodActiveValidation,PodTakeoverSource,PodTakeoverAdmission,PodInactiveGenerationCollector,PodTakeoverCoordinator,PodRoomV18Converter,PodTakeoverConverters,PodFileConverter,PodPreferenceReader,PodStoreConverter,PodTakeoverProfile,PodStoreMappings,PodNativeResume,PodStorePolicy,PodTakeoverSupport,PodFeedbackLogRedactor}.java tests/java/dev/podjs/runtime/{StoreTest,NativeResumeTest,RoomV18Test,StoreRoomTest,FileTakeoverTest,CanonicalTakeoverTest,StorePolicyTest,UnknownFilesTest,ReviewTakeoverProbe}.java
+if [[ "${1:-}" == --review ]]; then
+  java -ea -cp "$cp" dev.podjs.runtime.ReviewTakeoverProbe
+  java -ea -cp "$cp" dev.podjs.runtime.UnknownFilesTest tests/fixtures/watchrss-path-candidates.tsv
+  java -ea -cp "$cp" dev.podjs.runtime.StorePolicyTest
+  exit
+fi
+if [[ "${1:-}" == --policy ]]; then
+  java -ea -cp "$cp" dev.podjs.runtime.UnknownFilesTest tests/fixtures/watchrss-path-candidates.tsv
+  java -ea -cp "$cp" dev.podjs.runtime.FileTakeoverTest --policy
+  java -ea -cp "$cp" dev.podjs.runtime.StorePolicyTest
+  exit
+fi
+if [[ "${1:-}" == --support ]]; then
+  java -ea -cp "$cp" dev.podjs.runtime.UnknownFilesTest --support
+  exit
+fi
+if [[ "${1:-}" == --unknown-files ]]; then
+  java -ea -cp "$cp" dev.podjs.runtime.UnknownFilesTest tests/fixtures/watchrss-path-candidates.tsv
+  exit
+fi
+if [[ "${1:-}" != --files && "${1:-}" != --safety ]]; then
+  java -ea -cp "$cp" dev.podjs.runtime.StoreTest "$work/oracle"
+  bun scripts/store-consumer-oracle.ts "$work/oracle"
+  java -ea -cp "$cp" dev.podjs.runtime.StoreRoomTest
+fi
 
-java -ea -cp "$cp" dev.podjs.runtime.FileTakeoverTest "$work/files-oracle"
-bun scripts/file-consumer-oracle.ts "$work/files-oracle"
+if [[ "${1:-}" != --safety ]]; then
+  java -ea -cp "$cp" dev.podjs.runtime.FileTakeoverTest "$work/files-oracle"
+  bun scripts/file-consumer-oracle.ts "$work/files-oracle"
+fi
 
 java -ea -cp "$cp" dev.podjs.runtime.CanonicalTakeoverTest
 
 java -ea -cp "$cp" dev.podjs.runtime.StorePolicyTest
 
 java -ea -cp "$cp" dev.podjs.runtime.NativeResumeTest
+
+java -ea -cp "$cp" dev.podjs.runtime.UnknownFilesTest tests/fixtures/watchrss-path-candidates.tsv

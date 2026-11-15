@@ -220,12 +220,22 @@ public final class PodTakeover {
         }
         boolean alive(){android.app.Activity owner=activity.get();return owner!=null&&!owner.isFinishing()&&!owner.isDestroyed();}
         JSONObject currentStatus(){android.app.Activity owner=activity.get();return owner==null?new JSONObject():status(owner);}
+        static JSONObject presentation(JSONObject state) {
+            if(!"unknown_user_files".equals(state.optString("reason")))return state;
+            try{return new JSONObject(state.toString()).put("phase","CHECKING").put("progressPhase","CHECKING").put("reason","");}
+            catch(Exception invalid){return new JSONObject();}
+        }
         void show(JSONObject state){
+            state=presentation(state);
             if(finished||!alive())return;
             android.app.Activity owner=activity.get();
             if(view==null){
                 long began=PodStartupTrace.now();view=new RecoveryView(owner);
                 view.retry.setOnClickListener(v->start());
+                view.support.setOnClickListener(v->{
+                    if(running.get()||!alive())return;
+                    owner.setContentView(new PodTakeoverSupportAndroid.Page(owner,()->{if(alive())owner.setContentView(view);},view.currentStatus));
+                });
                 PodStartupTrace.stage("recoveryViewCreate",began);
                 began=PodStartupTrace.now();owner.setContentView(view);
                 PodStartupTrace.stage("recoverySetContent",began);
@@ -236,9 +246,10 @@ public final class PodTakeover {
             main.post(()->{
                 if(finished||!alive())return;
                 PodSplash splash=PodSplash.of(activity.get());
-                boolean recovery=PodSplash.isRecoveryState(state);
-                if(view!=null||recovery)show(state);
-                if(splash!=null)splash.recoveryStatus(state);
+                JSONObject visible=presentation(state);
+                boolean recovery=PodSplash.isRecoveryState(visible);
+                if(view!=null||recovery)show(visible);
+                if(splash!=null)splash.recoveryStatus(visible);
             });
         }
         void finish(boolean ready,long posted){
@@ -247,13 +258,18 @@ public final class PodTakeover {
             if(finished||!alive())return;
             if(ready){finished=true;admitted.run();}
             else {
-                show(status(activity.get()));
+                JSONObject halted=status(activity.get());
+                if("unknown_user_files".equals(halted.optString("reason")))try{halted.put("phase","PAUSED").put("reason","migration_admission_failed");}catch(Exception ignored){}
+                if(!"PAUSED".equals(halted.optString("phase"))&&!"BLOCKED".equals(halted.optString("phase")))try{
+                    halted.put("phase","BLOCKED");if(halted.optString("reason").isEmpty())halted.put("reason","migration_admission_failed");
+                }catch(Exception ignored){}
+                show(halted);
                 PodSplash splash=PodSplash.of(activity.get());if(splash!=null)splash.recovery();
             }
         }
         void start() {
             if(finished||!alive()||!running.compareAndSet(false,true))return;
-            if(view!=null)view.render(status(activity.get()),true);
+            if(view!=null)view.render(presentation(status(activity.get())),true);
             // Retain a bounded checking fallback for unusually slow admission.
             main.postDelayed(checking,120);main.postDelayed(refresh,200);
             Context context=activity.get().getApplicationContext();
@@ -275,15 +291,17 @@ public final class PodTakeover {
     }
     /** Round-watch recovery page: pure black, progress ring hugging the round edge, centred
      * WatchRSS-palette text (titleMedium 21sp, bodyMedium 14sp, bodySmall 12sp) and an M3 pill retry. */
-    private static final class RecoveryView extends android.widget.FrameLayout {
+    static final class RecoveryView extends android.widget.FrameLayout {
         static final int FOREGROUND=0xfff5f5f5,SECONDARY=0xffb6b6b6,PRIMARY=0xffff6026,TRACK=0xff2a2a2a,ERROR=0xffff8a80;
-        final android.widget.TextView title,percent,detail,code,next;final Ring ring;final android.widget.TextView retry;
+        final android.widget.TextView title,percent,detail,code,next;final Ring ring;final android.widget.TextView retry,support;
+        final android.widget.LinearLayout column;final android.widget.ScrollView scroll;boolean haltedState;JSONObject currentStatus=new JSONObject();
         RecoveryView(Context context) {
             super(context);setBackgroundColor(0xff000000);float dp=getResources().getDisplayMetrics().density;
             ring=new Ring(context,dp);addView(ring,new LayoutParams(LayoutParams.MATCH_PARENT,LayoutParams.MATCH_PARENT));
-            android.widget.LinearLayout column=new android.widget.LinearLayout(context);column.setOrientation(android.widget.LinearLayout.VERTICAL);column.setGravity(android.view.Gravity.CENTER);
-            int side=(int)(36*dp);column.setPadding(side,side,side,side);addView(column,new LayoutParams(LayoutParams.MATCH_PARENT,LayoutParams.MATCH_PARENT));
-            title=text(context,column,21,FOREGROUND,0);title.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            column=new android.widget.LinearLayout(context);column.setOrientation(android.widget.LinearLayout.VERTICAL);column.setGravity(android.view.Gravity.CENTER);
+            int side=(int)(36*dp);column.setPadding(side,side,side,side);
+            scroll=new android.widget.ScrollView(context);scroll.setFillViewport(true);scroll.addView(column);addView(scroll,new LayoutParams(LayoutParams.MATCH_PARENT,LayoutParams.MATCH_PARENT));
+            title=text(context,column,21,FOREGROUND,0);title.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);title.setMaxLines(1);title.setAutoSizeTextTypeUniformWithConfiguration(14,21,1,android.util.TypedValue.COMPLEX_UNIT_SP);
             percent=text(context,column,34,FOREGROUND,(int)(4*dp));
             detail=text(context,column,12,SECONDARY,(int)(2*dp));
             // Support code on its own single line, shrunk to fit, so long codes never add rows on the round screen.
@@ -293,8 +311,36 @@ public final class PodTakeover {
             retry=new android.widget.TextView(context);retry.setText("重试迁移");retry.setTextSize(14);retry.setTextColor(0xff000000);retry.setGravity(android.view.Gravity.CENTER);
             android.graphics.drawable.GradientDrawable pill=new android.graphics.drawable.GradientDrawable();pill.setColor(PRIMARY);pill.setCornerRadius(20*dp);retry.setBackground(pill);
             retry.setPadding((int)(24*dp),0,(int)(24*dp),0);retry.setClickable(true);retry.setFocusable(true);
-            android.widget.LinearLayout.LayoutParams button=new android.widget.LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT,(int)(36*dp));button.topMargin=(int)(8*dp);column.addView(retry,button);
+            android.widget.LinearLayout.LayoutParams button=new android.widget.LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT,(int)(36*dp));button.topMargin=(int)(8*dp);addView(retry,new LayoutParams(LayoutParams.WRAP_CONTENT,(int)(36*dp)));
+            support=new android.widget.TextView(context);support.setText("上传日志");support.setTextSize(14);support.setTextColor(0xff000000);support.setGravity(android.view.Gravity.CENTER);
+            android.graphics.drawable.GradientDrawable uploadPill=new android.graphics.drawable.GradientDrawable();uploadPill.setColor(PRIMARY);uploadPill.setCornerRadius(20*dp);support.setBackground(uploadPill);
+            support.setClickable(true);support.setFocusable(true);addView(support,new LayoutParams(LayoutParams.WRAP_CONTENT,(int)(36*dp)));
             render(new JSONObject(),true);
+        }
+        @Override protected void onLayout(boolean changed,int left,int top,int right,int bottom) {
+            super.onLayout(changed,left,top,right,bottom);
+            if(!haltedState)return;
+            int width=right-left,height=bottom-top;float scale=Math.min(width,height)/233f;
+            PodRecoveryRoundLayout.Rect retryRect=PodRecoveryRoundLayout.button(width,height,143,34,104);
+            PodRecoveryRoundLayout.Rect uploadRect=PodRecoveryRoundLayout.button(width,height,183,32,90);
+            for(android.widget.TextView button:new android.widget.TextView[]{retry,support}) {
+                button.setPadding(0,0,0,0);button.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,14*scale);
+            }
+            // Safe, scrollable text viewport above fixed, vertically stacked circle-safe buttons.
+            column.setPadding(0,0,0,0);
+            int minWidth=Math.min(Math.round(190*scale),(int)Math.ceil(title.getPaint().measureText(title.getText().toString())+4*scale));
+            double inner=Math.min(width,height)/2d-2,cy=height/2d;
+            double earliest=cy-Math.sqrt(Math.max(0,inner*inner-minWidth*minWidth/4d));
+            int maxHeight=Math.max(1,Math.min(Math.round(122*scale),(int)Math.floor(retryRect.y-5*scale-earliest-2)));
+            PodRecoveryRoundLayout.Rect textRect=PodRecoveryRoundLayout.safeTopBlock(width,height,w->{
+                column.measure(MeasureSpec.makeMeasureSpec(w,MeasureSpec.EXACTLY),MeasureSpec.makeMeasureSpec(0,MeasureSpec.UNSPECIFIED));
+                return Math.min(maxHeight,column.getMeasuredHeight());
+            },Math.round((height-Math.min(width,height))/2f+12*scale),Math.round(190*scale),retryRect.y-Math.round(5*scale),minWidth);
+            if(textRect!=null){scroll.measure(MeasureSpec.makeMeasureSpec(textRect.width,MeasureSpec.EXACTLY),MeasureSpec.makeMeasureSpec(textRect.height,MeasureSpec.EXACTLY));scroll.layout(textRect.x,textRect.y,textRect.x+textRect.width,textRect.y+textRect.height);}
+            place(retry,retryRect);place(support,uploadRect);
+        }
+        private static void place(android.view.View view,PodRecoveryRoundLayout.Rect rect) {
+            view.measure(MeasureSpec.makeMeasureSpec(rect.width,MeasureSpec.EXACTLY),MeasureSpec.makeMeasureSpec(rect.height,MeasureSpec.EXACTLY));view.layout(rect.x,rect.y,rect.x+rect.width,rect.y+rect.height);
         }
         private static android.widget.TextView text(Context context,android.widget.LinearLayout column,int sp,int color,int top) {
             android.widget.TextView view=new android.widget.TextView(context);view.setGravity(android.view.Gravity.CENTER);view.setTextSize(sp);view.setTextColor(color);view.setIncludeFontPadding(false);
@@ -349,7 +395,6 @@ public final class PodTakeover {
                 case "migration_storage_invalid":return "迁移目录中有异常文件";
                 case "verification_scratch_invalid":return "校验目录中有异常文件";
                 case "active_validation_failed":return "迁移后数据校验失败";
-                case "unknown_user_files":return "发现无法识别的数据";
                 case "target_conflict":return "目标位置已有数据";
                 case "store_unsupported_or_failed":return "部分设置无法迁移";
                 case "store_needs_reauth_user_confirmation":return "账号需要重新登录";
@@ -363,17 +408,18 @@ public final class PodTakeover {
         }
         private static String nextStep(String phase,String reason) {
             if("PAUSED".equals(phase)) {
-                if("migration_row_too_large".equals(reason)||"migration_storage_invalid".equals(reason)||"verification_scratch_invalid".equals(reason))return "原数据未改动，\n请截图联系支持。";
+                if("migration_row_too_large".equals(reason)||"migration_storage_invalid".equals(reason)||"verification_scratch_invalid".equals(reason))return "原数据未改动，\n请上传日志，并把日志编号发给支持。";
                 return "已完成的部分会保留，可重试或重开应用继续。";
             }
             if(!"BLOCKED".equals(phase))return "迁移期间不会修改原数据，\n请保持应用在前台。";
             if("user_locked".equals(reason))return "请先解锁手表，再重试。";
             if("space_insufficient".equals(reason))return "请清理存储空间，再重试。";
             if("store_needs_reauth_user_confirmation".equals(reason))return "原数据已保留，\n完成后请重新登录。";
-            if("active_validation_failed".equals(reason))return "数据已迁移但校验失败，\n请截图联系支持。";
-            return "原数据未改动，\n请截图联系支持。";
+            if("active_validation_failed".equals(reason))return "数据已迁移但校验失败，\n请上传日志，并把日志编号发给支持。";
+            return "原数据未改动，\n请上传日志，并把日志编号发给支持。";
         }
         void render(JSONObject status,boolean running) {
+            status=RecoveryController.presentation(status);currentStatus=status;
             String phase=status.optString("progressPhase",status.optString("phase","CHECKING"));
             String durable=status.optString("phase",phase),reason=status.optString("reason","");int value=status.optInt("percent",0);long copied=status.optLong("copiedBytes",0);
             boolean halted="PAUSED".equals(durable)||"BLOCKED".equals(durable)||"PAUSED".equals(phase);
@@ -386,7 +432,8 @@ public final class PodTakeover {
             detail.setText(bytesLine+(reason.isEmpty()?"":(bytesLine.isEmpty()?"":"\n")+reasonLine(reason)));detail.setVisibility(detail.length()>0?VISIBLE:GONE);
             code.setText(reason);code.setVisibility(reason.isEmpty()?GONE:VISIBLE);
             next.setText(nextStep(displayPhase,reason));
-            boolean canRetry=!running&&halted;retry.setVisibility(canRetry?VISIBLE:GONE);retry.setEnabled(canRetry);
+            haltedState=halted;boolean canRetry=!running&&halted;retry.setVisibility(canRetry?VISIBLE:GONE);retry.setEnabled(canRetry);retry.setAlpha(retry.isEnabled()?1f:0.45f);
+            support.setVisibility(!running&&halted?VISIBLE:GONE);support.setEnabled(!running&&halted);requestLayout();
             setContentDescription(title.getText()+" "+value+"%");
         }
     }

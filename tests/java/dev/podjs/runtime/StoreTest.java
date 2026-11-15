@@ -89,7 +89,7 @@ public class StoreTest {
         if(args.length>0){File oracle=new File(args[0]);oracle.mkdirs();PodStoreConverter.json(new File(oracle,"kv.json"),kv);PodStoreConverter.json(new File(oracle,"synthetic-secure.json"),secure);}
         remove(g);
         // Every known store and unknown store interrupted before write, after files, after receipt.
-        List<String> names=new ArrayList<>(Arrays.asList(PodStoreConverter.STORES));names.add("future_store");int boundaries=0;
+        List<String> names=new ArrayList<>(Arrays.asList(PodStoreConverter.STORES));names.add("unrecognized:shared_prefs/future_store.xml");int boundaries=0;
         for(String name:names)for(String boundary:new String[]{"before","files","receipt"}){
             File candidate=generation();boolean[] hit={false};PodStoreConverter interrupted=new PodStoreConverter(root,crypto,(s,b)->{if(s.equals(name)&&b.equals(boundary)&&!hit[0]){hit[0]=true;throw new IOException("power_loss");}});interrupted.snapshot(candidate);try{interrupted.copy(candidate);throw new AssertionError("missing interruption");}catch(IOException expected){check(hit[0]);}c.resume(candidate,PodTakeoverCoordinator.Phase.COPYING);c.copy(candidate);c.verify(candidate);check(before.equals(digests(root)));remove(candidate);boundaries++;
         }

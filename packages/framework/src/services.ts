@@ -51,6 +51,7 @@ const methods: Record<string, PodCapabilityId> = {
   "app.finishTask": "host.lifecycle",
   "settings.openWifi": "host.lifecycle",
   "takeover.status": "host.takeover",
+  "takeover.openSupport": "host.lifecycle",
   "debug.external.subscribe":"host.lifecycle", "debug.external.unsubscribe":"host.lifecycle", "debug.external.reply":"host.lifecycle",
   "app.buildInfo": "host.lifecycle",
   "splash.hold": "host.lifecycle", "splash.release": "host.lifecycle",
@@ -855,9 +856,11 @@ export interface TakeoverStatus {
   requiredBytes?: string;
   availableBytes?: string;
 }
-/** Read-only first-launch migration status; unsupported hosts reject via capability gating. */
+/** Migration status and private receipt UI. Neither operation grants storage admission. */
 export const takeover = Object.freeze({
   status: (): Promise<TakeoverStatus> => hostOperation<TakeoverStatus>("takeover.status", {}).result,
+  /** Native receipt management only; never grants storage admission or uploads automatically. */
+  openSupport: (): Promise<void> => hostOperation<void>("takeover.openSupport", {}).result,
 });
 
 /** Android 12+ non-exportable P-256 key. keyId is scoped to this host application. */

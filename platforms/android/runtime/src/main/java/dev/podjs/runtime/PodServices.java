@@ -504,6 +504,16 @@ final class PodServices implements Closeable {
             });
             return;
         }
+        if ("takeover.openSupport".equals(method)) {
+            main.post(()->{
+                if(closed||!requests.remove(id,request))return;
+                try {
+                    request.cancellation.throwIfCanceled();
+                    context.startActivity(new android.content.Intent(context,PodTakeoverSupportActivity.class).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
+                    reply(id,true,new JSONObject(),null,null);
+                }catch(Exception error){failure(id,"unavailable","Migration diagnostic receipts unavailable");}
+            });return;
+        }
         if ("takeover.status".equals(method)) {
             if (requests.remove(id,request)) reply(id,true,PodTakeover.status(context),null,null);
             return;

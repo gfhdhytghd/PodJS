@@ -1,0 +1,54 @@
+{
+  "sensitivePattern": "access_token|api_key|apiKey|appRefreshToken|bili_jct|csrf_session_id|DedeUserID|DedeUserID__ckMd5|msToken|n_mh|odin_tt|passport_csrf_token|passport_csrf_token_default|refresh_token|refreshToken|SESSDATA|sessionid|sessionid_ss|sid|sid_guard|sid_tt|sid_ucp_v1|s_v_web_id|ssid_ucp_v1|ttwid|uid_tt|uid_tt_ss|watchrss_pair|[A-Za-z0-9_-]*token|password|secret|signature|sign|a_bogus|x_bogus|X-Bogus|w_rid",
+  "headerPattern": "(?:set-)?cookie|authorization|proxy-authorization|x-watchrss-pairing-auth",
+  "vectors": [
+    {
+      "raw": "Authorization: Bearer synthetic-secret",
+      "expected": "Authorization:<redacted>"
+    },
+    {
+      "raw": "Cookie: SID=synthetic\nnext line",
+      "expected": "Cookie:<redacted>\nnext line"
+    },
+    {
+      "raw": "Bearer abcdef==",
+      "expected": "Bearer <redacted>"
+    },
+    {
+      "raw": "{\"access_token\":\"synthetic\",\"title\":\"fixture\"}",
+      "expected": "{\"access_token=<redacted>,\"title\":\"fixture\"}"
+    },
+    {
+      "raw": "https://user:password@example.invalid/path?token=synthetic#frag",
+      "expected": "https://<redacted>@example.invalid/path?<redacted>"
+    },
+    {
+      "raw": "/path?secret=synthetic",
+      "expected": "/path?<redacted>"
+    },
+    {
+      "raw": "x-watchrss-pairing-auth=synthetic",
+      "expected": "x-watchrss-pairing-auth=<redacted>"
+    },
+    {
+      "raw": "apiKey=synthetic; SESSDATA=synthetic",
+      "expected": "apiKey=<redacted>; SESSDATA=<redacted>"
+    },
+    {
+      "raw": "{\"generation\":\"g-00000000-0000-0000-0000-000000000000\",\"reason\":\"unknown_user_files\"}",
+      "expected": "{\"generation\":\"g-00000000-0000-0000-0000-000000000000\",\"reason\":\"unknown_user_files\"}"
+    },
+    {
+      "raw": "files/<id:8>/<id:36>",
+      "expected": "files/<id:8>/<id:36>"
+    },
+    {
+      "raw": "{\"msToken\":\"synthetic\",\"sid_guard\":\"synthetic\"}",
+      "expected": "{\"msToken=<redacted>,\"sid_guard=<redacted>}"
+    },
+    {
+      "raw": "https://example.invalid/no-query",
+      "expected": "https://example.invalid/no-query"
+    }
+  ]
+}

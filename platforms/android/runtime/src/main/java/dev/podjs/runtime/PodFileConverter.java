@@ -52,7 +52,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
             this.packages.add(name);
         }
     }
-    public String version(){return "watchrss-files-5";}
+    public String version(){return "watchrss-files-7";}
     // A file converter alone does not constitute a publishable storage bundle.
     public boolean complete(){return false;}
     static SortedSet<String> names(JSONObject object) {
@@ -121,13 +121,36 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
     }
     private java.util.function.Consumer<String> diagnostics=line -> {};
     PodFileConverter withDiagnostics(java.util.function.Consumer<String> sink){diagnostics=sink;return this;}
+    // Only public structural names survive. Short names can be usernames, tokens or titles too.
+    private static final Set<String> PUBLIC_SEGMENTS=new HashSet<>(Arrays.asList(
+        "files","cache","datastore","shared_prefs","databases","no_backup","article_content",
+        "offline","rss","bili","notes","assets","reader_assets","fonts","backgrounds","variants",
+        "douyin_unwatched_stock","inventory.json","phone-article-checkpoints","watch-cloud-restore",
+        "watch-cloud-cache","imports","accounts","Firebase",".com.google.firebase.crashlytics","umeng","WebView","org.chromium.android_webview","image_cache","rss_images","coil","okhttp",
+        "douyin_preload","bili_stream_cache","douyin_preview_snapshots","updates","read_aloud",
+        "profileinstaller_profileWrittenFor_lastUpdateTime.dat","profileInstalled","app_log.txt",
+        "androidx.appcompat.app.AppCompatDelegate.application_locales_record_file","activity_choser_model_history.xml"));
     static String redactedPath(String path) {
         StringJoiner out=new StringJoiner("/");
         for(String bit:path.split("/",-1)) {
-            if(bit.length()>32||bit.matches("(?i)[0-9a-f]{8,}(?:[._-].*)?")||bit.matches("[0-9]+(?:[._-].*)?")||bit.matches("(?i)[0-9a-f]{8}-[0-9a-f-]{27}(?:[._-].*)?"))out.add("<id:"+bit.length()+">");
-            else out.add(bit.replaceAll("[^A-Za-z0-9._-]","_"));
+            if(PUBLIC_SEGMENTS.contains(bit))out.add(bit);
+            else if(bit.matches("<id:[0-9]{1,3}>"))out.add(bit);
+            else out.add("<id:"+Math.min(bit.length(),255)+">");
         }
         return out.toString();
+    }
+    static boolean nativeTransfer(String p) {
+        if(!p.matches("files/phone-article-checkpoints/[a-f0-9]{64}/[a-f0-9]{64}/(0|[1-9][0-9]{0,9})\\.bin(?:\\.tmp)?"))return false;
+        String name=p.substring(p.lastIndexOf('/')+1);return Long.parseLong(name.substring(0,name.indexOf('.')))<=Integer.MAX_VALUE;
+    }
+    static boolean restoreReceipt(String p) {
+        return p.matches("files/watch-cloud-restore/[0-9a-f]{64}/[0-9a-f]{64}\\.json(?:\\.tmp)?");
+    }
+    static boolean stockCache(String p) {
+        return p.matches("files/douyin_unwatched_stock/(?:inventory\\.json|[0-9a-f]{64}\\.mp4)(?:\\.tmp)?");
+    }
+    static boolean knownPartial(String p) {
+        return p.matches("files/(?:article_content/[^/]+|offline/rss/[^/]+/[^/]+|notes/assets/[^/]+|reader_assets/(?:fonts|backgrounds|variants)/[^/]+)(?:\\.part|\\.part\\.meta|\\.tmp)");
     }
     static boolean knownCache(String p) {
         return p.matches("cache/(douyin_preload|bili_stream_cache|rss_images|douyin_preview_snapshots|updates)/.+")||p.matches("cache/tts_[0-9]+\\.mp3");
@@ -138,12 +161,12 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         // Compose ArticleReceiveCheckpoint: verified but not-yet-committed phone
         // article chunks. The manifest lives at the peer; never invent articles
         // from these bytes. Retain exact files in the sealed native backup.
-        if(p.matches("files/phone-article-checkpoints/[a-f0-9]{64}/[a-f0-9]{64}/(0|[1-9][0-9]{0,9})\\.bin")) {
-            String index=p.substring(p.lastIndexOf('/')+1,p.length()-4);
-            if(Long.parseLong(index)<=Integer.MAX_VALUE)return "native-transfer-checkpoint";
-        }
         if(p.equals("files/androidx.appcompat.app.AppCompatDelegate.application_locales_record_file")||p.equals("files/activity_choser_model_history.xml"))return "private-platform-state";
-        if(p.endsWith(".part")||p.endsWith(".part.meta")||p.endsWith(".tmp"))return "incomplete";
+        if(stockCache(p))return "refetchable";
+        // Only transport staging and derived receipts live here; committed content is in Room/assets.
+        if(nativeTransfer(p))return p.endsWith(".tmp")?"incomplete":"native-transfer-checkpoint";
+        if(knownPartial(p))return "incomplete";
+        if(restoreReceipt(p))return "private-transfer-state";
         if(p.matches("files/article_content/[^/]+")||p.matches("files/offline/rss/[^/]+/[^/]+")||p.matches("files/reader_assets/(fonts|backgrounds|variants)/[^/]+")||p.matches("files/notes/assets/[A-Za-z0-9][A-Za-z0-9._-]{0,159}"))return "asset";
         if(p.startsWith("files/watch-cloud-cache/"))return "cloud-unverified";
         if(p.equals("files/app_log.txt"))return "private-log";
@@ -258,7 +281,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         syncDirtyDirectories();
         JSONObject report=report(g);
         PodStoreConverter.json(new File(g,"files-report.json"),report);
-        if(report.getInt("unknownFiles")>0)diagnostics.accept("reason=unknown_user_files count="+report.getInt("unknownFiles")+" paths="+report.getJSONArray("unknownPaths").toString());
+        if(report.getInt("unknownFiles")>0)diagnostics.accept("unknown_files count="+report.getInt("unknownFiles")+" categories="+report.getJSONArray("unknownPaths").toString());
         hook.saved("report");
     }
     private static String referenceId(JSONObject object,String key) {
@@ -274,8 +297,8 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
     }
     private JSONObject report(File g)throws Exception {
         PodRoomV18Converter.checkGenerationStorage(g);
-        JSONObject entries=entries(g),r=new JSONObject().put("version",version()).put("blockers",new JSONArray()).put("degraded",new JSONArray()).put("derivedSync","empty-rebuild-before-export");
-        JSONObject classes=new JSONObject();JSONArray unknownPaths=new JSONArray();int unknownFiles=0,unrecognizedCache=0;
+        JSONObject entries=entries(g),r=new JSONObject().put("version",version()).put("blockers",new JSONArray()).put("degraded",new JSONArray()).put("derivedSync","empty-rebuild-before-export").put("unknownPolicy","not-imported-native-backup-retained");
+        JSONObject classes=new JSONObject();JSONArray unknownPaths=new JSONArray();SortedSet<String> unknownNames=new TreeSet<>();int unknownFiles=0,unrecognizedCache=0;
         for(String p:names(entries)) try {
             String c=classify(p);classes.put(c,classes.optInt(c)+1);
             if(p.startsWith("cache/")&&c.equals("refetchable")&&!knownCache(p))unrecognizedCache++;
@@ -284,15 +307,22 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
                 if(!receipt.getBoolean("complete")||!receipt.getString("path").equals(p)||!same(receipt,entries.getJSONObject(p)))throw new IOException("file_receipt_changed");
                 if(!same(measure(safe(new File(g,"podjs/files"),logical(p).substring(6))),entries.getJSONObject(p)))throw new IOException("file_readback_mismatch");
             }
+            else if(c.equals("private-transfer-state"))degraded(r,"native_restore_progress_not_imported",p);
+            else if(c.equals("native-transfer-checkpoint")){r.put("nativeTransferCheckpointPolicy","retain-uncommitted-chunks-in-native-backup; no-article-or-ack-created");degraded(r,"native_transfer_restart_required",p);}
+            else if(c.equals("refetchable")&&stockCache(logical(p)))degraded(r,"preloaded_video_refetch",p);
             else if(c.equals("private-test-state"))PodPreferenceReader.protobuf(safe(new File(g,"files-source"),p));
             else if(c.equals("platform-metadata")&&entries.getJSONObject(p).getLong("size")!=8)block(r,"platform_metadata_invalid");
-            else if(c.equals("native-transfer-checkpoint"))r.put("nativeTransferCheckpointPolicy","retain-uncommitted-chunks-in-native-backup; no-article-or-ack-created");
             else if(c.equals("unknown-user-content")) {
-                block(r,"unknown_user_files");unknownFiles++;
-                if(unknownPaths.length()<20)unknownPaths.put(redactedPath(p));
+                unknownFiles++;unknownNames.add(p);
             }
             else if(c.equals("cloud-unverified"))block(r,"cloud_cache_binding_unverified");
         }catch(Exception error){throw failure(p,error);}
+        // Preference files are inventoried by the store converter, never parsed or imported when unknown.
+        File storeSnapshot=new File(g,"stores-snapshot.json");
+        if(storeSnapshot.isFile())for(String path:names(PodStoreConverter.json(storeSnapshot).getJSONObject("entries"))) {
+            if(!PodStoreConverter.knownFile(path)){unknownFiles++;unknownNames.add(path);classes.put("unknown-store-file",classes.optInt("unknown-store-file")+1);}
+        }
+        for(String path:unknownNames){if(unknownPaths.length()==20)break;unknownPaths.put(redactedPath(path));}
         r.put("classes",classes).put("unrecognizedCacheFiles",unrecognizedCache).put("unknownFiles",unknownFiles).put("unknownPaths",unknownPaths);
         try(PodRoomV18Converter.Db refs=factory.open(new File(g,"room-progress.sqlite"))) {
             for(Map<String,Object> row:refs.query("SELECT * FROM content_reference ORDER BY item_id,kind")) {

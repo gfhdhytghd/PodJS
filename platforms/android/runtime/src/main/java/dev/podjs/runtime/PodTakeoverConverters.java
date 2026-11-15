@@ -10,17 +10,30 @@ final class PodTakeoverConverters implements PodTakeoverCoordinator.Converter {
     PodTakeoverConverters(PodTakeoverCoordinator.Converter room,PodTakeoverCoordinator.Converter stores,PodTakeoverCoordinator.Converter files){this.room=room;this.stores=stores;this.files=files;}
     public String version(){return room.version()+"+"+stores.version()+(files==null?"":"+"+files.version());}
     public boolean reclassifies(File g,String previous)throws Exception {
-        if(files!=null&&files.version().equals("watchrss-files-5")&&previous.equals(room.version()+"+watchrss-stores-3+watchrss-files-4")){
-            org.json.JSONObject diagnostics=PodStoreConverter.json(PodFileConverter.safe(g,"stores-diagnostics.json"));
-            return diagnostics.getInt("blockerCount")>0; // Fresh generation rechecks every key; old candidates are retained.
+        if(files==null||!files.version().equals("watchrss-files-7"))return false;
+        String prefix=room.version()+"+";
+        if(!previous.startsWith(prefix))return false;
+        String[] old=previous.substring(prefix.length()).split("\\+",-1);
+        if(old.length!=2||!java.util.Arrays.asList("watchrss-stores-3","watchrss-stores-4","watchrss-stores-5").contains(old[0].replace("-isolated",""))||
+           !java.util.Arrays.asList("watchrss-files-3","watchrss-files-4","watchrss-files-5","watchrss-files-6","watchrss-files-7").contains(old[1]))return false;
+        if(old[0].endsWith("-isolated")&&!stores.version().endsWith("-isolated"))return false;
+        // Preserve the released store-upgrade recovery path, without bypassing publication evidence.
+        if(old[0].equals("watchrss-stores-3")&&old[1].equals("watchrss-files-4")) {
+            File diagnostics=PodFileConverter.safe(g,"stores-diagnostics.json");
+            if(diagnostics.isFile()&&PodStoreConverter.json(diagnostics).getInt("blockerCount")>0)return true;
         }
-        if(!(previous.equals(room.version()+"+"+stores.version()+"+watchrss-files-3")||previous.equals(room.version()+"+watchrss-stores-3+watchrss-files-3"))||files==null||!(files.version().equals("watchrss-files-4")||files.version().equals("watchrss-files-5")))return false;
+        File snapshot=PodFileConverter.safe(g,"stores-snapshot.json"),diagnostics=PodFileConverter.safe(g,"stores-diagnostics.json");
+        if(!old[0].equals(stores.version())&&snapshot.isFile()&&diagnostics.isFile()&&PodStoreConverter.json(diagnostics).optInt("blockerCount")>0) {
+            org.json.JSONObject captured=PodStoreConverter.json(snapshot);
+            if(old[0].equals(captured.optString("version")))for(String path:PodFileConverter.names(captured.getJSONObject("entries")))
+                if(!PodStoreConverter.knownFile(path)||PodStoreConverter.retainedKnownFile(path))return true;
+        }
         org.json.JSONObject report=PodStoreConverter.json(PodFileConverter.safe(g,"files-report.json"));
-        if(!"watchrss-files-3".equals(report.getString("version")))return false;
+        if(!old[1].equals(report.getString("version")))return false;
         org.json.JSONArray blockers=report.getJSONArray("blockers");
-        if(blockers.length()==0)return false;
-        for(int i=0;i<blockers.length();i++)if(!"unknown_user_files".equals(blockers.getString(i)))return false;
-        return true;
+        // Re-run every other business check in the fresh candidate; never keep an obsolete unknown-file blocker.
+        for(int i=0;i<blockers.length();i++)if("unknown_user_files".equals(blockers.getString(i)))return true;
+        return false;
     }
     public boolean complete(){return files!=null&&verified;}
     public void active(File g)throws Exception{room.active(g);stores.active(g);}
@@ -45,7 +58,7 @@ final class PodTakeoverConverters implements PodTakeoverCoordinator.Converter {
         for(String key:PodFileConverter.names(stores)) {
             String status=stores.getJSONObject(key).getString("status");
             String disposition=stores.getJSONObject(key).optString("activationDisposition","");
-            if(disposition.equals("known-difference")||disposition.equals("needs-reauth"))continue;
+            if(status.equals("discarded-unknown")||disposition.equals("known-difference")||disposition.equals("needs-reauth"))continue;
             if(status.equals("needs-reauth"))return "store_needs_reauth_user_confirmation";
             if(!status.equals("migrated")&&!status.equals("absent"))return "store_unsupported_or_failed";
         }
