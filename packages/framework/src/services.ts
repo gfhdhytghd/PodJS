@@ -392,12 +392,12 @@ export interface VideoSessionCapabilities {
   capability:"media.video.sessions"; maxSessions:number; decoderLimit:number; decoderInUse:number;
   targetBufferBytesPerSession:number; targetBufferBytesTotal:number; prewarmTimeoutMs:number;prewarmIdleTimeoutMs?:number;
   prewarmMode:"hidden_first_frame"; surfacePromotion:boolean; verticalTransition:boolean;
-  surfaceComposition:"android_texture_view"; backgroundPlayback:false;
+  surfaceComposition:"android_texture_view"; backgroundPlayback:boolean;
   decoderMime?:string|null; decoderWidth?:number; decoderHeight?:number; decoderName?:string|null;
   keyframeCache?:boolean; independentKeyframes?:boolean; keyframeEntries?:number; keyframeBytes?:number; keyframeMaxBytes?:number; decoderPeak?:number;
   decoderAdvertisedInstances?:number; decoderSizeSupported?:boolean; decoderRuntimeDowngraded?:boolean;
 }
-export interface VideoSessionPrepare extends Omit<VideoPrepare,"backgroundPlayback"> {
+export interface VideoSessionPrepare extends VideoPrepare {
   sessionId:string;
   /** Decode silently to a retained hidden first frame. Prewarm never requests audio focus. */
   prepareSeq?:number;prewarm?:boolean;
@@ -438,7 +438,7 @@ export const videoSessions = {
   captureFrame(sessionId:string,options:VideoFrameCapture):Promise<VideoFrame> {return hostOperation<VideoFrame>("video.session.captureFrame",{sessionId,...options}).result;},
   capabilities(profile:Pick<VideoPrepare,"videoMime"|"videoWidth"|"videoHeight">={}):Promise<VideoSessionCapabilities> { return hostOperation<VideoSessionCapabilities>("video.session.capabilities",profile as Record<string,unknown>).result; },
   prepare(options:VideoSessionPrepare):HostOperation<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.prepare",options as unknown as Record<string,unknown>); },
-  play(sessionId:string):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.play",{sessionId}).result; },
+  play(sessionId:string,options:{backgroundPlayback?:boolean}={}):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.play",{sessionId,...options}).result; },
   retire(sessionId:string,handoff=false):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.retire",{sessionId,handoff}).result; },
   pause(sessionId:string,benchmark?:import("./benchmark.ts").VideoBenchmarkAction,handoff=false):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.pause",{sessionId,handoff,...(benchmark?{benchmark}:{})}).result; },
   seek(sessionId:string,positionMs:number):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.seek",{sessionId,positionMs}).result; },
@@ -452,7 +452,7 @@ export const videoSessions = {
   setMuted(sessionId:string,muted:boolean):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setVolume",{sessionId,muted}).result; },
   setVolume(sessionId:string,volume:number,crownDirection?:-1|1):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setVolume",{sessionId,volume,...(crownDirection?{crownDirection}:{})}).result; },
   /** Reveals the retained target first frame before hiding the replaced session. */
-  promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean;loop?:boolean;adoptPreparing?:boolean;benchmark?:VideoBenchmarkAction}={}):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.promote",{sessionId,...options}).result; },
+  promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean;loop?:boolean;adoptPreparing?:boolean;backgroundPlayback?:boolean;benchmark?:VideoBenchmarkAction}={}):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.promote",{sessionId,...options}).result; },
   /** Atomically translates both native surfaces. Call promote after progress reaches one. */
   transition(options:VideoSessionTransition):Promise<VideoSessionTransitionState> { return hostOperation<VideoSessionTransitionState>("video.session.transition",options as unknown as Record<string,unknown>).result; },
 };

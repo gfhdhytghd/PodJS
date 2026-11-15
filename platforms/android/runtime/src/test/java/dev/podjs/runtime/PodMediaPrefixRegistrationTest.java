@@ -29,4 +29,18 @@ public class PodMediaPrefixRegistrationTest {
    assertEquals(first,cache.register("first","https://fixture.invalid/first",Collections.emptyMap()));
   }finally{cache.close();}
  }
+ @Test public void credentialsCannotEnterUntrustedMainCompanionOrMirror()throws Exception {
+  Context c=ApplicationProvider.getApplicationContext();PodMediaPrefixCache cache=new PodMediaPrefixCache(new File(c.getCacheDir(),"registration-credentials"));
+  try{
+   for(String part:new String[]{"main","audio","mirror"})try{
+    cache.register(part,part.equals("main")?"https://fixture.invalid/main":"https://www.douyin.com/main",java.util.Map.of("Cookie","offline-fixture"),false,
+      part.equals("mirror")?java.util.List.of("https://fixture.invalid/mirror"):Collections.emptyList(),part.equals("audio")?"http://www.douyin.com/audio":"");fail(part);
+   }catch(IOException expected){assertEquals("media_credentials_origin_rejected",expected.getMessage());}
+  }finally{cache.close();}
+ }
+ @Test public void clearRestoresExplicitTrafficStop()throws Exception {
+  Context c=ApplicationProvider.getApplicationContext();PodMediaPrefixCache cache=new PodMediaPrefixCache(new File(c.getCacheDir(),"registration-recovery"));
+  try{cache.stopTraffic();assertTrue(cache.trafficStopped());cache.execute("video.cache.clear",new org.json.JSONObject());assertFalse(cache.trafficStopped());}finally{cache.close();}
+ }
+
 }

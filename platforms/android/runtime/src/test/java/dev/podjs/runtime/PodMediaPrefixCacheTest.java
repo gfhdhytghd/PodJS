@@ -28,7 +28,7 @@ public class PodMediaPrefixCacheTest {
   };}
  }
  static File root()throws Exception {Context c=ApplicationProvider.getApplicationContext();return java.nio.file.Files.createTempDirectory(c.getCacheDir().toPath(),"prefix-test-").toFile();}
- static String register(PodMediaPrefixCache c,String key)throws Exception{return c.register(key,"https://example.test/"+key,Map.of("Referer","https://example.test/","Cookie","fixture","User-Agent","fixture"));}
+ static String register(PodMediaPrefixCache c,String key)throws Exception{return c.register(key,"https://example.test/"+key,Map.of("Referer","https://example.test/","X-Fixture","fixture","User-Agent","fixture"));}
  static JSONObject window(String uri,int bytes)throws Exception{return new JSONObject().put("items",new JSONArray().put(new JSONObject().put("uri",uri).put("prefetchBytes",bytes).put("captureBytes",4*M)));}
  static byte[] read(DataSource d,int limit)throws Exception {ByteArrayOutputStream out=new ByteArrayOutputStream();byte[] b=new byte[8192];int n;while(out.size()<limit&&(n=d.read(b,0,Math.min(b.length,limit-out.size())))!=-1)out.write(b,0,n);return out.toByteArray();}
  static void idle(PodMediaPrefixCache c)throws Exception {long end=System.currentTimeMillis()+5000;while(c.stats().getInt("activePrefetches")>0&&System.currentTimeMillis()<end)Thread.sleep(10);assertEquals(0,c.stats().getInt("activePrefetches"));}
@@ -72,7 +72,7 @@ public class PodMediaPrefixCacheTest {
  @Test public void prefixThenRangeAndTailAreByteIdenticalWithAllHeaders()throws Exception {
   Remote r=new Remote(5*M);try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
    String uri=register(c,"one");c.execute("video.cache.window",window(uri,M));idle(c);assertEquals(M,c.stats().getLong("bytes"));assertEquals(M,c.stats().getLong("downloadedBytes"));
-   DataSource d=c.factory(r).createDataSource();assertEquals(r.body.length,d.open(new DataSpec(Uri.parse(uri))));assertArrayEquals(r.body,read(d,r.body.length));d.close();assertEquals(M,r.opened.get(2).position);assertEquals("fixture",r.opened.get(2).httpRequestHeaders.get("Cookie"));assertEquals(4*M,c.stats().getLong("bytes"));assertEquals(M,c.stats().getLong("cacheReadBytes"));
+   DataSource d=c.factory(r).createDataSource();assertEquals(r.body.length,d.open(new DataSpec(Uri.parse(uri))));assertArrayEquals(r.body,read(d,r.body.length));d.close();assertEquals(M,r.opened.get(2).position);assertEquals("fixture",r.opened.get(2).httpRequestHeaders.get("X-Fixture"));assertEquals(4*M,c.stats().getLong("bytes"));assertEquals(M,c.stats().getLong("cacheReadBytes"));
    d.open(new DataSpec.Builder().setUri(uri).setPosition(5*M-64).setLength(64).build());assertArrayEquals(Arrays.copyOfRange(r.body,5*M-64,5*M),read(d,64));d.close();assertEquals(5*M-64,r.opened.get(3).position);assertEquals(64,r.opened.get(3).length);
    // Seek backwards into the prefix needs no new upstream.
    d.open(new DataSpec.Builder().setUri(uri).setPosition(17).setLength(111).build());assertArrayEquals(Arrays.copyOfRange(r.body,17,128),read(d,111));d.close();assertEquals(4,r.opened.size());
@@ -97,7 +97,7 @@ public class PodMediaPrefixCacheTest {
  }
  @Test public void changedSourceOrHeadersGetsNewCapabilityAndOriginalHttpStillWorks()throws Exception {
   Remote r=new Remote(M);try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
-   String a=register(c,"identity"),b=c.register("identity","https://example.test/identity",Map.of("Cookie","different"));assertNotEquals(a,b);assertEquals(a,register(c,"identity"));
+   String a=register(c,"identity"),b=c.register("identity","https://example.test/identity",Map.of("X-Fixture","different"));assertNotEquals(a,b);assertEquals(a,register(c,"identity"));
    DataSource d=c.factory(r).createDataSource();d.open(new DataSpec(Uri.parse("https://example.test/direct")));assertArrayEquals(r.body,read(d,M));d.close();assertEquals(0,c.stats().getLong("bytes"));
   }
  }
@@ -105,7 +105,7 @@ public class PodMediaPrefixCacheTest {
   byte[] body=new byte[65536];new Random(7).nextBytes(body);
   try(java.net.ServerSocket server=new java.net.ServerSocket(0);PodMediaPrefixCache c=new PodMediaPrefixCache(root())){
    FutureTask<String> served=new FutureTask<>(()->{try(java.net.Socket socket=server.accept()){socket.setSoTimeout(3000);BufferedReader input=new BufferedReader(new InputStreamReader(socket.getInputStream(),java.nio.charset.StandardCharsets.US_ASCII));StringBuilder request=new StringBuilder();String line;while((line=input.readLine())!=null&&!line.isEmpty())request.append(line).append("\n");socket.getOutputStream().write(("HTTP/1.1 200 OK\r\nContent-Length: "+body.length+"\r\nConnection: close\r\n\r\n").getBytes(java.nio.charset.StandardCharsets.US_ASCII));socket.getOutputStream().write(body);return request.toString();}});new Thread(served).start();
-   String uri=c.register("default","http://127.0.0.1:"+server.getLocalPort()+"/video",Map.of("Cookie","fixture"));DataSource d=c.factory(new Remote(1)).createDataSource();d.open(new DataSpec(Uri.parse(uri)));assertArrayEquals(body,read(d,body.length));d.close();assertTrue(served.get(3,TimeUnit.SECONDS).contains("Cookie: fixture"));assertEquals(body.length,c.stats().getLong("bytes"));
+   String uri=c.register("default","http://127.0.0.1:"+server.getLocalPort()+"/video",Map.of("X-Fixture","fixture"));DataSource d=c.factory(new Remote(1)).createDataSource();d.open(new DataSpec(Uri.parse(uri)));assertArrayEquals(body,read(d,body.length));d.close();assertTrue(served.get(3,TimeUnit.SECONDS).contains("X-Fixture: fixture"));assertEquals(body.length,c.stats().getLong("bytes"));
   }
  }
  @Test public void persistedShortCompletePrefixKnowsEofWithoutExtraNetwork()throws Exception {
@@ -128,7 +128,7 @@ public class PodMediaPrefixCacheTest {
  @Test public void rejectUnregisteredAndMalformedSourcesOrOversizedWindows()throws Exception {
   Remote r=new Remote(M);try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
    for(String url:new String[]{"file:///etc/passwd","http://user:pass@example.test/x","http:///no-host"})try{c.register("k",url,Map.of());fail(url);}catch(IllegalArgumentException expected){}
-   try{c.register("k","https://example.test/x",Map.of("Cookie","x\r\ny"));fail();}catch(IllegalArgumentException expected){}
+   try{c.register("k","https://example.test/x",Map.of("X-Fixture","x\r\ny"));fail();}catch(IllegalArgumentException expected){}
    try{c.target("podjs-media-cache://play/"+"a".repeat(64)+".mp4");fail();}catch(IOException expected){}
    String uri=register(c,"limits");try{c.execute("video.cache.window",window(uri,5*M));fail();}catch(IllegalArgumentException expected){}
   }
@@ -137,7 +137,7 @@ public class PodMediaPrefixCacheTest {
   java.util.List<JSONObject> events=new java.util.concurrent.CopyOnWriteArrayList<>();
   try(java.net.ServerSocket server=new java.net.ServerSocket(0);PodMediaPrefixCache c=new PodMediaPrefixCache(root())){
    FutureTask<Void> served=new FutureTask<>(()->{try(java.net.Socket socket=server.accept()){BufferedReader input=new BufferedReader(new InputStreamReader(socket.getInputStream()));String line;while((line=input.readLine())!=null&&!line.isEmpty()){}socket.getOutputStream().write("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".getBytes());}return null;});new Thread(served).start();
-   c.setResultSink(events::add);String uri=c.register("private-item","http://127.0.0.1:"+server.getLocalPort()+"/private",Map.of("Cookie","fixture-secret"));JSONObject window=window(uri,M);window.getJSONArray("items").getJSONObject(0).put("itemToken","opaque_7").put("generation",42);c.execute("video.cache.window",window);idle(c);served.get(3,TimeUnit.SECONDS);
+   c.setResultSink(events::add);String uri=c.register("private-item","http://127.0.0.1:"+server.getLocalPort()+"/private",Map.of("X-Fixture","fixture-secret"));JSONObject window=window(uri,M);window.getJSONArray("items").getJSONObject(0).put("itemToken","opaque_7").put("generation",42);c.execute("video.cache.window",window);idle(c);served.get(3,TimeUnit.SECONDS);
    assertEquals(1,events.size());JSONObject value=events.get(0).getJSONObject("value");assertEquals("opaque_7",value.getString("itemToken"));assertEquals(42,value.getLong("generation"));assertEquals(403,value.getInt("httpStatus"));assertEquals("http_403",value.getString("category"));assertFalse(events.toString().contains("fixture-secret"));assertFalse(events.toString().contains("127.0.0.1"));
   }
  }
@@ -149,12 +149,12 @@ public class PodMediaPrefixCacheTest {
  @Test public void persistentContentReRegistersAcrossRestartWithoutNetworkAndIgnoresRotatingAuth()throws Exception {
   Remote r=new Remote(4096);File directory=root();String uri;
   try(PodMediaPrefixCache c=new PodMediaPrefixCache(directory,r,6*M)){
-   uri=c.register("stable-rendition","https://example.test/old?expires=1",Map.of("Cookie","old"),true);
+   uri=c.register("stable-rendition","https://example.test/old?expires=1",Map.of("X-Fixture","old"),true);
    c.execute("video.cache.window",window(uri,M));idle(c);
   }
   r.opened.clear();
   try(PodMediaPrefixCache c=new PodMediaPrefixCache(directory,r,6*M)){
-   String restored=c.register("stable-rendition","https://new.test/new?expires=2",Map.of("Cookie","new"),true);assertEquals(uri,restored);
+   String restored=c.register("stable-rendition","https://new.test/new?expires=2",Map.of("X-Fixture","new"),true);assertEquals(uri,restored);
    DataSource d=c.factory(r).createDataSource();assertEquals(4096,d.open(new DataSpec(Uri.parse(restored))));assertArrayEquals(r.body,read(d,8192));d.close();
    assertEquals(0,r.opened.size());assertEquals(4096,c.stats().getLong("cacheReadBytes"));
   }
@@ -218,7 +218,7 @@ public class PodMediaPrefixCacheTest {
    register(cache,"private-fixture");org.robolectric.shadows.ShadowLog.clear();cache.logPlaybackStats();
    java.util.List<org.robolectric.shadows.ShadowLog.LogItem> rows=org.robolectric.shadows.ShadowLog.getLogsForTag("PodMediaCache");assertEquals(1,rows.size());
    assertTrue(rows.get(0).msg.matches("cache_stats mono_ms=[0-9]+ files=[0-9]+ bytes=[0-9]+ downloadedBytes=[0-9]+ cacheReadBytes=[0-9]+ networkReadBytes=[0-9]+ maxBytes=[0-9]+"));
-   assertFalse(rows.get(0).msg.contains("private-fixture"));assertFalse(rows.get(0).msg.contains("Cookie"));
+   assertFalse(rows.get(0).msg.contains("private-fixture"));assertFalse(rows.get(0).msg.contains("X-Fixture"));
   }
  }
 

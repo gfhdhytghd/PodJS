@@ -7,7 +7,7 @@ export interface VideoSessionPort {
   captureFrame?(sessionId:string,options:VideoFrameCapture):Promise<VideoFrame>;
   capabilities(profile?:VideoDecoderProfile):Promise<VideoSessionCapabilities>;
   prepare(options:Parameters<typeof videoSessions.prepare>[0]):HostOperation<VideoSessionState>;
-  play(sessionId:string):Promise<VideoSessionState>;
+  play(sessionId:string,options?:{backgroundPlayback?:boolean}):Promise<VideoSessionState>;
   retire(sessionId:string,handoff?:boolean):Promise<VideoSessionState>;
   pause(sessionId:string,benchmark?:VideoBenchmarkAction,handoff?:boolean):Promise<VideoSessionState>;
   seek(sessionId:string,positionMs:number):Promise<VideoSessionState>;
@@ -20,7 +20,7 @@ export interface VideoSessionPort {
   setMuted?(sessionId:string,muted:boolean):Promise<VideoSessionState>;
   setLoop(sessionId:string,loop:boolean):Promise<VideoSessionState>;
   setSpeed?(sessionId:string,speed:number):Promise<VideoSessionState>;
-  promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean;loop?:boolean;adoptPreparing?:boolean;benchmark?:VideoBenchmarkAction}):Promise<VideoSessionState>;
+  promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean;loop?:boolean;adoptPreparing?:boolean;backgroundPlayback?:boolean;benchmark?:VideoBenchmarkAction}):Promise<VideoSessionState>;
   transition(options:{fromSessionId:string;toSessionId:string;progress:number;direction:VideoPagerDirection;bounds?:VideoBounds;benchmark?:VideoBenchmarkAction;trackPointer?:boolean}):Promise<VideoSessionTransitionState>;
 }
 
@@ -59,6 +59,7 @@ export class VideoSessionPool<Source extends {key:string}> {
   private transform:VideoTransform={};
   private readonly poolId=nextPoolId++;
   private activeId:string;
+  private backgroundPlayback=false;
   private activeKey:string|undefined;
   private activeSource:Source|undefined;
   private activeIdentity:string|undefined;
@@ -111,6 +112,7 @@ export class VideoSessionPool<Source extends {key:string}> {
   }
   retainNeighbours(keys:readonly string[]){for(const slot of this.slots)if(slot.source&&!keys.includes(slot.source.key))this.evict(slot,'stale');}
   prepare(source:Source,options:VideoPrepare):HostOperation<VideoState>{
+    this.backgroundPlayback=options.backgroundPlayback===true;
     this.transform={...(options.transform??this.transform)};
     options={...options,transform:this.transform};
     this.cancelNeighbourhood();
@@ -127,7 +129,7 @@ export class VideoSessionPool<Source extends {key:string}> {
         if(!current())throw Error('stale initial video preparation');
         let value=await this.syncLoop(this.activeId);
         if(!current())throw Error('stale initial video preparation');
-        if(options.autoplay===true)value=await this.port.play(this.activeId);
+        if(options.autoplay===true)value=await this.port.play(this.activeId,{backgroundPlayback:this.backgroundPlayback});
         if(!current())throw Error('stale initial video preparation');
         return state(value);
       }).finally(()=>{settled=true;});
@@ -141,9 +143,7 @@ export class VideoSessionPool<Source extends {key:string}> {
     const own=++this.generation;this.activePrepareSeq=undefined;this.loop=options.loop===true;this.activeKey=source.key;this.activeSource=source;this.activeIdentity=this.prepareIdentity(options);
     const retired=this.slots.filter(slot=>slot.source||slot.operation).map(slot=>({slot,revision:slot.revision}));
     if(!this.keyframeCache)for(const {slot} of retired)void this.evict(slot,'stale');
-    // Explicit sessions are foreground-only. Do not leak a legacy preference
-    // into the native API (which correctly rejects backgroundPlayback=true).
-    const {backgroundPlayback,...foreground}=options;
+    const foreground=options;
     const operation=this.port.prepare({...foreground,sessionId:this.activeId,sourceOrdinal:this.ordinal(source.key),slotOrdinal:this.slotOrdinal(this.activeId),prewarm:false,autoplay:options.autoplay===true});
     return {cancel:()=>operation.cancel(),result:operation.result.then(value=>{
       if(own!==this.generation)throw new Error('stale video session preparation');
@@ -171,14 +171,14 @@ export class VideoSessionPool<Source extends {key:string}> {
     const result=(async()=>{
       const loop=this.loop;
       let promoted:VideoSessionState;
-      try{if(Object.keys(this.transform).length)await this.port.setTransform(id,this.transform);promoted=await this.port.promote(id,{replaceSessionId:replacedId,bounds:options.bounds,autoplay:options.autoplay===true,loop,adoptPreparing:true,...(options.benchmark?{benchmark:options.benchmark}:{})});}
+      try{if(Object.keys(this.transform).length)await this.port.setTransform(id,this.transform);promoted=await this.port.promote(id,{replaceSessionId:replacedId,bounds:options.bounds,autoplay:options.autoplay===true,loop,adoptPreparing:true,backgroundPlayback:this.backgroundPlayback,...(options.benchmark?{benchmark:options.benchmark}:{})});}
       catch(error){
         const failure=error as {code?:string;message?:string};
         // Native expiry can win between guest selection and host promotion.
         // Only this absent-session acknowledgement permits one cold prepare.
         // Transport, authorization and decoder failures remain terminal.
         if(failure.code!=='invalid_argument'||failure.message!=='unknown_video_session'||cancelled||own!==this.generation)throw error;
-        const {backgroundPlayback,...foreground}=options;
+        const foreground=options;
         await this.port.retire(replacedId,true).catch(()=>undefined);
         if(cancelled||own!==this.generation)throw Error('stale video session adoption');
         recovery=this.port.prepare({...foreground,sessionId:id,sourceOrdinal:this.ordinal(source.key),slotOrdinal:this.slotOrdinal(id),prewarm:false,autoplay:options.autoplay===true});
@@ -346,7 +346,7 @@ export class VideoSessionPool<Source extends {key:string}> {
     const loop=this.loop;
     // The ready receipt can outlive its cached pixels. A committed selection
     // still owns this authorized source and may finish preparing on black.
-    const promoted=await this.port.promote(id,{replaceSessionId:this.activeId,bounds,autoplay,loop,adoptPreparing:true,...(benchmark?{benchmark}:{})});
+    const promoted=await this.port.promote(id,{replaceSessionId:this.activeId,bounds,autoplay,loop,adoptPreparing:true,backgroundPlayback:this.backgroundPlayback,...(benchmark?{benchmark}:{})});
     // A fast swipe can retire the initial active before it decoded anything.
     // Retain its source, but never label that surface ready without host proof.
     const retired=typeof promoted.replacedHasRenderedFirstFrame==='boolean'?{hasRenderedFirstFrame:promoted.replacedHasRenderedFirstFrame,state:'prewarmed'}:await this.port.state(this.activeId).catch(()=>undefined);
@@ -371,7 +371,7 @@ export class VideoSessionPool<Source extends {key:string}> {
   async setLoop(loop:boolean):Promise<void>{this.loop=loop;for(const slot of this.slots.filter(s=>s.ready))this.neighbourUpdate(slot,this.syncLoop(slot.id));if(this.activeKey)await this.syncLoop(this.activeId);}
   /** Active session only; neighbours start at 1x and the caller re-applies its speed after a page change. */
   setSpeed(speed:number):Promise<VideoState>{if(!this.port.setSpeed)return Promise.reject(Object.assign(new Error("video.session.setSpeed is unavailable"),{code:"unsupported"}));return this.port.setSpeed(this.activeId,speed).then(state);}
-  play():Promise<VideoState>{return this.port.play(this.activeId).then(state);}
+  play():Promise<VideoState>{return this.port.play(this.activeId,{backgroundPlayback:this.backgroundPlayback}).then(state);}
   retire(handoff=false):Promise<VideoState>{this.cancelNeighbourhood();return this.port.retire(this.activeId,handoff).then(state);}
   pause(benchmark?:VideoBenchmarkAction,handoff=false):Promise<VideoState>{return this.port.pause(this.activeId,benchmark,handoff).then(state);}
   seek(positionMs:number):Promise<VideoState>{return this.port.seek(this.activeId,positionMs).then(state);}

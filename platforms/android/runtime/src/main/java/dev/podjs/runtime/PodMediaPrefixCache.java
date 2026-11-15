@@ -33,14 +33,14 @@ final class PodMediaPrefixCache implements AutoCloseable {
     void revokeLocal(String uri){verifiedLocal.remove(uri);}
     private final Set<Object> busyMedia=Collections.newSetFromMap(new IdentityHashMap<>());
     private final Map<String,Integer> pinnedLocal=new HashMap<>();
-    private volatile boolean trafficStopped;
-    boolean trafficStopped(){return trafficStopped;}
+    private volatile long trafficStoppedUntil;
+    boolean trafficStopped(){return android.os.SystemClock.elapsedRealtime()<trafficStoppedUntil;}
     java.util.function.IntSupplier batteryPercent=()->100;
     synchronized void foregroundBusy(Object owner,boolean busy){if(busy)busyMedia.add(owner);else busyMedia.remove(owner);notifyAll();}
     synchronized boolean localPinned(String token){return pinnedLocal.containsKey(token);}
-    synchronized boolean preStoreAllowed(){int battery=batteryPercent.getAsInt();return localStore.enabled&&!trafficStopped&&busyMedia.isEmpty()&&foregroundNetworkReaders==0&&(battery<0||battery>=localStore.minBattery)&&root.getUsableSpace()>=localStore.minFree;}
-    synchronized void checkNetwork(Entry entry)throws IOException {if(trafficStopped)throw new IOException("media_traffic_stopped");if(System.currentTimeMillis()>=entry.expiresAt)throw new IOException("media_source_expired");}
-    synchronized void stopTraffic(){trafficStopped=true;for(Job job:jobs.values())job.cancel();notifyAll();}
+    synchronized boolean preStoreAllowed(){int battery=batteryPercent.getAsInt();return localStore.enabled&&!trafficStopped()&&busyMedia.isEmpty()&&foregroundNetworkReaders==0&&(battery<0||battery>=localStore.minBattery)&&root.getUsableSpace()>=localStore.minFree;}
+    synchronized void checkNetwork(Entry entry)throws IOException {if(trafficStopped())throw new IOException("media_traffic_stopped");if(System.currentTimeMillis()>=entry.expiresAt)throw new IOException("media_source_expired");}
+    synchronized void stopTraffic(){trafficStoppedUntil=android.os.SystemClock.elapsedRealtime()+30_000;for(Job job:jobs.values())job.cancel();notifyAll();}
     final DataSource.Factory upstream;
     private final ExecutorService workers=Executors.newFixedThreadPool(2);
     private final ExecutorService cancellations=Executors.newSingleThreadExecutor();
@@ -97,6 +97,8 @@ final class PodMediaPrefixCache implements AutoCloseable {
         TreeMap<String,String> clean=new TreeMap<>(String.CASE_INSENSITIVE_ORDER);int bytes=0;
         if(headers.size()>32)throw new IllegalArgumentException("too_many_headers");
         for(Map.Entry<String,String> h:headers.entrySet()){String name=h.getKey(),value=h.getValue();bytes+=name.length()+value.length();if(!name.matches("[!#$%&'*+.^_`|~0-9a-zA-Z-]+")||value.indexOf('\r')>=0||value.indexOf('\n')>=0||bytes>32768)throw new IllegalArgumentException("invalid_media_cache_headers");if(!name.equalsIgnoreCase("Range"))clean.put(name,value);}
+        for(String remoteUrl:mirrors)PodMediaRequestPolicy.check(okhttp3.HttpUrl.get(remoteUrl),okhttp3.Headers.of(clean));
+        if(!frameAudioUrl.isEmpty())PodMediaRequestPolicy.check(okhttp3.HttpUrl.get(frameAudioUrl),okhttp3.Headers.of(clean));
         String token=digest((frameAudioUrl.isEmpty()?"":"companion:"+digest(frameAudioUrl)+"\n")+(persistent?"content-v1\n"+key:key+"\n"+remote+"\n"+clean.toString()+(mirrors.size()>1?"\n"+mirrors.get(1):"")));Entry e=entries.get(token);
         if(e==null||!e.remote.equals(remote)||!e.headers.equals(clean)||!e.mirrors.equals(mirrors)){
             Entry next=new Entry(token,remote,Collections.unmodifiableMap(clean),new File(root,token+".prefix"),persistent);next.mirrors=Collections.unmodifiableList(mirrors);next.frameAudioUrl=frameAudioUrl;
@@ -202,7 +204,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
         }
         int responseCode(){return delegate instanceof androidx.media3.datasource.HttpDataSource?((androidx.media3.datasource.HttpDataSource)delegate).getResponseCode():delegate instanceof PodDouyinRequest?((PodDouyinRequest)delegate).responseCode():PodMediaHttp.responseCode(delegate);}
         public void addTransferListener(TransferListener listener){delegate.addTransferListener(listener);}
-        public long open(DataSpec spec)throws IOException{opened=android.os.SystemClock.uptimeMillis();rangePosition=spec.position;requested=spec.length;synchronized(PodMediaPrefixCache.this){entry.rangeRequests+=PodMediaHttp.attempts(delegate,spec);}checkNetwork(entry);try{return delegate.open(spec);}catch(IOException error){if(httpStatus(error)==403){synchronized(PodMediaPrefixCache.this){boolean first=!trafficStopped;stopTraffic();if(first&&foreground)publish(new Job(entry,0,"traffic-stop",0),false,403);}}throw error;}}
+        public long open(DataSpec spec)throws IOException{opened=android.os.SystemClock.uptimeMillis();rangePosition=spec.position;requested=spec.length;synchronized(PodMediaPrefixCache.this){entry.rangeRequests+=PodMediaHttp.attempts(delegate,spec);}checkNetwork(entry);try{return delegate.open(spec);}catch(IOException error){if((httpStatus(error)==403||httpStatus(error)==429)&&foreground)publish(new Job(entry,0,"cooldown",0),false,httpStatus(error));throw error;}}
         public int read(byte[] bytes,int offset,int length)throws IOException{checkNetwork(entry);long before=transferred;int n=delegate.read(bytes,offset,length);if(!PodMediaHttp.countsTransfers(delegate)&&n>transferred-before){int extra=(int)(n-(transferred-before));transferred+=extra;noteByte();recordNetwork(entry,extra);}return n;}
         public Uri getUri(){return delegate.getUri();}
         public Map<String,List<String>> getResponseHeaders(){return delegate.getResponseHeaders();}
@@ -428,7 +430,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
             .put("metadataMaxBytes",MAX_METADATA_BYTES).put("registrationMaxEntries",MAX_REGISTRATIONS)
             .put("jobs",jobs.size()).put("protectedEntries",protectedTokens.size()).put("activePumps",pumps).put("diskMaxBytes",maxTotal);
     }
-    private void clear(){verifiedLocal.clear();if(frameListener!=null)frameListener.clear();generation++;for(Job j:jobs.values())j.cancel();jobs.clear();entries.clear();protectedTokens.clear();for(File f:root.listFiles()==null?new File[0]:root.listFiles())if(f.getName().matches("[a-f0-9]{64}\\.(prefix|length|tail)"))f.delete();}
+    private void clear(){trafficStoppedUntil=0;if(upstream instanceof PodMediaHttp)((PodMediaHttp)upstream).recover();verifiedLocal.clear();if(frameListener!=null)frameListener.clear();generation++;for(Job j:jobs.values())j.cancel();jobs.clear();entries.clear();protectedTokens.clear();for(File f:root.listFiles()==null?new File[0]:root.listFiles())if(f.getName().matches("[a-f0-9]{64}\\.(prefix|length|tail)"))f.delete();}
     @Override public synchronized void close(){closed=true;verifiedLocal.clear();generation++;for(Job j:jobs.values())j.cancel();jobs.clear();protectedTokens.clear();entries.clear();wakeups.shutdownNow();workers.shutdownNow();cancellations.shutdown();if(upstream instanceof PodMediaHttp)((PodMediaHttp)upstream).close();notifyAll();}
     DataSource.Factory factory(DataSource.Factory fallback){return ()->new PrefixDataSource(fallback);}
     private final class PrefixDataSource implements DataSource {

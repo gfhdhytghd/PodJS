@@ -17,7 +17,7 @@ public class PodMediaHttpTest {
  static class Server implements AutoCloseable {
   final ServerSocket server=new ServerSocket(0);final ExecutorService workers=Executors.newCachedThreadPool();
   final AtomicInteger connections=new AtomicInteger(),requests=new AtomicInteger();final List<String> headers=Collections.synchronizedList(new ArrayList<>());
-  final int headerDelay,bodyDelay,status;final byte[] body;final CountDownLatch received=new CountDownLatch(1);volatile CountDownLatch responseGate;
+  final int headerDelay,bodyDelay,status;final byte[] body;final CountDownLatch received=new CountDownLatch(1);volatile CountDownLatch responseGate;String location,retryAfter;
   Server(int headerDelay,int bodyDelay,int status,byte value)throws Exception{this.headerDelay=headerDelay;this.bodyDelay=bodyDelay;this.status=status;body=new byte[1024];Arrays.fill(body,value);
    workers.execute(()->{while(!server.isClosed())try{Socket socket=server.accept();connections.incrementAndGet();workers.execute(()->serve(socket));}catch(IOException ignored){}});
   }
@@ -25,19 +25,19 @@ public class PodMediaHttpTest {
   void serve(Socket socket){try(Socket s=socket){s.setSoTimeout(5000);BufferedReader input=new BufferedReader(new InputStreamReader(s.getInputStream()));while(true){String line=input.readLine();if(line==null)return;int lo=0,hi=body.length-1;StringBuilder seen=new StringBuilder(line);
    while((line=input.readLine())!=null&&!line.isEmpty()){seen.append('\n').append(line);if(line.toLowerCase(Locale.ROOT).startsWith("range: bytes=")){String[] range=line.substring(line.indexOf('=')+1).split("-",-1);lo=Integer.parseInt(range[0]);if(!range[1].isEmpty())hi=Math.min(hi,Integer.parseInt(range[1]));}}
    requests.incrementAndGet();headers.add(seen.toString());received.countDown();if(responseGate!=null&&!responseGate.await(2,TimeUnit.SECONDS))return;Thread.sleep(headerDelay);int length=status==206?hi-lo+1:0;
-   s.getOutputStream().write(("HTTP/1.1 "+status+" Fixture\r\nContent-Length: "+length+"\r\nContent-Range: bytes "+lo+"-"+hi+"/"+body.length+"\r\n\r\n").getBytes(java.nio.charset.StandardCharsets.US_ASCII));s.getOutputStream().flush();Thread.sleep(bodyDelay);
+   s.getOutputStream().write(("HTTP/1.1 "+status+" Fixture\r\n"+(location==null?"":"Location: "+location+"\r\n")+(retryAfter==null?"":"Retry-After: "+retryAfter+"\r\n")+"Content-Length: "+length+"\r\nContent-Range: bytes "+lo+"-"+hi+"/"+body.length+"\r\n\r\n").getBytes(java.nio.charset.StandardCharsets.US_ASCII));s.getOutputStream().flush();Thread.sleep(bodyDelay);
    if(length>0){s.getOutputStream().write(body,lo,length);s.getOutputStream().flush();}
   }}catch(Exception ignored){}}
   public void close()throws Exception{server.close();workers.shutdownNow();}
  }
- static DataSpec spec(String url){return new DataSpec.Builder().setUri(url).setLength(64).setHttpRequestHeaders(Map.of("Cookie","fixture","Referer","https://example.test/")).build();}
+ static DataSpec spec(String url){return new DataSpec.Builder().setUri(url).setLength(64).setHttpRequestHeaders(Map.of("X-Fixture","fixture","Referer","https://example.test/")).build();}
  static byte[] read(DataSource source,int size)throws Exception{ByteArrayOutputStream out=new ByteArrayOutputStream();byte[] buf=new byte[size];int n;while((n=source.read(buf,0,Math.min(buf.length,size-out.size())))>0){out.write(buf,0,n);if(out.size()==size)break;}return out.toByteArray();}
  @Test public void raceSelectsFirstBodyNotFirstHeadersAndNeverMixesBodies()throws Exception {
   try(Server primary=new Server(0,800,206,(byte)1);Server alternate=new Server(60,0,206,(byte)2);PodMediaHttp http=new PodMediaHttp()){
    AtomicReference<String> winner=new AtomicReference<>();DataSource source=http.race(Arrays.asList(primary.url(),alternate.url()),winner::set);
    long start=System.nanoTime();assertEquals(64,source.open(spec(primary.url())));byte[] body=read(source,64);source.close();
    assertEquals(alternate.url(),winner.get());for(byte b:body)assertEquals(2,b);assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-start)<750);
-   assertEquals(1,primary.requests.get());assertEquals(1,alternate.requests.get());assertTrue(alternate.headers.get(0).contains("Cookie: fixture"));
+   assertEquals(1,primary.requests.get());assertEquals(1,alternate.requests.get());assertTrue(alternate.headers.get(0).contains("X-Fixture: fixture"));
   }
  }
  @Test public void boundedReadsReuseConnectionWithoutWarmupRequest()throws Exception {
@@ -46,16 +46,29 @@ public class PodMediaHttpTest {
    assertEquals(3,server.requests.get());assertEquals(1,server.connections.get());
   }
  }
- @Test public void forbiddenMirrorStopsAllLaterRequestsAndDoesNotRetry()throws Exception {
-  try(Server primary=new Server(0,0,403,(byte)1);Server alternate=new Server(300,0,206,(byte)2);PodMediaHttp http=new PodMediaHttp()){
-   // Both requests are in flight before 403. Delayed server acceptance is not
-   // evidence of a new retry after the transport has stopped.
-   primary.responseGate=alternate.received;alternate.responseGate=new CountDownLatch(1);
-   DataSource source=http.race(Arrays.asList(primary.url(),alternate.url()),url->{});
-   try{source.open(spec(primary.url()));fail("403 must stop race");}catch(IOException failure){assertEquals(403,PodMediaPrefixCache.httpStatus(failure));}finally{source.close();}
-   int requests=primary.requests.get()+alternate.requests.get();DataSource later=http.createDataSource();
-   try{later.open(spec(alternate.url()));fail("stopped instance must not request again");}catch(IOException failure){assertEquals(403,PodMediaPrefixCache.httpStatus(failure));}finally{later.close();}
-   Thread.sleep(80);assertEquals(requests,primary.requests.get()+alternate.requests.get());
+ @Test public void forbiddenSourceCoolsDownWithoutStoppingUnrelatedOrigin()throws Exception {
+  AtomicLong clock=new AtomicLong();
+  try(Server forbidden=new Server(0,0,403,(byte)1);Server healthy=new Server(0,0,206,(byte)2);PodMediaHttp http=new PodMediaHttp(clock::get)){
+   for(int attempt=0;attempt<2;attempt++){DataSource source=http.createDataSource();try{source.open(spec(forbidden.url()));fail();}catch(IOException failure){assertEquals(403,PodMediaPrefixCache.httpStatus(failure));}finally{source.close();}}
+   assertEquals(1,forbidden.requests.get());DataSource good=http.createDataSource();good.open(spec(healthy.url()));assertEquals(64,read(good,64).length);good.close();
+   clock.set(30_001);DataSource retry=http.createDataSource();try{retry.open(spec(forbidden.url()));fail();}catch(IOException expected){}finally{retry.close();}assertEquals(2,forbidden.requests.get());
+  }
+ }
+ @Test public void explicitRecoveryClearsDefaultCooldownButHonorsServerRetryAfter()throws Exception {
+  for(int status:new int[]{403,429}){
+   AtomicLong clock=new AtomicLong();try(Server server=new Server(0,0,status,(byte)1);PodMediaHttp http=new PodMediaHttp(clock::get)){
+    if(status==429)server.retryAfter="120";
+    DataSource first=http.createDataSource();try{first.open(spec(server.url()));fail();}catch(IOException expected){}finally{first.close();}
+    http.recover();DataSource second=http.createDataSource();try{second.open(spec(server.url()));fail();}catch(IOException expected){}finally{second.close();}
+    assertEquals(status==403?2:1,server.requests.get());
+    if(status==429){clock.set(120_001);DataSource third=http.createDataSource();try{third.open(spec(server.url()));fail();}catch(IOException expected){}finally{third.close();}assertEquals(2,server.requests.get());}
+   }
+  }
+ }
+ @Test public void publicRedirectRechecksEveryHopAndNeverSendsCredentials()throws Exception {
+  try(Server redirect=new Server(0,0,302,(byte)1);Server destination=new Server(0,0,206,(byte)2);PodMediaHttp http=new PodMediaHttp()){
+   redirect.location=destination.url();DataSource source=http.createDataSource();source.open(spec(redirect.url()));read(source,64);source.close();
+   assertEquals(1,redirect.requests.get());assertEquals(1,destination.requests.get());for(String h:destination.headers)assertFalse(h.toLowerCase(Locale.ROOT).contains("cookie:"));
   }
  }
  @Test public void closeCancelsBothPendingOpens()throws Exception {
@@ -74,6 +87,13 @@ public class PodMediaHttpTest {
     long began=System.nanoTime();DataSource foreground=http.createDataSource();foreground.open(spec(fast.url()));assertEquals(64,read(foreground,64).length);foreground.close();
     assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-began)<1000);
    }finally{race.close();caller.shutdownNow();}
+  }
+ }
+
+ @Test public void httpCredentialsAreRejectedBeforeAnySocketRequest()throws Exception {
+  try(Server server=new Server(0,0,206,(byte)1);PodMediaHttp http=new PodMediaHttp()){
+   DataSource source=http.createDataSource();try{source.open(spec(server.url()).buildUpon().setHttpRequestHeaders(Map.of("Cookie","offline-fixture")).build());fail();}catch(IOException expected){assertEquals("media_credentials_origin_rejected",expected.getMessage());}finally{source.close();}
+   assertEquals(0,server.requests.get());assertEquals(0,server.connections.get());
   }
  }
 
