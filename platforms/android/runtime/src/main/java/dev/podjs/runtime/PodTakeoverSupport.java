@@ -30,7 +30,7 @@ final class PodTakeoverSupport {
     static String generation(String value){if(value.isEmpty()||value.equals("unavailable"))return "unavailable";if(value.matches("<id:[0-9]{1,3}>"))return value;return value.matches("g-(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|v[0-9]{1,6}|test|fixture)")?value:"<id:"+Math.min(value.length(),255)+">";}
     static JSONObject classes(JSONObject input)throws Exception {
         JSONObject result=new JSONObject();if(input==null)return result;
-        for(String name:Arrays.asList("asset","incomplete","refetchable","private-transfer-state","private-platform-state","private-log","private-test-state","platform-metadata","database-lock","cloud-unverified","unknown-user-content","native-transfer-checkpoint","inactive-profile-preserved"))
+        for(String name:Arrays.asList("asset","incomplete","refetchable","private-transfer-state","private-platform-state","private-log","private-test-state","platform-metadata","database-lock","cloud-unverified","unknown-user-content","unknown-store-file","native-transfer-checkpoint","inactive-profile-preserved"))
             if(input.has(name)){int count=input.getInt(name);if(count>=0)result.put(name,count);}
         return result;
     }
@@ -63,7 +63,7 @@ final class PodTakeoverSupport {
         try {
             JSONObject report=new JSONObject(new String(bytes(PodFileConverter.safe(control,"generations/"+generation+"/files-report.json"),1024*1024),StandardCharsets.UTF_8));
             String version=report.getString("version");
-            if(!Arrays.asList("watchrss-files-3","watchrss-files-4","watchrss-files-5","watchrss-files-6").contains(version))return result;
+            if(!Arrays.asList("watchrss-files-3","watchrss-files-4","watchrss-files-5","watchrss-files-6","watchrss-files-7").contains(version))return result;
             int count=report.getInt("unknownFiles");if(count<0)throw new IOException("diagnostic_count_invalid");
             JSONArray paths=new JSONArray(),source=report.getJSONArray("unknownPaths");
             for(int i=0;i<Math.min(20,source.length());i++) {
@@ -119,7 +119,7 @@ final class PodTakeoverSupport {
             .put("generation",generation(summary.optString("generation",""))).put("classes",classes(summary.optJSONObject("classes")));
         safe.put("fileCount",fileCount(safe.getJSONObject("classes")));
         String appVersion=summary.optString("appVersionName","");if(appVersion.matches("[A-Za-z0-9._+-]{1,64}"))safe.put("appVersionName",appVersion);
-        String version=summary.optString("fileConverter","");if(version.matches("watchrss-files-[3456]"))safe.put("fileConverter",version);
+        String version=summary.optString("fileConverter","");if(version.matches("watchrss-files-[34567]"))safe.put("fileConverter",version);
         String text=redactor.apply(safe.toString());Envelope envelope=encrypt(text,publicKey);
         Map<String,String> headers=new HashMap<>();headers.put("content-type","application/octet-stream");headers.put("x-log-key-envelope",envelope.key);
         headers.put("x-log-char-count",Integer.toString(text.length()));headers.put("x-log-consent-version",CONSENT);

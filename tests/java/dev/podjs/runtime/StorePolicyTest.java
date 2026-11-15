@@ -69,7 +69,9 @@ public final class StorePolicyTest {
         if(kind.equals("malformed_settings"))StoreTest.write(new File(source,"files/datastore/settings.preferences_pb"),new byte[]{1,2,3});
         Map<String,String> before=StoreTest.digests(source);
         try {
-            Properties p=coordinator(source,target,crypto,isolated).run();check(!p.getProperty("phase").equals("ACTIVE"),kind+" rejected");check(!new File(target,"active").exists(),kind+" no publication");check(before.equals(StoreTest.digests(source)),kind+" source unchanged");
+            Properties p=coordinator(source,target,crypto,isolated).run();
+            if(kind.equals("unknown")){check(p.getProperty("phase").equals("ACTIVE"),"unknown preference file silently skipped");check(before.equals(StoreTest.digests(source)),"unknown preference native bytes retained");return;}
+            check(!p.getProperty("phase").equals("ACTIVE"),kind+" rejected");check(!new File(target,"active").exists(),kind+" no publication");check(before.equals(StoreTest.digests(source)),kind+" source unchanged");
             if(kind.equals("locked")){
                 crypto.failure="missing";check(coordinator(source,target,crypto,true).run().getProperty("phase").equals("ACTIVE"),"locked retry proceeds");
             }else{
@@ -88,6 +90,6 @@ public final class StorePolicyTest {
     }
     public static void main(String[] args)throws Exception {
         isolated();accountsOnly();for(String kind:new String[]{"formal","unexpected","authentication","locked","unknown","extra_webview","malformed","backup","unknown_settings","malformed_settings"})rejection(kind);
-        System.out.println("StorePolicyTest PASS: isolated ACTIVE/restart, core data/source integrity, native account recovery, formal/unknown/schema/crypto/backup rejection and locked retry");
+        System.out.println("StorePolicyTest PASS: isolated ACTIVE/restart, core data/source integrity, native account recovery, unknown-file skip; formal/known-schema/crypto/backup rejection and locked retry");
     }
 }

@@ -49,7 +49,7 @@ final class PodStorePolicy {
     static void classify(JSONObject reports,boolean rehearsal)throws Exception {
         for(String store:PodFileConverter.names(reports)){
             JSONObject r=reports.getJSONObject(store);String status=r.getString("status"),reason=r.getString("reason"),d="blocked";
-            if(status.equals("migrated")||status.equals("absent"))d="ready";
+            if(status.equals("migrated")||status.equals("absent")||status.equals("discarded-unknown"))d="ready";
             else if(status.equals("retained-unsupported")&&((r.optInt("retainedKnownKeyCount",0)>0&&r.optInt("unknownKeyCount",0)==0&&(!r.has("unknownKeys")||r.getJSONArray("unknownKeys").length()==0))||knownRetention(store,r)))d="known-difference";
             else if(status.equals("needs-reauth")){
                 if(rehearsal&&PodStoreConverter.encrypted(store)&&reason.equals("isolated_uid_keystore_unavailable"))d="known-difference";

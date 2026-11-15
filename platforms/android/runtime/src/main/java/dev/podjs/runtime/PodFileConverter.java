@@ -52,7 +52,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
             this.packages.add(name);
         }
     }
-    public String version(){return "watchrss-files-6";}
+    public String version(){return "watchrss-files-7";}
     // A file converter alone does not constitute a publishable storage bundle.
     public boolean complete(){return false;}
     static SortedSet<String> names(JSONObject object) {
@@ -281,7 +281,7 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
         syncDirtyDirectories();
         JSONObject report=report(g);
         PodStoreConverter.json(new File(g,"files-report.json"),report);
-        if(report.getInt("unknownFiles")>0)diagnostics.accept("reason=unknown_user_files count="+report.getInt("unknownFiles")+" paths="+report.getJSONArray("unknownPaths").toString());
+        if(report.getInt("unknownFiles")>0)diagnostics.accept("unknown_files count="+report.getInt("unknownFiles")+" categories="+report.getJSONArray("unknownPaths").toString());
         hook.saved("report");
     }
     private static String referenceId(JSONObject object,String key) {
@@ -297,8 +297,8 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
     }
     private JSONObject report(File g)throws Exception {
         PodRoomV18Converter.checkGenerationStorage(g);
-        JSONObject entries=entries(g),r=new JSONObject().put("version",version()).put("blockers",new JSONArray()).put("degraded",new JSONArray()).put("derivedSync","empty-rebuild-before-export");
-        JSONObject classes=new JSONObject();JSONArray unknownPaths=new JSONArray();int unknownFiles=0,unrecognizedCache=0;
+        JSONObject entries=entries(g),r=new JSONObject().put("version",version()).put("blockers",new JSONArray()).put("degraded",new JSONArray()).put("derivedSync","empty-rebuild-before-export").put("unknownPolicy","not-imported-native-backup-retained");
+        JSONObject classes=new JSONObject();JSONArray unknownPaths=new JSONArray();SortedSet<String> unknownNames=new TreeSet<>();int unknownFiles=0,unrecognizedCache=0;
         for(String p:names(entries)) try {
             String c=classify(p);classes.put(c,classes.optInt(c)+1);
             if(p.startsWith("cache/")&&c.equals("refetchable")&&!knownCache(p))unrecognizedCache++;
@@ -313,11 +313,16 @@ public final class PodFileConverter implements PodTakeoverCoordinator.Converter 
             else if(c.equals("private-test-state"))PodPreferenceReader.protobuf(safe(new File(g,"files-source"),p));
             else if(c.equals("platform-metadata")&&entries.getJSONObject(p).getLong("size")!=8)block(r,"platform_metadata_invalid");
             else if(c.equals("unknown-user-content")) {
-                block(r,"unknown_user_files");unknownFiles++;
-                if(unknownPaths.length()<20)unknownPaths.put(redactedPath(p));
+                unknownFiles++;unknownNames.add(p);
             }
             else if(c.equals("cloud-unverified"))block(r,"cloud_cache_binding_unverified");
         }catch(Exception error){throw failure(p,error);}
+        // Preference files are inventoried by the store converter, never parsed or imported when unknown.
+        File storeSnapshot=new File(g,"stores-snapshot.json");
+        if(storeSnapshot.isFile())for(String path:names(PodStoreConverter.json(storeSnapshot).getJSONObject("entries"))) {
+            if(!PodStoreConverter.knownFile(path)){unknownFiles++;unknownNames.add(path);classes.put("unknown-store-file",classes.optInt("unknown-store-file")+1);}
+        }
+        for(String path:unknownNames){if(unknownPaths.length()==20)break;unknownPaths.put(redactedPath(path));}
         r.put("classes",classes).put("unrecognizedCacheFiles",unrecognizedCache).put("unknownFiles",unknownFiles).put("unknownPaths",unknownPaths);
         try(PodRoomV18Converter.Db refs=factory.open(new File(g,"room-progress.sqlite"))) {
             for(Map<String,Object> row:refs.query("SELECT * FROM content_reference ORDER BY item_id,kind")) {

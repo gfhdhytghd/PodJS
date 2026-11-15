@@ -220,7 +220,13 @@ public final class PodTakeover {
         }
         boolean alive(){android.app.Activity owner=activity.get();return owner!=null&&!owner.isFinishing()&&!owner.isDestroyed();}
         JSONObject currentStatus(){android.app.Activity owner=activity.get();return owner==null?new JSONObject():status(owner);}
+        static JSONObject presentation(JSONObject state) {
+            if(!"unknown_user_files".equals(state.optString("reason")))return state;
+            try{return new JSONObject(state.toString()).put("phase","CHECKING").put("progressPhase","CHECKING").put("reason","");}
+            catch(Exception invalid){return new JSONObject();}
+        }
         void show(JSONObject state){
+            state=presentation(state);
             if(finished||!alive())return;
             android.app.Activity owner=activity.get();
             if(view==null){
@@ -240,9 +246,10 @@ public final class PodTakeover {
             main.post(()->{
                 if(finished||!alive())return;
                 PodSplash splash=PodSplash.of(activity.get());
-                boolean recovery=PodSplash.isRecoveryState(state);
-                if(view!=null||recovery)show(state);
-                if(splash!=null)splash.recoveryStatus(state);
+                JSONObject visible=presentation(state);
+                boolean recovery=PodSplash.isRecoveryState(visible);
+                if(view!=null||recovery)show(visible);
+                if(splash!=null)splash.recoveryStatus(visible);
             });
         }
         void finish(boolean ready,long posted){
@@ -252,6 +259,7 @@ public final class PodTakeover {
             if(ready){finished=true;admitted.run();}
             else {
                 JSONObject halted=status(activity.get());
+                if("unknown_user_files".equals(halted.optString("reason")))try{halted.put("phase","PAUSED").put("reason","migration_admission_failed");}catch(Exception ignored){}
                 if(!"PAUSED".equals(halted.optString("phase"))&&!"BLOCKED".equals(halted.optString("phase")))try{
                     halted.put("phase","BLOCKED");if(halted.optString("reason").isEmpty())halted.put("reason","migration_admission_failed");
                 }catch(Exception ignored){}
@@ -261,7 +269,7 @@ public final class PodTakeover {
         }
         void start() {
             if(finished||!alive()||!running.compareAndSet(false,true))return;
-            if(view!=null)view.render(status(activity.get()),true);
+            if(view!=null)view.render(presentation(status(activity.get())),true);
             // Retain a bounded checking fallback for unusually slow admission.
             main.postDelayed(checking,120);main.postDelayed(refresh,200);
             Context context=activity.get().getApplicationContext();
@@ -387,7 +395,6 @@ public final class PodTakeover {
                 case "migration_storage_invalid":return "迁移目录中有异常文件";
                 case "verification_scratch_invalid":return "校验目录中有异常文件";
                 case "active_validation_failed":return "迁移后数据校验失败";
-                case "unknown_user_files":return "发现无法识别的数据";
                 case "target_conflict":return "目标位置已有数据";
                 case "store_unsupported_or_failed":return "部分设置无法迁移";
                 case "store_needs_reauth_user_confirmation":return "账号需要重新登录";
@@ -405,7 +412,6 @@ public final class PodTakeover {
                 return "已完成的部分会保留，可重试或重开应用继续。";
             }
             if(!"BLOCKED".equals(phase))return "迁移期间不会修改原数据，\n请保持应用在前台。";
-            if("unknown_user_files".equals(reason))return "原数据保留，请上传日志。\n同版重试无效。";
             if("user_locked".equals(reason))return "请先解锁手表，再重试。";
             if("space_insufficient".equals(reason))return "请清理存储空间，再重试。";
             if("store_needs_reauth_user_confirmation".equals(reason))return "原数据已保留，\n完成后请重新登录。";
@@ -413,7 +419,7 @@ public final class PodTakeover {
             return "原数据未改动，\n请上传日志，并把日志编号发给支持。";
         }
         void render(JSONObject status,boolean running) {
-            currentStatus=status;
+            status=RecoveryController.presentation(status);currentStatus=status;
             String phase=status.optString("progressPhase",status.optString("phase","CHECKING"));
             String durable=status.optString("phase",phase),reason=status.optString("reason","");int value=status.optInt("percent",0);long copied=status.optLong("copiedBytes",0);
             boolean halted="PAUSED".equals(durable)||"BLOCKED".equals(durable)||"PAUSED".equals(phase);
@@ -426,7 +432,7 @@ public final class PodTakeover {
             detail.setText(bytesLine+(reason.isEmpty()?"":(bytesLine.isEmpty()?"":"\n")+reasonLine(reason)));detail.setVisibility(detail.length()>0?VISIBLE:GONE);
             code.setText(reason);code.setVisibility(reason.isEmpty()?GONE:VISIBLE);
             next.setText(nextStep(displayPhase,reason));
-            haltedState=halted;boolean canRetry=!running&&halted;retry.setVisibility(canRetry?VISIBLE:GONE);retry.setEnabled(canRetry&&!"unknown_user_files".equals(reason));retry.setAlpha(retry.isEnabled()?1f:0.45f);
+            haltedState=halted;boolean canRetry=!running&&halted;retry.setVisibility(canRetry?VISIBLE:GONE);retry.setEnabled(canRetry);retry.setAlpha(retry.isEnabled()?1f:0.45f);
             support.setVisibility(!running&&halted?VISIBLE:GONE);support.setEnabled(!running&&halted);requestLayout();
             setContentDescription(title.getText()+" "+value+"%");
         }

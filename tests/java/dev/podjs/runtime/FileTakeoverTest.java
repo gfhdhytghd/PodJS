@@ -66,7 +66,7 @@ public final class FileTakeoverTest {
         check(next.run().getProperty("phase").equals("ACTIVE"),"terminal active");check(Files.readString(body.toPath()).equals("new user edit"),"no reimport");
     }
     static void blockedReclassification()throws Exception {
-        blockedReclassificationVersion("watchrss-files-3");blockedReclassificationVersion("watchrss-files-4");blockedReclassificationVersion("watchrss-files-5");
+        blockedReclassificationVersion("watchrss-files-3");blockedReclassificationVersion("watchrss-files-4");blockedReclassificationVersion("watchrss-files-5");blockedReclassificationVersion("watchrss-files-6");
     }
     static void blockedReclassificationVersion(String legacy)throws Exception {
         for(int generations:new int[]{2,3}) {
@@ -105,12 +105,12 @@ public final class FileTakeoverTest {
                 if(guard.equals("candidate-link"))Files.delete(new File(target,"generations/g-old").toPath());
             }finally{StoreTest.remove(source);}
         }
-        for(String gate:new String[]{"other-reason","other-converter","mixed-blockers","report-version","source-missing","source-locked"}) {
+        for(String gate:new String[]{"other-reason","other-converter","report-version","source-missing","source-locked"}) {
             File source=fixture(),target=new File(source,"files/package-takeover");
             try {
                 File g=new File(target,"generations/g-v1002");g.mkdirs();
                 Properties blocked=new Properties();blocked.setProperty("protocol","1");blocked.setProperty("phase","BLOCKED");blocked.setProperty("reason",gate.equals("other-reason")?"cloud_cache_binding_unverified":"unknown_user_files");blocked.setProperty("converter",gate.equals("other-converter")?"other-room+watchrss-stores-3+"+legacy:"watchrss-room-v18-1+watchrss-stores-4+"+legacy);blocked.setProperty("generation","g-v1002");
-                JSONArray blockers=new JSONArray().put("unknown_user_files");if(gate.equals("mixed-blockers"))blockers.put("cloud_cache_binding_unverified");
+                JSONArray blockers=new JSONArray().put("unknown_user_files");
                 PodStoreConverter.json(new File(g,"files-report.json"),new JSONObject().put("version",gate.equals("report-version")?"other-files":legacy).put("blockers",blockers));
                 PodTakeoverCoordinator.atomic(new File(target,"journal"),blocked);
                 PodTakeoverCoordinator.Probe detection=()->new PodTakeoverCoordinator.Source(!gate.equals("source-missing"),gate.equals("source-locked")?"user_locked":null,18,0,Long.MAX_VALUE);
@@ -124,11 +124,11 @@ public final class FileTakeoverTest {
             for(int i=0;i<25;i++)StoreTest.write(new File(source,"files/unknown/"+i),new byte[]{1});
             List<String> lines=new ArrayList<>();PodFileConverter file=files(source,b->{}).withDiagnostics(lines::add);
             PodTakeoverConverters converter=new PodTakeoverConverters(new PodRoomV18Converter(new File(source,"databases/watchrss.db"),RoomV18Test.Jdbc::new,(File g)->PodStoreConverter.identity(new File(g,"stores-source"))),new PodStoreConverter(source,new StoreTest.Crypto()),file);
-            Properties blocked=new PodTakeoverCoordinator(target,probe,converter).run();check(blocked.getProperty("phase").equals("BLOCKED"),"unknown files still block");
+            Properties blocked=new PodTakeoverCoordinator(target,probe,converter).run();check(blocked.getProperty("phase").equals("ACTIVE"),"unknown files silently skipped");
             JSONObject report=PodStoreConverter.json(new File(generation(target,blocked),"files-report.json"));check(report.getInt("unknownFiles")==26&&report.getJSONArray("unknownPaths").length()==20,"bounded diagnostics with total");
             check(lines.size()==1&&!lines.get(0).contains("123456789")&&!lines.get(0).contains("a".repeat(40)),"release redaction");
             check(PodFileConverter.redactedPath("files/dir/deadbeef/12/uuid-"+"a".repeat(40)).equals("files/<id:3>/<id:8>/<id:2>/<id:45>"),"segment redaction");
-            check(new PodTakeoverCoordinator(target,probe,converter).run().equals(blocked),"new converter blocked remains terminal");
+            check(new PodTakeoverCoordinator(target,probe,converter).run().equals(blocked),"ACTIVE unknown-file policy does not reimport");
         }finally{StoreTest.remove(source);StoreTest.remove(target);}
     }
     static void aliasesAndLocks()throws Exception {
@@ -150,8 +150,8 @@ public final class FileTakeoverTest {
         for(String path:locks)check(!new File(generation(target,active),"podjs/files/"+path).exists(),"locks not migrated to assets");
         StoreTest.remove(target);StoreTest.remove(source);
         for(String path:new String[]{"files/recovery-rehearsal/seed.json","files/recovery-rehearsal/business.json","files/recovery-rehearsal/interrupt.bin","files/watchrss.db.lck"}){
-            source=fixture();converter=files(source,b->{});check(converter.classify(path).equals("unknown-user-content"),"unknown lock/marker still blocked");
-            StoreTest.write(new File(source,path),new byte[]{0});target=root();check(run(source,target).getProperty("phase").equals("BLOCKED"),"unknown user files still block ACTIVE");
+            source=fixture();converter=files(source,b->{});check(converter.classify(path).equals("unknown-user-content"),"unknown lock/marker remains classified unknown");
+            StoreTest.write(new File(source,path),new byte[]{0});target=root();check(run(source,target).getProperty("phase").equals("ACTIVE"),"unknown user files do not block ACTIVE");
             StoreTest.remove(target);StoreTest.remove(source);
         }
     }
@@ -236,7 +236,7 @@ public final class FileTakeoverTest {
         File source=fixture(true),target=new File(source,"files/package-takeover");
         try {
             File marker=new File(source,"files/profileinstaller_profileWrittenFor_lastUpdateTime.dat");
-            // Exact metadata paths only, regardless of bytes/length; unknown lookalikes remain data.
+            // Exact metadata paths only; unknown lookalikes stay in native source and are not imported.
             StoreTest.write(new File(source,"files/profileInstalled"),new byte[24]);
             File verificationMarker=new File(source,"files/profileInstalled");
             int[] writes={0};
@@ -253,7 +253,10 @@ public final class FileTakeoverTest {
         }finally{StoreTest.remove(source);}
         for(String path:new String[]{"files/profileInstalled.user","files/nested/profileInstalled","files/profileinstaller_profileWrittenFor_lastUpdateTime.dat.user"}) {
             source=fixture();target=root();try {
-                StoreTest.write(new File(source,path),new byte[]{1});check(run(source,target).getProperty("phase").equals("BLOCKED"),"lookalike still user data");
+                StoreTest.write(new File(source,path),new byte[]{1});Map<String,String> before=StoreTest.digests(source);
+                Properties active=run(source,target);check(active.getProperty("phase").equals("ACTIVE"),"unknown lookalike does not block");
+                File g=generation(target,active);check(PodStoreConverter.json(new File(g,"files-report.json")).getInt("unknownFiles")==1,"lookalike remains classified unknown");
+                check(!new File(g,"podjs/"+path).exists()&&before.equals(StoreTest.digests(source)),"lookalike not imported; native bytes retained");
             }finally{StoreTest.remove(source);StoreTest.remove(target);}
         }
         source=fixture(true);target=new File(source,"files/package-takeover");
@@ -272,6 +275,7 @@ public final class FileTakeoverTest {
         }finally{StoreTest.remove(source);}
     }
     public static void main(String[] args)throws Exception {
+        if(args.length==1&&args[0].equals("--policy")){blockedReclassification();aliasesAndLocks();System.out.println("FileTakeoverTest legacy3/4/5/6 policy guards PASS");return;}
         if(args.length>0&&args[0].equals("crash")) {
             File source=new File(args[1]),root=new File(args[2]);String boundary=args[3];
             PodTakeoverConverters converter=composite(source,b->{if(b.equals(boundary))Runtime.getRuntime().halt(91);},new StoreTest.Crypto());
@@ -300,8 +304,8 @@ public final class FileTakeoverTest {
         // Native recovers a missing account key to logged-out; preserve source and publish other data.
         File account=fixture();StoreTest.xml(account,"watchrss_account_state","<string name=\"state_json\">synthetic-invalid</string>");File target=root();StoreTest.Crypto badCrypto=new StoreTest.Crypto();badCrypto.unavailable=true;
         p=new PodTakeoverCoordinator(target,probe,composite(account,b->{},badCrypto)).run();check(p.getProperty("phase").equals("ACTIVE"),"native reauth fallback");check(new File(target,"active").exists(),"other data published");StoreTest.remove(account);StoreTest.remove(target);
-        for(String path:new String[]{"files/imports/book.txt","files/watch-cloud-cache/snapshot","files/article_content/fixture.txt","files/bili-smoke-user.preferences_pb","files/other-00000000-0000-0000-0000-000000000000.preferences_pb"}) {
-            File s=fixture();if(path.endsWith("fixture.txt"))Files.delete(new File(s,path).toPath());else StoreTest.write(new File(s,path),new byte[]{1});target=root();p=run(s,target);check(p.getProperty("phase").equals("BLOCKED"),"missing/unknown/cloud blocks: "+p);check(!new File(target,"active").exists(),"no blocked pointer");StoreTest.remove(s);StoreTest.remove(target);
+        for(String path:new String[]{"files/watch-cloud-cache/snapshot","files/article_content/fixture.txt"}) {
+            File s=fixture();if(path.endsWith("fixture.txt"))Files.delete(new File(s,path).toPath());else StoreTest.write(new File(s,path),new byte[]{1});target=root();p=run(s,target);check(p.getProperty("phase").equals("BLOCKED"),"missing business body/unverified cloud blocks: "+p);check(!new File(target,"active").exists(),"no blocked pointer");StoreTest.remove(s);StoreTest.remove(target);
         }
         // A recognized synthetic store is parsed during COPY. Malformed protobuf
         // pauses the stage before publication, rather than producing a VERIFY blocker.

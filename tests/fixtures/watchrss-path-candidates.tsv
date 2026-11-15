@@ -59,9 +59,9 @@ store	files/datastore/settings.preferences_pb	settings
 store	files/datastore/settings.preferences_pb.preferences_pb	settings
 store	files/datastore/bili_cache.preferences_pb	bili_cache
 store	files/datastore/bili_cache.preferences_pb.preferences_pb	bili_cache
-store	files/datastore/unknown.preferences_pb	blocked
-store	shared_prefs/com.google.firebase.xml	blocked
-store	shared_prefs/vendor_sdk.xml	blocked
+store	files/datastore/unknown.preferences_pb	ready
+store	shared_prefs/com.google.firebase.xml	ready
+store	shared_prefs/vendor_sdk.xml	ready
 store	shared_prefs/WebViewChromiumPrefs.xml	known-difference
 room	databases/watchrss.db	room
 room	databases/watchrss.db-wal	room
@@ -74,3 +74,5 @@ backup	no_backup/com.google.android.gms.appid-no-backup	private
 backup	databases/accounts/hash/watchrss.db	private
 outside	app_webview/Default/Cookies	unclaimed
 outside	app_webview/Default/Local Storage/leveldb/1.ldb	unclaimed
+store	files/datastore/vendor/settings.preferences_pb	ready
+store	shared_prefs/vendor/watchrss_push.xml	ready

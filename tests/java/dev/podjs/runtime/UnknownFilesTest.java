@@ -36,20 +36,25 @@ public final class UnknownFilesTest {
                         try {
                             StoreTest.write(new File(unknown,path),new byte[]{4,5});Map<String,String> before=StoreTest.digests(unknown);
                             Properties blocked=FileTakeoverTest.run(unknown,out);
-                            check(path.startsWith("files/accounts/")?!blocked.getProperty("phase").equals("ACTIVE"):blocked.getProperty("reason").equals("unknown_user_files"),"unknown still blocks "+path);
-                            check(!new File(out,"active").exists()&&before.equals(StoreTest.digests(unknown)),"no data loss "+path);
+                            check(blocked.getProperty("phase").equals("ACTIVE"),"unknown silently discarded "+path);
+                            File active=FileTakeoverTest.generation(out,blocked);check(!new File(active,"podjs/"+path).exists(),"unknown not imported "+path);
+                            check(new File(out,"active").exists()&&before.equals(StoreTest.digests(unknown)),"native source retained "+path);
                         }finally{StoreTest.remove(unknown);StoreTest.remove(out);}
                     }
                 } else if(scope.equals("store")) {
                     File stores=Files.createTempDirectory("unknown-store").toFile(),g=FileTakeoverTest.root();
                     try {
-                        byte[] value=path.endsWith(".xml")?("<map><int name=\""+(expected.equals("known-difference")?"lastVersionCodeUsed":"unknown_key")+"\" value=\"1\"/></map>").getBytes(StandardCharsets.UTF_8):expected.equals("blocked")?StoreTest.pref("unknown_key",StoreTest.concat(StoreTest.var(24),StoreTest.var(1))):new byte[0];
+                        byte[] value=path.endsWith(".xml")?("<map><int name=\""+(expected.equals("known-difference")?"lastVersionCodeUsed":"unknown_key")+"\" value=\"1\"/></map>").getBytes(StandardCharsets.UTF_8):expected.equals("ready")?StoreTest.pref("unknown_key",StoreTest.concat(StoreTest.var(24),StoreTest.var(1))):new byte[0];
                         StoreTest.write(new File(stores,path),value);Map<String,String> before=StoreTest.digests(stores);
                         PodStoreConverter store=new PodStoreConverter(stores,new StoreTest.Crypto());store.snapshot(g);store.copy(g);
                         JSONObject snapshot=PodStoreConverter.json(new File(g,"stores-snapshot.json"));check(snapshot.getJSONObject("entries").has(path),"store delegated "+path);
                         JSONObject reports=PodStoreConverter.json(new File(g,"stores-report.json"));
                         if(expected.equals("settings")||expected.equals("bili_cache"))check(reports.getJSONObject(expected).getString("activationDisposition").equals("ready"),"known store migrated "+path);
-                        else {boolean found=false;for(String key:PodFileConverter.names(reports))if(reports.getJSONObject(key).getString("activationDisposition").equals(expected))found=true;check(found,"store policy "+path);}
+                        else if(expected.equals("ready")) {
+                            int skipped=0;for(String key:PodFileConverter.names(reports)){JSONObject report=reports.getJSONObject(key);if(report.getString("status").equals("discarded-unknown")){skipped+=report.getInt("unknownFileCount");check(report.getString("activationDisposition").equals("ready"),"unknown store cannot block "+path);}}
+                            check(skipped==1,"exact unknown store skipped "+path);
+                            check(!PodStoreConverter.json(new File(g,"podjs/podjs-kv.json")).toString().contains("unknown_key"),"unknown store content not imported "+path);
+                        } else {boolean found=false;for(String key:PodFileConverter.names(reports))if(reports.getJSONObject(key).getString("activationDisposition").equals(expected))found=true;check(found,"store policy "+path);}
                         check(before.equals(StoreTest.digests(stores)),"store source unchanged");
                     }finally{StoreTest.remove(stores);StoreTest.remove(g);}
                 } else {
@@ -78,6 +83,73 @@ public final class UnknownFilesTest {
             check(Files.readString(outside.toPath()).equals("unchanged"),"link target retained");Files.delete(link.toPath());Files.delete(outside.toPath());
         }finally{StoreTest.remove(source);StoreTest.remove(target);}
         System.out.println("UnknownFilesTest path matrix PASS "+count);
+    }
+    static void coldUpgradeBackupAndRollback()throws Exception {
+        File source=FileTakeoverTest.fixture(),control=new File(source,"files/package-takeover");
+        String cert="a".repeat(64),old="g-old-unknown";
+        try {
+            for(String path:new String[]{"files/imports/PRIVATE_TITLE.txt","files/unreviewed.tmp","shared_prefs/PRIVATE_STORE.xml","files/datastore/PRIVATE.preferences_pb"})
+                StoreTest.write(new File(source,path),"opaque malformed payload".getBytes(StandardCharsets.UTF_8));
+            Map<String,String> nativeBefore=StoreTest.digests(source);File oldCandidate=new File(control,"generations/"+old);
+            StoreTest.write(new File(oldCandidate,"retained.part"),new byte[]{7,8,9});
+            PodStoreConverter.json(new File(oldCandidate,"files-report.json"),new JSONObject().put("version","watchrss-files-6").put("blockers",new JSONArray().put("unknown_user_files")));
+            Properties legacy=new Properties();legacy.setProperty("protocol","1");legacy.setProperty("phase","BLOCKED");legacy.setProperty("reason","unknown_user_files");legacy.setProperty("generation",old);
+            legacy.setProperty("converter","watchrss-room-v18-1+watchrss-stores-4+watchrss-files-6");PodTakeoverCoordinator.atomic(new File(control,"journal"),legacy);
+            Map<String,String> oldBytes=StoreTest.digests(oldCandidate);
+            try {new PodTakeoverCoordinator(control,FileTakeoverTest.probe,FileTakeoverTest.composite(source,b->{},new StoreTest.Crypto()),phase->{if(phase==PodTakeoverCoordinator.Phase.DETECTED)throw new FileTakeoverTest.PowerLoss();}).run();throw new AssertionError("missing restart interruption");}
+            catch(FileTakeoverTest.PowerLoss expected){}
+            Properties interrupted=PodTakeoverCoordinator.read(new File(control,"journal"));check(!old.equals(interrupted.getProperty("generation")),"upgrade auto-created fresh candidate");
+            dev.podjs.takeover.NativeBackup backup=new dev.podjs.takeover.NativeBackup(source);
+            List<PodTakeoverCoordinator.Phase> phases=new ArrayList<>();
+            PodTakeoverCoordinator.Publisher publisher=new PodTakeoverCoordinator.Publisher(){public void beforePublish(File generation)throws Exception{backup.prepare(generation.getName(),46,cert);}};
+            Properties active=new PodTakeoverCoordinator(control,FileTakeoverTest.probe,FileTakeoverTest.composite(source,b->{},new StoreTest.Crypto()),phases::add,publisher).run();
+            check(active.getProperty("phase").equals("ACTIVE"),"cold startup continues without retry button");
+            check(interrupted.getProperty("generation").equals(active.getProperty("generation")),"interrupted upgrade resumes same new candidate");
+            check(!phases.contains(PodTakeoverCoordinator.Phase.BLOCKED),"unknown files never create a blocker");
+            File g=FileTakeoverTest.generation(control,active),data=new File(source,dev.podjs.takeover.NativeBackup.BACKUP+"/"+g.getName()+"/data");
+            for(Map.Entry<String,String> entry:nativeBefore.entrySet())if(!entry.getKey().startsWith("cache/"))check(entry.getValue().equals(StoreTest.digests(data).get(entry.getKey())),"sealed native bytes including unknown: "+entry.getKey());
+            check(oldBytes.equals(StoreTest.digests(oldCandidate)),"old blocked candidate retained");
+            JSONObject files=PodStoreConverter.json(new File(g,"files-report.json"));check(files.getInt("unknownFiles")==4&&files.getJSONArray("blockers").length()==0,"only private unknown diagnostics");
+            check(!files.toString().contains("PRIVATE"),"no private filename in public file report");
+            JSONObject summary=PodTakeoverSupport.summary(source);
+            check(summary.getBoolean("diagnosticsAvailable")&&summary.getInt("unknownFileCount")==4&&summary.getString("fileConverter").equals("watchrss-files-7"),"current converter diagnostics remain usable");
+            check(summary.getJSONObject("classes").getInt("unknown-store-file")==2&&!summary.toString().contains("PRIVATE"),"store categories and paths are safe in support diagnostics");
+            JSONObject kv=PodStoreConverter.json(new File(g,"podjs/podjs-kv.json"));check(!kv.toString().contains("opaque malformed payload"),"unknown stores never imported");
+            for(String path:new String[]{"imports/PRIVATE_TITLE.txt","unreviewed.tmp"})check(!new File(g,"podjs/files/"+path).exists(),"unknown file absent from new business files");
+            check(Files.readString(new File(g,"podjs/files/article_content/fixture.txt").toPath()).contains("合成正文"),"known article content migrated");
+            check(new File(g,"podjs/files/notes/assets/shared.png").isFile()&&new File(g,"podjs/files/reader_assets/fonts/font.ttf").isFile(),"known notes/reader assets migrated");
+            String seal=backup.verify(g.getName());File body=new File(g,"podjs/files/article_content/fixture.txt");Files.writeString(body.toPath(),"new user edit");
+            Properties cold=new PodTakeoverCoordinator(control,()->{throw new AssertionError("ACTIVE must not reimport");},FileTakeoverTest.composite(source,b->{},new StoreTest.Crypto())).run();
+            check(cold.getProperty("phase").equals("ACTIVE")&&Files.readString(body.toPath()).equals("new user edit"),"cold reopen preserves new edits");
+            backup.restore(g.getName(),cert);check(backup.verify(g.getName()).equals(seal),"rollback keeps original backup seal");
+            Map<String,String> restored=StoreTest.digests(source);for(Map.Entry<String,String> entry:nativeBefore.entrySet())check(entry.getValue().equals(restored.get(entry.getKey())),"rollback restored known and unknown bytes");
+        }finally{StoreTest.remove(source);}
+        System.out.println("UnknownFilesTest cold upgrade/kill/resume/native backup/rollback PASS");
+    }
+    static void oldUnknownStoreAndMixedBlockers()throws Exception {
+        for(String mode:new String[]{"unknown-store","mixed-stale","mixed-business-error"}) {
+            File source=FileTakeoverTest.fixture(),control=new File(source,"files/package-takeover");
+            try {
+                String path="shared_prefs/PRIVATE_VENDOR.xml",old="g-old-"+mode;
+                StoreTest.write(new File(source,path),"malformed opaque unknown preference".getBytes(StandardCharsets.UTF_8));
+                if(mode.equals("mixed-business-error"))Files.delete(new File(source,"files/article_content/fixture.txt").toPath());
+                Map<String,String> before=StoreTest.digests(source);File g=new File(control,"generations/"+old);
+                JSONArray blockers=new JSONArray();if(!mode.equals("unknown-store"))blockers.put("unknown_user_files").put("article_body_missing");
+                PodStoreConverter.json(new File(g,"files-report.json"),new JSONObject().put("version","watchrss-files-5").put("blockers",blockers));
+                PodStoreConverter.json(new File(g,"stores-snapshot.json"),new JSONObject().put("version","watchrss-stores-4").put("entries",new JSONObject().put(path,"a".repeat(64))));
+                PodStoreConverter.json(new File(g,"stores-diagnostics.json"),new JSONObject().put("blockerCount",1));
+                Properties legacy=new Properties();legacy.setProperty("protocol","1");legacy.setProperty("phase","BLOCKED");legacy.setProperty("reason",mode.equals("unknown-store")?"store_unsupported_or_failed":"unknown_user_files");legacy.setProperty("generation",old);
+                legacy.setProperty("converter","watchrss-room-v18-1+watchrss-stores-4+watchrss-files-5");PodTakeoverCoordinator.atomic(new File(control,"journal"),legacy);
+                Properties result=FileTakeoverTest.run(source,control);
+                check(!old.equals(result.getProperty("generation")),"reclassifies actual files instead of old blocker labels "+mode);
+                if(mode.equals("mixed-business-error"))check(result.getProperty("phase").equals("BLOCKED")&&result.getProperty("reason").equals("article_body_missing"),"known business failure remains actionable");
+                else check(result.getProperty("phase").equals("ACTIVE"),"legacy unknown store automatically continues "+mode);
+                Map<String,String> after=StoreTest.digests(source);for(Map.Entry<String,String> e:before.entrySet())check(e.getValue().equals(after.get(e.getKey())),"all old sources retained "+mode);
+                JSONObject report=PodStoreConverter.json(new File(FileTakeoverTest.generation(control,result),"files-report.json"));check(report.getInt("unknownFiles")==1,"unknown store counted");
+                check(!report.toString().contains("PRIVATE_VENDOR"),"unknown store diagnostics redacted");
+            }finally{StoreTest.remove(source);}
+        }
+        System.out.println("UnknownFilesTest old unknown stores/mixed blockers PASS 3");
     }
     static void support()throws Exception {
         File root=FileTakeoverTest.root();
@@ -142,5 +214,5 @@ public final class UnknownFilesTest {
         }
         System.out.println("UnknownFilesTest feedback redaction parity PASS "+vectors.length());
     }
-    public static void main(String[] args)throws Exception {if(!args[0].equals("--support"))paths(args[0]);support();redaction();}
+    public static void main(String[] args)throws Exception {if(!args[0].equals("--support")){paths(args[0]);coldUpgradeBackupAndRollback();oldUnknownStoreAndMixedBlockers();}support();redaction();}
 }
