@@ -32,7 +32,7 @@ public class PodVideoSwipeGhostTest {
   texture.setLayoutParams(new FrameLayout.LayoutParams(466,466));texture.layout(0,0,466,466);field(t,"videoView").set(old,texture);parent.addView(texture);
   try{
    for(int sign:new int[]{-1,1})for(int i=0;i<=20;i++){
-    JSONObject bounds=new JSONObject().put("width",233).put("height",233).put("translateY",sign*233*i/20d);Reply r=new Reply();service.dispatch("video.session.setBounds",new JSONObject().put("sessionId","old").put("bounds",bounds),r);assertNull(r.error);assertEquals("no raw snapshot at progress "+i,0,readbacks[0]);
+    JSONObject bounds=new JSONObject().put("width",233).put("height",233).put("roundClip",new JSONObject().put("cx",116.5).put("cy",116.5).put("radius",116.5)).put("translateY",sign*233*i/20d);Reply r=new Reply();service.dispatch("video.session.setBounds",new JSONObject().put("sessionId","old").put("bounds",bounds),r);assertNull(r.error);assertEquals("no raw snapshot at progress "+i,0,readbacks[0]);
     for(int j=0;j<parent.getChildCount();j++)assertFalse("no stationary image behind the translated page",parent.getChildAt(j) instanceof ImageView);
    }
    View black=(View)field(t,"background").get(old);
@@ -49,7 +49,7 @@ public class PodVideoSwipeGhostTest {
  @Test public void selectedCachedPageKeepsUniformPixelScaleAtEveryDragSample()throws Exception{
   Context c=ApplicationProvider.getApplicationContext();FrameLayout parent=new FrameLayout(c);PodVideoSessionServices service=new PodVideoSessionServices(c,new PodVideoDecoderBudget(3));service.attachToParent(parent);Shadows.shadowOf(Looper.getMainLooper()).idle();
   Class<?> t=Class.forName("dev.podjs.runtime.PodVideoSessionServices$Session");Constructor<?> ctor=t.getDeclaredConstructor(PodVideoSessionServices.class,String.class);ctor.setAccessible(true);
-  @SuppressWarnings("unchecked") Map<String,Object> slots=(Map<String,Object>)field(PodVideoSessionServices.class,"sessions").get(service);JSONObject bounds=new JSONObject().put("width",233).put("height",233);
+  @SuppressWarnings("unchecked") Map<String,Object> slots=(Map<String,Object>)field(PodVideoSessionServices.class,"sessions").get(service);JSONObject bounds=new JSONObject().put("width",233).put("height",233).put("roundClip",new JSONObject().put("cx",116.5).put("cy",116.5).put("radius",116.5));
   try{
    for(String id:new String[]{"old","next","other"}){
     Object slot=ctor.newInstance(service,id);slots.put(id,slot);ExoPlayer player=new ExoPlayer.Builder(c).build();field(t,"player").set(slot,player);field(t,"audioPolicy").set(slot,new PodMediaAudioPolicy(c,player));field(t,"hasRenderedFirstFrame").setBoolean(slot,id.equals("old"));field(t,"hasUpdatedFrame").setBoolean(slot,id.equals("old"));field(t,"prewarming").setBoolean(slot,!id.equals("old"));Reply r=new Reply();service.dispatch("video.session.setBounds",new JSONObject().put("sessionId",id).put("bounds",bounds),r);assertNull(r.error);
@@ -60,6 +60,7 @@ public class PodVideoSwipeGhostTest {
     service.dispatch("video.session.setTransform",new JSONObject().put("sessionId","next").put("scaleMode",mode).put("rotationDeg",angle),new Reply());
     for(String direction:new String[]{"up","down"})for(int i=0;i<=20;i++){
      Reply r=new Reply();service.dispatch("video.session.transition",new JSONObject().put("fromSessionId","old").put("toSessionId","next").put("direction",direction).put("progress",i/20d).put("bounds",bounds),r);assertNull(r.error);
+     assertTrue("cached page keeps the native circular clip",picture.getClipToOutline());assertSame(((View)field(t,"videoView").get(next)).getOutlineProvider(),picture.getOutlineProvider());
      float[] axes={0,0,1,0,0,1};picture.getImageMatrix().mapPoints(axes);double sx=Math.hypot(axes[2]-axes[0],axes[3]-axes[1]),sy=Math.hypot(axes[4]-axes[0],axes[5]-axes[1]);assertEquals("decoded pixels keep equal x/y scale",sx,sy,.001);
      Method hide=t.getDeclaredMethod("hideOffscreen");hide.setAccessible(true);hide.invoke(slots.get("other"));
      View third=(View)field(t,"videoView").get(slots.get("other"));assertNotEquals("late standby callback cannot expose a third page",View.VISIBLE,third.getVisibility());assertTrue(parent.indexOfChild(picture)>parent.indexOfChild(third));int images=0;for(int j=0;j<parent.getChildCount();j++)if(parent.getChildAt(j) instanceof ImageView)images++;assertEquals(1,images);
