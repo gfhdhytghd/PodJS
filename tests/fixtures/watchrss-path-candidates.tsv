@@ -76,3 +76,9 @@ outside	app_webview/Default/Cookies	unclaimed
 outside	app_webview/Default/Local Storage/leveldb/1.ldb	unclaimed
 store	files/datastore/vendor/settings.preferences_pb	ready
 store	shared_prefs/vendor/watchrss_push.xml	ready
+store	shared_prefs/read_aloud_secure_prefs.xml	known-difference
+store	shared_prefs/read_aloud_secure_prefs.xml.bak	known-difference
+store	shared_prefs/account_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_read_aloud_secure_prefs.xml	ready
+store	shared_prefs/vendor/read_aloud_secure_prefs.xml	ready
+store	shared_prefs/read_aloud_secure_prefs.xml.user	ready
+file	files/read_aloud_secure_prefs.xml	unknown-user-content

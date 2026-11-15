@@ -15,7 +15,7 @@ final class PodTakeoverConverters implements PodTakeoverCoordinator.Converter {
         if(!previous.startsWith(prefix))return false;
         String[] old=previous.substring(prefix.length()).split("\\+",-1);
         if(old.length!=2||!java.util.Arrays.asList("watchrss-stores-3","watchrss-stores-4","watchrss-stores-5").contains(old[0].replace("-isolated",""))||
-           !java.util.Arrays.asList("watchrss-files-3","watchrss-files-4","watchrss-files-5","watchrss-files-6").contains(old[1]))return false;
+           !java.util.Arrays.asList("watchrss-files-3","watchrss-files-4","watchrss-files-5","watchrss-files-6","watchrss-files-7").contains(old[1]))return false;
         if(old[0].endsWith("-isolated")&&!stores.version().endsWith("-isolated"))return false;
         // Preserve the released store-upgrade recovery path, without bypassing publication evidence.
         if(old[0].equals("watchrss-stores-3")&&old[1].equals("watchrss-files-4")) {
@@ -26,7 +26,7 @@ final class PodTakeoverConverters implements PodTakeoverCoordinator.Converter {
         if(!old[0].equals(stores.version())&&snapshot.isFile()&&diagnostics.isFile()&&PodStoreConverter.json(diagnostics).optInt("blockerCount")>0) {
             org.json.JSONObject captured=PodStoreConverter.json(snapshot);
             if(old[0].equals(captured.optString("version")))for(String path:PodFileConverter.names(captured.getJSONObject("entries")))
-                if(!PodStoreConverter.knownFile(path))return true;
+                if(!PodStoreConverter.knownFile(path)||PodStoreConverter.retainedKnownFile(path))return true;
         }
         org.json.JSONObject report=PodStoreConverter.json(PodFileConverter.safe(g,"files-report.json"));
         if(!old[1].equals(report.getString("version")))return false;

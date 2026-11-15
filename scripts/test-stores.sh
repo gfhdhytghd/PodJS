@@ -10,7 +10,13 @@ cp="$work:$json:$sqlite:$slf4j:platforms/android/runtime/src/main/resources"
 # SecureStoreLimits folds constants from SecureStoreCipher; resolve that source against android.jar and emit its classes.
 sdk=${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}
 javac -cp "$cp:$sdk/platforms/android-36/android.jar" -sourcepath platforms/android/runtime/src/main/java -implicit:class -d "$work" platforms/android/runtime/src/main/java/dev/podjs/runtime/SecureStoreLimits.java
-javac -cp "$cp" -d "$work" platforms/android/runtime/src/main/java/dev/podjs/takeover/NativeBackup.java platforms/android/runtime/src/main/java/dev/podjs/takeover/TakeoverDigest.java platforms/android/runtime/src/main/java/dev/podjs/runtime/{PodActiveValidation,PodTakeoverSource,PodTakeoverAdmission,PodInactiveGenerationCollector,PodTakeoverCoordinator,PodRoomV18Converter,PodTakeoverConverters,PodFileConverter,PodPreferenceReader,PodStoreConverter,PodTakeoverProfile,PodStoreMappings,PodNativeResume,PodStorePolicy,PodTakeoverSupport,PodFeedbackLogRedactor}.java tests/java/dev/podjs/runtime/{StoreTest,NativeResumeTest,RoomV18Test,StoreRoomTest,FileTakeoverTest,CanonicalTakeoverTest,StorePolicyTest,UnknownFilesTest}.java
+javac -cp "$cp" -d "$work" platforms/android/runtime/src/main/java/dev/podjs/takeover/NativeBackup.java platforms/android/runtime/src/main/java/dev/podjs/takeover/TakeoverDigest.java platforms/android/runtime/src/main/java/dev/podjs/runtime/{PodActiveValidation,PodTakeoverSource,PodTakeoverAdmission,PodInactiveGenerationCollector,PodTakeoverCoordinator,PodRoomV18Converter,PodTakeoverConverters,PodFileConverter,PodPreferenceReader,PodStoreConverter,PodTakeoverProfile,PodStoreMappings,PodNativeResume,PodStorePolicy,PodTakeoverSupport,PodFeedbackLogRedactor}.java tests/java/dev/podjs/runtime/{StoreTest,NativeResumeTest,RoomV18Test,StoreRoomTest,FileTakeoverTest,CanonicalTakeoverTest,StorePolicyTest,UnknownFilesTest,ReviewTakeoverProbe}.java
+if [[ "${1:-}" == --review ]]; then
+  java -ea -cp "$cp" dev.podjs.runtime.ReviewTakeoverProbe
+  java -ea -cp "$cp" dev.podjs.runtime.UnknownFilesTest tests/fixtures/watchrss-path-candidates.tsv
+  java -ea -cp "$cp" dev.podjs.runtime.StorePolicyTest
+  exit
+fi
 if [[ "${1:-}" == --policy ]]; then
   java -ea -cp "$cp" dev.podjs.runtime.UnknownFilesTest tests/fixtures/watchrss-path-candidates.tsv
   java -ea -cp "$cp" dev.podjs.runtime.FileTakeoverTest --policy

@@ -154,11 +154,12 @@ public final class UnknownFilesTest {
     static void support()throws Exception {
         File root=FileTakeoverTest.root();
         try {
-            File control=new File(root,"files/package-takeover");Files.createDirectories(control.toPath());Properties journal=new Properties();journal.setProperty("generation","g-test");journal.setProperty("reason","unknown_user_files");PodTakeoverCoordinator.atomic(new File(control,"journal"),journal);
+            File control=new File(root,"files/package-takeover");Files.createDirectories(control.toPath());Properties journal=new Properties();journal.setProperty("generation","g-test");journal.setProperty("reason","article_body_missing");PodTakeoverCoordinator.atomic(new File(control,"journal"),journal);
             JSONObject raw=new JSONObject().put("version","watchrss-files-4").put("unknownFiles",24).put("unknownPaths",new JSONArray().put("files/alice/token-BearerSecret123/title.txt")).put("classes",new JSONObject().put("unknown-user-content",24).put("alice-secret",9)).put("secret","do-not-upload").put("degraded",new JSONArray().put("private-data"));
             PodStoreConverter.json(new File(control,"generations/g-test/files-report.json"),raw);
             Map<String,String> before=StoreTest.digests(root);JSONObject summary=PodTakeoverSupport.summary(root);
             check(summary.getString("generation").equals("g-test")&&summary.getJSONObject("classes").getInt("unknown-user-content")==24,"generation and safe classes");
+            check(summary.getString("reason").equals("article_body_missing"),"fixed business reason retained in summary");
             check(summary.getInt("unknownFileCount")==24&&summary.getBoolean("pathsTruncated"),"count and truncation");
             for(String secret:new String[]{"alice","BearerSecret","title.txt","do-not-upload","private-data"})check(!summary.toString().contains(secret),"closed projection "+secret);
             check(before.equals(StoreTest.digests(root)),"support projection read only");
@@ -174,6 +175,7 @@ public final class UnknownFilesTest {
                     String text;try(GZIPInputStream gzip=new GZIPInputStream(new ByteArrayInputStream(aes.doFinal(Arrays.copyOfRange(body,13,body.length))))){text=new String(gzip.readAllBytes(),StandardCharsets.UTF_8);}
                     check(Integer.parseInt(headers.get("x-log-char-count"))==text.length(),"char count");
                     check(!text.contains("alice")&&!text.contains("secret")&&!text.contains("raw-source"),"decrypted upload privacy");
+                    check(new JSONObject(text).getString("reason").equals("article_body_missing"),"fixed reason retained after upload projection and decryption");
                     check(new JSONObject(text).getInt("unknownFileCount")==24,"decrypted actionable summary");return new PodTakeoverSupport.Response(201,receipt().toString().getBytes(StandardCharsets.UTF_8));
                 }
                 check(method.equals("DELETE")&&headers.get("authorization").equals("Bearer "+"b".repeat(64)),"explicit receipt delete");return new PodTakeoverSupport.Response(204,new byte[0]);
