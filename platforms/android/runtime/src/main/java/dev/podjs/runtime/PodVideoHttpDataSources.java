@@ -1,15 +1,29 @@
 package dev.podjs.runtime;
 
-import androidx.media3.datasource.DefaultHttpDataSource;
-import androidx.media3.datasource.TransferListener;
-import java.util.Map;
+import android.net.Uri;
+import androidx.media3.datasource.*;
+import java.io.IOException;
+import java.util.*;
 
-/** Shared native playback factory. App-supplied headers also apply to DASH audio. */
+/** Playback cache bypass changes bytes only. Every HTTP exit shares the process media policy. */
 final class PodVideoHttpDataSources {
-    static androidx.media3.datasource.DataSource.Factory create(Map<String, String> headers, TransferListener listener) {
-        DefaultHttpDataSource.Factory factory = new DefaultHttpDataSource.Factory().setTransferListener(listener);
-        if (!headers.isEmpty()) factory.setDefaultRequestProperties(headers);
-        return PodDouyinRequest.factory(factory,headers);
+    private static final class Shared {static final PodMediaHttp HTTP=new PodMediaHttp(true);}
+    static DataSource.Factory create(Map<String,String> headers,TransferListener listener){
+        Map<String,String> defaults=new TreeMap<>(String.CASE_INSENSITIVE_ORDER);defaults.putAll(headers);
+        return ()->new DataSource(){
+            DataSource source;final List<TransferListener> listeners=new ArrayList<>();
+            {if(listener!=null)listeners.add(listener);}
+            public void addTransferListener(TransferListener value){listeners.add(value);if(source!=null)source.addTransferListener(value);}
+            public long open(DataSpec spec)throws IOException {
+                close();source=Shared.HTTP.createDataSource();for(TransferListener value:listeners)source.addTransferListener(value);
+                Map<String,String> merged=new TreeMap<>(String.CASE_INSENSITIVE_ORDER);merged.putAll(defaults);merged.putAll(spec.httpRequestHeaders);
+                return source.open(spec.buildUpon().setHttpRequestHeaders(merged).build());
+            }
+            public int read(byte[] bytes,int offset,int length)throws IOException{return source.read(bytes,offset,length);}
+            public Uri getUri(){return source==null?null:source.getUri();}
+            public Map<String,List<String>> getResponseHeaders(){return source==null?Collections.emptyMap():source.getResponseHeaders();}
+            public void close()throws IOException{DataSource previous=source;source=null;if(previous!=null)previous.close();}
+        };
     }
-    private PodVideoHttpDataSources() {}
+    private PodVideoHttpDataSources(){}
 }

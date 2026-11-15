@@ -29,12 +29,12 @@ public class PodVideoHttpDataSourcesTest {
         try {
             String url = "http://127.0.0.1:"+server.port()+"/media?signature=synthetic";
             Map<String,String> defaults = new HashMap<>();
-            defaults.put("User-Agent","Mozilla/5.0");defaults.put("Referer","https://www.bilibili.com/");defaults.put("Cookie","synthetic-session");
+            defaults.put("User-Agent","Mozilla/5.0");defaults.put("Referer","https://www.bilibili.com/");defaults.put("X-Fixture","synthetic-session");
             androidx.media3.datasource.DataSource.Factory factory = PodVideoHttpDataSources.create(defaults,null);
             open(factory,new DataSpec.Builder().setUri(Uri.parse(url)).build());
             Map<String,String> old = received.poll(5,TimeUnit.SECONDS);assertNotNull(old);
             assertEquals("Mozilla/5.0",old.get("user-agent"));assertEquals("https://www.bilibili.com/",old.get("referer"));
-            assertEquals("synthetic-session",old.get("cookie"));assertNull(old.get("range"));assertEquals("identity",old.get("accept-encoding"));
+            assertEquals("synthetic-session",old.get("x-fixture"));assertNull(old.get("range"));assertEquals("identity",old.get("accept-encoding"));
             System.out.println("WRSS_MEDIA3_WIRE "+new JSONObject(old).toString());
             defaults.clear();defaults.put("User-Agent","Mozilla/5.0");defaults.put("Range","bytes=0-");
             factory = PodVideoHttpDataSources.create(defaults,null);

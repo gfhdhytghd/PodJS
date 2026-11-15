@@ -71,9 +71,10 @@ final class PodMediaPrefixCache implements AutoCloseable {
     final class Job {
         final Entry entry;final int budget;final long epoch;volatile String itemToken;volatile long sourceGeneration;boolean background,preparing,done,preStore,requireAudio,localReserved;Entry localAudio;String localToken,localKey;JSONObject localMetadata;volatile boolean fetching;long deferredUntil;int stage;volatile boolean active=true;volatile DataSource source;Exception failure;
         Job(Entry e,int budget,String itemToken,long sourceGeneration){entry=e;this.budget=budget;epoch=generation;this.itemToken=itemToken;this.sourceGeneration=sourceGeneration;}
+        java.util.function.BooleanSupplier requestCurrent=()->true;
         PodMediaPrefixCache owner(){return PodMediaPrefixCache.this;}
         void cancel(){active=false;DataSource s=source;if(s!=null&&!cancellations.isShutdown())cancellations.execute(()->{try{s.close();}catch(Exception ignored){}});}
-        boolean current(){synchronized(PodMediaPrefixCache.this){return active&&!closed&&epoch==generation&&entries.get(entry.token)==entry;}}
+        boolean current(){synchronized(PodMediaPrefixCache.this){return active&&!closed&&requestCurrent.getAsBoolean()&&epoch==generation&&entries.get(entry.token)==entry;}}
     }
     PodMediaPrefixCache(File root){this(root,new PodMediaHttp(),Math.max(6L*1024*1024,Math.min(16L*1024*1024,Runtime.getRuntime().maxMemory()/4)));}
     PodMediaPrefixCache(File root,DataSource.Factory upstream,long budget){
@@ -116,8 +117,10 @@ final class PodMediaPrefixCache implements AutoCloseable {
     private String token(String uri){Uri u=Uri.parse(uri);if(!SCHEME.equals(u.getScheme())||!"play".equals(u.getHost()))return null;String p=u.getLastPathSegment();return p!=null&&p.matches("[a-f0-9]{64}\\.mp4")?p.substring(0,64):null;}
     synchronized Entry target(String uri)throws IOException {String t=token(uri);Entry e=t==null?null:entries.get(t);if(e==null)throw new IOException("media_cache_registration_missing");return e;}
     synchronized boolean owns(String uri){try{target(uri);return true;}catch(IOException e){return false;}}
-    JSONObject execute(String method,JSONObject a)throws Exception {
-        if(method.equals("video.cache.local.prepare"))return prepareLocal(a);
+    JSONObject execute(String method,JSONObject a)throws Exception {return execute(method,a,()->true);}
+    JSONObject execute(String method,JSONObject a,java.util.function.BooleanSupplier current)throws Exception {
+        if(!current.getAsBoolean())throw new IOException("media_request_cancelled");
+        if(method.equals("video.cache.local.prepare"))return prepareLocal(a,current);
         if(method.equals("video.cache.local.list"))return new JSONObject().put("items",localStore.list());
         if(method.equals("video.cache.local.lookup")){JSONObject item=localStore.lookupToken(PodMediaLocalStore.token(a.getString("key")));return new JSONObject().put("item",item==null?JSONObject.NULL:item);}
         if(method.equals("video.cache.local.watched")){localStore.watched(a.getString("key"));return new JSONObject();}
@@ -149,13 +152,13 @@ final class PodMediaPrefixCache implements AutoCloseable {
         }
     }
     private synchronized void cancelLocal(){for(Job job:jobs.values())if(job.localToken!=null)job.cancel();notifyAll();}
-    private JSONObject prepareLocal(JSONObject args)throws Exception {
+    private JSONObject prepareLocal(JSONObject args,java.util.function.BooleanSupplier current)throws Exception {
         String key=args.getString("key"),token=PodMediaLocalStore.token(key);
         JSONObject metadata=args.getJSONObject("metadata");if(metadata.toString().length()>8192)throw new IllegalArgumentException("local_metadata_budget");
         JSONObject known=localStore.lookupToken(token);if(known!=null){PodMediaLocalStore.requireTracks(known.optInt("audioTracks"),known.optInt("videoTracks"),args.optBoolean("requireAudio"));return new JSONObject().put("ready",true).put("item",known);}
         Job job;
-        synchronized(this){Entry entry=target(args.getString("uri"));checkNetwork(entry);Job old=jobs.get(entry.token);if(old!=null)old.cancel();
-            localStore.root.mkdirs();job=new Job(entry,0,"",0);job.stage=2;job.preStore=true;job.localToken=token;job.localKey=key;job.localMetadata=metadata;job.requireAudio=args.optBoolean("requireAudio");
+        synchronized(this){if(!current.getAsBoolean())throw new IOException("media_request_cancelled");Entry entry=target(args.getString("uri"));checkNetwork(entry);Job old=jobs.get(entry.token);if(old!=null)old.cancel();
+            localStore.root.mkdirs();job=new Job(entry,0,"",0);job.requestCurrent=current;job.stage=2;job.preStore=true;job.localToken=token;job.localKey=key;job.localMetadata=metadata;job.requireAudio=args.optBoolean("requireAudio");
             if(!entry.frameAudioUrl.isEmpty()){String audio=register("local-audio:"+digest(key),entry.frameAudioUrl,entry.headers,entry.persistent);job.localAudio=target(audio);job.localAudio.expiresAt=Math.min(job.localAudio.expiresAt,entry.expiresAt);}
             jobs.put(entry.token,job);localStore.removePartials(token);}
         try{prefetch(job);if(job.failure!=null)throw job.failure;if(!job.current())throw new IOException("complete_cancelled");
@@ -212,7 +215,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
         public void close()throws IOException{int status=Math.max(0,responseCode());try{delegate.close();}finally{if(!logged&&opened>=0){logged=true;android.util.Log.i("PodMediaCache","range_transfer entry="+ordinal+" request="+request+" position="+rangePosition+" requested_bytes="+Math.max(0,requested)+" network_bytes="+transferred+" ttfb_ms="+(first<0?0:Math.max(0,first-opened))+" read_ms="+(first<0?0:Math.max(0,last-first))+" status="+status);}}}
     }
     private void fetchStep(Job job){
-        if(job.localToken!=null){try{localStore.step(job);}catch(BackgroundDeferred paused){job.deferredUntil=android.os.SystemClock.uptimeMillis()+100;}catch(Exception error){job.failure=error;job.done=true;android.util.Log.i("PodMediaCache","complete_store phase=failed reason="+PodMediaLocalStore.failureReason(error)+" status="+httpStatus(error));if(httpStatus(error)==403)stopTraffic();}finally{synchronized(this){job.fetching=false;notifyAll();}}return;}
+        if(job.localToken!=null){try{localStore.step(job);}catch(BackgroundDeferred paused){job.deferredUntil=android.os.SystemClock.uptimeMillis()+100;}catch(Exception error){job.failure=error;job.done=true;android.util.Log.i("PodMediaCache","complete_store phase=failed reason="+PodMediaLocalStore.failureReason(error)+" status="+httpStatus(error));}finally{synchronized(this){job.fetching=false;notifyAll();}}return;}
         boolean succeeded=false;int status=0;boolean failed=false;
         job.fetching=true;
         try{

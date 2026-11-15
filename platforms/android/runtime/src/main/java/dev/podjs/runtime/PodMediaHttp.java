@@ -10,23 +10,34 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.Consumer;
 
-/** One bounded pool per media cache. No probes, cookie jar, URL logs or automatic retries.
+/** Bounded connection pools share one process-wide origin/credential cooldown policy.
+ * No probes, cookie jar, URL logs or automatic retries.
  * A race is opt-in for byte-identical mirrors, once before any prefix is published. */
 final class PodMediaHttp implements DataSource.Factory, AutoCloseable {
     private final OkHttpClient client;
     private final ExecutorService racers=Executors.newFixedThreadPool(2);
     private volatile boolean closed;
     private final java.util.function.LongSupplier now;
-    private static final class Cooldown {final IOException error;final long until;final boolean server;Cooldown(IOException e,long u,boolean s){error=e;until=u;server=s;}}
-    private final Map<String,Cooldown> cooldowns=new LinkedHashMap<>();
-    PodMediaHttp(){this(android.os.SystemClock::elapsedRealtime);}
-    PodMediaHttp(java.util.function.LongSupplier now){
-        this.now=now;
+    private final boolean direct;
+    private static final Object POLICY=new Object();
+    private static final class Cooldown {final IOException error;final long until;final boolean server;final java.util.function.LongSupplier clock;Cooldown(IOException e,long u,boolean s,java.util.function.LongSupplier n){error=e;until=u;server=s;clock=n;}}
+    private static final Map<String,Cooldown> cooldowns=new LinkedHashMap<>();
+    PodMediaHttp(){this(android.os.SystemClock::elapsedRealtime,false);}
+    PodMediaHttp(boolean direct){this(android.os.SystemClock::elapsedRealtime,direct);}
+    PodMediaHttp(java.util.function.LongSupplier now){this(now,false);}
+    private PodMediaHttp(java.util.function.LongSupplier now,boolean direct){
+        this.now=now;this.direct=direct;
         client=new OkHttpClient.Builder().connectionPool(new ConnectionPool(4,2,TimeUnit.MINUTES))
             .protocols(Collections.singletonList(Protocol.HTTP_1_1))
             .dns(new CachedDns()).connectTimeout(12,TimeUnit.SECONDS).readTimeout(25,TimeUnit.SECONDS)
             .eventListenerFactory(call->new TransportEvents())
-            .addNetworkInterceptor(new PodMediaRequestPolicy()).retryOnConnectionFailure(false).build();
+            .addNetworkInterceptor(chain->{
+                Request request=chain.request();DataSpec spec=requestSpec(request);check(spec);
+                PodMediaRequestPolicy.check(request);
+                Response response=chain.proceed(request);
+                if(response.code()==403||response.code()==429)failed(new HttpDataSource.InvalidResponseCodeException(response.code(),response.message(),null,response.headers().toMultimap(),spec,new byte[0]),spec);
+                return response;
+            }).retryOnConnectionFailure(false).build();
     }
     /** Numeric request identity and closed phases; never host names or request fields. */
     private static final java.util.concurrent.atomic.AtomicLong REQUESTS=new java.util.concurrent.atomic.AtomicLong();
@@ -52,19 +63,29 @@ final class PodMediaHttp implements DataSource.Factory, AutoCloseable {
     private void check()throws IOException{if(closed)throw new IOException("media_transport_closed");}
     private static String scope(DataSpec spec){
         HttpUrl url=HttpUrl.get(spec.uri.toString());TreeMap<String,String> credentials=new TreeMap<>();
-        for(Map.Entry<String,String> h:spec.httpRequestHeaders.entrySet())if(h.getKey().equalsIgnoreCase("Cookie")||h.getKey().equalsIgnoreCase("Authorization"))credentials.put(h.getKey().toLowerCase(Locale.ROOT),h.getValue());
+        for(Map.Entry<String,String> h:spec.httpRequestHeaders.entrySet())if(h.getKey().equalsIgnoreCase("Cookie")||h.getKey().equalsIgnoreCase("Authorization")||h.getKey().equalsIgnoreCase("Proxy-Authorization"))credentials.put(h.getKey().toLowerCase(Locale.ROOT),h.getValue());
         try{return url.scheme()+"://"+url.host()+":"+url.port()+":"+PodVideoFrameCache.hash(credentials.toString());}catch(Exception error){throw new IllegalStateException("media_scope_unavailable",error);}
     }
-    private synchronized void check(DataSpec spec)throws IOException {
-        check();Cooldown value=cooldowns.get(scope(spec));
-        if(value!=null){if(now.getAsLong()<value.until)throw value.error;cooldowns.remove(scope(spec));}
+    private static DataSpec requestSpec(Request request){
+        TreeMap<String,String> headers=new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        for(String name:request.headers().names())headers.put(name,request.header(name));
+        return new DataSpec.Builder().setUri(request.url().toString()).setHttpRequestHeaders(headers).build();
     }
-    synchronized void recover(){cooldowns.entrySet().removeIf(e->!e.getValue().server||now.getAsLong()>=e.getValue().until);}
-    private synchronized void failed(IOException error,DataSpec spec){
+    private void check(DataSpec spec)throws IOException {
+        check();synchronized(POLICY){Cooldown value=cooldowns.get(scope(spec));
+            if(value!=null){if(value.clock.getAsLong()<value.until)throw value.error;cooldowns.remove(scope(spec));}
+        }
+    }
+    void recover(){synchronized(POLICY){cooldowns.entrySet().removeIf(e->!e.getValue().server||e.getValue().clock.getAsLong()>=e.getValue().until);}}
+    private void failed(IOException error,DataSpec spec){
         int status=PodMediaPrefixCache.httpStatus(error);if(status!=403&&status!=429)return;
         long retry=0;for(Throwable e=error;e!=null;e=e.getCause())if(e instanceof HttpDataSource.InvalidResponseCodeException)retry=PodDouyinRequest.retryAfter(((HttpDataSource.InvalidResponseCodeException)e).headerFields);
-        cooldowns.put(scope(spec),new Cooldown(error,now.getAsLong()+Math.max(30_000,retry),retry>0));
-        while(cooldowns.size()>64)cooldowns.remove(cooldowns.keySet().iterator().next());
+        synchronized(POLICY){
+            // A blocked attempt cannot shorten or extend an existing server cooldown.
+            Cooldown previous=cooldowns.get(scope(spec));if(previous!=null&&previous.clock.getAsLong()<previous.until)return;
+            cooldowns.put(scope(spec),new Cooldown(error,now.getAsLong()+Math.max(30_000,retry),retry>0,now));
+            while(cooldowns.size()>64)cooldowns.remove(cooldowns.keySet().iterator().next());
+        }
     }
     public void close(){closed=true;racers.shutdownNow();client.dispatcher().cancelAll();client.connectionPool().evictAll();}
     static final class CachedDns implements Dns {
@@ -78,14 +99,14 @@ final class PodMediaHttp implements DataSource.Factory, AutoCloseable {
         }
     }
     private final class Stream implements DataSource {
-        private DataSpec spec;private volatile Call call;private volatile boolean closed,busy;private boolean disposed;private final Object io=new Object();
+        private DataSpec spec;private PodMediaRequestPolicy.Binding credentials;private volatile Call call;private volatile boolean closed,busy;private boolean disposed;private final Object io=new Object();
         private final DataSource source=PodDouyinRequest.factory(new OkHttpDataSource.Factory(request->{
-            try{PodMediaRequestPolicy.check(request.url(),request.headers());}catch(IOException error){throw new IllegalArgumentException(error.getMessage(),error);}
-            Call next=client.newCall(request);call=next;if(closed||PodMediaHttp.this.closed)next.cancel();return next;
+            Request bound=request.newBuilder().tag(PodMediaRequestPolicy.Binding.class,credentials).build();
+            Call next=client.newCall(bound);call=next;if(closed||PodMediaHttp.this.closed)next.cancel();return next;
         }),Collections.emptyMap()).createDataSource();
         public void addTransferListener(TransferListener listener){source.addTransferListener(listener);}
-        public long open(DataSpec spec)throws IOException{synchronized(io){PodMediaRequestPolicy.check(HttpUrl.get(spec.uri.toString()),Headers.of(spec.httpRequestHeaders));check(spec);this.spec=spec;if(closed)throw new InterruptedIOException("media_cancelled");busy=true;try{return source.open(spec);}catch(IOException error){failed(error,spec);throw error;}finally{busy=false;}}}
-        public int read(byte[] bytes,int offset,int length)throws IOException{synchronized(io){check(spec);if(closed)throw new InterruptedIOException("media_cancelled");busy=true;try{return source.read(bytes,offset,length);}catch(IOException error){failed(error,spec);throw error;}finally{busy=false;}}}
+        public long open(DataSpec spec)throws IOException{synchronized(io){credentials=PodMediaRequestPolicy.bind(HttpUrl.get(spec.uri.toString()),Headers.of(spec.httpRequestHeaders),direct);credentials.check(HttpUrl.get(spec.uri.toString()),Headers.of(spec.httpRequestHeaders));check(spec);this.spec=spec;if(closed)throw new InterruptedIOException("media_cancelled");busy=true;try{return source.open(spec);}finally{busy=false;}}}
+        public int read(byte[] bytes,int offset,int length)throws IOException{synchronized(io){check(spec);if(closed)throw new InterruptedIOException("media_cancelled");busy=true;try{return source.read(bytes,offset,length);}finally{busy=false;}}}
         public Uri getUri(){return source.getUri();}
         public Map<String,List<String>> getResponseHeaders(){return source.getResponseHeaders();}
         int responseCode(){return ((PodDouyinRequest)source).responseCode();}

@@ -23,6 +23,14 @@ public class PodMediaRequestPolicyTest {
   List<Request> captured=new ArrayList<>();for(String kind:List.of("main","audio","mirror"))exchange(new PodMediaRequestPolicy(),"https://fixture.invalid/"+kind,false,captured);
   assertEquals(3,captured.size());for(Request r:captured)assertNull(r.header("Cookie"));
  }
+ @Test public void directOtherPlatformCredentialsStayOnTheirInitialHttpsOrigin()throws Exception {
+  HttpUrl initial=HttpUrl.get("https://api.bilibili.com/media");Headers headers=Headers.of("Cookie","offline-fixture","Referer","https://www.bilibili.com/");
+  PodMediaRequestPolicy.Binding binding=PodMediaRequestPolicy.bind(initial,headers,true);
+  binding.check(initial,headers);binding.check(HttpUrl.get("https://api.bilibili.com/audio"),headers);
+  for(String target:List.of("http://api.bilibili.com/media","https://other.invalid/media","https://api.bilibili.com:8443/media"))try{binding.check(HttpUrl.get(target),headers);fail(target);}catch(IOException expected){}
+  PodMediaRequestPolicy.Binding douyin=PodMediaRequestPolicy.bind(HttpUrl.get("https://fixture.invalid/media"),Headers.of("Cookie","fixture","Referer","https://www.douyin.com/"),true);
+  try{douyin.check(HttpUrl.get("https://fixture.invalid/media"),headers);fail();}catch(IOException expected){}
+ }
  static void exchange(PodMediaRequestPolicy policy,String url,boolean cookie,List<Request> captured)throws Exception {
   Request.Builder builder=new Request.Builder().url(url);if(cookie)builder.header("cOoKiE","offline-fixture");Request request=builder.build();
   Interceptor.Chain chain=(Interceptor.Chain)Proxy.newProxyInstance(Interceptor.Chain.class.getClassLoader(),new Class[]{Interceptor.Chain.class},(proxy,method,args)->{
