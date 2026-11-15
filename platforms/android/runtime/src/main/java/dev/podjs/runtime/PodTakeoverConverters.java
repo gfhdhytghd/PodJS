@@ -10,13 +10,20 @@ final class PodTakeoverConverters implements PodTakeoverCoordinator.Converter {
     PodTakeoverConverters(PodTakeoverCoordinator.Converter room,PodTakeoverCoordinator.Converter stores,PodTakeoverCoordinator.Converter files){this.room=room;this.stores=stores;this.files=files;}
     public String version(){return room.version()+"+"+stores.version()+(files==null?"":"+"+files.version());}
     public boolean reclassifies(File g,String previous)throws Exception {
-        if(files!=null&&files.version().equals("watchrss-files-5")&&previous.equals(room.version()+"+watchrss-stores-3+watchrss-files-4")){
-            org.json.JSONObject diagnostics=PodStoreConverter.json(PodFileConverter.safe(g,"stores-diagnostics.json"));
-            return diagnostics.getInt("blockerCount")>0; // Fresh generation rechecks every key; old candidates are retained.
+        if(files==null||!files.version().equals("watchrss-files-6"))return false;
+        // Preserve the released stores-3 -> stores-4 compatibility path, including its diagnostics gate.
+        if(previous.equals(room.version()+"+watchrss-stores-3+watchrss-files-4")) {
+            File diagnostics=PodFileConverter.safe(g,"stores-diagnostics.json");
+            if(diagnostics.isFile()&&PodStoreConverter.json(diagnostics).getInt("blockerCount")>0)return true;
         }
-        if(!(previous.equals(room.version()+"+"+stores.version()+"+watchrss-files-3")||previous.equals(room.version()+"+watchrss-stores-3+watchrss-files-3"))||files==null||!(files.version().equals("watchrss-files-4")||files.version().equals("watchrss-files-5")))return false;
+        String prefix=room.version()+"+"+stores.version()+"+";
+        String legacyPrefix=room.version()+"+watchrss-stores-3+";
+        String old=previous.startsWith(prefix)?previous.substring(prefix.length()):
+            previous.startsWith(legacyPrefix)?previous.substring(legacyPrefix.length()):"";
+        if(!java.util.Arrays.asList("watchrss-files-3","watchrss-files-4","watchrss-files-5").contains(old))return false;
+        if(old.equals("watchrss-files-5")&&!previous.startsWith(prefix))return false;
         org.json.JSONObject report=PodStoreConverter.json(PodFileConverter.safe(g,"files-report.json"));
-        if(!"watchrss-files-3".equals(report.getString("version")))return false;
+        if(!old.equals(report.getString("version")))return false;
         org.json.JSONArray blockers=report.getJSONArray("blockers");
         if(blockers.length()==0)return false;
         for(int i=0;i<blockers.length();i++)if(!"unknown_user_files".equals(blockers.getString(i)))return false;

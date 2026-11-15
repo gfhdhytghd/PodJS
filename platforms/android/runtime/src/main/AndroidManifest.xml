@@ -18,6 +18,7 @@
         <intent><action android:name="android.intent.action.TTS_SERVICE" /></intent>
     </queries>
     <application>
+        <activity android:name="dev.podjs.runtime.PodTakeoverSupportActivity" android:exported="false" android:theme="@android:style/Theme.Material.NoActionBar" />
         <provider android:name="androidx.startup.InitializationProvider" android:authorities="${applicationId}.androidx-startup" tools:node="merge">
             <meta-data android:name="androidx.profileinstaller.ProfileInstallerInitializer" tools:node="remove" />
         </provider>

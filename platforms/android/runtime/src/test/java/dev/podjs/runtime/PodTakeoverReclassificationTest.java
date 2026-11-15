@@ -24,8 +24,8 @@ public final class PodTakeoverReclassificationTest {
         }finally{new File(sandbox,"files").delete();sandbox.delete();}
     }
     @Test public void unknownPathsRedactIdentifiersAndLogControls() {
-        assertEquals("files/dir/<id:8>/<id:36>/<id:2>",PodFileConverter.redactedPath("files/dir/deadbeef/12345678-1234-1234-1234-123456789abc/42"));
-        assertEquals("files/dir/line_break_",PodFileConverter.redactedPath("files/dir/line\nbreak\""));
-        assertEquals("files/dir/<id:33>",PodFileConverter.redactedPath("files/dir/"+"z".repeat(33)));
+        assertEquals("files/<id:3>/<id:8>/<id:36>/<id:2>",PodFileConverter.redactedPath("files/dir/deadbeef/12345678-1234-1234-1234-123456789abc/42"));
+        assertEquals("files/<id:3>/<id:11>",PodFileConverter.redactedPath("files/dir/line\nbreak\""));
+        assertEquals("files/<id:3>/<id:33>",PodFileConverter.redactedPath("files/dir/"+"z".repeat(33)));
     }
 }
