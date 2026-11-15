@@ -20,6 +20,20 @@ public class PodVideoCodecAdaptersTest {
   MediaCodecAdapter adapter=new PodVideoCodecAdapters(c->fake(()->assertEquals(baseline+1,gate.live())),"test",()->1).createAdapter(config("video/avc"));
   assertEquals(baseline+1,gate.live());adapter.release();assertEquals(baseline,gate.live());
  }
+ @Test public void asynchronousTeardownCannotReturnItsPermitBeforeCodecRelease()throws Exception {
+  PodVideoCodecGate gate=PodVideoCodecGate.PROCESS;
+  java.util.concurrent.CountDownLatch entered=new java.util.concurrent.CountDownLatch(1),finish=new java.util.concurrent.CountDownLatch(1);
+  MediaCodecAdapter adapter=new PodVideoCodecAdapters(c->fake(()->{entered.countDown();try{finish.await();}catch(InterruptedException e){throw new RuntimeException(e);}}),"retired",()->1).createAdapter(config("video/avc"));
+  Thread worker=new Thread(adapter::release);worker.start();
+  PodVideoCodecGate.Permit current=null,next=null;
+  try{
+   assertTrue(entered.await(2,java.util.concurrent.TimeUnit.SECONDS));assertEquals(1,gate.live());
+   current=gate.acquire("current",2);next=gate.acquire("next",1);assertNotNull(current);assertNotNull(next);
+   assertEquals(3,gate.live());assertNull(gate.acquire("fourth",2));
+   finish.countDown();worker.join(2000);assertFalse(worker.isAlive());assertEquals(2,gate.live());
+  }finally{finish.countDown();worker.join(2000);if(current!=null)current.close();if(next!=null)next.close();}
+  assertEquals(0,gate.live());
+ }
  @Test public void factoryFailureReturnsReservation()throws Exception {
   int baseline=PodVideoCodecGate.PROCESS.live();
   try{new PodVideoCodecAdapters(c->{throw new java.io.IOException("fixture");},"test",()->1).createAdapter(config("video/hevc"));fail();}catch(java.io.IOException expected){assertEquals("fixture",expected.getMessage());}
