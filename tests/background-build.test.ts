@@ -159,8 +159,8 @@ test('headless CPU work telemetry is pure and does not grant host or unsafe subp
 });
 
 test('large handlers compact under the unchanged size cap and oversized data stays rejected',async()=>{
- const rows=Array.from({length:12000},(_,i)=>`const independentBackgroundValue${i}=${i};`),names=Array.from({length:12000},(_,i)=>`independentBackgroundValue${i}`);
+ const rows=Array.from({length:18000},(_,i)=>`const independentBackgroundValue${i}=${i};`),names=Array.from({length:18000},(_,i)=>`independentBackgroundValue${i}`);
  const {root,entry}=fixture(rows.join('')+`export default ()=>[${names.join(',')}];`);
- const artifact=(await buildBackground({compact:entry},root)).compact!,context:Record<string,any>={};expect(artifact.bytes).toBeLessThanOrEqual(1024*1024);runInNewContext(readFileSync(join(root,artifact.file),'utf8'),context);expect(context.backgroundHandler().length).toBe(12000);expect(context.backgroundHandler()[11999]).toBe(11999);
+ const passes:{compact:boolean;bytes:number}[]=[];const artifact=(await buildBackground({compact:entry},root,p=>passes.push(p))).compact!,context:Record<string,any>={};expect(passes.map(p=>p.compact)).toEqual([false,true]);expect(passes[0]!.bytes).toBeGreaterThan(1024*1024);expect(passes[1]!.bytes).toBe(artifact.bytes);expect(artifact.bytes).toBeLessThanOrEqual(1024*1024);runInNewContext(readFileSync(join(root,artifact.file),'utf8'),context);expect(context.backgroundHandler().length).toBe(18000);expect(context.backgroundHandler()[17999]).toBe(17999);
  const oversized=fixture(`export default ()=>${JSON.stringify('x'.repeat(1024*1024+1))};`);await expect(buildBackground({large:oversized.entry},oversized.root)).rejects.toThrow('exceeds 1 MiB');
 });

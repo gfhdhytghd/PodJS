@@ -672,8 +672,10 @@ export const fileChunks = {
   hash(path:string):Promise<{size:number;sha256:string}> {
     return hostOperation<{size:number;sha256:string}>("file.hash",{path}).result;
   },
-  commit(path:string,target:string,expectedSize:number,expectedSha256:string):Promise<{path:string;size:number;sha256:string;reused:boolean}> {
-    return hostOperation<{path:string;size:number;sha256:string;reused:boolean}>("file.commit",{path,target,expectedSize,expectedSha256}).result;
+  /** Optional target CAS: null requires absence; a digest requires that exact
+   * current target. The native comparison and rename share one writer lock. */
+  commit(path:string,target:string,expectedSize:number,expectedSha256:string,expectedTargetSha256?:string|null):Promise<{path:string;size:number;sha256:string;reused:boolean}> {
+    return hostOperation<{path:string;size:number;sha256:string;reused:boolean}>("file.commit",{path,target,expectedSize,expectedSha256,...(expectedTargetSha256===undefined?{}:{expectedTargetSha256})}).result;
   },
   /** Enumerate one directory inside the app file root. Links and oversized directories fail closed. */
   list(path:string):Promise<{entries:{path:string;file:boolean;directory:boolean;size:number;modified:number;changeToken?:string}[]}> {

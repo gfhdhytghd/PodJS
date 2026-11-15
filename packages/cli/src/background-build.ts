@@ -4,7 +4,7 @@ import { isAbsolute, join } from "node:path";
 
 export interface BackgroundArtifact { file: string; sha256: string; bytes: number }
 /** Each handler gets its own IIFE, never the UI entry, assets or frame bootstrap. */
-export async function buildBackground(entries: Record<string, string>, output: string): Promise<Record<string, BackgroundArtifact>> {
+export async function buildBackground(entries: Record<string, string>, output: string, observePass?:(pass:{id:string;compact:boolean;bytes:number})=>void): Promise<Record<string, BackgroundArtifact>> {
   const artifacts: Record<string, BackgroundArtifact> = Object.create(null);
   for (const [id, entry] of Object.entries(entries)) {
     if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(id) || !isAbsolute(entry)) throw new Error("Invalid background build entry");
@@ -36,8 +36,8 @@ export async function buildBackground(entries: Record<string, string>, output: s
     };
     // Preserve diagnostic identifiers for ordinary jobs. Large algorithm-only
     // jobs get a compact second pass under the same import and size limits.
-    let bytes=await outputBytes(await bundle(false));
-    if(bytes.length>1024*1024)bytes=await outputBytes(await bundle(true));
+    let bytes=await outputBytes(await bundle(false));observePass?.({id,compact:false,bytes:bytes.length});
+    if(bytes.length>1024*1024){bytes=await outputBytes(await bundle(true));observePass?.({id,compact:true,bytes:bytes.length});}
     if (bytes.length > 1024 * 1024) throw new Error(`Background bundle exceeds 1 MiB (${bytes.length} bytes)`);
     const name = createHash("sha256").update(id).digest("hex") + ".js";
     const file = `background/${name}`;

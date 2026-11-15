@@ -677,6 +677,9 @@ public final class PodDeviceServices implements AutoCloseable {
         return result.put("dataBase64", enc(Arrays.copyOf(out, n)));
     }
     private JSONObject fileWrite(JSONObject a) throws Exception {
+        return FileCommitGuard.locked(root,safeFile(required(a,"path")),()->fileWriteLocked(a));
+    }
+    private JSONObject fileWriteLocked(JSONObject a) throws Exception {
         File f = safeFile(required(a, "path")); byte[] data = decode(a, "dataBase64"); if (data.length > MAX_CHUNK_BYTES) throw new IllegalArgumentException("chunk_too_large");
         File parent = f.getParentFile(); if (!parent.exists() && !parent.mkdirs()) throw new IOException("parent_unavailable");
         if (a.optBoolean("append", false)) {
@@ -923,6 +926,9 @@ public final class PodDeviceServices implements AutoCloseable {
     private static String hexDigest(byte[] bytes){char[] out=new char[bytes.length*2];String alphabet="0123456789abcdef";for(int i=0;i<bytes.length;i++){out[i*2]=alphabet.charAt((bytes[i]&255)>>>4);out[i*2+1]=alphabet.charAt(bytes[i]&15);}return new String(out);}
     /** Verify the complete staged file before atomically publishing its final path. */
     private JSONObject fileCommit(JSONObject a) throws Exception {
+        return FileCommitGuard.locked(root,safeFile(required(a,"path")),safeFile(required(a,"target")),()->fileCommitLocked(a));
+    }
+    private JSONObject fileCommitLocked(JSONObject a) throws Exception {
         File source = safeFile(required(a, "path")), target = safeFile(required(a, "target"));
         if (source.equals(target)) throw new IllegalArgumentException("same_commit_path");
         long expectedSize = exactFileSize(a, "expectedSize");
@@ -932,6 +938,16 @@ public final class PodDeviceServices implements AutoCloseable {
         if (actual.getLong("size") != expectedSize || !actual.getString("sha256").equalsIgnoreCase(expectedHash)) throw new IOException("commit_checksum_mismatch");
         // This also flushes a staged file supplied by a caller other than file.write.
         try (java.io.RandomAccessFile file = new java.io.RandomAccessFile(source, "rw")) { file.getFD().sync(); }
+        // Presence of this field opts into CAS. JSON null means absent. Check
+        // under the same cross-guest/process lock as the final atomic rename.
+        if(a.has("expectedTargetSha256")) {
+            Object wanted=a.get("expectedTargetSha256");
+            if(wanted==JSONObject.NULL) { if(target.exists())throw new IOException("file_target_changed"); }
+            else {
+                if(!(wanted instanceof String)||!((String)wanted).matches("[a-f0-9]{64}"))throw new IllegalArgumentException("invalid_target_hash");
+                if(!target.isFile()||!hashFile(target).getString("sha256").equals(wanted))throw new IOException("file_target_changed");
+            }
+        }
         boolean reused = false;
         if (target.isFile() && target.length() == expectedSize) {
             reused = hashFile(target).getString("sha256").equalsIgnoreCase(expectedHash);
@@ -990,7 +1006,7 @@ public final class PodDeviceServices implements AutoCloseable {
     private JSONObject fileStat(JSONObject a) throws Exception {
         File f = safeFile(required(a, "path")); return new JSONObject().put("exists", f.exists()).put("file", f.isFile()).put("directory", f.isDirectory()).put("size", f.isFile() ? f.length() : 0).put("modified", f.exists() ? f.lastModified() : 0).put("changeToken", f.exists()?fileChangeToken(f):"missing").put("usableBytes", root.getUsableSpace());
     }
-    private JSONObject fileDelete(JSONObject a) throws Exception { File f = safeFile(required(a, "path")); boolean deleted = f.isFile() && f.delete(); if (deleted || !f.exists()) temporaryFiles.remove(f); return new JSONObject().put("deleted", deleted); }
+    private JSONObject fileDelete(JSONObject a) throws Exception { File f = safeFile(required(a, "path")); return FileCommitGuard.locked(root,f,()->{boolean deleted = f.isFile() && f.delete(); if (deleted || !f.exists()) temporaryFiles.remove(f); return new JSONObject().put("deleted", deleted);}); }
 
     private File safeFile(String path) throws IOException {
         if (path.isEmpty() || path.startsWith("/") || path.indexOf('\0') >= 0) throw new IllegalArgumentException("invalid_path");
