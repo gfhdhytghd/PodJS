@@ -117,7 +117,9 @@
     "./sql-state-journal": "./src/sql-state-journal.ts",
     "./sql-program": "./src/sql-program.ts",
     "./sql-authenticated-cache": "./src/sql-authenticated-cache.ts",
-    "./chunked-aead": "./src/chunked-aead.ts"
+    "./chunked-aead": "./src/chunked-aead.ts",
+    "./shell": "./src/shell.ts",
+    "./shell-error": "./src/shell-error.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",

@@ -177,6 +177,7 @@ async function build(target: Target, project?: ResolvedPodProject, diagnosticJsS
     }} : {}),
     background,
     backgroundServices: project?.config.backgroundServices ?? [],
+    shellCommands: project?.config.shellCommands ?? [],
     ...(project && manifestWorkManagerTakeover(project.config.appId, project.config.android?.workManagerTakeover) ? { androidWorkManagerTakeover: project.config.android!.workManagerTakeover } : {}),
   };
   writeProjectManifest(out, manifest, project?.assets ?? {}, shareFonts ? pakFontAliases(pakBytes) : []);
@@ -224,7 +225,7 @@ async function packageTarget(target: Target, project?: ResolvedPodProject, relea
     gradleArgs.push(`-PpodReleaseDebuggable=${overrides.debuggable}`);
     if (!project && overrides.versionCode !== undefined) gradleArgs.push(`-PpodVersionCode=${overrides.versionCode}`);
     const plan = androidPackagePlan(release, project?.androidSigning);
-    run(["./gradlew", "--max-workers=2", ...gradleArgs, ...plan.tasks.map(task => `${app}:${task}`), ":runtime:assembleRelease"], join(ROOT, "platforms/android"));
+    run(["./gradlew", "--no-daemon", "-Dorg.gradle.workers.max=2", "--max-workers=2", ...gradleArgs, ...plan.tasks.map(task => `${app}:${task}`), ":runtime:assembleRelease"], join(ROOT, "platforms/android"));
     if (plan.release && project?.androidSigning) {
       const module = target === "android-watch" ? "android/app" : "wearos/app";
       // Keep APKs outside the directory Gradle packages as runtime assets.

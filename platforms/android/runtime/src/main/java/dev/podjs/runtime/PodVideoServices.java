@@ -371,7 +371,7 @@ public final class PodVideoServices implements AutoCloseable {
         PodBenchmark.cancelVideo(videoView);
         if(!statsWindowLogged)logFrameStats("end");frameStats=null;
         ExoPlayer previous=player;player=null;audioPolicy=null;audioStop=null;
-        if(previous!=null){if(analytics!=null){previous.removeAnalyticsListener(analytics);previous.removeAnalyticsListener(analytics.playbackStats);}if(playerListener!=null)previous.removeListener(playerListener);previous.clearVideoSurface();if(!keepPlaying){previous.stop();previous.clearMediaItems();}}
+        if(previous!=null){if(analytics!=null){analytics.retireDecoder();previous.removeAnalyticsListener(analytics);previous.removeAnalyticsListener(analytics.playbackStats);}if(playerListener!=null)previous.removeListener(playerListener);previous.clearVideoSurface();if(!keepPlaying){previous.stop();previous.clearMediaItems();}}
         playerListener=null;
         ServiceConnection previousConnection=connection;connection=null;
         if(previousConnection!=null){try{context.unbindService(previousConnection);}catch(IllegalArgumentException ignored){}}

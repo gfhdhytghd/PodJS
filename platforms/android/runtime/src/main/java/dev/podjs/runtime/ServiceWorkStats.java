@@ -8,6 +8,8 @@ import java.util.function.Consumer;
 final class ServiceWorkStats {
     private final Map<String,long[]> rows=new LinkedHashMap<>();
     private long emitted;
+    private final Map<String,long[]> shellSql=new LinkedHashMap<>();
+    synchronized Map<String,long[]> shellSql(){Map<String,long[]> copy=new LinkedHashMap<>();for(Map.Entry<String,long[]> e:shellSql.entrySet())copy.put(e.getKey(),e.getValue().clone());return copy;}
     private final long[][] sqlSites=new long[64][4];
     synchronized void sqlSite(int site,long workNs,long cpuNs,long units){long[] r=sqlSites[site>=0&&site<64?site:0];r[0]++;r[1]+=Math.max(0,units);r[2]+=Math.max(0,workNs);r[3]+=Math.max(0,cpuNs);}
     static String phase(String method){
@@ -15,6 +17,7 @@ final class ServiceWorkStats {
             case "secure.get":return "secure-read";
             case "secure.set":case "secure.update":case "secure.delete":case "secure.compareAndSet":return "secure-write";
             case "sql.query":case "sql.execute":case "sql.transaction":return "sql";
+            case "sql.gzipJson":return "sql.gzipJson";
             case "crypto.aesGcmDecrypt":case "crypto.largeAesGcmDecrypt":return "decrypt";
             case "crypto.aesGcmEncrypt":case "crypto.largeAesGcmEncrypt":return "encrypt";
             case "crypto.verifyP256":case "crypto.hash":case "file.hash":return "verify";
@@ -25,6 +28,9 @@ final class ServiceWorkStats {
         }
     }
     synchronized void add(String method,long queueNs,long workNs,long cpuNs,long inputChars,long units,boolean success){
+        if(method.equals("sql.query")||method.equals("sql.execute")||method.equals("sql.transaction")||method.equals("sql.gzipJson")){
+            long[] row=shellSql.computeIfAbsent(method,k->new long[5]);row[0]++;row[1]+=Math.max(0,queueNs);row[2]+=Math.max(0,workNs);row[3]+=Math.max(0,cpuNs);if(!success)row[4]++;
+        }
         String phase=phase(method);if(phase==null)return;
         long[] r=rows.computeIfAbsent(phase,k->new long[9]);r[0]++;r[1]+=Math.max(0,queueNs);r[2]+=Math.max(0,workNs);r[3]+=Math.max(0,cpuNs);r[4]+=Math.max(0,inputChars);r[5]+=Math.max(0,units);r[6]=Math.max(r[6],Math.max(0,queueNs));r[7]=Math.max(r[7],Math.max(0,workNs));if(!success)r[8]++;
     }

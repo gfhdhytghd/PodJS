@@ -75,6 +75,8 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     private final LinkedHashMap<String, Session> sessions = new LinkedHashMap<>();
     private ViewGroup parent;
     private boolean closed;
+    private long shellCreated,shellReleased;
+    JSONObject shellCounters() throws Exception {return new JSONObject().put("active",sessions.size()).put("created",shellCreated).put("released",shellReleased);}
     private boolean lifecyclePaused;
     private int lastMemoryLimit=MAX_SESSIONS;
     private long lastSystemHeadroom;
@@ -1113,7 +1115,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         boolean swapTextureLogged, hasUpdatedFrame;
         boolean benchmarkFramePending;
 
-        Session(String id) { this.id = id; attachViews(parent); }
+        Session(String id) { shellCreated++; this.id = id; attachViews(parent); }
 
         void attachViews(ViewGroup host) {
             if (host == null || disposed) return;
@@ -1217,6 +1219,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                 try { previous.clearVideoTextureView(videoView); } catch (RuntimeException ignored) { }
                 try { previous.stop(); } catch (RuntimeException ignored) { }
                 previous.release();
+                if(analytics!=null)analytics.retireDecoder();
             }
             if (decoderLease) { decoderLease = false; decoderBudget.release(); }
             hasRenderedFirstFrame = false;hasUpdatedFrame=false;
@@ -1502,6 +1505,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             if (disposed) return;
             if(!prewarming&&presented)mediaGate(false);
             disposed = true;
+            shellReleased++;
             Callback pending = takePrepareCallback();
             resetPlayer();
             if (pending != null) pending.fail("cancelled", "Video session released");

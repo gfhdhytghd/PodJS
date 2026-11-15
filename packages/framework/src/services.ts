@@ -54,6 +54,7 @@ const methods: Record<string, PodCapabilityId> = {
   "takeover.openSupport": "host.lifecycle",
   "debug.external.subscribe":"host.lifecycle", "debug.external.unsubscribe":"host.lifecycle", "debug.external.reply":"host.lifecycle",
   "app.buildInfo": "host.lifecycle",
+  "shell.diagnostics": "host.lifecycle",
   "splash.hold": "host.lifecycle", "splash.release": "host.lifecycle",
   "cloud.enqueue":"host.lifecycle", "cloud.localTransfer":"host.lifecycle", "cloud.workState":"host.lifecycle",
   // cloud.acquire accepts localTransferOwner:true only for this host's sole active

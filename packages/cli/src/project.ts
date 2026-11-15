@@ -53,6 +53,7 @@ export interface PodProjectConfig {
   capabilities: string[];
   background?: Record<string, string>;
   backgroundServices?: string[];
+  shellCommands?: string[];
   resources?: PodProjectResources;
   /** Omit duplicate function source strings, retaining error locations.
    * Opt in only if Function.toString source introspection is unused. */
@@ -108,6 +109,8 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
   const name = stringField(value.name, "name");
   if (!Array.isArray(value.capabilities) || value.capabilities.some(cap => typeof cap !== "string")) invalid("capabilities must be an array of strings");
   const capabilities = value.capabilities as string[];
+  const shellCommands = value.shellCommands ?? [];
+  if (!Array.isArray(shellCommands) || shellCommands.length > 64 || new Set(shellCommands).size !== shellCommands.length || shellCommands.some(name => typeof name !== "string" || !/^[a-z][a-z0-9]*(?:\.[a-z][a-zA-Z0-9]*)+$/.test(name) || name.length > 80)) invalid("shellCommands must be at most 64 unique dotted command names");
   const backgroundServices = value.backgroundServices ?? [];
   if (!Array.isArray(backgroundServices) || backgroundServices.length > 6 ||
       backgroundServices.some(method => !["kv.get", "kv.set", "kv.delete", "kv.keys", "cloud.host", "debug.cloudHost"].includes(method)) ||
@@ -287,5 +290,5 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
       }
     }
   }
-  return { config: { entry: entryValue, appId, versionName, versionCode: value.versionCode as number, name, capabilities, resources, android, background: backgroundConfig, backgroundServices, bytecode }, root, configPath, entry, output: join(defaults.outputRoot, appId), fontRegular, fontBold, fontSlots, extraChars, background, assets, androidResources, androidTheme, androidCleartextTraffic, androidSigning };
+  return { config: { entry: entryValue, appId, versionName, versionCode: value.versionCode as number, name, capabilities, resources, android, background: backgroundConfig, backgroundServices, shellCommands, bytecode }, root, configPath, entry, output: join(defaults.outputRoot, appId), fontRegular, fontBold, fontSlots, extraChars, background, assets, androidResources, androidTheme, androidCleartextTraffic, androidSigning };
 }

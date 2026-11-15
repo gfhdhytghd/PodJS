@@ -487,6 +487,20 @@ final class PodServices implements Closeable {
             request.future = imageWorkers.submit(() -> { try { JSONObject value=images.execute(method,args); if(requests.remove(id,request)) reply(id,true,value,null,null); else images.discard(value); } catch(Exception error) { if(requests.remove(id,request)) failure(id,error instanceof SecurityException?"permission_denied":error instanceof IllegalArgumentException?"invalid_argument":"image_error",error.getMessage()); } });
             return;
         }
+        if ("shell.diagnostics".equals(method)) {
+            main.post(()->{
+                if(closed||!requests.remove(id,request))return;
+                try {
+                    JSONObject sql=new JSONObject();
+                    for(String methodName:new String[]{"sql.query","sql.execute","sql.transaction","sql.gzipJson"})sql.put(methodName,new JSONObject().put("count",0).put("queueNs",0).put("workNs",0).put("cpuNs",0).put("failures",0));
+                    for(java.util.Map.Entry<String,long[]> e:workStats.shellSql().entrySet()){
+                        long[] row=e.getValue();sql.put(e.getKey(),new JSONObject().put("count",row[0]).put("queueNs",row[1]).put("workNs",row[2]).put("cpuNs",row[3]).put("failures",row[4]));
+                    }
+                    android.os.Debug.MemoryInfo memory=new android.os.Debug.MemoryInfo();android.os.Debug.getMemoryInfo(memory);
+                    reply(id,true,new JSONObject().put("pssKb",memory.getTotalPss()).put("decoderInstances",PodVideoAnalytics.liveDecoderInstances()).put("decoderLeases",videoDecoderBudget.inUse()).put("sql",sql).put("videoSessions",videoSessions.shellCounters()),null,null);
+                }catch(Exception ignored){failure(id,"unavailable","Diagnostics unavailable");}
+            });return;
+        }
         if ("debug.memoryStats".equals(method)) {
             main.post(()->{
                 if(closed||!requests.containsKey(id))return;

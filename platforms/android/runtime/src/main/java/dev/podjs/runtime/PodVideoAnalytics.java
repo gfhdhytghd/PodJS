@@ -13,6 +13,12 @@ import org.json.JSONObject;
  * Transfer callbacks can run off-main. Never retain DataSpec/URI/request headers. */
 final class PodVideoAnalytics implements AnalyticsListener, TransferListener {
     final androidx.media3.exoplayer.analytics.PlaybackStatsListener playbackStats = new androidx.media3.exoplayer.analytics.PlaybackStatsListener(false,null);
+    private static final java.util.concurrent.atomic.AtomicInteger liveDecoders=new java.util.concurrent.atomic.AtomicInteger();
+    static int liveDecoderInstances(){return liveDecoders.get();}
+    private boolean decoderLive,decoderRetired;
+    synchronized void retireDecoder(){decoderRetired=true;decoderClosed();}
+    synchronized void decoderClosed(){if(decoderLive){decoderLive=false;liveDecoders.decrementAndGet();}}
+    @Override public void onVideoDecoderReleased(EventTime time,String name){decoderClosed();}
     long decoderIndex,decoderInstances;
     long startupSeq,cacheEntry,sourceOrdinal,slotOrdinal,admissionMs,deadlineMs,cacheReadBytes;
     java.util.function.LongSupplier cacheNetworkBytes=()->0,cacheRangeRequests=()->0,cacheBytes=()->0;
@@ -29,6 +35,7 @@ final class PodVideoAnalytics implements AnalyticsListener, TransferListener {
     synchronized void stage(String stage,androidx.media3.exoplayer.ExoPlayer player,android.view.TextureView view){if(prepareSeq>0)try{PodBenchmark.mark("prepare_stage",prepareSeq,prepareFields(stage).put("surface_ready",view!=null&&view.isAvailable()).put("playback_state",player==null?1:player.getPlaybackState()).put("buffered_ms",player==null?0:Math.max(0,player.getBufferedPosition()-player.getCurrentPosition())));}catch(Exception ignored){}}
 
     @Override public void onVideoDecoderInitialized(EventTime time,String decoderName,long initializedTimestampMs,long initializationDurationMs) {
+        synchronized(this){if(!decoderRetired&&!decoderLive){decoderLive=true;liveDecoders.incrementAndGet();}}
         synchronized(this){preparationProgressMs=SystemClock.uptimeMillis();}
         try{android.media.MediaCodecInfo[] codecs=new android.media.MediaCodecList(android.media.MediaCodecList.REGULAR_CODECS).getCodecInfos();for(int i=0;i<codecs.length;i++)if(codecs[i].getName().equals(decoderName)){decoderIndex=i+1;for(String mime:codecs[i].getSupportedTypes())if(mime.equals("video/avc")||mime.equals("video/hevc")){decoderInstances=codecs[i].getCapabilitiesForType(mime).getMaxSupportedInstances();break;}break;}}catch(RuntimeException ignored){}
         stage("decoder_configured");

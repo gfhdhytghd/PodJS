@@ -191,6 +191,9 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                     if(serviceResultTrace.enabled && command.optString("label").matches("[a-zA-Z][a-zA-Z0-9_.:-]{0,79}"))
                         android.util.Log.i("PodJSService", "guest label="+command.optString("label")+" ms="+command.optLong("elapsedMs")+" exclusiveMs="+command.optLong("exclusiveMs")+" beginEpochMs="+command.optLong("beginEpochMs")+" endEpochMs="+command.optLong("endEpochMs")+(command.has("units")?" units="+command.optLong("units"):""));
                 }
+                else if (command.optString("t").startsWith("shell.")) {
+                    PodShellProvider.effect(this,command,this::receiveServiceEvent);
+                }
                 else if (command.optString("t").startsWith("service.")) {
                     if (serviceResultTrace.enabled) {
                         if ("service.request".equals(command.optString("t"))) serviceResultTrace.request(command.optInt("id"),command.optString("method"),command.optJSONObject("args")==null?null:command.optJSONObject("args").optString("traceLabel",null),command.optJSONObject("args")==null?null:command.optJSONObject("args").optString("sql",null));
@@ -264,6 +267,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         serviceHandler.postDelayed(jobContinuation,HostTurnQueue.YIELD_MS);
     }
     private void destroyHost() {
+        PodShellProvider.detach(this);
         long previous = host;
         setHost(0);
         queuedServiceTurn = null;

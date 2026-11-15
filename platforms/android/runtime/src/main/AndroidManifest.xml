@@ -20,6 +20,7 @@
     </queries>
     <application>
         <service android:name=".PodSessionPlaybackService" android:exported="false" android:foregroundServiceType="mediaPlayback" />
+        <provider android:name="dev.podjs.runtime.PodShellProvider" android:authorities="${applicationId}.podjs.shell" android:exported="true" android:grantUriPermissions="false" />
         <activity android:name="dev.podjs.runtime.PodTakeoverSupportActivity" android:exported="false" android:theme="@android:style/Theme.Material.NoActionBar" />
         <provider android:name="androidx.startup.InitializationProvider" android:authorities="${applicationId}.androidx-startup" tools:node="merge">
             <meta-data android:name="androidx.profileinstaller.ProfileInstallerInitializer" tools:node="remove" />
