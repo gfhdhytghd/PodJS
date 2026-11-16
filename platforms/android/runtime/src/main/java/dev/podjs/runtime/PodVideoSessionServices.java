@@ -726,9 +726,12 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             if(action!=null)PodBenchmark.watchVideo(target.keyframeView,new PodBenchmark.VideoAction(action.seq,action.generation,own,action.delta),
                 ()->target.generation==own&&target.hasCachedFrame()&&target.presented&&!target.prewarming,true);
             target.prepareCallback=result;
-            target.frameCompletionCancel=promotionPaint.await(target.keyframeView,committed->main.post(()->{
-                target.frameCompletionCancel=null;
-                if(target.disposed||target.generation!=own||target.prewarming||sessions.get(target.id)!=target)return;
+            target.cancelFrameCompletion();
+            final long attempt=++target.frameCompletionRevision;
+            final android.widget.ImageView expectedKeyframe=target.keyframeView;
+            target.frameCompletionCancel=promotionPaint.await(expectedKeyframe,committed->main.post(()->{
+                if(target.disposed||target.generation!=own||target.keyframeView!=expectedKeyframe||target.frameCompletionRevision!=attempt||target.prewarming||sessions.get(target.id)!=target)return;
+                target.frameCompletionRevision++;target.frameCompletionCancel=null;
                 Callback pending=target.takePrepareCallback();if(pending==null)return;
                 try{prepare(live,pending,true);}
                 catch(Exception error){
@@ -1100,7 +1103,8 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         String frameBinding, decoderName;
         android.widget.ImageView keyframeView;
         PodVideoKeyframes.Frame cachedFrame;
-        Runnable frameCompletionCancel;
+        Runnable frameCompletionCancel, frameCompletionRetry;
+        long frameCompletionRevision;
         PodVideoAnalytics analytics;
         PodBenchmark.VideoAction benchmarkAction;
         boolean swapTextureLogged, hasUpdatedFrame;
@@ -1121,7 +1125,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             if (videoView == null) {
                 // A retained cached page can replace its TextureView without
                 // changing source generation. Never inherit the old paint fence.
-                resetGeometryWait();hasUpdatedFrame=false;
+                cancelFrameCompletion();resetGeometryWait();hasUpdatedFrame=false;
                 videoView = new PodObservedTextureView(context, texture -> {
                     hasUpdatedFrame=true;
                     // TextureView calls this from draw(). Releasing its layer or
@@ -1193,7 +1197,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             if(player==null)return;
             if(!hasCachedFrame())revealKeyframe();
             if(!hasCachedFrame())return;
-            if(frameCompletionCancel!=null){frameCompletionCancel.run();frameCompletionCancel=null;}
+            cancelFrameCompletion();
             if(audioPolicy!=null){audioPolicy.close();audioPolicy=null;}
             ExoPlayer previous=player;player=null;
             previous.clearVideoTextureView(videoView);previous.stop();previous.release();
@@ -1205,7 +1209,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             PodSessionPlaybackService.detach(context,this);
             progressObserver=()->{};
             if(this == dragFrom || this == dragTo || presented) endDrag();
-            if(frameCompletionCancel!=null){frameCompletionCancel.run();frameCompletionCancel=null;}
+            cancelFrameCompletion();
             clearKeyframe();
             PodBenchmark.cancelVideo(videoView);
             if(analytics!=null)analytics.stage("release",player,videoView);
@@ -1437,34 +1441,53 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             videoView.setKeepScreenOn(false);
         }
 
+        private void cancelFrameCompletion() {
+            frameCompletionRevision++;
+            if(frameCompletionCancel!=null){frameCompletionCancel.run();frameCompletionCancel=null;}
+            if(frameCompletionRetry!=null){main.removeCallbacks(frameCompletionRetry);frameCompletionRetry=null;}
+        }
+
         void finishDecodedFrame() {
-            if(frameCompletionCancel!=null||!hasRenderedFirstFrame||!hasUpdatedFrame)return;
+            if(frameCompletionCancel!=null||!hasRenderedFirstFrame||!hasUpdatedFrame||player==null)return;
             if(prewarming){
                 // A live decoded surface is ready independently of PixelCopy.
                 // Optional readback must not time out or retire a usable decoder.
                 if(!keyframeOnly)completePrepare();
                 cacheKeyframe();return;
             }
-            long own=generation;
-            // MediaCodec's callback can precede TextureLayer's crop/transform
-            // commit. Read pixels and cross over only after HWUI latches it.
-            frameCompletionCancel=PodAfterPaint.await(videoView,main,1,(frame,time)->{},committed->{
+            if(!hasCachedFrame())return;
+            if(frameCompletionRetry!=null){main.removeCallbacks(frameCompletionRetry);frameCompletionRetry=null;}
+            final long own=generation, attempt=++frameCompletionRevision;
+            final TextureView expectedTexture=videoView;
+            // As with geometry confirmation, await can finish before returning
+            // its handle when the window is detached. Always clear it later.
+            java.util.function.Consumer<Boolean> complete=committed->main.post(()->{
+                if(disposed||generation!=own||videoView!=expectedTexture||frameCompletionRevision!=attempt)return;
+                final long completedAttempt=++frameCompletionRevision;
                 frameCompletionCancel=null;
-                if(disposed||generation!=own)return;
-                if(!committed){main.postDelayed(()->{if(!disposed&&generation==own)finishDecodedFrame();},50);return;}
+                if(!committed){
+                    frameCompletionRetry=()->{
+                        if(disposed||generation!=own||videoView!=expectedTexture||frameCompletionRevision!=completedAttempt)return;
+                        frameCompletionRetry=null;finishDecodedFrame();
+                    };
+                    main.postDelayed(frameCompletionRetry,50);return;
+                }
                 if(prewarming)cacheKeyframe();
                 else if(hasCachedFrame()){clearKeyframe();if(autoplay&&mayPlay())player.play();}
             });
+            try{frameCompletionCancel=PodAfterPaint.await(expectedTexture,main,1,(frame,time)->{},complete);}
+            catch(RuntimeException unavailable){complete.accept(false);}
         }
         boolean hasCachedFrame() { return cachedFrame != null; }
         void cacheKeyframe() {
             if (!prewarming || !hasRenderedFirstFrame || !hasUpdatedFrame || frameBinding == null) return;
-            long own=generation;
+            final long own=generation, attempt=++frameCompletionRevision;
+            final TextureView expectedTexture=videoView;
             frameCompletionCancel=()->{}; // Fences duplicate texture callbacks during readback.
             androidx.media3.common.VideoSize size=player.getVideoSize();
-            keyframes.capture(frameBinding,videoView,size.width,size.height,main,()->!disposed&&generation==own,frame->{
-                if(disposed||generation!=own)return;
-                frameCompletionCancel=null;
+            keyframes.capture(frameBinding,expectedTexture,size.width,size.height,main,()->!disposed&&generation==own&&videoView==expectedTexture&&frameCompletionRevision==attempt,frame->{
+                if(disposed||generation!=own||videoView!=expectedTexture||frameCompletionRevision!=attempt)return;
+                frameCompletionRevision++;frameCompletionCancel=null;
                 if(frame==null&&keyframeOnly){failPrepare(this,player,own,"prepare_failed","keyframe_copy_failed",false);return;}
                 if(frame!=null)frame.pixelAspectRatio=size.pixelWidthHeightRatio;
                 completePrepare();
@@ -1556,6 +1579,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                     .put("presented", presented)
                     .put("hasCachedFirstFrame",hasCachedFrame()).put("keyframeAvailable",frameBinding!=null&&keyframes.get(frameBinding)!=null)
                     .put("geometryReady",geometryReady).put("geometryWaitExpired",geometryWaitExpired)
+                    .put("frameHandoffPending",!prewarming&&hasCachedFrame()&&(frameCompletionCancel!=null||frameCompletionRetry!=null))
                     .put("hasRenderedFirstFrame", hasRenderedFirstFrame)
                     .put("sourceGeneration",generation).put("completedLoops", completedLoops).put("loop", player!=null && player.getRepeatMode()==Player.REPEAT_MODE_ONE).put("speed", player==null?1:player.getPlaybackParameters().speed)
                     .put("targetBufferBytes", TARGET_BUFFER_BYTES));
