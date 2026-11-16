@@ -29,6 +29,13 @@ public final class PodVideoPlaybackService extends MediaSessionService {
         videoAnalytics=next;
         if(player!=null&&next!=null){player.addAnalyticsListener(next);player.addAnalyticsListener(next.playbackStats);}
     }
+    private PodVideoAdmissionRetry admissionRetry;
+    PodVideoAdmissionRetry beginAdmissionRecovery(ExoPlayer expected){
+        if(expected!=player)throw new IllegalStateException("video_owner_changed");
+        cancelAdmissionRecovery();
+        admissionRetry=new PodVideoAdmissionRetry(expected);return admissionRetry;
+    }
+    void cancelAdmissionRecovery(){if(admissionRetry!=null){admissionRetry.close();admissionRetry=null;}}
     private PodMediaAudioPolicy audioPolicy;
     private PodVideoAudioStop audioStop;
     PodVideoAudioStop audioStop() { return audioStop; }
@@ -55,13 +62,13 @@ public final class PodVideoPlaybackService extends MediaSessionService {
         addSession(session);
     }
     @Override public MediaSession onGetSession(MediaSession.ControllerInfo controllerInfo) { return session; }
-    @Override public int onStartCommand(Intent intent,int flags,int id) { if (!PodTakeover.ready(this)) { stopSelf(); return Service.START_NOT_STICKY; } if(intent!=null&&ACTION_STOP.equals(intent.getAction())) { if(player!=null)player.stop(); stopForeground(true);stopSelf(); return Service.START_NOT_STICKY; }
+    @Override public int onStartCommand(Intent intent,int flags,int id) { if (!PodTakeover.ready(this)) { stopSelf(); return Service.START_NOT_STICKY; } if(intent!=null&&ACTION_STOP.equals(intent.getAction())) { cancelAdmissionRecovery();if(player!=null)player.stop(); stopForeground(true);stopSelf(); return Service.START_NOT_STICKY; }
         PendingIntent stop=PendingIntent.getService(this,0,new Intent(this,PodVideoPlaybackService.class).setAction(ACTION_STOP),PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);
         Notification notification=new Notification.Builder(this,"pod_video").setSmallIcon(android.R.drawable.ic_media_play).setContentTitle("WatchRSS").setContentText("正在播放视频").setOngoing(true).addAction(new Notification.Action.Builder(android.R.drawable.ic_media_pause,"停止",stop).build()).build();
         startForeground(1907,notification);
         super.onStartCommand(intent,flags,id);
         return Service.START_NOT_STICKY; }
     @Override public void onTaskRemoved(Intent rootIntent) { if(player==null||!player.getPlayWhenReady()) stopSelf(); }
-    @Override public void onDestroy() { stopForeground(true);if(audioPolicy!=null)audioPolicy.close();audioPolicy=null;if(session!=null)session.release(); if(player!=null)player.release();observeVideo(null); session=null;player=null;super.onDestroy(); }
+    @Override public void onDestroy() { cancelAdmissionRecovery();stopForeground(true);if(audioPolicy!=null)audioPolicy.close();audioPolicy=null;if(session!=null)session.release(); if(player!=null)player.release();observeVideo(null); session=null;player=null;super.onDestroy(); }
     @Override public IBinder onBind(Intent intent) { if (!PodTakeover.ready(this)) return null; if ("dev.podjs.runtime.BIND_VIDEO".equals(intent.getAction())) return localBinder; return super.onBind(intent); }
 }

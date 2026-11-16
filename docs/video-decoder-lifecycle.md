@@ -50,3 +50,15 @@ A CURRENT waiter requests main-lane speculative reclamation without releasing
 any CURRENT owner. Actual codec factory failures keep the existing capability
 fallback policy. Successful release returns a permit once even if stop failed;
 failed release retains the physical reservation until release is confirmed.
+
+Legacy admission recovery belongs to `PodVideoPlaybackService`, not the view's
+lifetime. The foreground listener handles `AdmissionDenied` before recording
+or publishing failure, preserving player, MediaSource and source generation.
+One service-owned retry checks for a physically returned gate permit every
+100 ms, then prepares that same player without setting its source again.
+Pause, lifecycle suspension and retirement remove the scheduled work; explicit
+play may resume the still-authorized source. Stop, source replacement and service
+destruction close the old retry. Generation and recovery identity guard late
+foreground callbacks. A permitted background handoff detaches foreground views
+and callbacks while the service retains the existing player and its recovery
+listener. Background MediaSession pause/stop must also suppress pending retries.
