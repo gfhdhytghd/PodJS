@@ -29,7 +29,13 @@ mkdir -p "$rootfs/workspace" "$rootfs/native" "$rootfs/proc" "$rootfs/dev" "$roo
 touch "$rootfs/native/libpodjs_runtime.a"
 for name in null zero random urandom; do touch "$rootfs/dev/$name"; done
 rm -f "$rootfs/tmp/podjs-swift-unit.xml"
-scratch='podjs-swift-build'
+# SwiftPM does not track the external archive passed through -Xlinker.
+# A content key forces a new link when Rust changes without a header change.
+native_key=$(sha256sum target/debug/libpodjs_runtime.a | cut -d' ' -f1)
+printf 'Swift native archive SHA256: %s\n' "$native_key"
+printf 'Swift framework revision: '
+git rev-parse HEAD
+scratch="podjs-swift-build-$native_key"
 if [[ ${PODJS_TEST_FRESH:-0} == 1 ]]; then scratch="podjs-swift-fresh-$$"; fi
 set +e
 tools=$(cd "$(dirname "$0")" && pwd)

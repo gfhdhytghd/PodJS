@@ -56,3 +56,7 @@ An unprivileged user/mount namespace runs with read-only source binds,
 dropped capabilities, two Swift build jobs and the caller capmem cgroup.
 The SDK and incremental Swift scratch files stay in the reclaimable cache.
 No physical device nodes are bound into that namespace.
+
+Swift scratch paths include the external Rust archive content hash. SwiftPM
+tracks its package sources and flags; a Rust-only change therefore also forces
+a new native link rather than reusing an old XCTest binary.
