@@ -64,3 +64,11 @@ a new native link rather than reusing an old XCTest binary.
 The notebook model/data/resources unit children of `test:scaffold` run as
 explicit manifest entries. Scaffold install/package roundtrips stay outside
 the unit gate. Unknown owned unit files are discovered across the repository.
+
+Setup restores the notebook runtime links with its existing link script.
+Cargo uses `--no-fail-fast` to collect all workspace binaries on failures.
+Recorded build/setup durations cover instrumented helper/Gradle/fixture work;
+the test command remainder includes uninstrumented startup and Cargo/Swift
+compilation. It is an envelope, not a pure test CPU duration.
+App `--repo-only` is labelled `app-repo-checks`; it is a diagnostic scope, not
+the complete framework-plus-app gate.

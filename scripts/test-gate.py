@@ -28,7 +28,7 @@ parser.add_argument('--inside', action='store_true', help=argparse.SUPPRESS)
 args = parser.parse_args()
 project = args.project.resolve()
 app = project != ROOT
-label='unit-checks' if args.tests_only else 'lint-checks' if args.lint_only else 'test-gate'
+label='unit-checks' if args.tests_only else 'lint-checks' if args.lint_only else ('app-repo-checks' if app and args.repo_only else 'test-gate')
 out = (args.output or project / '.cache/test-gate/runs' / time.strftime('%Y%m%d-%H%M%S')).resolve()
 out.mkdir(parents=True, exist_ok=True)
 if not args.inside:
@@ -81,6 +81,8 @@ start = entered
 manifest = json.loads((ROOT / 'scripts/unit-commands.json').read_text())
 with (out/'setup.log').open('w') as log:
     ready=subprocess.run(['bun',str(ROOT/'scripts/link-pocket.ts')],cwd=ROOT,env=env,stdout=log,stderr=subprocess.STDOUT).returncode
+    if ready==0:
+        ready=subprocess.run(['bun',str(ROOT/'examples/watch-notebook/scripts/link-framework.ts')],cwd=ROOT,env=env,stdout=log,stderr=subprocess.STDOUT).returncode
     if ready==0:
         ready=subprocess.run(['bun','-e',"for(const name of ['@babel/core','@babel/preset-typescript','babel-preset-solid','solid-js'])Bun.resolveSync(name,process.cwd());"],cwd=ROOT/'vendor/pocketjs',env=env,stdout=log,stderr=subprocess.STDOUT).returncode
     if ready==0 and app:

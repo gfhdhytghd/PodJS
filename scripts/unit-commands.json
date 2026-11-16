@@ -608,7 +608,8 @@
       "argv": [
         "cargo",
         "test",
-        "--workspace"
+        "--workspace",
+        "--no-fail-fast"
       ],
       "parallel": false,
       "origin": "package.json:test"
