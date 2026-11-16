@@ -11,6 +11,8 @@ import androidx.media3.exoplayer.ExoPlayer;
 import androidx.test.core.app.ApplicationProvider;
 import java.lang.reflect.*;
 import java.util.Map;
+import java.util.Set;
+import java.util.LinkedHashSet;
 import org.json.JSONObject;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -18,6 +20,7 @@ import org.robolectric.*;
 import org.robolectric.annotation.*;
 
 /** Every pager sample contains only selected pages and the opaque black base. */
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 @RunWith(RobolectricTestRunner.class) @Config(sdk=30) @LooperMode(LooperMode.Mode.PAUSED)
 public class PodVideoSwipeGhostTest {
  static Field field(Class<?> t,String n)throws Exception{Field f=t.getDeclaredField(n);f.setAccessible(true);return f;}
@@ -54,19 +57,31 @@ public class PodVideoSwipeGhostTest {
    for(String id:new String[]{"old","next","other"}){
     Object slot=ctor.newInstance(service,id);slots.put(id,slot);ExoPlayer player=new ExoPlayer.Builder(c).build();field(t,"player").set(slot,player);field(t,"audioPolicy").set(slot,new PodMediaAudioPolicy(c,player));field(t,"hasRenderedFirstFrame").setBoolean(slot,id.equals("old"));field(t,"hasUpdatedFrame").setBoolean(slot,id.equals("old"));field(t,"prewarming").setBoolean(slot,!id.equals("old"));Reply r=new Reply();service.dispatch("video.session.setBounds",new JSONObject().put("sessionId",id).put("bounds",bounds),r);assertNull(r.error);
    }
-   Object next=slots.get("next");
+   Object next=slots.get("next");Set<String> actualTransforms=new LinkedHashSet<>();int samples=0;
    for(int[] size:new int[][]{{320,180},{180,320},{240,240}})for(String mode:new String[]{"standard","expanded","shrunk"})for(int angle:new int[]{0,90,180,270}){
-    ImageView picture=new ImageView(c);picture.setScaleType(ImageView.ScaleType.MATRIX);Bitmap pixels=Bitmap.createBitmap(size[0],size[1],Bitmap.Config.ARGB_8888);picture.setImageBitmap(pixels);parent.addView(picture,new FrameLayout.LayoutParams(466,466));PodVideoKeyframes.Frame frame=new PodVideoKeyframes.Frame(pixels);frame.pins=1;field(t,"cachedFrame").set(next,frame);field(t,"keyframeView").set(next,picture);
-    service.dispatch("video.session.setTransform",new JSONObject().put("sessionId","next").put("scaleMode",mode).put("rotationDeg",angle),new Reply());
+    ImageView picture=new ImageView(c);picture.setScaleType(ImageView.ScaleType.MATRIX);Bitmap pixels=Bitmap.createBitmap(size[0],size[1],Bitmap.Config.ARGB_8888);picture.setImageBitmap(pixels);parent.addView(picture,new FrameLayout.LayoutParams((FrameLayout.LayoutParams)((View)field(t,"videoView").get(next)).getLayoutParams()));picture.layout(0,0,picture.getLayoutParams().width,picture.getLayoutParams().height);PodVideoKeyframes.Frame frame=new PodVideoKeyframes.Frame(pixels);frame.pins=1;field(t,"cachedFrame").set(next,frame);field(t,"keyframeView").set(next,picture);
+    service.dispatch("video.session.setTransform",new JSONObject().put("sessionId","old").put("scaleMode",mode).put("rotationDeg",angle),new Reply());
     for(String direction:new String[]{"up","down"})for(int i=0;i<=20;i++){
      Reply r=new Reply();service.dispatch("video.session.transition",new JSONObject().put("fromSessionId","old").put("toSessionId","next").put("direction",direction).put("progress",i/20d).put("bounds",bounds),r);assertNull(r.error);
+     for(String id:new String[]{"old","next"}){
+      Object slot=slots.get(id);assertEquals(mode,field(t,"scaleMode").get(slot));assertEquals(angle,field(t,"rotationDeg").getFloat(slot),.001);assertEquals(angle,field(t,"scaleRotationDeg").getFloat(slot),.001);
+     }
+     actualTransforms.add(field(t,"scaleMode").get(next)+"/"+field(t,"rotationDeg").getFloat(next));samples++;
      assertTrue("cached page keeps the native circular clip",picture.getClipToOutline());assertSame(((View)field(t,"videoView").get(next)).getOutlineProvider(),picture.getOutlineProvider());
-     float[] axes={0,0,1,0,0,1};picture.getImageMatrix().mapPoints(axes);double sx=Math.hypot(axes[2]-axes[0],axes[3]-axes[1]),sy=Math.hypot(axes[4]-axes[0],axes[5]-axes[1]);assertEquals("decoded pixels keep equal x/y scale",sx,sy,.001);
+     float[] axes={0,0,1,0,0,1};picture.getImageMatrix().mapPoints(axes);double sx=Math.hypot(axes[2]-axes[0],axes[3]-axes[1]),sy=Math.hypot(axes[4]-axes[0],axes[5]-axes[1]);double pixelX=sx*picture.getDrawable().getIntrinsicWidth()/size[0],pixelY=sy*picture.getDrawable().getIntrinsicHeight()/size[1];
+     FrameLayout.LayoutParams viewport=(FrameLayout.LayoutParams)picture.getLayoutParams();
+     double rotatedW=angle%180==0?size[0]:size[1],rotatedH=angle%180==0?size[1]:size[0];
+     double expected=mode.equals("expanded")?Math.max(viewport.width/rotatedW,viewport.height/rotatedH):Math.min(viewport.width/rotatedW,viewport.height/rotatedH);
+     if(mode.equals("shrunk"))expected=Math.min(expected,Math.min(viewport.width,viewport.height)/Math.hypot(size[0],size[1]));
+     assertEquals("decoded pixels keep equal x/y scale",pixelX,pixelY,.001);assertEquals("actual mode changes destination pixel scale",expected,pixelX,.001);
+     assertEquals("actual angle changes the horizontal pixel axis",Math.cos(Math.toRadians(angle)),(axes[2]-axes[0])/sx,.001);assertEquals(Math.sin(Math.toRadians(angle)),(axes[3]-axes[1])/sx,.001);
      Method hide=t.getDeclaredMethod("hideOffscreen");hide.setAccessible(true);hide.invoke(slots.get("other"));
      View third=(View)field(t,"videoView").get(slots.get("other"));assertNotEquals("late standby callback cannot expose a third page",View.VISIBLE,third.getVisibility());assertTrue(parent.indexOfChild(picture)>parent.indexOfChild(third));int images=0;for(int j=0;j<parent.getChildCount();j++)if(parent.getChildAt(j) instanceof ImageView)images++;assertEquals(1,images);
     }
     Method clear=t.getDeclaredMethod("clearKeyframe");clear.setAccessible(true);clear.invoke(next);
    }
+   assertEquals(12,actualTransforms.size());assertEquals(1512,samples);
+   System.out.println("DYSWIPE_R2 actualTransforms="+actualTransforms+" samples="+samples);
   }finally{service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();}
  }
 }

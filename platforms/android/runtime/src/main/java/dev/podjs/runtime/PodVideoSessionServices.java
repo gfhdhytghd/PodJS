@@ -50,6 +50,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     static final int TARGET_BUFFER_BYTES = 4 * 1024 * 1024;
     static final long PREWARM_TIMEOUT_MS = 2_500L;
     static final long PREWARM_MAX_LIFETIME_MS = 10_000L;
+    static final long GEOMETRY_WAIT_MAX_MS = 1_000L;
     private static final float PREWARM_ALPHA = 0.01f;
     private static final String CAPABILITY = "media.video.sessions";
 
@@ -571,7 +572,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         Session session=require(args);session.requirePlayer();
         String key=PodVideoFrameCache.key(args),binding=PodVideoFrameCache.binding(args.getJSONObject("source"),mediaPrefixCache);
         if(session.prewarming||!binding.equals(PodVideoFrameCache.binding(session.frameSource,mediaPrefixCache)))throw new IllegalStateException("frame_source_changed");
-        android.graphics.Bitmap frame=PodVideoFrameCache.capture(session.videoView,session.hasRenderedFirstFrame,session.generation,args);
+        android.graphics.Bitmap frame=PodVideoFrameCache.capture(session.videoView,session.hasRenderedFirstFrame&&session.geometryReady,session.generation,args);
         long generation=session.generation,position=session.player.getCurrentPosition();
         try{PodVideoFrameCache.IO.execute(()->{try{JSONObject result=new PodVideoFrameCache(mediaRoot).save(key,binding,generation,position,frame);main.post(()->callback.complete(result));}catch(Exception error){main.post(()->callback.fail("frame_unavailable","Frame snapshot unavailable"));}finally{frame.recycle();}});}catch(java.util.concurrent.RejectedExecutionException busy){frame.recycle();throw new IllegalStateException("frame_queue_busy");}
     }
@@ -1104,8 +1105,9 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         PodBenchmark.VideoAction benchmarkAction;
         boolean swapTextureLogged, hasUpdatedFrame;
         boolean benchmarkFramePending;
-        boolean geometryReady;
-        Runnable geometryCommitCancel;
+        boolean geometryReady, geometryWaitExpired;
+        long geometryWaitRevision;
+        Runnable geometryCommitCancel, geometryDeadline;
 
         Session(String id) { shellCreated++; this.id = id; attachViews(parent); }
 
@@ -1119,8 +1121,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             if (videoView == null) {
                 // A retained cached page can replace its TextureView without
                 // changing source generation. Never inherit the old paint fence.
-                geometryReady=false;hasUpdatedFrame=false;
-                if(geometryCommitCancel!=null){geometryCommitCancel.run();geometryCommitCancel=null;}
+                resetGeometryWait();hasUpdatedFrame=false;
                 videoView = new PodObservedTextureView(context, texture -> {
                     hasUpdatedFrame=true;
                     // TextureView calls this from draw(). Releasing its layer or
@@ -1220,8 +1221,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                 if(analytics!=null)analytics.retireDecoder();
             }
             if (decoderLease) { decoderLease = false; decoderBudget.release(); }
-            hasRenderedFirstFrame = false;hasUpdatedFrame=false;geometryReady=false;
-            if(geometryCommitCancel!=null){geometryCommitCancel.run();geometryCommitCancel=null;}
+            hasRenderedFirstFrame = false;hasUpdatedFrame=false;resetGeometryWait();
             if (videoView != null) videoView.setKeepScreenOn(false);
         }
 
@@ -1311,21 +1311,59 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             hideOffscreen();
         }
 
-        // A codec receipt can precede HWUI applying the aspect matrix. Keep
-        // decoding behind black until that exact generation crosses a paint.
+        private void cancelGeometryAttempt() {
+            geometryWaitRevision++;
+            if(geometryCommitCancel!=null){geometryCommitCancel.run();geometryCommitCancel=null;}
+        }
+
+        private void resetGeometryWait() {
+            cancelGeometryAttempt();
+            if(geometryDeadline!=null){main.removeCallbacks(geometryDeadline);geometryDeadline=null;}
+            geometryReady=false;geometryWaitExpired=false;
+        }
+
+        private void revealGeometry() {
+            if(this==dragFrom||this==dragTo){dragTo.raisePresented();dragFrom.raisePresented();}
+            else if(presented&&!prewarming)showPresented();
+        }
+
+        // Bound the black cover separately from proof of a committed transform.
+        // Fallback permits display, but never authorizes frame capture/telemetry.
         void confirmGeometry() {
             if(geometryReady||geometryCommitCancel!=null||player==null||!hasRenderedFirstFrame||!hasUpdatedFrame)return;
             androidx.media3.common.VideoSize size=player.getVideoSize();
             if(size.width<=0||size.height<=0)return;
-            appliedVideoMatrix=null;fitVideo();long own=generation;
-            geometryCommitCancel=PodAfterPaint.await(videoView,main,1,(frame,time)->{},committed->{
-                geometryCommitCancel=null;
-                if(disposed||generation!=own)return;
-                if(!committed){main.postDelayed(()->{if(!disposed&&generation==own)confirmGeometry();},16);return;}
-                geometryReady=true;
-                if(this==dragFrom||this==dragTo){dragTo.raisePresented();dragFrom.raisePresented();}
-                else if(presented&&!prewarming)showPresented();
+            final TextureView expectedTexture=videoView;
+            final long own=generation;
+            if(geometryDeadline==null&&!geometryWaitExpired){
+                geometryDeadline=()->{
+                    geometryDeadline=null;
+                    if(disposed||generation!=own||videoView!=expectedTexture||geometryReady)return;
+                    geometryWaitExpired=true;cancelGeometryAttempt();revealGeometry();
+                };
+                main.postDelayed(geometryDeadline,GEOMETRY_WAIT_MAX_MS);
+            }
+            appliedVideoMatrix=null;fitVideo();
+            final long attempt=++geometryWaitRevision;
+            // PodAfterPaint can complete synchronously for a hidden/detached
+            // view. Post every completion so the returned handle is assigned
+            // before it is cleared; fence duplicate or obsolete completions.
+            java.util.function.Consumer<Boolean> complete=committed->main.post(()->{
+                if(disposed||generation!=own||videoView!=expectedTexture||geometryWaitRevision!=attempt)return;
+                geometryWaitRevision++;geometryCommitCancel=null;
+                if(!committed){
+                    final long completedAttempt=geometryWaitRevision;
+                    if(!geometryWaitExpired)main.postDelayed(()->{
+                        if(!disposed&&generation==own&&videoView==expectedTexture&&geometryWaitRevision==completedAttempt&&!geometryWaitExpired)confirmGeometry();
+                    },16);
+                    return;
+                }
+                geometryReady=true;geometryWaitExpired=false;
+                if(geometryDeadline!=null){main.removeCallbacks(geometryDeadline);geometryDeadline=null;}
+                revealGeometry();
             });
+            try{geometryCommitCancel=PodAfterPaint.await(expectedTexture,main,1,(frame,time)->{},complete);}
+            catch(RuntimeException unavailable){complete.accept(false);}
         }
 
         void showPresented() {
@@ -1357,7 +1395,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             for(int i=0;i<parent.getChildCount();i++)if(parent.getChildAt(i) instanceof PodRuntimeView)runtime=parent.getChildAt(i);
             parent.bringChildToFront(background);
             parent.bringChildToFront(videoView);
-            if(!geometryReady)parent.bringChildToFront(background);
+            if(!geometryReady&&!geometryWaitExpired)parent.bringChildToFront(background);
             if(keyframeView!=null)parent.bringChildToFront(keyframeView);
             if(runtime!=null)parent.bringChildToFront(runtime);
             if(mediaPrefixCache!=null&&mediaPrefixCache.startupPreview!=null)mediaPrefixCache.startupPreview.raise();
@@ -1517,6 +1555,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                     .put("prewarming", prewarming)
                     .put("presented", presented)
                     .put("hasCachedFirstFrame",hasCachedFrame()).put("keyframeAvailable",frameBinding!=null&&keyframes.get(frameBinding)!=null)
+                    .put("geometryReady",geometryReady).put("geometryWaitExpired",geometryWaitExpired)
                     .put("hasRenderedFirstFrame", hasRenderedFirstFrame)
                     .put("sourceGeneration",generation).put("completedLoops", completedLoops).put("loop", player!=null && player.getRepeatMode()==Player.REPEAT_MODE_ONE).put("speed", player==null?1:player.getPlaybackParameters().speed)
                     .put("targetBufferBytes", TARGET_BUFFER_BYTES));
