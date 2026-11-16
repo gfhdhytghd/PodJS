@@ -25,6 +25,10 @@ final class PodVideoCodecGate {
         while(!pending.isEmpty()&&seen.size()<64){Throwable next=pending.removeFirst();if(!seen.add(next))continue;
             if(marker.isInstance(next))return true;if(next.getCause()!=null)pending.add(next.getCause());
             for(Throwable suppressed:next.getSuppressed())pending.add(suppressed);
+            if(next instanceof androidx.media3.exoplayer.mediacodec.MediaCodecRenderer.DecoderInitializationException){
+                Throwable fallback=((androidx.media3.exoplayer.mediacodec.MediaCodecRenderer.DecoderInitializationException)next).fallbackDecoderInitializationException;
+                if(fallback!=null)pending.add(fallback);
+            }
         }return false;
     }
     static final PodVideoCodecGate PROCESS=new PodVideoCodecGate();

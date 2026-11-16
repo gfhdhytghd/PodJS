@@ -356,7 +356,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         }
         if (!decoderBudget.acquire()) {
             if (created) { sessions.remove(id); session.close(); }
-            throw new IllegalStateException("video_decoder_limit");
+            throw new PodVideoCodecGate.AdmissionDenied(prewarming?PodVideoCodecGate.PREWARM:PodVideoCodecGate.CURRENT);
         }
         if(!prewarming)PodBenchmark.startup(analytics.startupSeq,"prepare_admitted");
         session.decoderLease = true;
@@ -557,19 +557,19 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         if(!session.hasCachedFrame())session.revealKeyframe();
         session.state=session.prewarming&&session.hasCachedFrame()?"prewarmed":"preparing";
         if(session.prewarming){session.hideOffscreen();if(session.hasCachedFrame())session.completePrepare();}
-        else {session.showPresented();mediaGate(!lifecyclePaused);}
+        else {session.showPresented();mediaGate(session.mayPlay());}
         try{observer.stateChanged(session.snapshot());}catch(Exception ignored){}
         if(!session.prewarming)PodVideoCodecGate.PROCESS.requestReclaim(session,PodVideoCodecGate.PREWARM);
         session.admissionRetry=new Runnable(){public void run(){
             if(!session.matches(expected,generation)||!session.admissionDeferred)return;
-            if(lifecyclePaused||PodVideoCodecGate.PROCESS.live()>=PodVideoCodecGate.MAXIMUM){
+            if(!session.mayPlay()||PodVideoCodecGate.PROCESS.live()>=(session.keyframeOnly?2:PodVideoCodecGate.MAXIMUM)){
                 main.postDelayed(this,100);return;
             }
             session.admissionRetry=null;session.admissionDeferred=false;
             // prepare() retries the same Media3 source after an init refusal.
             // Do not replace the player, seek, publish an error, or write capacity.
             expected.prepare();
-            expected.setPlayWhenReady(!session.prewarming&&session.autoplay&&!lifecyclePaused&&!session.hasCachedFrame());
+            expected.setPlayWhenReady(!session.prewarming&&session.autoplay&&session.mayPlay()&&!session.hasCachedFrame());
             if(session.prewarming&&session.prepareCallback!=null)session.armPrewarmTimeout(expected,generation);
         }};
         main.postDelayed(session.admissionRetry,100);

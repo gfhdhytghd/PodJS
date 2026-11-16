@@ -116,6 +116,16 @@ public class PodVideoAdmissionTest {
             field(PodVideoSessionServices.class,"lifecyclePaused").setBoolean(f.service,false);retry.run();assertEquals(false,f.get("admissionDeferred"));
         }
     }
+    @Test public void admittedBackgroundCurrentCanRetryWithoutChangingUserIntent()throws Exception {
+        try(Fixture f=new Fixture()) {
+            f.deliver(f.denial());f.promote();f.free();
+            field(f.session.getClass(),"backgroundPlayback").setBoolean(f.session,true);
+            field(f.session.getClass(),"autoplay").setBoolean(f.session,true);
+            field(PodVideoSessionServices.class,"lifecyclePaused").setBoolean(f.service,true);
+            ((Runnable)f.get("admissionRetry")).run();assertEquals(false,f.get("admissionDeferred"));
+            assertTrue(f.player.getPlayWhenReady());assertSame(f.player,f.get("player"));f.unchangedCapacity();
+        }
+    }
     @Test public void releasedSessionCannotResurrectFromQueuedRetryOrLateError()throws Exception {
         try(Fixture f=new Fixture()) {
             Throwable denied=f.denial();f.deliver(denied);Runnable retry=(Runnable)f.get("admissionRetry");
@@ -130,6 +140,18 @@ public class PodVideoAdmissionTest {
             catch(java.io.IOException expected){failure=expected;}
             assertTrue(PodVideoCodecGate.isFactoryFailure(failure));assertFalse(PodVideoCodecGate.isAdmissionDenied(failure));
             f.deliver(failure);assertEquals(1,new PodVideoDecoderCapabilities(f.context).cachedDeviceLimit(3));assertEquals(1,f.budget.limit());assertEquals("decode_error",f.prepare.error);
+        }
+    }
+    @Test public void fallbackDecoderRefusalCannotBecomeAnOrdinaryFactoryFailure()throws Exception {
+        try(Fixture f=new Fixture()) {
+            Class<androidx.media3.exoplayer.mediacodec.MediaCodecRenderer.DecoderInitializationException> type=androidx.media3.exoplayer.mediacodec.MediaCodecRenderer.DecoderInitializationException.class;
+            Format format=new Format.Builder().setSampleMimeType("video/avc").build();
+            Exception actualFailure=new java.io.IOException("first_codec_failure");actualFailure.addSuppressed(new PodVideoCodecGate.FactoryFailure());
+            Object first=new androidx.media3.exoplayer.mediacodec.MediaCodecRenderer.DecoderInitializationException(format,actualFailure,false,1);
+            Object fallback=new androidx.media3.exoplayer.mediacodec.MediaCodecRenderer.DecoderInitializationException(format,f.denial(),false,1);
+            Method copy=type.getDeclaredMethod("copyWithFallbackException",type);copy.setAccessible(true);
+            Throwable combined=(Throwable)copy.invoke(first,fallback);assertTrue(PodVideoCodecGate.isFactoryFailure(combined));assertTrue(PodVideoCodecGate.isAdmissionDenied(combined));
+            f.promote();f.deliver(combined);f.assertDeferred();
         }
     }
     @Test public void admissionMarkerSurvivesMedia3SuppressedAndCyclicCauses() {

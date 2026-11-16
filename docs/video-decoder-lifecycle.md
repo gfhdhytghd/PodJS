@@ -39,3 +39,14 @@ ImageView, or a memory-budget entry for it when combining the patches. Decoder
 concurrency does not account for all Graphics memory and does not prove a
 128 MB process-PSS limit. The memory budget must never directly close the active
 player to meet that limit.
+
+A full gate returns typed `AdmissionDenied`, including Media3 cause, suppressed,
+and fallback-decoder chains. It is a transient scheduling signal. It must never
+publish a terminal decode error, persist a device capacity, or reset a player
+that was promoted before the denial callback arrived. Sessions keep their
+selected identity and retry that player when a physical permit becomes free;
+release, supersession and lifecycle permission cancel or defer that retry.
+A CURRENT waiter requests main-lane speculative reclamation without releasing
+any CURRENT owner. Actual codec factory failures keep the existing capability
+fallback policy. Successful release returns a permit once even if stop failed;
+failed release retains the physical reservation until release is confirmed.
