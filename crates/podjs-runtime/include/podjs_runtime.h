@@ -428,6 +428,11 @@ uint64_t pod_render_snapshot_font_epoch(const PodRenderSnapshot*, uint32_t);
 int32_t pod_render_snapshot_glyph(PodRenderSnapshot*, uint32_t, uint32_t, PodGlyphView*);
 int32_t pod_render_snapshot_rgba(const PodRenderSnapshot*, uint32_t, uint8_t*, size_t);
 
+void pod_runtime_bytes_enable(PodRuntime*);
+const uint8_t* pod_runtime_bytes_peek(PodRuntime*, uint32_t, size_t*);
+uint32_t pod_runtime_bytes_put(PodRuntime*, const uint8_t*, size_t);
+void pod_runtime_bytes_drop(PodRuntime*, uint32_t);
+const char* pod_sync_files_command_bytes(PodSyncFiles*,const uint8_t*,size_t,const uint8_t*,size_t);
 #ifdef __cplusplus
 }
 #endif

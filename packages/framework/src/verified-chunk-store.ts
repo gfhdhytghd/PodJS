@@ -22,7 +22,7 @@ export class VerifiedChunkError extends Error {
  constructor(readonly code:string,readonly detail?:string){super(code);this.name='VerifiedChunkError';}
 }
 export class VerifiedChunkStore {
- constructor(private readonly host:ChunkHost){}
+ constructor(private readonly host:ChunkHost,private readonly byteHost?:<T>(method:string,args:Record<string,unknown>,bytes:Uint8Array)=>Promise<T>){}
  private async invoke<T>(method:string,args:Record<string,unknown>):Promise<T>{const value=await this.host<T>(method,args);if(value&&typeof value==='object'&&'error' in value&&typeof value.error==='string')throw new VerifiedChunkError(value.error,'detail' in value?String(value.detail):undefined);return value;}
  async runtime():Promise<VerifiedChunkRuntime|undefined>{
   try{const r=await this.invoke<VerifiedChunkRuntime>('file.resumable.status',{operation:'probe'});
@@ -44,7 +44,9 @@ export class VerifiedChunkStore {
  async stage(lease:ObjectLease,object:VerifiedObject,index:number,bytes:Uint8Array,request:{id:string;digest:string}):Promise<VerifiedObjectStatus>{
   validateVerifiedObject(object);
   if(!Number.isSafeInteger(index)||index<0||index>=object.chunkHashes.length||bytes.length!==Math.min(VERIFIED_CHUNK_BYTES,object.size-index*VERIFIED_CHUNK_BYTES)||!/^[0-9a-f]{32}$/.test(request.id)||!hex(request.digest))throw Error('invalid_verified_chunk');
-  return this.invoke('file.resumable.stage',{...lease,object,index,dataBase64:encodeBase64(bytes),bindingId:request.id,requestDigest:request.digest});
+  const args={...lease,object,index,bindingId:request.id,requestDigest:request.digest};
+  if(this.byteHost){const value=await this.byteHost<VerifiedObjectStatus>('file.resumable.stage',args,bytes);if(value&&typeof value==='object'&&'error' in value&&typeof value.error==='string')throw new VerifiedChunkError(value.error,'detail' in value?String(value.detail):undefined);return value;}
+  return this.invoke('file.resumable.stage',{...args,dataBase64:encodeBase64(bytes)});
  }
  async finalize(lease:ObjectLease,object:VerifiedObject,path?:string):Promise<VerifiedPublication>{
   validateVerifiedObject(object);const r=await this.invoke<VerifiedPublication>('file.resumable.finalize',{...lease,object,...(path===undefined?{}:{path})});

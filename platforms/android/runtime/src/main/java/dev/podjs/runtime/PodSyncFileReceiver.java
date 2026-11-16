@@ -75,6 +75,17 @@ public final class PodSyncFileReceiver implements AutoCloseable {
         }
     }
 
+    /** Same durable receiver and app quota lock as command; no Base64 payload. */
+    public synchronized String commandBytes(String json,byte[] data) throws IOException {
+        if(handle==0)throw new IllegalStateException("Receiver closed");
+        if(json==null||json.length()>1024||data==null||data.length>65536)throw new IllegalArgumentException("Invalid binary chunk");
+        byte[] metadata=json.getBytes(StandardCharsets.UTF_8);
+        if(metadata.length==0||metadata.length>1024)throw new IllegalArgumentException("Invalid binary metadata");
+        try(RandomAccessFile quota=new RandomAccessFile(quotaPath,"rw");FileLock quotaLock=quotaLock(quota)){
+            return new String(nativeCommandBytes(handle,metadata,data),StandardCharsets.UTF_8);
+        }
+    }
+    private static native byte[] nativeCommandBytes(long handle,byte[] metadata,byte[] data);
     private static FileLock quotaLock(RandomAccessFile file) throws IOException {
         try {
             FileLock lock = file.getChannel().tryLock();

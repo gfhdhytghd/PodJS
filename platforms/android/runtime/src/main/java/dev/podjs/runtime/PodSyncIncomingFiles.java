@@ -5,7 +5,6 @@ import android.content.Context;
 import android.database.Cursor;
 import android.database.DatabaseUtils;
 import android.database.sqlite.SQLiteDatabase;
-import android.util.Base64;
 import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
@@ -174,7 +173,11 @@ public final class PodSyncIncomingFiles implements Closeable {
     }
     public void chunk(String peer, String id, int index, byte[] bytes) throws Exception {
         if(bytes==null || bytes.length>65536 || index<0) throw new IllegalArgumentException("Invalid file chunk"); byte[] frozen=bytes.clone();
-        locked(() -> { accepted(peer,id); nativeCommand(peer,command("chunk",id).put("index",index).put("data_base64",Base64.encodeToString(frozen,Base64.NO_WRAP))); return null; });
+        locked(() -> { accepted(peer,id);
+            try(PodSyncFileReceiver receiver=new PodSyncFileReceiver(context,storageApp,"peer-"+hash(peer))){
+                JSONObject reply=new JSONObject(receiver.commandBytes(command("chunk",id).put("index",index).toString(),frozen));
+                if(!reply.getBoolean("ok"))throw new IOException(reply.optString("message"));
+            }return null; });
     }
     public Offer finish(String peer, String id) throws Exception {
         return locked(() -> { Offer offer=accepted(peer,id); nativeCommand(peer,command("finish",id)); phase(offer,"complete"); return require(peer,id); });

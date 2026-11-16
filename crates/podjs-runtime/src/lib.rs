@@ -22,6 +22,8 @@ pub mod kv;
 pub mod accessibility_ffi;
 pub mod render_snapshot;
 pub mod byte_codecs;
+mod byte_bridge;
+#[cfg(test)] mod byte_bridge_bench;
 mod raw_json;
 mod register_merge;
 mod cpu_trace;
@@ -226,6 +228,7 @@ pub struct PodRuntimePerfStats {
 
 #[derive(Default)]
 struct PodBridge {
+    bytes: byte_bridge::ByteBridge,
     events: VecDeque<String>,
     service_results_only: bool,
     effects: VecDeque<String>,
@@ -450,6 +453,7 @@ fn mount_pod(
         xml::mount(ctx.clone(), &ns)?;
         json_projection::mount(ctx.clone(), &ns)?;
         text_wrap::mount(ctx.clone(), &ns, surface.clone())?;
+        byte_bridge::install(&ctx, &ns, bridge.clone())?;
         ns.set("decodeBase64", Function::new(ctx.clone(), decode_base64)?)?;
         ns.set("encodeBase64", Function::new(ctx.clone(), encode_base64)?)?;
         ns.set("decodeUtf8", Function::new(ctx.clone(), decode_utf8)?)?;
@@ -738,6 +742,7 @@ pub extern "C" fn pod_runtime_create(config: *const PodRuntimeConfig) -> *mut Po
         None => FsModule::with_quota(Storage::Memory, 16 * 1024 * 1024),
     }));
     let bridge = Rc::new(RefCell::new(PodBridge {
+        bytes: byte_bridge::ByteBridge::default(),
         events: VecDeque::new(),
         service_results_only: false,
         effects: VecDeque::new(),

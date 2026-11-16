@@ -1,7 +1,6 @@
 package dev.podjs.runtime;
 
 import android.content.Context;
-import android.util.Base64;
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
@@ -81,7 +80,8 @@ public final class PodSyncFileSnapshots {
                     long copied=0; int index=0;
                     while((count=readChunk(input,bytes))>0) {
                         copied+=count; if(copied>size) throw new IOException("Snapshot source changed");
-                        command(receiver,operation("chunk",id).put("index",index++).put("data_base64",Base64.encodeToString(bytes,0,count,Base64.NO_WRAP)));
+                        JSONObject reply=new JSONObject(receiver.commandBytes(operation("chunk",id).put("index",index++).toString(),count==bytes.length?bytes:java.util.Arrays.copyOf(bytes,count)));
+                        if(!reply.getBoolean("ok"))throw new IOException(reply.optString("message"));
                     }
                     if(copied!=size) throw new IOException("Snapshot source changed");
                     command(receiver,operation("finish",id)); return manifest;

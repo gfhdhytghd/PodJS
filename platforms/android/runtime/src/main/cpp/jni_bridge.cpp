@@ -346,6 +346,7 @@ const char* capabilities = "[\"input.touch\",\"input.rotary\",\"data.kv\",\"devi
       density, POD_DISPLAY_ROUND, 0, 0, 0, 0, d, capabilities};
   const double runtimeBegan = monoMs();
   auto host = std::make_unique<Host>(); host->runtime = pod_runtime_create(&config);
+  if(host->runtime)pod_runtime_bytes_enable(host->runtime);
   const double runtimeCreated = monoMs();
   if (!host->runtime) {
     ANativeWindow_release(window);
@@ -867,4 +868,37 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativ
       << ",\"mediaPixelCapacityBytes\":" << h->mediaPixels.capacity()
       << ",\"mediaArgbCapacityBytes\":" << h->mediaArgb.capacity() * sizeof(jint) << "}}";
   return env->NewStringUTF(out.str().c_str());
+}
+
+// Called only on the QuickJS owner (main) thread. JNI arrays own worker storage.
+extern "C" JNIEXPORT jbyteArray JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeTakeBytes(JNIEnv* env,jclass,jlong p,jint id){
+  auto* h=reinterpret_cast<Host*>(p);if(!h)return nullptr;
+  size_t size=0;auto bytes=pod_runtime_bytes_peek(h->runtime,uint32_t(id),&size);
+  if(!bytes)return nullptr;
+  auto result=env->NewByteArray(jsize(size));
+  if(result&&size)env->SetByteArrayRegion(result,0,jsize(size),reinterpret_cast<const jbyte*>(bytes));
+  pod_runtime_bytes_drop(h->runtime,uint32_t(id));return result;
+}
+extern "C" JNIEXPORT jint JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePutBytes(JNIEnv* env,jclass,jlong p,jbyteArray input){
+  auto* h=reinterpret_cast<Host*>(p);if(!h||!input)return 0;
+  jsize size=env->GetArrayLength(input);if(size>65536)return 0;
+  if(size==0){uint8_t empty=0;return jint(pod_runtime_bytes_put(h->runtime,&empty,0));}
+  auto bytes=env->GetByteArrayElements(input,nullptr);if(!bytes)return 0;
+  auto id=pod_runtime_bytes_put(h->runtime,reinterpret_cast<const uint8_t*>(bytes),size);
+  env->ReleaseByteArrayElements(input,bytes,JNI_ABORT);return jint(id);
+}
+extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeDropBytes(JNIEnv*,jclass,jlong p,jint id){
+  auto* h=reinterpret_cast<Host*>(p);if(h)pod_runtime_bytes_drop(h->runtime,uint32_t(id));
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL Java_dev_podjs_runtime_PodSyncFileReceiver_nativeCommandBytes(JNIEnv* env,jclass,jlong handle,jbyteArray metadata,jbyteArray data){
+ if(!handle||!metadata||!data)return nullptr;
+ jsize m=env->GetArrayLength(metadata),n=env->GetArrayLength(data);if(m<1||m>1024||n>65536){fail(env,"Invalid binary file command");return nullptr;}
+ std::vector<uint8_t> command(m);env->GetByteArrayRegion(metadata,0,m,reinterpret_cast<jbyte*>(command.data()));
+ if(env->ExceptionCheck())return nullptr;
+ uint8_t empty=0;auto bytes=n?env->GetByteArrayElements(data,nullptr):nullptr;if(n&&!bytes)return nullptr;
+ const char* reply=pod_sync_files_command_bytes(reinterpret_cast<PodSyncFiles*>(handle),command.data(),m,n?reinterpret_cast<const uint8_t*>(bytes):&empty,n);
+ if(bytes)env->ReleaseByteArrayElements(data,bytes,JNI_ABORT);
+ if(!reply){fail(env,"Missing binary file reply");return nullptr;}
+ auto size=jsize(std::strlen(reply));auto result=env->NewByteArray(size);if(result)env->SetByteArrayRegion(result,0,size,reinterpret_cast<const jbyte*>(reply));return result;
 }

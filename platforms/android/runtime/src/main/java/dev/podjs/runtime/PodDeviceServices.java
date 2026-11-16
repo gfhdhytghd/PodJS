@@ -671,6 +671,7 @@ public final class PodDeviceServices implements AutoCloseable {
         try (FileInputStream in = new FileInputStream(f)) { if (offset > 0 && in.skip(offset) != offset) throw new IOException("seek_failed"); n = in.read(out); }
         if (n < 0) n = 0;
         JSONObject result = new JSONObject().put("offset", offset).put("size", f.length()).put("bytesRead", n).put("eof", offset + n >= f.length());
+        if(a.optBoolean("_podByteMode"))return PodBytePayload.output(a,result,n==out.length?out:Arrays.copyOf(out,n));
         String encoding = a.optString("encoding", "base64");
         if ("utf8".equals(encoding)) return result.put("text", new String(out, 0, n, StandardCharsets.UTF_8));
         if (!"base64".equals(encoding)) throw new IllegalArgumentException("invalid_encoding");
@@ -680,7 +681,7 @@ public final class PodDeviceServices implements AutoCloseable {
         return FileCommitGuard.locked(root,safeFile(required(a,"path")),()->fileWriteLocked(a));
     }
     private JSONObject fileWriteLocked(JSONObject a) throws Exception {
-        File f = safeFile(required(a, "path")); byte[] data = decode(a, "dataBase64"); if (data.length > MAX_CHUNK_BYTES) throw new IllegalArgumentException("chunk_too_large");
+        File f = safeFile(required(a, "path")); byte[] data = a.optBoolean("_podByteMode")?PodBytePayload.input(a):decode(a, "dataBase64"); if (data.length > MAX_CHUNK_BYTES) throw new IllegalArgumentException("chunk_too_large");
         File parent = f.getParentFile(); if (!parent.exists() && !parent.mkdirs()) throw new IOException("parent_unavailable");
         if (a.optBoolean("append", false)) {
             if (a.has("atomicReplace") && a.getBoolean("atomicReplace")) throw new IllegalArgumentException("append_cannot_replace");
@@ -913,7 +914,7 @@ public final class PodDeviceServices implements AutoCloseable {
         File target=safeFile(required(a,"target"));long size=exactFileSize(a,"expectedSize");
         String digest=required(a,"expectedSha256");
         if(size>MAX_CHUNK_BYTES||!digest.matches("[a-f0-9]{64}"))throw new IllegalArgumentException("invalid_file_publication");
-        byte[] bytes=decode(a,"dataBase64");
+        byte[] bytes=a.optBoolean("_podByteMode")?PodBytePayload.input(a):decode(a,"dataBase64");
         if(bytes.length!=size||!hexDigest(MessageDigest.getInstance("SHA-256").digest(bytes)).equals(digest))throw new IOException("commit_checksum_mismatch");
         boolean reused=target.isFile()&&target.length()==size&&hashFile(target).getString("sha256").equals(digest);
         if(reused)return new JSONObject().put("path",a.getString("target")).put("size",size).put("sha256",digest).put("reused",true);

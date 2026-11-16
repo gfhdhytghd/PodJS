@@ -1,6 +1,6 @@
 import {materializeSqlPrograms} from './sql-program';
 import type {VideoBenchmarkAction} from './benchmark.ts';
-import { bytesToBase64 as portableBytesToBase64 } from "../../../vendor/pocketjs/framework/src/bytes.ts";
+import { base64ToBytes, bytesToBase64 as portableBytesToBase64 } from "../../../vendor/pocketjs/framework/src/bytes.ts";
 import { __onHostEvent, hasCapability } from "./watch.ts";
 import type { PodCapabilityId } from "./targets.ts";
 import { platformMethods } from "./platform-contract.ts";
@@ -131,7 +131,33 @@ function emit(value: unknown): void {
   if (!host) throw new HostServiceError("unavailable", "PodJS host is unavailable");
   host.emit(JSON.stringify(value));
 }
+type ByteHost={byteBridgeVersion?:()=>number;putBytes?:(v:Uint8Array)=>number;takeBytes?:(id:number)=>Uint8Array|null;dropBytes?:(id:number)=>void};
+const byteHost=()=> (globalThis as {pod?:ByteHost}).pod;
+export function hasByteBridge():boolean {const p=byteHost();return typeof p?.byteBridgeVersion==='function'&&p.byteBridgeVersion()===1&&typeof p.putBytes==='function'&&typeof p.takeBytes==='function'&&typeof p.dropBytes==='function';}
+function requireByteChunk(bytes:Uint8Array):void {if(!(bytes instanceof Uint8Array)||bytes.byteLength>65536)throw new HostServiceError('invalid_argument','Invalid byte attachment');}
+function requireByteRead(maxBytes:number):void {if(!Number.isSafeInteger(maxBytes)||maxBytes<1||maxBytes>65536)throw new HostServiceError('invalid_argument','Invalid byte read size');}
+/** Owned snapshot at call time. No guest pointer survives the synchronous put.
+ * Only unsupported hosts use legacy wrappers; failed mutations are never replayed. */
+export function byteHostOperation<T>(method:string,args:Record<string,unknown>,bytes?:Uint8Array):HostOperation<T> {
+ const p=byteHost();
+ if(!hasByteBridge())return {result:Promise.reject(new HostServiceError('unsupported','Byte bridge unavailable')),cancel(){}};
+ let handle=0;
+ if(bytes!==undefined){
+  requireByteChunk(bytes);
+  handle=p!.putBytes!(bytes);if(!handle)throw new HostServiceError('busy','Byte bridge full');
+ }
+ const op=hostOperation<T>(method+'.bytes',{...args,...(handle?{byteHandle:handle}:{})});
+ return {result:op.result.finally(()=>{if(handle)p!.dropBytes!(handle);}),cancel:reason=>op.cancel(reason)};
+}
+for(const method of ['stream.read','stream.write','file.read','file.write','file.resumable.stage','file.publishBytes'])methods[method+'.bytes']=methods[method]!;
 __onHostEvent(event => {
+  // Consume even late/cancelled completions so they cannot retain native slots.
+  if(typeof event.byteHandle==='number'){
+   let bytes:Uint8Array|null|undefined;
+   try{bytes=byteHost()?.takeBytes?.(event.byteHandle);}catch{/* The native take releases ownership even if array creation fails. */}
+   if(bytes instanceof Uint8Array && event.value && typeof event.value==='object')(event.value as Record<string,unknown>).bytes=bytes;
+   else {event.ok=false;event.code='invalid_bytes';event.message='Missing byte attachment';}
+  }
   if (typeof event.id !== "number") return;
   if (event.t === "browser.auth.status") {
     const request = pending.get(event.id);
@@ -141,6 +167,9 @@ __onHostEvent(event => {
   if (event.t !== "service.result") return;
   const request = pending.get(event.id);
   if (!request) return;
+  if(event.ok===true&&(request.method==='stream.read.bytes'||request.method==='file.read.bytes')&&!(event.value&&typeof event.value==='object'&&(event.value as Record<string,unknown>).bytes instanceof Uint8Array)){
+    event.ok=false;event.code='invalid_bytes';event.message='Missing byte attachment';
+  }
   pending.delete(event.id);
   serviceDiagnosticComplete(request.method,request.diagnosticSite,event.ok===true);
   if (event.ok === true) traceServiceCallback(request.method,'resolve',()=>request.resolve(event.value));
@@ -650,6 +679,13 @@ export const sharing = {
 };
 
 export const fileChunks = {
+  readBytes:async(path:string,offset=0,maxBytes=65536):Promise<{bytes:Uint8Array;offset:number;size:number;eof:boolean}>=>{
+   requireByteRead(maxBytes);
+   if(hasByteBridge())return byteHostOperation<{bytes:Uint8Array;offset:number;size:number;eof:boolean}>('file.read',{path,offset,maxBytes}).result;
+   const value=await fileChunks.read(path,offset,maxBytes);return {...value,bytes:base64ToBytes(value.dataBase64)};
+  },
+  writeBytes:(path:string,bytes:Uint8Array):Promise<{size:number}>=>{requireByteChunk(bytes);return hasByteBridge()?byteHostOperation<{size:number}>('file.write',{path,atomicReplace:true},bytes).result:fileChunks.write(path,bytesToBase64(bytes));},
+  appendBytes:(path:string,bytes:Uint8Array,expectedOffset:number):Promise<{size:number}>=>{requireByteChunk(bytes);return hasByteBridge()?byteHostOperation<{size:number}>('file.write',{path,append:true,expectedOffset},bytes).result:fileChunks.append(path,bytesToBase64(bytes),expectedOffset);},
   /** Extract visible HTML text into a temporary UTF-8 file; caller removes it. */
   htmlText(path:string,maxOutputBytes=32*1024*1024):Promise<{path:string;size:number;sha256:string}> {
     return hostOperation<{path:string;size:number;sha256:string}>("file.htmlText",{path,maxOutputBytes}).result;
@@ -780,6 +816,12 @@ export const tcp = {
  addresses:()=>hostOperation<{addresses:string[]}>("tcp.addresses",{}).result,
 };
 export const byteStreams = {
+  readBytes:(id:string,maxBytes:number,timeoutMs:number):HostOperation<{eof:boolean;bytes:Uint8Array}>=>{
+   requireByteRead(maxBytes);
+   if(hasByteBridge())return byteHostOperation('stream.read',{id,maxBytes,timeoutMs});
+   const op=byteStreams.read(id,maxBytes,timeoutMs);return {result:op.result.then(v=>({eof:v.eof,bytes:base64ToBytes(v.dataBase64)})),cancel:r=>op.cancel(r)};
+  },
+  writeBytes:(id:string,bytes:Uint8Array,timeoutMs=120000):HostOperation<{written:number}>=>{requireByteChunk(bytes);return hasByteBridge()?byteHostOperation('stream.write',{id,timeoutMs},bytes):byteStreams.write(id,bytes,timeoutMs);},
   read: (id:string,maxBytes:number,timeoutMs:number) => hostOperation<{eof:boolean;dataBase64:string}>("stream.read",{id,maxBytes,timeoutMs}),
   write: (id:string,bytes:Uint8Array,timeoutMs=120000) => hostOperation<{written:number}>("stream.write",{id,dataBase64:bytesToBase64(bytes),timeoutMs}),
   close: (id:string) => hostOperation<{closed:boolean}>("stream.close",{id}).result,

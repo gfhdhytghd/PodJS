@@ -50,7 +50,10 @@ final class PodResumableObjects {
         return new JSONObject().put("transfer_id",oid).put("size",size).put("sha256",digest).put("chunk_hashes",frozen).put("mime","application/octet-stream");
     }
     private static JSONObject core(PodSyncFileReceiver receiver,JSONObject command)throws Exception {
-        JSONObject reply;try{reply=new JSONObject(receiver.command(command.toString()));}
+        return core(receiver,command,null);
+    }
+    private static JSONObject core(PodSyncFileReceiver receiver,JSONObject command,byte[] bytes)throws Exception {
+        JSONObject reply;try{reply=new JSONObject(bytes==null?receiver.command(command.toString()):receiver.commandBytes(command.toString(),bytes));}
         catch(PodSyncFileReceiver.QuotaException capacity){throw new IOException("WINDOW_FULL");}
         if(!reply.getBoolean("ok")){
             String text=reply.optString("message");
@@ -115,9 +118,9 @@ final class PodResumableObjects {
         byte[] bytes=null;String rid=null,rd=null;
         if(stage){
             int index=(int)integer(a,"index",255);if(index>=m.getJSONArray("chunk_hashes").length())throw new IOException("INVALID_FRAME");
-            String encoded=a.getString("dataBase64");if(encoded.length()>87384)throw new IOException("INVALID_FRAME");
-            bytes=Base64.decode(encoded,Base64.NO_WRAP);
-            if(!encoded.equals(Base64.encodeToString(bytes,Base64.NO_WRAP))||bytes.length!=Math.min(65536,m.getLong("size")-(long)index*65536)||!hash(bytes).equals(m.getJSONArray("chunk_hashes").getString(index)))throw new IOException("HASH_MISMATCH");
+            String encoded=a.optBoolean("_podByteMode")?null:a.getString("dataBase64");if(encoded!=null&&encoded.length()>87384)throw new IOException("INVALID_FRAME");
+            bytes=encoded==null?PodBytePayload.input(a):Base64.decode(encoded,Base64.NO_WRAP);
+            if((encoded!=null&&!encoded.equals(Base64.encodeToString(bytes,Base64.NO_WRAP)))||bytes.length!=Math.min(65536,m.getLong("size")-(long)index*65536)||!hash(bytes).equals(m.getJSONArray("chunk_hashes").getString(index)))throw new IOException("HASH_MISMATCH");
             rid=id(a,"bindingId",32);rd=id(a,"requestDigest",64);String old=scalar(db,"SELECT digest FROM requests WHERE scope=? AND id=?",scope,rid);
             if(old!=null&&!old.equals(rd))throw new IOException("REQUEST_CONFLICT");
         }
@@ -144,7 +147,7 @@ final class PodResumableObjects {
         try(PodSyncFileReceiver receiver=new PodSyncFileReceiver(context,application,scope)){
             if(release){core(receiver,command("cancel",oid));discardPublication(a,scope,oid);db.execSQL("UPDATE objects SET phase='released' WHERE scope=? AND id=?",new Object[]{scope,oid});return new JSONObject().put("released",true);}
             core(receiver,new JSONObject().put("method","offer").put("manifest",m));
-            if(stage){core(receiver,command("chunk",oid).put("index",a.getInt("index")).put("data_base64",a.getString("dataBase64")));db.execSQL("INSERT OR IGNORE INTO requests VALUES(?,?,?)",new Object[]{scope,rid,rd});}
+            if(stage){if(a.optBoolean("_podByteMode"))core(receiver,command("chunk",oid).put("index",a.getInt("index")),bytes);else core(receiver,command("chunk",oid).put("index",a.getInt("index")).put("data_base64",a.getString("dataBase64")));db.execSQL("INSERT OR IGNORE INTO requests VALUES(?,?,?)",new Object[]{scope,rid,rd});}
             if(finish){
                 File source=new File(core(receiver,command("finish",oid)).getString("path"));
                 String path=a.has("path")?a.getString("path"):"resumable-published/"+scope+"/"+oid+".bin";

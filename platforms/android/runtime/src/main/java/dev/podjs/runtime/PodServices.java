@@ -22,6 +22,9 @@ import java.util.concurrent.Future;
 final class PodServices implements Closeable {
     private java.util.function.Consumer<String> debugExternalSink;
     interface Sink { void complete(String event); }
+    interface ByteBridge {byte[] take(int id);int put(byte[] bytes);void drop(int id);}
+    private ByteBridge byteBridge;
+    void attachByteBridge(ByteBridge bridge){byteBridge=bridge;}
     private final Context context;
     final PodActivityState activityState = new PodActivityState();
     final PodModalState modalState = new PodModalState();
@@ -314,8 +317,24 @@ final class PodServices implements Closeable {
         if (closed) return;
         if (command.optInt("version") != 1) { failure(id,"unsupported","Unsupported service version"); return; }
         if (id <= 0 || requests.containsKey(id)) { failure(id,"invalid_argument","Invalid request id"); return; }
-        String method = command.getString("method");
+        String requestedMethod = command.getString("method");
+        boolean binary=requestedMethod.endsWith(".bytes");
+        final String method=binary?requestedMethod.substring(0,requestedMethod.length()-6):requestedMethod;
         JSONObject args = command.getJSONObject("args");
+        args.remove("_podBytes");args.remove("_podByteMode");
+        if(binary){
+            if(byteBridge==null||!java.util.Arrays.asList("stream.read","stream.write","file.read","file.write","file.resumable.stage","file.publishBytes").contains(method)){failure(id,"unsupported","Byte method unavailable");return;}
+            if("file.read".equals(method)){
+                Object max=args.opt("maxBytes");double n=max instanceof Number?((Number)max).doubleValue():65536;
+                if(!(max==null||max instanceof Number)||n<1||n>65536||n!=Math.rint(n)){failure(id,"invalid_argument","Invalid byte read size");return;}
+            }
+            args.put("_podByteMode",true);
+            if(args.has("byteHandle")){
+                byte[] bytes=byteBridge.take(args.getInt("byteHandle"));args.remove("byteHandle");
+                if(bytes==null){failure(id,"invalid_argument","Unknown byte attachment");return;}
+                args.put("_podBytes",bytes);
+            }
+        }
         Request request = new Request();
         request.method = method;
         // Closing an owned session must not wait behind its blocked receive/RPC.
@@ -1010,7 +1029,16 @@ final class PodServices implements Closeable {
             else event.put("code",code).put("message",message);
             // Serialize on the calling (worker) thread; the main thread only hands the
             // finished string to the guest so large replies cannot stall frames.
+            final byte[] payload=value instanceof JSONObject&&((JSONObject)value).opt("_podBytes") instanceof byte[]?(byte[])((JSONObject)value).remove("_podBytes"):null;
             final String json = event.toString();
+            if(payload!=null){
+                main.post(()->{if(closed)return;int handle=0;try{
+                    handle=byteBridge.put(payload);
+                    if(handle==0){failure(id,"busy","Byte bridge full");return;}
+                    sink.complete(new JSONObject(json).put("byteHandle",handle).toString());
+                }catch(Exception error){if(handle!=0)byteBridge.drop(handle);failure(id,"host_error","Byte completion failed");}});
+                return;
+            }
             if (PERF_TRACE && json.length() > 65536) android.util.Log.i("PodJSPerf", "large service reply id=" + id + " chars=" + json.length());
             main.post(() -> { if(!closed) sink.complete(json); });
         } catch(Exception error) { throw new IllegalStateException(error); }

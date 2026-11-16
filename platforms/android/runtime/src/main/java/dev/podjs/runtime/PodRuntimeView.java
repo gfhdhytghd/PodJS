@@ -439,6 +439,11 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
         long servicesBegan = PodStartupTrace.now();
         services = new PodServices(context, this::receiveServiceEvent);
+        services.attachByteBridge(new PodServices.ByteBridge(){
+            public byte[] take(int id){return host==0?null:nativeTakeBytes(host,id);}
+            public int put(byte[] bytes){return host==0?0:nativePutBytes(host,bytes);}
+            public void drop(int id){if(host!=0)nativeDropBytes(host,id);}
+        });
         services.attachPaintAwaiter(complete->PodAfterPaint.await(this,serviceHandler,complete));
         services.enableDeviceServiceTrace(serviceResultTrace.enabled);
         if(PodServices.memoryEnabled(context))services.attachMemoryProvider(()->{
@@ -890,6 +895,9 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     }
 
     private static native String nativeMemoryStats(long host);
+    private static native byte[] nativeTakeBytes(long host,int id);
+    private static native int nativePutBytes(long host,byte[] bytes);
+    private static native void nativeDropBytes(long host,int id);
     private static native void nativePostEvent(long host, byte[] event);
     private static native void nativeAccessibilityEnabled(long host, boolean enabled);
     private static native byte[] nativeAccessibilitySnapshot(long host, long[] metadata);
