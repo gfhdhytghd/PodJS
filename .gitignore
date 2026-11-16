@@ -18,3 +18,5 @@ platforms/harmony/entry/src/main/resources/rawfile/pod.manifest.json
 __pycache__/
 *.pyc
 **/build-bad-*/
+
+.cache/

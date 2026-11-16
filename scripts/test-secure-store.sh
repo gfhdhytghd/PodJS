@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 # Compile the actual Android implementation. Run JVM-compatible secure host
 # operations with a synthetic key; never load AndroidKeyStore or device data.
-(cd platforms/android && ./gradlew --no-daemon -Dorg.gradle.workers.max=2 --max-workers=2 :runtime:compileReleaseJavaWithJavac)
+(cd platforms/android && ./gradlew --daemon --build-cache -Dorg.gradle.workers.max=2 --max-workers=2 :runtime:compileReleaseJavaWithJavac)
 secure_work=$(mktemp -d)
 trap 'rm -rf "$secure_work"' EXIT
 secure_sdk=${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/home/wilf/Android/Sdk}}
