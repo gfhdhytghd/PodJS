@@ -33,6 +33,17 @@ test('full slots, missing reply attachment and emit failure fail closed and rele
  const emit=pod.emit;pod.emit=()=>{throw Error('emit failed');};
  try{await expect(byteHostOperation('file.write',{},new Uint8Array([1])).result).rejects.toThrow('emit failed');}finally{pod.emit=emit;}
 });
+test('synchronous argument construction failures release snapshots and preserve the original error',async()=>{
+ const failure=Error('argument access failed'),bytes=new Uint8Array(65536);
+ const getter={get path(){throw failure;}},proxy=new Proxy({},{ownKeys(){throw failure;}});
+ for(const args of [getter,proxy])for(let i=0;i<128;i++){
+  let caught:unknown;try{byteHostOperation('file.write',args,bytes);}catch(error){caught=error;}
+  expect(caught).toBe(failure);expect(slots.size).toBe(0);expect(serviceResourceCounts().pending).toBe(0);
+ }
+ expect(requests).toHaveLength(0);
+ const op=byteHostOperation('file.write',{path:'after-errors'},bytes),r=requests.at(-1);
+ expect(pod.takeBytes(r.args.byteHandle)).toEqual(bytes);complete(r,{size:bytes.length});await op.result;
+});
 test('chunk store byte stage preserves metadata and errors; legacy stage stays canonical Base64',async()=>{
  const lease={scope:'a'.repeat(64),connectionId:'b'.repeat(32),epoch:1},object={id:'c'.repeat(64),size:1,sha256:'d'.repeat(64),chunkHashes:['e'.repeat(64)]},request={id:'f'.repeat(32),digest:'0'.repeat(64)},data=new Uint8Array([255]);
  let legacy:any,raw:any;

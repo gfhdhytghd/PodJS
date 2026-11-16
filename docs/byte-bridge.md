@@ -84,6 +84,8 @@ All QuickJS/attachment-map and JNI calls execute on the owner main thread. Java
 workers never receive a JS pointer or Rust borrow. Metadata only crosses the old
 queue. Input handles are consumed before submitting IO. The JS promise also
 idempotently drops its input handle on rejection, admission failure or completion.
+Synchronous request construction failures also drop the input handle before
+propagating the original exception; no host request or mutation is replayed.
 An exception while emitting a request follows the same cleanup path.
 
 Replies hold Java arrays until the main-thread callback, which first checks the

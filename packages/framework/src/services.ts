@@ -146,8 +146,13 @@ export function byteHostOperation<T>(method:string,args:Record<string,unknown>,b
   requireByteChunk(bytes);
   handle=p!.putBytes!(bytes);if(!handle)throw new HostServiceError('busy','Byte bridge full');
  }
- const op=hostOperation<T>(method+'.bytes',{...args,...(handle?{byteHandle:handle}:{})});
- return {result:op.result.finally(()=>{if(handle)p!.dropBytes!(handle);}),cancel:reason=>op.cancel(reason)};
+ try {
+  const op=hostOperation<T>(method+'.bytes',{...args,...(handle?{byteHandle:handle}:{})});
+  return {result:op.result.finally(()=>{if(handle)p!.dropBytes!(handle);}),cancel:reason=>op.cancel(reason)};
+ } catch(error) {
+  if(handle)p!.dropBytes!(handle);
+  throw error;
+ }
 }
 for(const method of ['stream.read','stream.write','file.read','file.write','file.resumable.stage','file.publishBytes'])methods[method+'.bytes']=methods[method]!;
 __onHostEvent(event => {
