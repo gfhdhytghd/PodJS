@@ -408,6 +408,8 @@ export interface VideoSessionPrepare extends VideoPrepare {
   keyframeOnly?:boolean;
 }
 export interface VideoSessionState { isBuffering?:boolean;
+  /** Transient process admission; not a device limit or a terminal playback error. */
+  decoderAdmissionDeferred?:boolean;
   speed?:number;
   ringerMode?:VideoState["ringerMode"];silenced?:boolean;
   volumeIndex?:number; volumeMax?:number;

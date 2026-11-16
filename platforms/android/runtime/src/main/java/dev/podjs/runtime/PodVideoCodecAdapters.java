@@ -22,10 +22,11 @@ final class PodVideoCodecAdapters implements MediaCodecAdapter.Factory {
         if(mime==null||!mime.startsWith("video/"))return delegate.createAdapter(config);
         PodVideoCodecGate.Permit permit=PodVideoCodecGate.PROCESS.await(identity,generation.getAsLong(),owner,priority.getAsInt());
         try{return new Counted(delegate.createAdapter(config),permit);}
-        catch(java.io.IOException|RuntimeException|Error e){permit.close();throw e;}
+        catch(java.io.IOException|RuntimeException e){permit.close();e.addSuppressed(new PodVideoCodecGate.FactoryFailure());throw e;}
+        catch(Error e){permit.close();throw e;}
     }
     private static final class Counted implements MediaCodecAdapter {
-        final MediaCodecAdapter codec;final PodVideoCodecGate.Permit permit;
+        final MediaCodecAdapter codec;final PodVideoCodecGate.Permit permit;private boolean released;
         Counted(MediaCodecAdapter codec,PodVideoCodecGate.Permit permit){this.codec=codec;this.permit=permit;}
         public int dequeueInputBufferIndex(){return codec.dequeueInputBufferIndex();}
         public int dequeueOutputBufferIndex(MediaCodec.BufferInfo info){return codec.dequeueOutputBufferIndex(info);}
@@ -37,7 +38,7 @@ final class PodVideoCodecAdapters implements MediaCodecAdapter.Factory {
         public void releaseOutputBuffer(int i,boolean render){codec.releaseOutputBuffer(i,render);}
         public void releaseOutputBuffer(int i,long time){codec.releaseOutputBuffer(i,time);}
         public void flush(){codec.flush();}
-        public void release(){codec.release();permit.close();}
+        public synchronized void release(){if(released)return;codec.release();released=true;permit.close();}
         public void setOnFrameRenderedListener(OnFrameRenderedListener listener,Handler handler){codec.setOnFrameRenderedListener((adapter,time,nano)->listener.onFrameRendered(this,time,nano),handler);}
         public boolean registerOnBufferAvailableListener(OnBufferAvailableListener listener){return codec.registerOnBufferAvailableListener(listener);}
         public void setOutputSurface(Surface surface){codec.setOutputSurface(surface);}

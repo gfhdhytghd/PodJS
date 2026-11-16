@@ -232,7 +232,7 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
                 throw error;
             }finally{
                 boolean codecReleased=codec==null;
-                try{if(codec!=null){try{codec.stop();}finally{codec.release();}}codecReleased=true;}
+                try{if(codec!=null){try{codec.stop();}finally{codec.release();codecReleased=true;}}}
                 finally{
                     try{if(reader!=null)reader.close();}finally{
                         boolean cancelled=hardware&&decoderBudget.spareCancelled();decodeCancelled=cancelled;

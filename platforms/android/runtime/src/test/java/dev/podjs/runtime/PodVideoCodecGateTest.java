@@ -65,4 +65,24 @@ public class PodVideoCodecGateTest {
   Thread request=new Thread(()->gate.requestReclaim(next,1));request.start();request.join();assertTrue(order.isEmpty());
   org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();assertEquals(Collections.singletonList("other"),order);
  }
+ @Test @org.robolectric.annotation.LooperMode(org.robolectric.annotation.LooperMode.Mode.PAUSED)
+ public void currentWaitReclaimsWarmOnMainAndAcquiresAfterActualRelease()throws Exception {
+  PodVideoCodecGate gate=new PodVideoCodecGate();Object warm=new Object(),selected=new Object();
+  PodVideoCodecGate.Permit a=gate.acquire(selected,1,"current",2),b=gate.acquire("other_current",2),w=gate.acquire(warm,1,"warm",1);
+  java.util.concurrent.CountDownLatch reclaimed=new java.util.concurrent.CountDownLatch(1);int[] calls={0};
+  gate.register(selected,()->2,()->fail("current stolen"));
+  gate.register(warm,()->1,()->{assertSame(android.os.Looper.getMainLooper(),android.os.Looper.myLooper());calls[0]++;reclaimed.countDown();});
+  java.util.concurrent.atomic.AtomicReference<PodVideoCodecGate.Permit> result=new java.util.concurrent.atomic.AtomicReference<>();
+  java.util.concurrent.atomic.AtomicReference<Throwable> failure=new java.util.concurrent.atomic.AtomicReference<>();
+  Thread worker=new Thread(()->{try{result.set(gate.await(selected,2,"new_current",2));}catch(Throwable e){failure.set(e);}});worker.start();
+  try{
+   long deadline=System.nanoTime()+2_000_000_000L;
+   while(worker.getState()!=Thread.State.TIMED_WAITING&&System.nanoTime()<deadline)Thread.yield();
+   assertEquals(Thread.State.TIMED_WAITING,worker.getState());
+   org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();assertEquals(1,calls[0]);
+   assertEquals(0,reclaimed.getCount());assertNull(result.get());assertEquals(3,gate.live());
+   w.close();worker.join(1000);assertFalse(worker.isAlive());assertNull(failure.get());assertNotNull(result.get());assertEquals(3,gate.live());
+  }finally{w.close();a.close();b.close();worker.interrupt();worker.join(1000);if(result.get()!=null)result.get().close();}
+  assertEquals(0,gate.live());
+ }
 }

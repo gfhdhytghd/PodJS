@@ -9,6 +9,24 @@ import java.util.function.IntSupplier;
  * Call reclaim on the main looper; codec threads never invoke player callbacks. */
 final class PodVideoCodecGate {
     static final int OTHER=0, PREWARM=1, CURRENT=2, MAXIMUM=3;
+    /** A transient reservation refusal, never a decoder/device failure. */
+    static final class AdmissionDenied extends java.io.IOException {
+        final int priority;
+        AdmissionDenied(int priority){super("video_decoder_limit");this.priority=priority;}
+    }
+    /** Attached to the original exception without changing Media3's exception type. */
+    static final class FactoryFailure extends Exception { FactoryFailure(){super("video_codec_factory_attempted");} }
+    static boolean isAdmissionDenied(Throwable error){return contains(error,AdmissionDenied.class);}
+    static boolean isFactoryFailure(Throwable error){return contains(error,FactoryFailure.class);}
+    private static boolean contains(Throwable error,Class<?> marker){
+        java.util.ArrayDeque<Throwable> pending=new java.util.ArrayDeque<>();
+        java.util.Set<Throwable> seen=java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        if(error!=null)pending.add(error);
+        while(!pending.isEmpty()&&seen.size()<64){Throwable next=pending.removeFirst();if(!seen.add(next))continue;
+            if(marker.isInstance(next))return true;if(next.getCause()!=null)pending.add(next.getCause());
+            for(Throwable suppressed:next.getSuppressed())pending.add(suppressed);
+        }return false;
+    }
     static final PodVideoCodecGate PROCESS=new PodVideoCodecGate();
     private final LinkedHashMap<Object,Owner> owners=new LinkedHashMap<>();
     /** One reservation identity follows a codec through actual release.
@@ -66,11 +84,12 @@ final class PodVideoCodecGate {
     synchronized Permit await(String purpose,int priority)throws java.io.IOException {return await(purpose,0,purpose,priority);}
     synchronized Permit await(Object owner,long generation,String purpose,int priority)throws java.io.IOException {
         long deadline=android.os.SystemClock.elapsedRealtime()+2000;
-        Permit permit;
+        Permit permit;boolean reclaimRequested=false;
         while((permit=acquire(owner,generation,purpose,priority))==null){
-            if(priority!=CURRENT)throw new java.io.IOException("video_decoder_limit");
+            if(priority!=CURRENT)throw new AdmissionDenied(priority);
+            if(!reclaimRequested){reclaimRequested=true;requestReclaim(owner,PREWARM);}
             long remaining=deadline-android.os.SystemClock.elapsedRealtime();
-            if(remaining<=0)throw new java.io.IOException("video_decoder_limit");
+            if(remaining<=0)throw new AdmissionDenied(priority);
             try{wait(remaining);}catch(InterruptedException e){Thread.currentThread().interrupt();throw new java.io.IOException("video_decoder_cancelled",e);}
         }
         return permit;

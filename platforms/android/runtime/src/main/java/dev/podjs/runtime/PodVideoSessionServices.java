@@ -185,6 +185,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                     default: callback.fail("unsupported_method", "Unsupported video session method: " + method);
                 }
             } catch (Exception error) {
+                if(PodVideoCodecGate.isAdmissionDenied(error)){callback.fail("decoder_admission_deferred","Video prewarm admission deferred");return;}
                 PodVideoFailure.record("sessions",PodVideoFailure.stage(method),errorCode(error),error,args,decoderBudget.inUse(),lastMemoryLimit,parent==null?"missing":parent.isAttachedToWindow()?"attached":"detached","unknown");
                 callback.fail(errorCode(error), error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage());
             }
@@ -327,7 +328,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         if(prewarming&&decoderBudget.inUse()-(existing!=null&&existing.decoderLease?1:0)>=memoryLimit){
             if(prefixFrames!=null){preparePixels(args,bounds,callback);return;}
             admission(args,memoryLimit<decoderBudget.limit()?"memory":decoderBudget.limit()<MAX_SESSIONS?"codec":"lease");
-            throw new IllegalStateException("video_decoder_limit");
+            throw new PodVideoCodecGate.AdmissionDenied(PodVideoCodecGate.PREWARM);
         }
         admission(args,"allowed");
         PodVideoAnalytics analytics=new PodVideoAnalytics();analytics.startupSeq=args.optBoolean("prewarm",false)?0:args.optLong("startupSeq",0);
@@ -504,6 +505,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
 
             @Override public void onPlayerError(PlaybackException error) {
                 if (!own.matches(player, generation)) return;
+                if(PodVideoCodecGate.isAdmissionDenied(error)){deferAdmission(own,player,generation,callback);return;}
                 if(!own.prewarming)mediaGate(false);
                 boolean decoderFailure = error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED
                         || error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED
@@ -518,7 +520,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                 }
                 failPrepare(own, player, generation, code,
                         "Video playback failed",
-                        own.prewarming && decoderFailure);
+                        own.prewarming && decoderFailure && (PodVideoCodecGate.isFactoryFailure(error)||own.decoderName!=null));
             }
         });
         try {
@@ -544,6 +546,33 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             if (created) { sessions.remove(id); session.close(); }
             throw error;
         }
+    }
+
+    /** Media3 may deliver an old prewarm denial after this exact player was
+     * promoted. Keep its selected identity, surface, callback and generation.
+     * Only retry preparation after the physical gate has a returned permit. */
+    private void deferAdmission(Session session,ExoPlayer expected,long generation,Callback observer) {
+        session.cancelPrewarmTimeout();session.cancelAdmissionRetry();
+        session.admissionDeferred=true;session.errorCode=null;
+        if(!session.hasCachedFrame())session.revealKeyframe();
+        session.state=session.prewarming&&session.hasCachedFrame()?"prewarmed":"preparing";
+        if(session.prewarming){session.hideOffscreen();if(session.hasCachedFrame())session.completePrepare();}
+        else {session.showPresented();mediaGate(!lifecyclePaused);}
+        try{observer.stateChanged(session.snapshot());}catch(Exception ignored){}
+        if(!session.prewarming)PodVideoCodecGate.PROCESS.requestReclaim(session,PodVideoCodecGate.PREWARM);
+        session.admissionRetry=new Runnable(){public void run(){
+            if(!session.matches(expected,generation)||!session.admissionDeferred)return;
+            if(lifecyclePaused||PodVideoCodecGate.PROCESS.live()>=PodVideoCodecGate.MAXIMUM){
+                main.postDelayed(this,100);return;
+            }
+            session.admissionRetry=null;session.admissionDeferred=false;
+            // prepare() retries the same Media3 source after an init refusal.
+            // Do not replace the player, seek, publish an error, or write capacity.
+            expected.prepare();
+            expected.setPlayWhenReady(!session.prewarming&&session.autoplay&&!lifecyclePaused&&!session.hasCachedFrame());
+            if(session.prewarming&&session.prepareCallback!=null)session.armPrewarmTimeout(expected,generation);
+        }};
+        main.postDelayed(session.admissionRetry,100);
     }
 
     private void admission(JSONObject args,String reason) {
@@ -1068,6 +1097,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     }
 
     private static String errorCode(Exception error) {
+        if(PodVideoCodecGate.isAdmissionDenied(error))return "decoder_admission_deferred";
         if (error instanceof SecurityException) return "permission_denied";
         if (error instanceof IllegalArgumentException) return "invalid_argument";
         if ("video_foreground_busy".equals(error.getMessage()) || "video_session_limit".equals(error.getMessage()) || "video_decoder_limit".equals(error.getMessage())) return "resource_exhausted";
@@ -1106,7 +1136,8 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         android.graphics.Matrix appliedVideoMatrix, appliedKeyframeMatrix;
         boolean backgroundPlayback;
         volatile boolean prewarming, keyframeOnly;
-        boolean decoderLease, autoplay, presented, hasRenderedFirstFrame, disposed;
+        boolean decoderLease, autoplay, presented, hasRenderedFirstFrame, disposed, admissionDeferred;
+        Runnable admissionRetry;
         long generation, completedLoops;
         JSONObject frameSource;
         String frameBinding, decoderName;
@@ -1218,17 +1249,21 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             if(player==null)return;
             if(!hasCachedFrame())revealKeyframe();
             if(!hasCachedFrame())return;
+            cancelAdmissionRetry();
             PodVideoCodecGate.PROCESS.unregister(this);
             cancelFrameCompletion();
             if(audioPolicy!=null){audioPolicy.close();audioPolicy=null;}
             ExoPlayer previous=player;player=null;
-            previous.clearVideoTextureView(videoView);previous.stop();previous.release();
+            try{previous.clearVideoTextureView(videoView);}catch(RuntimeException ignored){}
+            try{previous.stop();}catch(RuntimeException ignored){}
+            previous.release();
             if(decoderLease){decoderLease=false;decoderBudget.release();}
             hasRenderedFirstFrame=false;hasUpdatedFrame=false;state="prewarmed";completePrepare();
         }
 
         void resetPlayer() {
             PodSessionPlaybackService.detach(context,this);
+            cancelAdmissionRetry();
             PodVideoCodecGate.PROCESS.unregister(this);
             progressObserver=()->{};
             if(this == dragFrom || this == dragTo || presented) endDrag();
@@ -1251,6 +1286,8 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             hasRenderedFirstFrame = false;hasUpdatedFrame=false;resetGeometryWait();
             if (videoView != null) videoView.setKeepScreenOn(false);
         }
+
+        void cancelAdmissionRetry(){if(admissionRetry!=null){main.removeCallbacks(admissionRetry);admissionRetry=null;}admissionDeferred=false;}
 
         void armPrewarmTimeout(ExoPlayer expected, long expectedGeneration) {
             cancelPrewarmTimeout();
@@ -1590,7 +1627,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
 
         JSONObject snapshot() throws Exception {
             return PodVideoSystemAudio.snapshot(context,new JSONObject()
-                    .put("silenced",audioPolicy!=null&&audioPolicy.silenced()).put("appliedVolume",player==null?null:player.getVolume()).put("audioTrackSelected",player!=null&&player.getAudioFormat()!=null).put("metrics",analytics==null?null:analytics.snapshot()).put("ok", true).put("isBuffering",player!=null&&player.getPlaybackState()==Player.STATE_BUFFERING).put("sessionId", id).put("state", state).put("errorCode", "error".equals(state) ? errorCode : null)
+                    .put("silenced",audioPolicy!=null&&audioPolicy.silenced()).put("appliedVolume",player==null?null:player.getVolume()).put("audioTrackSelected",player!=null&&player.getAudioFormat()!=null).put("metrics",analytics==null?null:analytics.snapshot()).put("ok", true).put("isBuffering",player!=null&&player.getPlaybackState()==Player.STATE_BUFFERING).put("sessionId", id).put("decoderAdmissionDeferred",admissionDeferred).put("state", state).put("errorCode", "error".equals(state) ? errorCode : null)
                     .put("positionMs", player == null ? 0 : player.getCurrentPosition())
                     .put("bufferedMs",player==null?0:Math.max(0,player.getBufferedPosition()-player.getCurrentPosition()))
                     .put("networkStalled",analytics!=null&&analytics.networkStalled())

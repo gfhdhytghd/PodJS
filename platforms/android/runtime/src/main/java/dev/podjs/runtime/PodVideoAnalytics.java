@@ -86,6 +86,7 @@ final class PodVideoAnalytics implements AnalyticsListener, TransferListener {
         return result;
     }
     static String errorCode(PlaybackException error) {
+        if(PodVideoCodecGate.isAdmissionDenied(error))return "decoder_admission_deferred";
         // Bounded cause walk. Never send exception messages containing URLs.
         Throwable current = error;
         for (int i = 0; current != null && i < 16; i++, current = current.getCause()) {

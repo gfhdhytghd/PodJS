@@ -54,4 +54,15 @@ public class PodVideoCodecAdaptersTest {
    assertEquals(1,reserved.size());assertEquals(1,released.size());assertSame(reserved.get(0),released.get(0));assertSame(owner,released.get(0).owner);assertEquals(29,released.get(0).generation);assertEquals(0,gate.live());
   }finally{subscription.close();}
  }
+ @Test public void repeatedReleaseReturnsOnePermitAndCallsDelegateOnce()throws Exception {
+  PodVideoCodecGate gate=PodVideoCodecGate.PROCESS;int[] releases={0};
+  MediaCodecAdapter adapter=new PodVideoCodecAdapters(c->fake(()->releases[0]++),"idempotent",()->1).createAdapter(config("video/avc"));
+  adapter.release();adapter.release();assertEquals(1,releases[0]);assertEquals(0,gate.live());
+ }
+ @Test public void failedReleaseRetainsPhysicalPermitUntilSuccessfulRetry()throws Exception {
+  PodVideoCodecGate gate=PodVideoCodecGate.PROCESS;int[] releases={0};
+  MediaCodecAdapter adapter=new PodVideoCodecAdapters(c->fake(()->{if(++releases[0]==1)throw new IllegalStateException("release_failed");}),"retry",()->1).createAdapter(config("video/avc"));
+  try{adapter.release();fail();}catch(IllegalStateException expected){}
+  assertEquals(1,gate.live());adapter.release();adapter.release();assertEquals(2,releases[0]);assertEquals(0,gate.live());
+ }
 }
