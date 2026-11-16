@@ -8,21 +8,24 @@ import static org.junit.Assert.*;
 @RunWith(RobolectricTestRunner.class) @Config(sdk=35) @org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
 public class PodVideoFrameCacheTest {
  private File root()throws Exception{return Files.createTempDirectory(ApplicationProvider.<android.content.Context>getApplicationContext().getCacheDir().toPath(),"frame-test-").toFile();}
- private JSONObject source(String cookie)throws Exception{return new JSONObject().put("url","https://example.test/private?signature=fixture").put("headers",new JSONObject().put("Cookie",cookie).put("Referer","https://example.test/"));}
+ // Registration/binding tests use policy-valid credentials without an HTTP source.
+ private PodMediaPrefixCache offlineCache(File root){return new PodMediaPrefixCache(root,()->{throw new AssertionError("offline frame binding test must never create upstream");},16L<<20);}
+ private JSONObject source(String cookie)throws Exception{return new JSONObject().put("url","https://www.douyin.com/offline-fixture/private?signature=fixture").put("headers",new JSONObject().put("Cookie",cookie).put("Referer","https://www.douyin.com/offline-fixture/"));}
  @Test public void actualPixelsPersistWithExactEntrySourceAndCredentialsButNoUrlsOnDisk()throws Exception {
   File root=root();PodVideoFrameCache cache=new PodVideoFrameCache(root);Bitmap bitmap=Bitmap.createBitmap(32,24,Bitmap.Config.ARGB_8888);bitmap.eraseColor(android.graphics.Color.RED);
   String binding=PodVideoFrameCache.binding(source("fixture-secret"),null);JSONObject saved=cache.save("douyin:item",binding,7,4321,bitmap);bitmap.recycle();
   assertEquals("actual_frame",saved.getString("kind"));assertEquals(7,saved.getLong("capturedGeneration"));assertEquals(4321,saved.getLong("positionMs"));
   assertTrue(new PodVideoFrameCache(root).restore("douyin:item",binding).getBoolean("available"));
   assertFalse(cache.restore("douyin:other",binding).getBoolean("available"));assertFalse(cache.restore("douyin:item",PodVideoFrameCache.binding(source("rotated"),null)).getBoolean("available"));
-  assertFalse(cache.restore("douyin:item",PodVideoFrameCache.binding(source("fixture-secret").put("url","https://example.test/new"),null)).getBoolean("available"));
+  assertFalse(cache.restore("douyin:item",PodVideoFrameCache.binding(source("fixture-secret").put("url","https://www.douyin.com/offline-fixture/new"),null)).getBoolean("available"));
   for(File file:new File(root,"video-frames").listFiles()){assertTrue(file.getName().matches("[a-f0-9]{64}\\.(jpg|json)"));if(file.getName().endsWith("json")){String text=new String(Files.readAllBytes(file.toPath()),java.nio.charset.StandardCharsets.UTF_8);assertFalse(text.contains("fixture-secret"));assertFalse(text.contains("https://"));}}
   assertEquals(2,cache.clear().getInt("removedFiles"));assertFalse(cache.restore("douyin:item",binding).getBoolean("available"));
  }
  @Test public void prefixRegistrationAndRemoteHaveSameBindingWhileRotatedHeadersDoNot()throws Exception {
-  try(PodMediaPrefixCache prefix=new PodMediaPrefixCache(root())){JSONObject source=source("fixture");String uri=prefix.register("item",source.getString("url"),Map.of("Cookie","fixture","Referer","https://example.test/"));
+  try(PodMediaPrefixCache prefix=offlineCache(root())){JSONObject source=source("fixture");String uri=prefix.register("item",source.getString("url"),Map.of("Cookie","fixture","Referer","https://www.douyin.com/offline-fixture/"));
    assertEquals(PodVideoFrameCache.binding(source,null),PodVideoFrameCache.binding(new JSONObject().put("url",uri).put("headers",source.getJSONObject("headers")),prefix));
    try{PodVideoFrameCache.binding(new JSONObject().put("url",uri),null);fail();}catch(IllegalArgumentException expected){}
+   assertEquals(0,prefix.stats().getLong("networkReadBytes"));
   }
  }
  @Test public void corruptFramesFallBackAndDiskCountIsBounded()throws Exception {
@@ -44,23 +47,24 @@ public class PodVideoFrameCacheTest {
  }
  @Test public void persistentFrameUsesTheSameRenditionIdentityAsBytesAcrossRestartAndCredentialRotation()throws Exception {
   File root=root();String binding;PodVideoFrameCache frames=new PodVideoFrameCache(root);
-  try(PodMediaPrefixCache cache=new PodMediaPrefixCache(root)){
-   String uri=cache.register("rendition-avc-320","https://old.test/movie?signature=old",Map.of("Cookie","old"),true);
+  try(PodMediaPrefixCache cache=offlineCache(root)){
+   String uri=cache.register("rendition-avc-320","https://www.douyin.com/offline-fixture/old?signature=old",Map.of("Cookie","old"),true);
    binding=PodVideoFrameCache.binding(new JSONObject().put("url",uri),cache);
    Bitmap frame=Bitmap.createBitmap(24,24,Bitmap.Config.ARGB_8888);frame.eraseColor(android.graphics.Color.GREEN);
    frames.save("stock-item",binding,0,0,frame);frame.recycle();
   }
-  try(PodMediaPrefixCache cache=new PodMediaPrefixCache(root)){
-   String uri=cache.register("rendition-avc-320","https://new.test/movie?signature=new",Map.of("Cookie","new"),true);
+  try(PodMediaPrefixCache cache=offlineCache(root)){
+   String uri=cache.register("rendition-avc-320","https://www.douyin.com/offline-fixture/new?signature=new",Map.of("Cookie","new"),true);
    String restored=PodVideoFrameCache.binding(new JSONObject().put("url",uri).put("headers",new JSONObject().put("Cookie","current")),cache);
    assertEquals(binding,restored);assertTrue(frames.restore("stock-item",restored).getBoolean("available"));
-   String other=cache.register("rendition-hevc-640","https://new.test/movie?signature=new",Map.of("Cookie","new"),true);
+   String other=cache.register("rendition-hevc-640","https://www.douyin.com/offline-fixture/new?signature=new",Map.of("Cookie","new"),true);
    assertFalse(frames.restore("stock-item",PodVideoFrameCache.binding(new JSONObject().put("url",other),cache)).getBoolean("available"));
+   assertEquals(0,cache.stats().getLong("networkReadBytes"));
   }
  }
 
  @org.junit.Test public void dashPrefixPixelsBindTheCompanionWithoutReadingIt()throws Exception {
-  try(PodMediaPrefixCache cache=new PodMediaPrefixCache(root())){
+  try(PodMediaPrefixCache cache=offlineCache(root())){
    org.json.JSONObject args=new org.json.JSONObject().put("key","dash").put("url","https://fixture/video").put("audioUrl","https://fixture/audio").put("headers",new org.json.JSONObject());
    String uri=cache.execute("video.cache.register",args).getString("uri");PodMediaPrefixCache.Entry entry=cache.target(uri);
    assertEquals("https://fixture/audio",entry.frameAudioUrl);
