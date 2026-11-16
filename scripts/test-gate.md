@@ -60,3 +60,7 @@ No physical device nodes are bound into that namespace.
 Swift scratch paths include the external Rust archive content hash. SwiftPM
 tracks its package sources and flags; a Rust-only change therefore also forces
 a new native link rather than reusing an old XCTest binary.
+
+The notebook model/data/resources unit children of `test:scaffold` run as
+explicit manifest entries. Scaffold install/package roundtrips stay outside
+the unit gate. Unknown owned unit files are discovered across the repository.

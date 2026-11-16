@@ -15,7 +15,7 @@ def expand(argv, root):
 
 def unlisted_units(root, commands):
     tracked = subprocess.check_output(['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z'], cwd=root).decode().split('\0')
-    tests = [p for p in tracked if p.startswith(('packages/', 'tests/')) and p.endswith(('.test.ts','.test.tsx','.spec.ts','.spec.tsx','.test.js','.test.mjs','.spec.js','.spec.mjs','.isolated.ts'))]
+    tests = [p for p in tracked if not p.startswith(('vendor/', 'dist/', 'artifacts/', '.cache/')) and p.endswith(('.test.ts','.test.tsx','.spec.ts','.spec.tsx','.test.js','.test.mjs','.spec.js','.spec.mjs','.isolated.ts'))]
     known = set()
     for command in commands:
         argv = expand(command['argv'], root)

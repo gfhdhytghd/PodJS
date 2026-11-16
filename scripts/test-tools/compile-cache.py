@@ -24,7 +24,7 @@ if not tool:
     sys.exit(127)
 start = time.monotonic()
 args = sys.argv[1:]
-if any('@' in arg or arg == '-' or arg.startswith(('-L','-Wl,','-M','-save-temps','-fprofile','-fmodule','-fsanitize','-flto','-fplugin','-specs=','--sysroot','-isysroot','-B','--module','--processor','--upgrade-module','--patch-module')) or arg in ('-processorpath','-processor','-proc:only','--system','-bootclasspath','-h','-s','--coverage') for arg in args) or any('*' in arg for i,arg in enumerate(args) if i and args[i-1] in ('-cp','-classpath','--class-path')):
+if any('@' in arg or arg == '-' or arg.startswith(('-L','-Wl,','-M','-save-temps','-fprofile','-fmodule','-fsanitize','-flto','-fplugin','-specs=','--target','-target','--gcc-toolchain','-stdlib=','--sysroot','-isysroot','-B','--module','--processor','--upgrade-module','--patch-module')) or arg in ('-processorpath','-processor','-proc:only','--system','-bootclasspath','-h','-s','--coverage') for arg in args) or any('*' in arg for i,arg in enumerate(args) if i and args[i-1] in ('-cp','-classpath','--class-path')):
     os.execv(tool,[tool,*args])
 option = '-d' if name == 'javac' else '-o'
 if option not in args:
@@ -118,7 +118,14 @@ for key in ('SOURCE_DATE_EPOCH','TZ','LANG','LC_ALL','CPATH','CPLUS_INCLUDE_PATH
     add(key)
     add(os.environ.get(key,''))
 if name == 'javac':
-    file(pathlib.Path(tool).resolve().parents[1] / 'lib/modules')
+    jdk=pathlib.Path(tool).resolve().parents[1]
+    file(jdk/'lib/modules')
+    file(jdk/'release')
+    file(jdk/'bin/java')
+    for library in sorted((jdk/'lib').rglob('*.so')):
+        add(library.relative_to(jdk))
+        file(library)
+    file(jdk/'lib/jvm.cfg')
 else:
     for library in ('libstdc++.so','libgcc_s.so','libc.so','crtbegin.o','cc1plus'):
         location=subprocess.check_output([tool,'-print-file-name='+library],text=True).strip()
@@ -188,7 +195,7 @@ if name != 'javac':
     # Transitive header contents above include compiler builtin headers.
     # Hash the actual compiler/linker/runtime inputs, not unrelated toolchain
     # executables that cannot participate in this compile.
-    for library in ('libc_nonshared.a','Scrt1.o','crt1.o','crti.o','crtn.o','crtbeginS.o','crtendS.o','libgcc.a','libgcc_eh.a'):
+    for library in ('libc_nonshared.a','Scrt1.o','crt1.o','crti.o','crtn.o','crtbeginS.o','crtendS.o','libgcc.a','libgcc_eh.a','libc.so.6','libgcc_s.so.1','libm.so.6','libmvec.so.1','libpthread.so.0','libdl.so.2','librt.so.1','ld-linux-x86-64.so.2'):
         location=subprocess.check_output([tool,'-print-file-name='+library],text=True).strip()
         file(pathlib.Path(location).resolve())
     for program in ('ld','as'):

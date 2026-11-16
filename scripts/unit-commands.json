@@ -763,6 +763,27 @@
       ],
       "parallel": false,
       "origin": "existing Swift units in the caller capmem cgroup"
+    },
+    {
+      "argv": [
+        "bun",
+        "--conditions=browser",
+        "test",
+        "./examples/watch-notebook/tests/model.test.ts",
+        "./examples/watch-notebook/tests/data.test.ts"
+      ],
+      "parallel": false,
+      "origin": "existing notebook unit children of test:scaffold; installation/package build remain integration"
+    },
+    {
+      "argv": [
+        "bun",
+        "--conditions=browser",
+        "test",
+        "./examples/watch-notebook/tests/resources.isolated.ts"
+      ],
+      "parallel": false,
+      "origin": "existing notebook unit children of test:scaffold; installation/package build remain integration"
     }
   ]
 }

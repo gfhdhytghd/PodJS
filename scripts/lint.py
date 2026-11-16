@@ -21,7 +21,7 @@ def run(name, args):
         print(error, file=sys.stderr)
         code = 127
     rows.append((name, code))
-files = [p for p in subprocess.check_output(['git', 'ls-files', '-z'], cwd=ROOT).decode().split('\x00') if p]
+files = [p for p in subprocess.check_output(['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z'], cwd=ROOT).decode().split('\x00') if p]
 owned = [p for p in files if not p.startswith(('vendor/', '.codex-tmp/', 'artifacts/', 'dist/')) and '/build/' not in p and ('/node_modules/' not in p)]
 js = [p for p in owned if pathlib.Path(p).suffix in ('.ts', '.tsx', '.js', '.mjs', '.cjs')]
 for p in ('eslint.config.mjs', 'scripts/lint.py'):
