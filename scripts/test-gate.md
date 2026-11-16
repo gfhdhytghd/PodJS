@@ -72,3 +72,9 @@ the test command remainder includes uninstrumented startup and Cargo/Swift
 compilation. It is an envelope, not a pure test CPU duration.
 App `--repo-only` is labelled `app-repo-checks`; it is a diagnostic scope, not
 the complete framework-plus-app gate.
+
+The Harmony host-contract and background-store chains retain their first
+nonzero exit and continue independent programs after failures. Dependent
+programs only run after successful fixture builds. Original test sources,
+compiler flags and assertions are unchanged. `native-chain.jsonl` records
+per-program build/test duration and status. Each child has an 1800s watchdog.

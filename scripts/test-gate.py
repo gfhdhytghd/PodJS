@@ -52,7 +52,7 @@ if not args.inside:
 def terminate(signum,frame):
     raise KeyboardInterrupt
 signal.signal(signal.SIGTERM,terminate)
-env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', CARGO_BUILD_JOBS='4', PODJS_TIMING_FILE=str(out / 'compile.jsonl'), PODJS_TEST_FRESH='1' if args.fresh else '0', PODJS_TEST_WORKERS=str(args.workers),PODJS_LINT_OUTPUT=str(out/'lint-artifacts'),PODJS_GRADLE_BUILD_CACHE=str(ROOT/'.cache/test-gate/gradle-build-cache'))
+env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', CARGO_BUILD_JOBS='4', PODJS_TIMING_FILE=str(out / 'compile.jsonl'), PODJS_TEST_FRESH='1' if args.fresh else '0', PODJS_TEST_WORKERS=str(args.workers),PODJS_LINT_OUTPUT=str(out/'lint-artifacts'),PODJS_UNIT_CHAIN_REPORT=str(out/'native-chain.jsonl'),PODJS_GRADLE_BUILD_CACHE=str(ROOT/'.cache/test-gate/gradle-build-cache'))
 env['PATH'] = str(ROOT / 'scripts/test-tools/bin') + os.pathsep + env['PATH']
 gradle_home = ROOT / '.cache/test-gate/gradle-home'
 gradle_home.mkdir(parents=True, exist_ok=True)
@@ -183,6 +183,13 @@ def run(item):
                 build += r['seconds']
             if r.get('command') == name and r.get('phase') == 'setup':
                 setup += r['seconds']
+    native_rows=[]
+    if (out/'native-chain.jsonl').exists():
+        native_rows=[json.loads(line) for line in (out/'native-chain.jsonl').read_text().splitlines() if line.strip()]
+        native_rows=[r for r in native_rows if r.get('command')==name]
+    if native_rows:
+        build=sum(r['seconds'] for r in native_rows if r['phase']=='build')
+        setup=sum(r['seconds'] for r in native_rows if r['phase']=='setup')
     row = {'started_monotonic':begin,'finished_monotonic':finished,'build_seconds': build, 'setup_seconds':setup,'test_seconds': max(0, finished - begin - build - setup), 'name': name, 'phase': 'lint' if name == 'lint' else 'test', 'command': command, 'seconds': finished - begin,'collect_seconds':time.monotonic()-finished, 'exit': code}
     print(name, round(row['seconds'], 3), 'exit=' + str(code), flush=True)
     return row

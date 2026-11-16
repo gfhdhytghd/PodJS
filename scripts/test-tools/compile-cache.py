@@ -24,6 +24,40 @@ if not tool:
     sys.exit(127)
 start = time.monotonic()
 args = sys.argv[1:]
+def native_context():
+    database = pathlib.Path(os.environ.get('PODJS_TEST_CACHE', ROOT / '.cache/test-gate')) / 'native-database'
+    database.mkdir(parents=True, exist_ok=True)
+    sources = [arg for arg in args if pathlib.Path(arg).suffix in ('.cpp', '.cc', '.c')]
+    compile_args = [arg for i, arg in enumerate(args) if arg not in sources and arg not in ('-shared',) and (i not in (args.index('-o'), args.index('-o') + 1)) and (not arg.startswith('-l'))]
+    entries = [{'directory': str(pathlib.Path.cwd()), 'file': str(pathlib.Path(source).absolute()), 'arguments': [tool, *compile_args, source, '-c']} for source in sources]
+    target = database / hashlib.sha256(json.dumps(entries).encode()).hexdigest()
+    target.mkdir(exist_ok=True)
+    # Keep ephemeral generated include headers for later native lint, without
+    # changing the actual compilation command or the compiler cache key.
+    for entry in entries:
+        copied=[]
+        for i,arg in enumerate(entry['arguments']):
+            include = arg[2:] if arg.startswith('-I') and len(arg)>2 else None
+            if include is None:
+                copied.append(arg)
+                continue
+            folder=pathlib.Path(include).absolute()
+            if folder.is_dir() and folder.is_relative_to(pathlib.Path(tempfile.gettempdir())) and not folder.is_relative_to(ROOT):
+                dest=target/'includes'/hashlib.sha256(str(folder).encode()).hexdigest()
+                dest.mkdir(parents=True,exist_ok=True)
+                for header in folder.rglob('*'):
+                    if header.is_file() and header.suffix in ('.h','.hpp','.inc','.def'):
+                        output_header=dest/header.relative_to(folder)
+                        output_header.parent.mkdir(parents=True,exist_ok=True)
+                        shutil.copy2(header,output_header)
+                copied.append('-I'+str(dest))
+            else:
+                copied.append(arg)
+        entry['arguments']=copied
+    (target/'compile_commands.json').write_text(json.dumps(entries))
+
+if name != 'javac' and '-o' in args and any(a.startswith('-fsanitize=') for a in args):
+    native_context()
 if any('@' in arg or arg == '-' or arg.startswith(('-L','-Wl,','-M','-save-temps','-fprofile','-fmodule','-fsanitize','-flto','-fplugin','-specs=','--target','-target','--gcc-toolchain','-stdlib=','--sysroot','-isysroot','-B','--module','--processor','--upgrade-module','--patch-module')) or arg in ('-processorpath','-processor','-proc:only','--system','-bootclasspath','-h','-s','--coverage') for arg in args) or any('*' in arg for i,arg in enumerate(args) if i and args[i-1] in ('-cp','-classpath','--class-path')):
     os.execv(tool,[tool,*args])
 option = '-d' if name == 'javac' else '-o'
@@ -136,36 +170,7 @@ for directory in ('platforms/android/runtime/src', 'tests/java', 'tests/cpp', 'c
             add(p.relative_to(ROOT))
             file(p)
 if name != 'javac':
-    database = pathlib.Path(os.environ.get('PODJS_TEST_CACHE', ROOT / '.cache/test-gate')) / 'native-database'
-    database.mkdir(parents=True, exist_ok=True)
-    sources = [arg for arg in args if pathlib.Path(arg).suffix in ('.cpp', '.cc', '.c')]
-    compile_args = [arg for i, arg in enumerate(args) if arg not in sources and arg not in ('-shared',) and (i not in (args.index('-o'), args.index('-o') + 1)) and (not arg.startswith('-l'))]
-    entries = [{'directory': str(pathlib.Path.cwd()), 'file': str(pathlib.Path(source).absolute()), 'arguments': [tool, *compile_args, source, '-c']} for source in sources]
-    target = database / hashlib.sha256(json.dumps(entries).encode()).hexdigest()
-    target.mkdir(exist_ok=True)
-    # Keep ephemeral generated include headers for later native lint, without
-    # changing the actual compilation command or the compiler cache key.
-    for entry in entries:
-        copied=[]
-        for i,arg in enumerate(entry['arguments']):
-            include = arg[2:] if arg.startswith('-I') and len(arg)>2 else None
-            if include is None:
-                copied.append(arg)
-                continue
-            folder=pathlib.Path(include).absolute()
-            if folder.is_dir() and folder.is_relative_to(pathlib.Path(tempfile.gettempdir())) and not folder.is_relative_to(ROOT):
-                dest=target/'includes'/hashlib.sha256(str(folder).encode()).hexdigest()
-                dest.mkdir(parents=True,exist_ok=True)
-                for header in folder.rglob('*'):
-                    if header.is_file() and header.suffix in ('.h','.hpp','.inc','.def'):
-                        output_header=dest/header.relative_to(folder)
-                        output_header.parent.mkdir(parents=True,exist_ok=True)
-                        shutil.copy2(header,output_header)
-                copied.append('-I'+str(dest))
-            else:
-                copied.append(arg)
-        entry['arguments']=copied
-    (target/'compile_commands.json').write_text(json.dumps(entries))
+    native_context()
     dep_args = args[:]
     at = dep_args.index('-o')
     del dep_args[at:at + 2]
