@@ -49,6 +49,8 @@ public final class MigrationRecoveryTest {
         for(String failure:new String[]{"timeout","memory"}) {
             File root=Files.createTempDirectory("migration-budget-").toFile();
             try {
+                // Complete fixture-directory durability before starting the copy-failure watchdog.
+                PodTakeoverCoordinator.syncDirectory(root.getParentFile());
                 boolean[] fail={true};
                 PodTakeoverCoordinator.Converter converter=new PodTakeoverCoordinator.Converter(){
                     public String version(){return "budget-fixture";}

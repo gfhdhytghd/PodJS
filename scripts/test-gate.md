@@ -90,3 +90,9 @@ This avoids sharing parent-directory fsyncs with unrelated system-temp users;
 SQLite FULL, explicit deadlines (including the 200ms migration regression),
 crash boundaries and all assertions remain unchanged. The property is supplied
 only to children of this runner, not to the user's global Java environment.
+
+The migration copy-failure fixture explicitly fsyncs its freshly created
+parent directory before constructing the coordinator's unchanged 200ms
+watchdog. Product preflight still performs its original fsync. This separates
+fixture creation from the intended copy-timeout/OOM injection without changing
+assertions, retry identity, deadlines, crash loops or production source.
