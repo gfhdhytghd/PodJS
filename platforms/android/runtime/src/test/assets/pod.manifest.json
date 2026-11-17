@@ -1,1 +1,1 @@
-{"schema":1,"androidWorkManagerTakeover":{"nativeAppId":"dev.podjs.runtime.test","workerClasses":["com.example.nativeapp.RemovedWorker"],"uniqueWorkNames":["native-sync"],"tags":["native-log"]}}
+{"schema":1,"androidWorkManagerTakeover":{"nativeAppId":"dev.podjs.runtime.test","workerClasses":["com.example.nativeapp.RemovedWorker"],"uniqueWorkNames":["native-sync"],"tags":["native-log"]},"shellCommands":["library.books","library.summary","sync.last"],"shellReadOnlyCommands":["library.books","library.summary","sync.last"]}
