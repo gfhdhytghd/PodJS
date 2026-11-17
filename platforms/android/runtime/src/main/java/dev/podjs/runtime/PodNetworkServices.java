@@ -52,18 +52,12 @@ final class PodNetworkServices implements Closeable {
         if("discovery.networkUnsubscribe".equals(method))return new JSONObject().put("released",discard(id));
         if(!"discovery.networkSubscribe".equals(method))throw new IllegalArgumentException("Unknown network method");
         cancellation.throwIfCanceled();if(manager==null)throw new IllegalStateException("Network observation unavailable");
-        Subscription subscription=new Subscription(id);
+        Subscription subscription=new Subscription(id,debug&&args.optBoolean("observeDebugOverride",false));
         synchronized(this){if(closed)throw new IllegalStateException("Network observation closed");if(subscriptions.size()>=8)throw new IllegalStateException("Too many network subscriptions");if(subscriptions.containsKey(id))throw new IllegalArgumentException("Duplicate network subscription");subscriptions.put(id,subscription);}
         cancellation.setOnCancelListener(subscription::close);
         try{subscription.start();cancellation.throwIfCanceled();return new JSONObject().put("subscriptionId",id);}
         catch(Exception error){synchronized(this){subscriptions.remove(id,subscription);}subscription.close();throw error;}
         finally{cancellation.setOnCancelListener(null);}
-    }
-    /** Keep typed DNS/socket failures distinct from HTTP and local file errors. */
-    static String transportFailureCode(Throwable error){
-        if(error instanceof java.net.SocketTimeoutException)return "timeout";
-        if(error instanceof java.net.UnknownHostException || error instanceof java.net.SocketException)return "network_error";
-        return null;
     }
     static String parseDebugInternetStatus(String value){
         if(value==null)return null;
@@ -79,27 +73,34 @@ final class PodNetworkServices implements Closeable {
     public void close(){List<Subscription> pending;synchronized(this){closed=true;pending=new ArrayList<>(subscriptions.values());subscriptions.clear();}for(Subscription subscription:pending)subscription.close();}
     private final class Subscription implements Closeable {
         final String id;boolean ended,defaultRegistered,wifiRegistered,overrideRegistered;
-        final ContentObserver overrideObserver=new ContentObserver(new Handler(Looper.getMainLooper())){
-            @Override public void onChange(boolean selfChange){changed("default","capabilities");}
-        };
-        Subscription(String id){this.id=id;}
+        final ContentObserver overrideObserver;
+        Subscription(String id,boolean observeDebugOverride){
+            this.id=id;
+            overrideObserver=observeDebugOverride?new ContentObserver(new Handler(Looper.getMainLooper())){
+                @Override public void onChange(boolean selfChange){emit("network.debugOverrideChanged",null,null);}
+            }:null;
+        }
         final ConnectivityManager.NetworkCallback defaultCallback=callback("default");
         final ConnectivityManager.NetworkCallback wifiCallback=callback("wifi");
         ConnectivityManager.NetworkCallback callback(String source){return new ConnectivityManager.NetworkCallback(){
-            public void onAvailable(Network network){changed(source,"available");}
-            public void onLost(Network network){changed(source,"lost");}
-            public void onCapabilitiesChanged(Network network,NetworkCapabilities capabilities){changed(source,"capabilities");}
+            public void onAvailable(Network network){emit("network.changed",source,"available");}
+            public void onLost(Network network){emit("network.changed",source,"lost");}
+            public void onCapabilitiesChanged(Network network,NetworkCapabilities capabilities){emit("network.changed",source,"capabilities");}
         };}
         synchronized void start(){
             if(ended)throw new IllegalStateException("Network subscription closed");
             manager.registerDefaultNetworkCallback(defaultCallback);defaultRegistered=true;
-            if(debug){context.getContentResolver().registerContentObserver(Settings.Global.getUriFor(DEBUG_INTERNET_SETTING),false,overrideObserver);overrideRegistered=true;}
+            if(overrideObserver!=null){context.getContentResolver().registerContentObserver(Settings.Global.getUriFor(DEBUG_INTERNET_SETTING),false,overrideObserver);overrideRegistered=true;}
             // Local Wi-Fi routes can be useful even without internet validation.
             manager.registerNetworkCallback(new NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(),wifiCallback);wifiRegistered=true;
         }
-        synchronized void changed(String source,String reason){
+        synchronized void emit(String type,String source,String reason){
             if(ended)return;
-            try{sink.accept(new JSONObject().put("t","network.changed").put("subscriptionId",id).put("value",new JSONObject().put("source",source).put("reason",reason)).toString());}
+            try{
+                JSONObject event=new JSONObject().put("t",type).put("subscriptionId",id);
+                if(source!=null)event.put("value",new JSONObject().put("source",source).put("reason",reason));
+                sink.accept(event.toString());
+            }
             catch(RuntimeException ignored){}catch(org.json.JSONException ignored){}
         }
         public synchronized void close(){

@@ -25,13 +25,6 @@ public final class PodNetworkServicesTest {
         }finally{workers.shutdownNow();}
     }
 
-    @Test public void onlySocketAndDnsErrorsAreTransportFailures(){
-        assertEquals("network_error",PodNetworkServices.transportFailureCode(new java.net.UnknownHostException()));
-        assertEquals("network_error",PodNetworkServices.transportFailureCode(new java.net.ConnectException()));
-        assertEquals("timeout",PodNetworkServices.transportFailureCode(new java.net.SocketTimeoutException()));
-        assertNull(PodNetworkServices.transportFailureCode(new java.io.IOException("http_status:503")));
-        assertNull(PodNetworkServices.transportFailureCode(new java.io.FileNotFoundException()));
-    }
     @Test public void parsesOnlyClosedDebugStatuses(){
         assertEquals("checking",PodNetworkServices.parseDebugInternetStatus("checking"));
         assertEquals("available",PodNetworkServices.parseDebugInternetStatus(" WIFI "));
@@ -61,7 +54,7 @@ public final class PodNetworkServicesTest {
             shell("settings put global "+key+" unavailable");
             try(PodNetworkServices services=new PodNetworkServices(release,ignored->{})){
                 assertFalse(services.execute("discovery.networkSnapshot",new JSONObject(),new CancellationSignal()).has("internetStatusOverride"));
-                services.execute("discovery.networkSubscribe",args("release"),new CancellationSignal());
+                services.execute("discovery.networkSubscribe",args("release").put("observeDebugOverride",true),new CancellationSignal());
                 assertFalse(field(subscription(services,"release"),"overrideRegistered"));
             }
         }finally{shell("null".equals(previous)?"settings delete global "+key:"settings put global "+key+" "+previous);}
@@ -70,14 +63,22 @@ public final class PodNetworkServicesTest {
         final String key=PodNetworkServices.DEBUG_INTERNET_SETTING;
         String previous=shell("settings get global "+key);
         BlockingQueue<String> events=new LinkedBlockingQueue<>();
-        try(PodNetworkServices services=new PodNetworkServices(context(),events::add)){
+        try(PodNetworkServices services=new PodNetworkServices(context(),event->{
+            try{if("network.debugOverrideChanged".equals(new JSONObject(event).optString("t")))events.add(event);}
+            catch(org.json.JSONException error){throw new AssertionError(error);}
+        })){
             boolean debug=(context().getApplicationInfo().flags&android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0;
-            services.execute("discovery.networkSubscribe",args("override"),new CancellationSignal());
+            services.execute("discovery.networkSubscribe",args("override").put("observeDebugOverride",true),new CancellationSignal());
             Object owner=subscription(services,"override");assertEquals(debug,field(owner,"overrideRegistered"));
             for(String status:new String[]{"checking","unavailable","bluetooth","available"}){
                 events.clear();shell("settings put global "+key+" "+status);
                 JSONObject snapshot=services.execute("discovery.networkSnapshot",new JSONObject(),new CancellationSignal());
-                if(debug){assertEquals(status,snapshot.getString("internetStatusOverride"));assertNotNull("setting notification",events.poll(5,TimeUnit.SECONDS));}
+                if(debug){
+                    assertEquals(status,snapshot.getString("internetStatusOverride"));
+                    String event=events.poll(5,TimeUnit.SECONDS);
+                    assertNotNull("setting notification",event);
+                    assertEquals("override",new JSONObject(event).getString("subscriptionId"));
+                }
                 else assertFalse(snapshot.has("internetStatusOverride"));
             }
             services.execute("discovery.networkUnsubscribe",args("override"),new CancellationSignal());

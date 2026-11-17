@@ -10,7 +10,7 @@ const emitted: Record<string, unknown>[] = [];
 };
 
 const api = await import("../src/watch.ts");
-const { systemSettings, secureStorage, device, battery, debugPerformance, application, sharing, displayPower, silencePlayback, HostServiceError, hostOperation, sqlite, browser, browserAuth, mediaVolume, speech, timeInput, textInput, textLayout, fileChunks, uri, rfcomm, tcp, byteStreams, webSockets, discovery, onNetworkChange } = await import("../src/services.ts");
+const { systemSettings, secureStorage, device, battery, debugPerformance, application, sharing, displayPower, silencePlayback, HostServiceError, hostOperation, sqlite, browser, browserAuth, mediaVolume, speech, timeInput, textInput, textLayout, fileChunks, uri, rfcomm, tcp, byteStreams, webSockets, discovery, onNetworkChange, onInternetAvailabilityChange } = await import("../src/services.ts");
 const host = (globalThis as unknown as { pod: { capabilities: () => string } }).pod;
 
 beforeEach(() => {
@@ -183,6 +183,37 @@ describe("host services", () => {
     host.capabilities=()=>JSON.stringify(["net.discovery"]);let delivered=0,errors=0;const stop=onNetworkChange(()=>delivered++,()=>errors++),request=emitted.at(-1)!;const subscriptionId=(request.args as {subscriptionId:string}).subscriptionId;stop();
     expect(emitted.at(-2)).toMatchObject({t:"service.cancel",id:request.id});const release=emitted.at(-1)!;expect(release).toMatchObject({method:"discovery.networkUnsubscribe",args:{subscriptionId}});
     events.push({t:"service.result",id:request.id,ok:true,value:{subscriptionId}},{t:"service.result",id:release.id,ok:true,value:{released:true}},{t:"network.changed",subscriptionId,value:{source:"default",reason:"lost"}});api.__pumpPodEvents();await Promise.resolve();expect(delivered).toBe(0);expect(errors).toBe(0);
+  });
+  test("internet availability opts in to debug notifications separately from route callbacks",async()=>{
+    host.capabilities=()=>JSON.stringify(["net.discovery"]);
+    let routeChanges=0,availabilityChanges=0;
+    const stopRoute=onNetworkChange(()=>routeChanges++),route=emitted.at(-1)!;
+    const stopAvailability=onInternetAvailabilityChange(()=>availabilityChanges++),availability=emitted.at(-1)!;
+    const routeId=(route.args as {subscriptionId:string}).subscriptionId;
+    const availabilityId=(availability.args as {subscriptionId:string}).subscriptionId;
+    try{
+      expect(route.args).toEqual({subscriptionId:routeId});
+      expect(availability.args).toEqual({subscriptionId:availabilityId,observeDebugOverride:true});
+      for(const [request,subscriptionId] of [[route,routeId],[availability,availabilityId]] as const){
+        events.push({t:"service.result",id:request.id,ok:true,value:{subscriptionId}});
+        events.push({t:"network.debugOverrideChanged",subscriptionId});
+      }
+      api.__pumpPodEvents();
+      expect([routeChanges,availabilityChanges]).toEqual([0,1]);
+      for(const subscriptionId of [routeId,availabilityId]){
+        events.push({t:"network.changed",subscriptionId,value:{source:"default",reason:"available"}});
+      }
+      api.__pumpPodEvents();
+      expect([routeChanges,availabilityChanges]).toEqual([1,2]);
+    }finally{
+      stopRoute();
+      stopAvailability();
+      for(const request of emitted.slice(-2))events.push({t:"service.result",id:request.id,ok:true,value:{released:true}});
+      events.push({t:"network.debugOverrideChanged",subscriptionId:availabilityId});
+      api.__pumpPodEvents();
+      await Promise.resolve();
+    }
+    expect([routeChanges,availabilityChanges]).toEqual([1,2]);
   });
   test("unavailable network observation reports failure without a native request",async()=>{
     let failure:unknown;const stop=onNetworkChange(()=>{throw new Error("unexpected network event");},error=>{failure=error;});await Promise.resolve();expect(failure).toMatchObject({code:"unsupported"});expect(emitted).toHaveLength(0);stop();expect(emitted).toHaveLength(0);

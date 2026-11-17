@@ -2,15 +2,21 @@ package dev.podjs.runtime;
 
 import android.content.Context;
 import android.os.CancellationSignal;
+import android.os.Looper;
 import androidx.test.core.app.ApplicationProvider;
 import java.io.*;
+import java.net.SocketException;
 import java.util.Arrays;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import org.json.JSONObject;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.annotation.Config;
+import org.robolectric.util.ReflectionHelpers;
 import static org.junit.Assert.*;
+import static org.robolectric.Shadows.shadowOf;
 
 /** JVM-only checks of the actual stream IO and byte envelope, with no radio/device. */
 @RunWith(RobolectricTestRunner.class)
@@ -50,6 +56,36 @@ public class PodByteBridgeTest {
     @Test public void emptyPayloadAndOversizeAreDistinct()throws Exception {
         assertEquals(0,PodBytePayload.input(new JSONObject().put("_podByteMode",true).put("_podBytes",new byte[0])).length);
         for(Object bad:new Object[]{"wrong",new byte[65537]})try{PodBytePayload.input(new JSONObject().put("_podByteMode",true).put("_podBytes",bad));fail();}catch(IllegalArgumentException expected){}
+    }
+    @Test public void nativeByteReadPreservesTheHostErrorForConnectionReset()throws Exception {
+        LinkedBlockingQueue<String> results=new LinkedBlockingQueue<>();
+        try(PodServices host=new PodServices(ApplicationProvider.getApplicationContext(),results::add)){
+            host.attachByteBridge(new PodServices.ByteBridge(){
+                public byte[] take(int id){throw new AssertionError("unexpected input attachment");}
+                public int put(byte[] bytes){throw new AssertionError("unexpected output attachment");}
+                public void drop(int id){throw new AssertionError("unexpected dropped attachment");}
+            });
+            PodByteStreamServices streams=ReflectionHelpers.getField(host,"byteStreams");
+            String id=streams.attach(new InputStream(){
+                @Override public int read()throws IOException{throw new SocketException("Connection reset");}
+            },new ByteArrayOutputStream(),()->{});
+            host.dispatch(new JSONObject().put("t","service.request").put("version",1).put("id",1)
+                    .put("method","stream.read.bytes").put("args",args(id,1)));
+
+            long expires=System.nanoTime()+TimeUnit.SECONDS.toNanos(5);
+            while(results.isEmpty()&&System.nanoTime()<expires){
+                shadowOf(Looper.getMainLooper()).idle();
+                Thread.sleep(1);
+            }
+            String line=results.poll();
+            assertNotNull("native read result",line);
+            JSONObject reply=new JSONObject(line);
+            assertEquals("service.result",reply.getString("t"));
+            assertEquals(1,reply.getInt("id"));
+            assertFalse(reply.getBoolean("ok"));
+            assertEquals("host_error",reply.getString("code"));
+            assertEquals("Connection reset",reply.getString("message"));
+        }
     }
     private static JSONObject args(String id,int max)throws Exception{return new JSONObject().put("id",id).put("maxBytes",max).put("timeoutMs",1000);}
 }

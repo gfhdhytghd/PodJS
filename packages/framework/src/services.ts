@@ -859,13 +859,24 @@ export interface NetworkChange {source:"default"|"wifi";reason:"available"|"lost
 let nextNetworkSubscription=1;
 /** Returns a disposer immediately, including while native registration is pending. */
 export function onNetworkChange(listener:(event:NetworkChange)=>void,onError?:(error:unknown)=>void):()=>void {
+ return subscribeNetwork(listener,onError);
+}
+
+/** Lets internet status displays refresh after native route or debug override changes. */
+export function onInternetAvailabilityChange(listener:()=>void,onError?:(error:unknown)=>void):()=>void {
+ return subscribeNetwork(listener,onError,listener);
+}
+
+function subscribeNetwork(listener:(event:NetworkChange)=>void,onError?:(error:unknown)=>void,onDebugOverride?:()=>void):()=>void {
  const subscriptionId="network-"+nextNetworkSubscription++;let stopped=false;
  const off=__onHostEvent(event=>{
-  if(stopped||!hasCapability("net.discovery")||event.t!=="network.changed"||event.subscriptionId!==subscriptionId)return;
+  if(stopped||!hasCapability("net.discovery")||event.subscriptionId!==subscriptionId)return;
+  if(event.t==="network.debugOverrideChanged"){onDebugOverride?.();return;}
+  if(event.t!=="network.changed")return;
   const value=event.value as Partial<NetworkChange>|undefined;
   if(value&&(value.source==="default"||value.source==="wifi")&&(value.reason==="available"||value.reason==="lost"||value.reason==="capabilities"))listener(value as NetworkChange);
  });
- const pending=hostOperation<{subscriptionId:string}>("discovery.networkSubscribe",{subscriptionId});
+ const pending=hostOperation<{subscriptionId:string}>("discovery.networkSubscribe",onDebugOverride?{subscriptionId,observeDebugOverride:true}:{subscriptionId});
  void pending.result.catch(error=>{if(!stopped){stopped=true;off();onError?.(error);}});
  return ()=>{if(stopped)return;stopped=true;off();try{pending.cancel();}finally{void hostOperation("discovery.networkUnsubscribe",{subscriptionId}).result.catch(()=>{});}};
 }

@@ -804,7 +804,7 @@ final class PodServices implements Closeable {
                 else if ("content.http".equals(method) && value instanceof JSONObject) contentHttp.discard((JSONObject)value);
             } catch (Exception error) {
                 if (requests.remove(id, request)) failure(id,
-                    error instanceof SecureStoreLimits.Failure ? ((SecureStoreLimits.Failure)error).code : error instanceof SecurityException ? "permission_denied" : error instanceof ProvisioningSession.Failure ? "provision_"+((ProvisioningSession.Failure)error).reason : error instanceof UnsupportedOperationException ? "unsupported" : error instanceof IllegalArgumentException ? "invalid_argument" : PodNetworkServices.transportFailureCode(error)!=null ? PodNetworkServices.transportFailureCode(error) : "host_error",
+                    error instanceof SecureStoreLimits.Failure ? ((SecureStoreLimits.Failure)error).code : error instanceof SecurityException ? "permission_denied" : error instanceof ProvisioningSession.Failure ? "provision_"+((ProvisioningSession.Failure)error).reason : error instanceof UnsupportedOperationException ? "unsupported" : error instanceof IllegalArgumentException ? "invalid_argument" : "host_error",
                     error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage());
             } finally {
                 if (request.priority != null) request.priority.close();
