@@ -13,6 +13,18 @@ public final class PodNetworkServicesTest {
     private JSONObject args(String id)throws Exception{return new JSONObject().put("subscriptionId",id);}
     private Object subscription(PodNetworkServices services,String id)throws Exception{java.lang.reflect.Field field=PodNetworkServices.class.getDeclaredField("subscriptions");field.setAccessible(true);synchronized(services){return ((java.util.Map<?,?>)field.get(services)).get(id);}}
     private boolean field(Object subscription,String name)throws Exception{java.lang.reflect.Field field=subscription.getClass().getDeclaredField(name);field.setAccessible(true);synchronized(subscription){return field.getBoolean(subscription);}}
+    @Test public void snapshotSequenceAdvancesAcrossWorkers() throws Exception {
+        ExecutorService workers=Executors.newFixedThreadPool(2);
+        try(PodNetworkServices services=new PodNetworkServices(context(), ignored->{})){
+            Callable<Long> sample=()->services.execute("discovery.networkSnapshot",new JSONObject(),new CancellationSignal()).getLong("snapshotSequence");
+            long first=workers.submit(sample).get(5,TimeUnit.SECONDS);
+            Future<Long> a=workers.submit(sample), b=workers.submit(sample);
+            long second=a.get(5,TimeUnit.SECONDS), third=b.get(5,TimeUnit.SECONDS);
+            assertEquals(first+1,Math.min(second,third));
+            assertEquals(first+2,Math.max(second,third));
+        }finally{workers.shutdownNow();}
+    }
+
     @Test public void onlySocketAndDnsErrorsAreTransportFailures(){
         assertEquals("network_error",PodNetworkServices.transportFailureCode(new java.net.UnknownHostException()));
         assertEquals("network_error",PodNetworkServices.transportFailureCode(new java.net.ConnectException()));

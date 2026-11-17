@@ -25,21 +25,28 @@ final class PodNetworkServices implements Closeable {
     private final Consumer<String> sink;
     private final Map<String,Subscription> subscriptions=new HashMap<>();
     private boolean closed;
+    private final Object snapshotLock=new Object();
+    private long snapshotSequence;
     PodNetworkServices(Context context,Consumer<String> sink){this.context=context.getApplicationContext();debug=(context.getApplicationInfo().flags&ApplicationInfo.FLAG_DEBUGGABLE)!=0;manager=context.getSystemService(ConnectivityManager.class);this.sink=sink;}
     JSONObject execute(String method,JSONObject args,CancellationSignal cancellation)throws Exception{
         if("discovery.networkSnapshot".equals(method)){
             cancellation.throwIfCanceled();synchronized(this){if(closed)throw new IllegalStateException("Network observation closed");}
-            Network network=manager==null?null:manager.getActiveNetwork();NetworkCapabilities caps=network==null?null:manager.getNetworkCapabilities(network);
-            JSONObject result=new JSONObject().put("metered",manager==null||manager.isActiveNetworkMetered()).put("active",network!=null).put("internet",caps!=null&&caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)).put("validated",caps!=null&&caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)).put("wifi",caps!=null&&caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)).put("cellular",caps!=null&&caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)).put("bluetooth",caps!=null&&caps.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH));
-            boolean localWifi=false;
-            if(manager!=null)for(Network candidate:manager.getAllNetworks()){
-                NetworkCapabilities local=manager.getNetworkCapabilities(candidate);
-                if(local!=null&&local.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)){localWifi=true;break;}
+            // Keep route reads and their sequence in the same order, even
+            // when discovery requests execute on different worker threads.
+            synchronized(snapshotLock){
+                cancellation.throwIfCanceled();
+                Network network=manager==null?null:manager.getActiveNetwork();NetworkCapabilities caps=network==null?null:manager.getNetworkCapabilities(network);
+                JSONObject result=new JSONObject().put("metered",manager==null||manager.isActiveNetworkMetered()).put("active",network!=null).put("internet",caps!=null&&caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)).put("validated",caps!=null&&caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)).put("wifi",caps!=null&&caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)).put("cellular",caps!=null&&caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)).put("bluetooth",caps!=null&&caps.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH));
+                boolean localWifi=false;
+                if(manager!=null)for(Network candidate:manager.getAllNetworks()){
+                    NetworkCapabilities local=manager.getNetworkCapabilities(candidate);
+                    if(local!=null&&local.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)){localWifi=true;break;}
+                }
+                result.put("localWifi",localWifi);
+                // Preserve the real route fields for local/LAN consumers. Never honor overrides in release.
+                if(debug){String forced=null;try{forced=parseDebugInternetStatus(Settings.Global.getString(context.getContentResolver(),DEBUG_INTERNET_SETTING));}catch(RuntimeException ignored){}if(forced!=null)result.put("internetStatusOverride",forced);}
+                cancellation.throwIfCanceled();return result.put("snapshotSequence",++snapshotSequence);
             }
-            result.put("localWifi",localWifi);
-            // Preserve the real route fields for local/LAN consumers. Never honor overrides in release.
-            if(debug){String forced=null;try{forced=parseDebugInternetStatus(Settings.Global.getString(context.getContentResolver(),DEBUG_INTERNET_SETTING));}catch(RuntimeException ignored){}if(forced!=null)result.put("internetStatusOverride",forced);}
-            cancellation.throwIfCanceled();return result;
         }
         String id=args.getString("subscriptionId");if(!id.matches("[A-Za-z0-9_-]{1,64}"))throw new IllegalArgumentException("Invalid network subscription");
         if("discovery.networkUnsubscribe".equals(method))return new JSONObject().put("released",discard(id));

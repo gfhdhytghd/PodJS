@@ -161,7 +161,7 @@ describe("host services", () => {
   test("debug internet status remains separate from real LAN and route fields",async()=>{
     host.capabilities=()=>JSON.stringify(["net.discovery"]);
     const result=discovery.networkSnapshot(),request=emitted.at(-1)!;
-    const value={active:true,internet:false,validated:false,wifi:true,localWifi:true,cellular:false,bluetooth:false,internetStatusOverride:"bluetooth"};
+    const value={snapshotSequence:23,active:true,internet:false,validated:false,wifi:true,localWifi:true,cellular:false,bluetooth:false,internetStatusOverride:"bluetooth"};
     events.push({t:"service.result",id:request.id,ok:true,value});api.__pumpPodEvents();
     await expect(result).resolves.toEqual(value);
   });

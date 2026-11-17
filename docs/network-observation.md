@@ -12,3 +12,7 @@ Snapshots include the optional `internetStatusOverride` only when enabled. Actua
 including `localWifi`, remain unchanged. Release hosts neither read nor observe this setting.
 Changing this setting emits the existing `default/capabilities` notification. Unsubscribe/host close
 also unregisters the content observer. This capability only observes status; it changes no network.
+
+Android snapshots carry a host-local, increasing `snapshotSequence` allocated in capture order.
+A consumer combining observed and on-demand snapshots should discard results older than
+its latest accepted capture. Older hosts can omit the field.
