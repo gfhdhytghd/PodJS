@@ -54,6 +54,10 @@ def terminate(signum,frame):
 signal.signal(signal.SIGTERM,terminate)
 env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', CARGO_BUILD_JOBS='4', PODJS_TIMING_FILE=str(out / 'compile.jsonl'), PODJS_TEST_FRESH='1' if args.fresh else '0', PODJS_TEST_WORKERS=str(args.workers),PODJS_LINT_OUTPUT=str(out/'lint-artifacts'),PODJS_UNIT_CHAIN_REPORT=str(out/'native-chain.jsonl'),PODJS_GRADLE_BUILD_CACHE=str(ROOT/'.cache/test-gate/gradle-build-cache'))
 env['PATH'] = str(ROOT / 'scripts/test-tools/bin') + os.pathsep + env['PATH']
+# Keep host JVM scratch-directory fsyncs separate from the shared system temp.
+java_tmp = project / '.cache/test-gate/java-tmp'
+java_tmp.mkdir(parents=True, exist_ok=True)
+env['JAVA_TOOL_OPTIONS'] = env.get('JAVA_TOOL_OPTIONS', '') + ' -Djava.io.tmpdir=' + str(java_tmp)
 gradle_home = ROOT / '.cache/test-gate/gradle-home'
 gradle_home.mkdir(parents=True, exist_ok=True)
 original = pathlib.Path(os.environ.get('GRADLE_USER_HOME', pathlib.Path.home() / '.gradle'))
@@ -118,7 +122,7 @@ if not args.lint_only:
         commands.extend(((f'extra-{i:02d}', item['argv'], False) for i, item in enumerate(unlisted_units(ROOT,manifest['framework']))))
 if not args.tests_only:
     commands.append(('lint', ['bun', 'run', 'lint'], False))
-provenance = {'project': str(project), 'head': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=project, text=True).strip(), 'fresh': args.fresh, 'workers': args.workers, 'tools': {}}
+provenance = {'project': str(project), 'head': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=project, text=True).strip(), 'fresh': args.fresh, 'workers': args.workers, 'java_tmp': str(java_tmp), 'tools': {}}
 for tool, flag in [('bun', '--version'), ('java', '-version'), ('cargo', '--version')]:
     result = subprocess.run([tool, flag], capture_output=True, text=True)
     provenance['tools'][tool] = '\n'.join(line for line in (result.stdout + result.stderr).splitlines() if not line.startswith(('Picked up ','NOTE: Picked up '))).strip()

@@ -83,3 +83,10 @@ The complete app Bun invocation uses a 30-second default watchdog, as approved
 for physical-disk host tests. Explicit per-test deadlines and product timing
 assertions still apply. This is a command argument only: direct `bun test` and
 targeted diagnostic invocations retain Bun's original 5-second default.
+
+Host JVMs use the repository's reclaimable `.cache/test-gate/java-tmp` as
+`java.io.tmpdir`. Each fixture still creates its own directory on real disk.
+This avoids sharing parent-directory fsyncs with unrelated system-temp users;
+SQLite FULL, explicit deadlines (including the 200ms migration regression),
+crash boundaries and all assertions remain unchanged. The property is supplied
+only to children of this runner, not to the user's global Java environment.
