@@ -45,7 +45,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
     private final ExecutorService workers=Executors.newFixedThreadPool(2);
     private final ExecutorService cancellations=Executors.newSingleThreadExecutor();
     private final LinkedHashMap<String,Entry> entries=new LinkedHashMap<>(16,.75f,true);
-    private final Set<String> resolutionRejected=new LinkedHashSet<>();
+    private final Set<String> resolutionRejected=new LinkedHashSet<>(),supersededTokens=new LinkedHashSet<>();
     private final Map<Entry,Set<ObservedSource>> foregroundSources=new IdentityHashMap<>();
     private final Map<String,Job> jobs=new LinkedHashMap<>();
     private Set<String> protectedTokens=new LinkedHashSet<>();
@@ -65,7 +65,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
     private void frameBytes(Entry entry){if(frameListener!=null)frameListener.bytes(entry);}
     static final class Entry {
         final long ordinal=ORDINALS.incrementAndGet();final String token,remote;volatile String selectedRemote;List<String> mirrors=Collections.emptyList();boolean raced;long sampleEnd=-1,keyframeEnd=-1;final Map<String,String> headers;final File file;final boolean persistent;
-        String frameAudioUrl=""; volatile int maxVideoShortEdge;
+        String frameAudioUrl="", replacementKey; volatile int maxVideoShortEdge;
         volatile boolean revoked,oversized;
         String windowToken=""; long windowGeneration;
         volatile long expiresAt=Long.MAX_VALUE;volatile long networkBytes,rangeRequests;volatile long length=-1;int captureBytes=MAX_ENTRY;
@@ -93,6 +93,9 @@ final class PodMediaPrefixCache implements AutoCloseable {
     synchronized String register(String key,String remote,Map<String,String> headers,boolean persistent)throws Exception {return register(key,remote,headers,persistent,Collections.emptyList());}
     synchronized String register(String key,String remote,Map<String,String> headers,boolean persistent,List<String> alternates)throws Exception {return register(key,remote,headers,persistent,alternates,"");}
     synchronized String register(String key,String remote,Map<String,String> headers,boolean persistent,List<String> alternates,String frameAudioUrl)throws Exception {
+        return register(key,remote,headers,persistent,alternates,frameAudioUrl,null);
+    }
+    private String register(String key,String remote,Map<String,String> headers,boolean persistent,List<String> alternates,String frameAudioUrl,String replacesUri)throws Exception {
         if(!frameAudioUrl.isEmpty()){Uri audio=Uri.parse(frameAudioUrl);if(frameAudioUrl.length()>32768||!("https".equals(audio.getScheme())||"http".equals(audio.getScheme()))||audio.getHost()==null||audio.getUserInfo()!=null)throw new IllegalArgumentException("invalid_frame_audio_source");}
         if(closed)throw new IOException("cache_closed");Uri u=Uri.parse(remote);
         if(key.isEmpty()||key.length()>2048||!("https".equals(u.getScheme())||"http".equals(u.getScheme()))||(u.getHost()==null||u.getHost().isEmpty())||u.getUserInfo()!=null||remote.length()>32768)throw new IllegalArgumentException("invalid_media_cache_source");
@@ -105,18 +108,39 @@ final class PodMediaPrefixCache implements AutoCloseable {
         for(String remoteUrl:mirrors)PodMediaRequestPolicy.check(okhttp3.HttpUrl.get(remoteUrl),okhttp3.Headers.of(clean));
         if(!frameAudioUrl.isEmpty())PodMediaRequestPolicy.check(okhttp3.HttpUrl.get(frameAudioUrl),okhttp3.Headers.of(clean));
         String token=digest((frameAudioUrl.isEmpty()?"":"companion:"+digest(frameAudioUrl)+"\n")+(persistent?"content-v1\n"+key:key+"\n"+remote+"\n"+clean.toString()+(mirrors.size()>1?"\n"+mirrors.get(1):"")));Entry e=entries.get(token);
+        Entry superseded=null;
+        if(replacesUri!=null&&!persistent){
+            // The key survives guest LRU eviction. Only opt-in registrations
+            // sharing that exact key can replace one another.
+            Entry explicit=entries.get(token(replacesUri));
+            if(explicit!=null&&key.equals(explicit.replacementKey)&&!token.equals(explicit.token))superseded=explicit;
+            if(superseded==null)for(Entry candidate:entries.values())if(key.equals(candidate.replacementKey)&&!token.equals(candidate.token)){
+                superseded=candidate;break;
+            }
+        }
         if(e==null||!e.remote.equals(remote)||!e.headers.equals(clean)||!e.mirrors.equals(mirrors)){
             Entry next=new Entry(token,remote,Collections.unmodifiableMap(clean),new File(root,token+".prefix"),persistent);next.mirrors=Collections.unmodifiableList(mirrors);next.frameAudioUrl=frameAudioUrl;
             // A returned URI is a process-local capability, not an evictable
             // bitmap. Reject new registrations at the byte limit without
             // invalidating addresses still held by players or the guest.
-            if(entries.size()+(e==null?1:0)>MAX_REGISTRATIONS||metadataBytes()-(e==null?0:metadataBytes(e))+metadataBytes(next)>MAX_METADATA_BYTES)
+            next.replacementKey=replacesUri!=null&&!persistent?key:null;
+            int replacing=superseded==null?0:1;
+            long replacedBytes=superseded==null?0:metadataBytes(superseded);
+            if(entries.size()+(e==null?1:0)-replacing>MAX_REGISTRATIONS
+                ||metadataBytes()-(e==null?0:metadataBytes(e))-replacedBytes+metadataBytes(next)>MAX_METADATA_BYTES)
                 throw new IOException("media_cache_metadata_budget");
             if(e!=null){Job old=jobs.remove(token);if(old!=null)old.cancel();}
             e=next;File lengthFile=new File(root,token+".length");if(lengthFile.isFile())try(DataInputStream input=new DataInputStream(new FileInputStream(lengthFile))){long length=input.readLong();if(length>=e.file.length())e.length=length;}catch(IOException ignored){}
             if(resolutionRejected.contains(token))throw new PodVideoShortEdge.Rejected();
-            entries.put(token,e);trim();
+            entries.put(token,e);
         }
+        supersededTokens.remove(token);
+        if(superseded!=null){
+            supersededTokens.add(superseded.token);
+            while(supersededTokens.size()>MAX_REGISTRATIONS)supersededTokens.remove(supersededTokens.iterator().next());
+            remove(superseded);
+        }
+        trim();
         return SCHEME+"://play/"+token+".mp4";
     }
     private String token(String uri){Uri u=Uri.parse(uri);if(!SCHEME.equals(u.getScheme())||!"play".equals(u.getHost()))return null;String p=u.getLastPathSegment();return p!=null&&p.matches("[a-f0-9]{64}\\.mp4")?p.substring(0,64):null;}
@@ -141,7 +165,22 @@ final class PodMediaPrefixCache implements AutoCloseable {
         synchronized(this){
         if(method.equals("video.cache.inspect")){Entry e=target(a.getString("uri"));return new JSONObject().put("prefixBytes",e.file.length()).put("tailBytes",e.tail().length()).put("length",e.length);}
         if(method.equals("video.cache.remove")){remove(target(a.getString("uri")));return new JSONObject();}
-        if(method.equals("video.cache.register")){Map<String,String> h=new HashMap<>();JSONObject o=a.optJSONObject("headers");if(o!=null)for(Iterator<String> keys=o.keys();keys.hasNext();){String k=keys.next();h.put(k,o.getString(k));}String uri=register(a.getString("key"),a.getString("url"),h,a.optBoolean("persistent",false),mirrors(a),a.optString("audioUrl",""));Entry entry=target(uri);entry.expiresAt=Math.min(entry.expiresAt,a.optLong("expiresAt",Long.MAX_VALUE));int limit=a.optInt(PodVideoShortEdge.KEY);if(limit>0)entry.maxVideoShortEdge=entry.maxVideoShortEdge==0?limit:Math.min(limit,entry.maxVideoShortEdge);return new JSONObject().put("uri",uri);}
+        if(method.equals("video.cache.register")){
+            if(!current.getAsBoolean())throw new IOException("media_request_cancelled");
+            Map<String,String> headers=new HashMap<>();
+            JSONObject values=a.optJSONObject("headers");
+            if(values!=null)for(Iterator<String> keys=values.keys();keys.hasNext();){
+                String key=keys.next();headers.put(key,values.getString(key));
+            }
+            String replacesUri=a.isNull("replacesUri")?null:a.getString("replacesUri");
+            String uri=register(a.getString("key"),a.getString("url"),headers,a.optBoolean("persistent",false),
+                mirrors(a),a.optString("audioUrl",""),replacesUri);
+            Entry entry=target(uri);
+            entry.expiresAt=Math.min(entry.expiresAt,a.optLong("expiresAt",Long.MAX_VALUE));
+            int limit=a.optInt(PodVideoShortEdge.KEY);
+            if(limit>0)entry.maxVideoShortEdge=entry.maxVideoShortEdge==0?limit:Math.min(limit,entry.maxVideoShortEdge);
+            return new JSONObject().put("uri",uri);
+        }
         if(method.equals("video.cache.stats"))return stats();
         if(method.equals("video.cache.clear")){windowRevision=Math.max(windowRevision,a.optLong("revision",0));long bytes=fileBytes();clear();return new JSONObject().put("removedBytes",bytes);}
         if(method.equals("video.cache.window")){
@@ -149,7 +188,9 @@ final class PodMediaPrefixCache implements AutoCloseable {
             JSONArray items=a.optJSONArray("items");if(items==null||items.length()>MAX_ENTRIES)throw new IllegalArgumentException("invalid_media_cache_window");
             Set<String> wanted=new LinkedHashSet<>();protectedTokens.clear();foregroundBitrate=Math.max(0,a.optLong("foregroundBitrate",0));
             for(int i=0;i<items.length();i++){JSONObject item=items.getJSONObject(i);Entry e;
-                try{e=target(item.getString("uri"));}
+                String uri=item.getString("uri");
+                if(supersededTokens.contains(token(uri)))continue;
+                try{e=target(uri);}
                 catch(PodVideoShortEdge.Rejected rejected){
                     publishResult(item.optString("itemToken"),item.optLong("generation"),false,0,PodVideoShortEdge.ERROR);
                     continue;
@@ -513,7 +554,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
     }
     private static long metadataBytes(Entry entry){
         int selectedMax=entry.remote.length();for(String mirror:entry.mirrors)selectedMax=Math.max(selectedMax,mirror.length());
-        long bytes=256+2L*(entry.token.length()+entry.remote.length()+selectedMax+entry.frameAudioUrl.length());
+        long bytes=256+2L*(entry.token.length()+entry.remote.length()+selectedMax+entry.frameAudioUrl.length()+(entry.replacementKey==null?0:entry.replacementKey.length()));
         for(String mirror:entry.mirrors)bytes+=32+2L*mirror.length();
         for(Map.Entry<String,String> header:entry.headers.entrySet())bytes+=64+2L*(header.getKey().length()+header.getValue().length());
         return bytes;
@@ -534,7 +575,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
             .put("metadataMaxBytes",MAX_METADATA_BYTES).put("registrationMaxEntries",MAX_REGISTRATIONS)
             .put("jobs",jobs.size()).put("protectedEntries",protectedTokens.size()).put("activePumps",pumps).put("diskMaxBytes",maxTotal);
     }
-    private void clear(){trafficStoppedUntil=0;if(upstream instanceof PodMediaHttp)((PodMediaHttp)upstream).recover();verifiedLocal.clear();if(frameListener!=null)frameListener.clear();generation++;for(Job j:jobs.values())j.cancel();jobs.clear();for(Entry entry:entries.values())revoke(entry);entries.clear();protectedTokens.clear();for(File f:root.listFiles()==null?new File[0]:root.listFiles())if(f.getName().matches("[a-f0-9]{64}\\.(prefix|length|tail)"))f.delete();}
+    private void clear(){trafficStoppedUntil=0;if(upstream instanceof PodMediaHttp)((PodMediaHttp)upstream).recover();verifiedLocal.clear();if(frameListener!=null)frameListener.clear();generation++;for(Job j:jobs.values())j.cancel();jobs.clear();for(Entry entry:entries.values())revoke(entry);entries.clear();protectedTokens.clear();supersededTokens.clear();for(File f:root.listFiles()==null?new File[0]:root.listFiles())if(f.getName().matches("[a-f0-9]{64}\\.(prefix|length|tail)"))f.delete();}
     @Override public synchronized void close(){closed=true;verifiedLocal.clear();generation++;for(Job j:jobs.values())j.cancel();jobs.clear();protectedTokens.clear();for(Entry entry:entries.values())revoke(entry);entries.clear();wakeups.shutdownNow();workers.shutdownNow();cancellations.shutdown();if(upstream instanceof PodMediaHttp)((PodMediaHttp)upstream).close();notifyAll();}
     DataSource.Factory factory(DataSource.Factory fallback){return ()->new PrefixDataSource(fallback);}
     private final class PrefixDataSource implements DataSource {

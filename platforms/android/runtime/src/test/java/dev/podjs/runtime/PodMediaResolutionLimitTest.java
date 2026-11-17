@@ -110,6 +110,34 @@ public class PodMediaResolutionLimitTest {
         }
     }
 
+    @Test public void generatedReplacementsRevokeOldRegistrationsAndBytes() throws Exception {
+        PodMediaStockRangeTest.Ranges remote=new PodMediaStockRangeTest.Ranges();
+        try(PodMediaPrefixCache cache=new PodMediaPrefixCache(PodMediaPrefixCacheTest.root(),remote,6L<<20)){
+            java.util.Random random=new java.util.Random(0x7202026);
+            String prior="";
+            for(int step=0;step<24;step++){
+                JSONObject args=new JSONObject().put("key","generated").put("url","https://example.test/video/"+step)
+                    .put("maxVideoShortEdge",720).put("replacesUri",random.nextBoolean()?prior:"");
+                String next=cache.execute("video.cache.register",args).getString("uri");
+                if(!prior.isEmpty()){
+                    final String superseded=prior;
+                    assertThrows(java.io.IOException.class,()->cache.target(superseded));
+                    assertEquals(0,cache.stats().getLong("bytes"));
+                    cache.execute("video.cache.window",new JSONObject().put("items",new org.json.JSONArray()
+                        .put(new JSONObject().put("uri",superseded)).put(new JSONObject().put("uri",next))));
+                }
+                androidx.media3.datasource.DataSource source=cache.factory(remote).createDataSource();
+                try{
+                    source.open(new androidx.media3.datasource.DataSpec(android.net.Uri.parse(next)));
+                    int size=1+random.nextInt(64);
+                    assertEquals(size,source.read(new byte[size],0,size));
+                    assertEquals(size,cache.stats().getLong("bytes"));
+                }finally{source.close();}
+                prior=next;
+            }
+        }
+    }
+
     private static String register(PodMediaPrefixCache cache,String key) throws Exception {
         return cache.execute("video.cache.register",new JSONObject().put("key",key).put("url","https://example.test/video")
             .put("maxVideoShortEdge",720)).getString("uri");
