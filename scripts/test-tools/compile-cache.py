@@ -170,11 +170,11 @@ def hash_java_classpath():
     for part in value.split(os.pathsep):
         # Empty entries in a nonempty path denote the current directory.
         path = pathlib.Path(part)
+        add(path.absolute())
         try:
             mode = path.stat().st_mode
         except FileNotFoundError:
             add('missing-classpath-entry')
-            add(path)
             continue
         if stat.S_ISDIR(mode):
             files = java_classpath_files(path)
@@ -190,6 +190,8 @@ def hash_java_classpath():
             for child in files:
                 add(child.relative_to(path))
                 with child.open('rb') as stream:
+                    # Javac can prefer a newer source over a matching class.
+                    add(os.fstat(stream.fileno()).st_mtime_ns)
                     add(hashlib.file_digest(stream, 'sha256').digest())
         elif stat.S_ISREG(mode):
             # A manifest Class-Path can load jars outside the supplied path.
@@ -228,11 +230,10 @@ for i, arg in enumerate(args):
     if i == args.index(option) + 1:
         normalized.append('<output>')
         continue
-    if name == 'javac' and arg.startswith('--class-path='):
-        normalized.append('--class-path=<classpath>')
-        continue
-    if name == 'javac' and i and args[i - 1] in JAVA_CLASSPATH_OPTIONS:
-        normalized.append('<classpath>')
+    if name == 'javac' and (
+        arg.startswith('--class-path=') or (i and args[i - 1] in JAVA_CLASSPATH_OPTIONS)
+    ):
+        normalized.append(arg)
         continue
     if i and args[i - 1] in ('-sourcepath', '--source-path'):
         parts = []
