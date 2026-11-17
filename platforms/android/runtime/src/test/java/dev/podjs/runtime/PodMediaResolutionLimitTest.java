@@ -1,5 +1,6 @@
 package dev.podjs.runtime;
 
+import java.io.File;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Test;
@@ -28,11 +29,11 @@ public class PodMediaResolutionLimitTest {
             JSONObject event=events.get(0).getJSONObject("value");
             assertEquals("clip",event.getString("itemToken"));
             assertEquals("resolution_limit",event.getString("category"));
-            assertThrows(PodVideoShortEdge.Rejected.class,()->cache.target(uri));
+            assertThrows(java.io.IOException.class,()->cache.target(uri));
             assertEquals(0,cache.stats().getLong("bytes"));
             assertTrue(remote.readBytes<512*1024);
             cache.execute("video.cache.window",new JSONObject().put("items",new JSONArray().put(target.put("generation",2))).put("revision",2));
-            assertEquals(2,events.get(1).getJSONObject("value").getInt("generation"));
+            assertEquals(1,events.size());
         }
     }
 
@@ -47,7 +48,7 @@ public class PodMediaResolutionLimitTest {
             assertEquals(0,cache.stats().getLong("bytes"));
             assertEquals(0,cache.localStore.list().length());
             assertFalse(cache.localStore.file(PodMediaLocalStore.token("stock"),".part").exists());
-            assertThrows(PodVideoShortEdge.Rejected.class,()->cache.target(uri));
+            assertThrows(java.io.IOException.class,()->cache.target(uri));
         }
     }
 
@@ -63,7 +64,7 @@ public class PodMediaResolutionLimitTest {
                 assertEquals(64,source.read(buffer,0,buffer.length));
                 assertEquals(64,cache.stats().getLong("bytes"));
                 cache.rejectResolution(uri);
-                assertThrows(PodVideoShortEdge.Rejected.class,()->cache.target(uri));
+                assertThrows(java.io.IOException.class,()->cache.target(uri));
                 assertEquals(0,cache.stats().getLong("bytes"));
                 int before=remote.readBytes;
                 assertThrows(PodVideoShortEdge.Rejected.class,()->source.read(buffer,0,buffer.length));
@@ -137,6 +138,36 @@ public class PodMediaResolutionLimitTest {
             }
         }
     }
+
+    @Test public void restartScrubsOversizedPrefixAndRejectRemovesUnregisteredBytes() throws Exception {
+        File root=PodMediaPrefixCacheTest.root();
+        PodMediaStockRangeTest.Ranges remote=new PodMediaStockRangeTest.Ranges();
+        String oversized,unclassified,compliant; File bad,pending,safe;
+        try(PodMediaPrefixCache cache=new PodMediaPrefixCache(root,remote,6L<<20)){
+            oversized=register(cache,"large-restart");
+            unclassified=register(cache,"unknown-restart");
+            compliant=register(cache,"safe-restart");
+            bad=cache.target(oversized).file;
+            pending=cache.target(unclassified).file;
+            safe=cache.target(compliant).file;
+            java.nio.file.Files.write(bad.toPath(),PodVideoShortEdgeTest.movie(1080,1920));
+            java.nio.file.Files.write(pending.toPath(),new byte[64]);
+            java.nio.file.Files.write(safe.toPath(),PodVideoShortEdgeTest.movie(720,1280));
+            for(File file:new File[]{bad,pending,safe}){
+                try(java.io.DataOutputStream length=new java.io.DataOutputStream(new java.io.FileOutputStream(lengthFile(file)))){length.writeLong(file.length());}
+            }
+        }
+        try(PodMediaPrefixCache cache=new PodMediaPrefixCache(root,remote,6L<<20)){
+            cache.rejectResolution(unclassified);
+            assertFalse(pending.exists());
+            assertFalse(lengthFile(pending).exists());
+            assertFalse(bad.exists());
+            assertFalse(lengthFile(bad).exists());
+            assertTrue(safe.isFile());
+            assertTrue(lengthFile(safe).isFile());
+        }
+    }
+    private static File lengthFile(File prefix){return new File(prefix.getParentFile(),prefix.getName().replace(".prefix",".length"));}
 
     private static String register(PodMediaPrefixCache cache,String key) throws Exception {
         return cache.execute("video.cache.register",new JSONObject().put("key",key).put("url","https://example.test/video")

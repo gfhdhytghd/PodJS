@@ -21,6 +21,7 @@ final class PodMediaLocalStore {
     volatile int count=3,rate=256*1024,minBattery=20;
     volatile long entryLimit=ENTRY_LIMIT,totalLimit=TOTAL_LIMIT,minFree=512L<<20;
     volatile boolean enabled=true;
+    private int recoveredShortEdgeLimit;
     PodMediaLocalStore(PodMediaPrefixCache cache){this.cache=cache;root=new File(cache.root,"complete-media");recover();}
     static String digest(File file)throws Exception {
         MessageDigest hash=MessageDigest.getInstance("SHA-256");byte[] buffer=new byte[64*1024];
@@ -51,8 +52,22 @@ final class PodMediaLocalStore {
             return value;
         }catch(Exception invalid){return null;}
     }
+    private void recoverResolution(int limit)throws Exception {
+        if(limit<=0||(recoveredShortEdgeLimit>0&&recoveredShortEdgeLimit<=limit))return;
+        for(String token:ordered()){
+            JSONObject value=manifest(token);
+            if(value==null)continue;
+            JSONObject metadata=value.optJSONObject("metadata");
+            File media=file(token,".mp4");
+            if(metadata!=null&&(metadata.optInt("resolution")>limit
+                ||PodVideoShortEdge.exceeds(limit,metadata.optInt("width"),metadata.optInt("height")))
+                ||PodMediaPrefixMp4.cachedExceeds(media,null,media.length(),limit))remove(token);
+        }
+        recoveredShortEdgeLimit=limit;
+    }
     synchronized JSONObject lookupToken(String token)throws Exception {return lookupToken(token,0);}
     synchronized JSONObject lookupToken(String token,int limit)throws Exception {
+        recoverResolution(limit);
         JSONObject value=manifest(token);File media=file(token,".mp4");
         if(value==null||!media.isFile()||media.length()!=value.getLong("bytes")||!digest(media).equals(value.getString("sha256"))){remove(token);return null;}
         // Older inventories did not describe tracks. Inspect the existing local bytes;
@@ -76,6 +91,7 @@ final class PodMediaLocalStore {
     }
     synchronized JSONArray list()throws Exception {return list(0);}
     synchronized JSONArray list(int limit)throws Exception {
+        recoverResolution(limit);
         File dir=new File(cache.frameRoot,"local-media-frames");for(File f:dir.listFiles()==null?new File[0]:dir.listFiles())if(f.getName().endsWith(".part")||f.getName().matches("[a-f0-9]{64}\\.jpg")&&!file(f.getName().substring(0,64),".json").isFile())f.delete();
         JSONArray result=new JSONArray();for(String token:ordered()) {JSONObject value=lookupToken(token,limit);if(value!=null)result.put(value);}return result;
     }
@@ -87,7 +103,10 @@ final class PodMediaLocalStore {
     synchronized void watched(String key)throws Exception {String token=token(key);JSONObject value=manifest(token);if(value!=null){value.put("watched",true);writeManifest(token,value);}}
     synchronized void removeUri(String uri){
         String name=Uri.parse(uri).getLastPathSegment();
-        if(name!=null&&name.matches("[a-f0-9]{64}\\.mp4"))remove(name.substring(0,64));
+        if(name!=null&&name.matches("[a-f0-9]{64}\\.mp4")){
+            String token=name.substring(0,64);
+            if(Uri.fromFile(file(token,".mp4")).toString().equals(uri))remove(token);
+        }
     }
     synchronized void remove(String token){cache.revokeLocal(Uri.fromFile(file(token,".mp4")).toString());file(token,".json").delete();file(token,".mp4").delete();frame(token).delete();}
     void removePartials(String token){file(token,".part").delete();file(token,".audio.part").delete();file(token,".mux.part").delete();}

@@ -1,6 +1,8 @@
 package dev.podjs.runtime;
 
+import java.io.File;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 
 /** Locate top-level MP4 metadata without walking the uncached mdat payload. */
 final class PodMediaPrefixMp4 {
@@ -92,6 +94,31 @@ final class PodMediaPrefixMp4 {
             }
             position+=size;
         }
+    }
+    /** Read only complete cached MP4 metadata. No missing range is fetched during recovery. */
+    static boolean cachedExceeds(File prefix,File tail,long total,int limit){
+        try(RandomAccessFile front=new RandomAccessFile(prefix,"r");
+            RandomAccessFile back=tail!=null&&tail.isFile()?new RandomAccessFile(tail,"r"):null){
+            long suffix=back==null?total:total-back.length();
+            for(long position=0,boxes=0;boxes<32&&position<=total-8;boxes++){
+                RandomAccessFile input=position<=front.length()-8?front:position>=suffix?back:null;
+                if(input==null)return false;
+                long offset=input==front?position:position-suffix;
+                input.seek(offset);
+                long size=Integer.toUnsignedLong(input.readInt());int type=input.readInt(),header=8;
+                if(size==1){size=input.readLong();header=16;}
+                if(size==0)size=total-position;
+                if(size<header||size>total-position)return false;
+                if(type==MOOV){
+                    if(size>512*1024||size>input.length()-offset)return false;
+                    byte[] moov=new byte[(int)size];
+                    input.seek(offset);input.readFully(moov);
+                    return PodMediaPrefixSamples.exceedsShortEdge(moov,limit);
+                }
+                position+=size;
+            }
+        }catch(IOException unavailable){}
+        return false;
     }
     private static int integer(byte[] b,int p){return (b[p]&255)<<24|(b[p+1]&255)<<16|(b[p+2]&255)<<8|(b[p+3]&255);}
 }

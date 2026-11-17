@@ -238,11 +238,11 @@ export class VideoSessionPool<Source extends {key:string}> {
   /** Decode the bounded neighbourhood once, retaining pixels after codec eviction.
    * Loaders run serially and must use already-authorized media (no detail fetch).
    * The nearest two live standbys are restored last on small codec budgets. */
-  async warmNeighbourhood(loaders:readonly (()=>Promise<{source:Source;options:VideoPrepare;direction:'next'|'prev'}|undefined>)[]):Promise<void>{
+  async warmNeighbourhood(loaders:readonly (()=>Promise<{source:Source;options:VideoPrepare;direction:'next'|'prev';onFailure?:(error:unknown)=>void}|undefined>)[]):Promise<void>{
     if(this.capacity<=2||this.independentKeyframes||!this.keyframeCache)return;
     this.cancelNeighbourhood();const revision=this.neighbourhoodRevision,generation=this.generation;
     const current=()=>revision===this.neighbourhoodRevision&&generation===this.generation;
-    const nearest:{source:Source;options:VideoPrepare;direction:'next'|'prev'}[]=[];
+    const nearest:{source:Source;options:VideoPrepare;direction:'next'|'prev';onFailure?:(error:unknown)=>void}[]=[];
     const loaded:typeof nearest=[];
     const deadline=Date.now()+30_000;
     const foregroundReady=async()=>{
@@ -264,7 +264,7 @@ export class VideoSessionPool<Source extends {key:string}> {
           catch(error){
             const value=error as {code?:string;message?:string};
             if(!current())return;
-            if(value.message!=='video_foreground_busy'&&value.code!=='cancelled')throw error;
+            if(value.message!=='video_foreground_busy'&&value.code!=='cancelled'){entry.onFailure?.(error);throw error;}
             if(Date.now()>=deadline)return;
             this.neighbourhoodWait=delay(250);await this.neighbourhoodWait.result;this.neighbourhoodWait=undefined;
           }
@@ -275,7 +275,7 @@ export class VideoSessionPool<Source extends {key:string}> {
       for(const entry of live){
         if(!current()||!await foregroundReady())return;
         try{await this.prewarm(entry.source,entry.options,entry.direction,true);}
-        catch(error){if(String((error as {code?:unknown})?.code)==='resource_exhausted'){await this.supportsPrewarm(entry.options);return;}throw error;}
+        catch(error){if(String((error as {code?:unknown})?.code)==='resource_exhausted'){await this.supportsPrewarm(entry.options);return;}if(current())entry.onFailure?.(error);throw error;}
       }
     }finally{if(current())this.neighbourhoodSlot=undefined;}
   }

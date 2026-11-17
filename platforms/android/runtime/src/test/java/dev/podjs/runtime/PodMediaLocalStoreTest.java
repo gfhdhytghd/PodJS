@@ -67,6 +67,25 @@ public class PodMediaLocalStoreTest {
    assertTrue(safeMedia.exists());
   }
  }
+ @Test public void inventoryInitializationScrubsPersistedOversizedMetadata()throws Exception {
+  File dir=root();String bad,safe;
+  try(PodMediaPrefixCache cache=cache(dir)){
+   bad=seed(cache,"old-portrait",4096,false,1);
+   safe=seed(cache,"old-safe",4096,false,2);
+   for(String token:new String[]{bad,safe}){
+    JSONObject manifest=cache.localStore.manifest(token);
+    int width=token.equals(bad)?1080:720;
+    manifest.put("verifiedShortEdgeLimit",720).put("metadata",new JSONObject().put("width",width).put("height",1920));
+    Files.write(cache.localStore.file(token,".json").toPath(),manifest.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+   }
+  }
+  try(PodMediaPrefixCache cache=cache(dir)){
+   assertNotNull(cache.localStore.lookupToken(safe,720));
+   assertFalse(cache.localStore.file(bad,".json").exists());
+   assertFalse(cache.localStore.file(bad,".mp4").exists());
+   assertFalse(cache.localStore.frame(bad).exists());
+  }
+ }
  @Test public void evictionUsesWatchedThenOldestAndHonorsCountAndBytes()throws Exception {
   try(PodMediaPrefixCache c=cache(root())){String oldest=seed(c,"old",65536,false,1),watched=seed(c,"watched",65536,true,3),newer=seed(c,"new",65536,false,2);
    c.localStore.configure(new JSONObject().put("count",2).put("totalBytes",132*1024));assertFalse(c.localStore.file(watched,".mp4").exists());assertNotNull(c.localStore.lookupToken(oldest));assertNotNull(c.localStore.lookupToken(newer));

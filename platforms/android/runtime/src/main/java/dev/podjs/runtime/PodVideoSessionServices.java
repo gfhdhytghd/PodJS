@@ -1072,7 +1072,6 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     }
 
     private String sourceValue(String value) throws Exception {
-        if(mediaPrefixCache!=null)mediaPrefixCache.requireResolutionAllowed(value);
         if(mediaPrefixCache!=null&&(mediaPrefixCache.owns(value)||mediaPrefixCache.ownsLocal(value)))return value;
         if (value.startsWith("http://") || value.startsWith("https://")) {
             Uri uri = Uri.parse(value);
