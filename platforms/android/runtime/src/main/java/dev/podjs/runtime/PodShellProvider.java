@@ -29,8 +29,12 @@ public final class PodShellProvider extends ContentProvider {
         if(Looper.myLooper()==Looper.getMainLooper())return bundle("unavailable",null);
         try {
             Set<String> commands=new HashSet<>();
+            Set<String> readOnlyCommands=new HashSet<>();
             try(java.io.InputStream input=getContext().getAssets().open("pod.manifest.json")) {
-                JSONArray names=PodManifest.read(input).optJSONArray("shellCommands");
+                JSONObject manifest=PodManifest.read(input);
+                JSONArray names=manifest.optJSONArray("shellCommands");
+                JSONArray readOnlyNames=manifest.optJSONArray("shellReadOnlyCommands");
+                if(readOnlyNames!=null)for(int i=0;i<readOnlyNames.length();i++)readOnlyCommands.add(readOnlyNames.getString(i));
                 if(names!=null)for(int i=0;i<names.length();i++)commands.add(names.getString(i));
             }
             if(!commands.contains(method))return bundle("unknown_command",null);
@@ -40,6 +44,10 @@ public final class PodShellProvider extends ContentProvider {
             MAIN.post(()->{
                 if(request.result.isDone())return;
                 try {
+                    // Readiness and launch decisions are serialized with detach/effect on MAIN.
+                    if(readOnlyCommands.contains(method)&&(owner==null||!ready.contains(method))) {
+                        QUEUE.reject(request,"not_ready");drain();return;
+                    }
                     if(owner==null) {
                         Intent launch=getContext().getPackageManager().getLaunchIntentForPackage(getContext().getPackageName());
                         if(launch==null){QUEUE.detach();return;}

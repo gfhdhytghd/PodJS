@@ -54,6 +54,7 @@ export interface PodProjectConfig {
   background?: Record<string, string>;
   backgroundServices?: string[];
   shellCommands?: string[];
+  shellReadOnlyCommands?: string[];
   resources?: PodProjectResources;
   /** Omit duplicate function source strings, retaining error locations.
    * Opt in only if Function.toString source introspection is unused. */
@@ -110,6 +111,7 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
   if (!Array.isArray(value.capabilities) || value.capabilities.some(cap => typeof cap !== "string")) invalid("capabilities must be an array of strings");
   const capabilities = value.capabilities as string[];
   const shellCommands = value.shellCommands ?? [];
+  const shellReadOnlyCommands = value.shellReadOnlyCommands ?? [];
   if (!Array.isArray(shellCommands) || shellCommands.length > 64 || new Set(shellCommands).size !== shellCommands.length || shellCommands.some(name => typeof name !== "string" || !/^[a-z][a-z0-9]*(?:\.[a-z][a-zA-Z0-9]*)+$/.test(name) || name.length > 80)) invalid("shellCommands must be at most 64 unique dotted command names");
   const backgroundServices = value.backgroundServices ?? [];
   if (!Array.isArray(backgroundServices) || backgroundServices.length > 6 ||
@@ -209,6 +211,7 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
     try { return readFileSync(path, "utf8"); } catch { invalid(`cannot read extraCharsFile: ${path}`); }
   })();
   let android: PodProjectConfig["android"];
+  if (!Array.isArray(shellReadOnlyCommands) || new Set(shellReadOnlyCommands).size !== shellReadOnlyCommands.length || shellReadOnlyCommands.some(name => !shellCommands.includes(name))) invalid("shellReadOnlyCommands must be a unique subset of shellCommands");
   let androidResources: string | undefined;
   let androidTheme: string | undefined;
   let androidCleartextTraffic: boolean | undefined;
@@ -290,5 +293,5 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
       }
     }
   }
-  return { config: { entry: entryValue, appId, versionName, versionCode: value.versionCode as number, name, capabilities, resources, android, background: backgroundConfig, backgroundServices, shellCommands, bytecode }, root, configPath, entry, output: join(defaults.outputRoot, appId), fontRegular, fontBold, fontSlots, extraChars, background, assets, androidResources, androidTheme, androidCleartextTraffic, androidSigning };
+  return { config: { entry: entryValue, appId, versionName, versionCode: value.versionCode as number, name, capabilities, resources, android, background: backgroundConfig, backgroundServices, shellCommands, shellReadOnlyCommands, bytecode }, root, configPath, entry, output: join(defaults.outputRoot, appId), fontRegular, fontBold, fontSlots, extraChars, background, assets, androidResources, androidTheme, androidCleartextTraffic, androidSigning };
 }

@@ -34,6 +34,11 @@ final class ShellCommandQueue {
     synchronized void complete(long id,String error,String json) {
         if(active!=null && active.id==id){active.result.complete(new Result(error,json));active=null;}
     }
+    synchronized void reject(Request request,String error) {
+        pending.remove(request);
+        if(active==request)active=null;
+        request.result.complete(new Result(error,null));
+    }
     synchronized boolean expire(Request request) {
         boolean running=active==request;
         request.result.complete(new Result("timeout",null));

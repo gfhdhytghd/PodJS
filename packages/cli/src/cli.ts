@@ -178,6 +178,7 @@ async function build(target: Target, project?: ResolvedPodProject, diagnosticJsS
     background,
     backgroundServices: project?.config.backgroundServices ?? [],
     shellCommands: project?.config.shellCommands ?? [],
+    shellReadOnlyCommands: project?.config.shellReadOnlyCommands ?? [],
     ...(project && manifestWorkManagerTakeover(project.config.appId, project.config.android?.workManagerTakeover) ? { androidWorkManagerTakeover: project.config.android!.workManagerTakeover } : {}),
   };
   writeProjectManifest(out, manifest, project?.assets ?? {}, shareFonts ? pakFontAliases(pakBytes) : []);

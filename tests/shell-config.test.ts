@@ -19,3 +19,11 @@ test('both call overloads check Binder UID as their first statement and release 
  expect(source).not.toContain('getCallingPackage(');expect(source).not.toContain('FLAG_DEBUGGABLE');
  const manifest=readFileSync(new URL('../platforms/android/runtime/src/main/AndroidManifest.xml',import.meta.url),'utf8');expect(manifest).toContain('${applicationId}.podjs.shell');expect(manifest).toContain('android:grantUriPermissions="false"');
 });
+
+test('readonly shell command subset is validated and retained',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'pod-readonly-'));try{writeFileSync(join(dir,'main.ts'),'');
+ const config={entry:'main.ts',appId:'example.app',name:'Shell',versionName:'1',versionCode:1,capabilities:[],resources:{fontSource:'system'},shellCommands:['library.books']};
+ const resolve=(shellReadOnlyCommands:unknown)=>{writeFileSync(join(dir,'pod.config.json'),JSON.stringify({...config,shellReadOnlyCommands}));return resolvePodProject(dir,POD_TARGETS,{fontRegular:'',fontBold:'',outputRoot:dir});};
+ expect(resolve(['library.books']).config.shellReadOnlyCommands).toEqual(['library.books']);for(const value of [['other.command'],['library.books','library.books'],{},[5]])expect(()=>resolve(value)).toThrow();
+ }finally{rmSync(dir,{recursive:true,force:true});}
+});
