@@ -54,10 +54,9 @@ def terminate(signum,frame):
 signal.signal(signal.SIGTERM,terminate)
 env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', CARGO_BUILD_JOBS='4', PODJS_TIMING_FILE=str(out / 'compile.jsonl'), PODJS_TEST_FRESH='1' if args.fresh else '0', PODJS_TEST_WORKERS=str(args.workers),PODJS_LINT_OUTPUT=str(out/'lint-artifacts'),PODJS_UNIT_CHAIN_REPORT=str(out/'native-chain.jsonl'),PODJS_GRADLE_BUILD_CACHE=str(ROOT/'.cache/test-gate/gradle-build-cache'))
 env['PATH'] = str(ROOT / 'scripts/test-tools/bin') + os.pathsep + env['PATH']
-# Keep host JVM scratch-directory fsyncs separate from the shared system temp.
+# Keep takeover JVM fixture fsyncs separate from the shared system temp.
 java_tmp = project / '.cache/test-gate/java-tmp'
 java_tmp.mkdir(parents=True, exist_ok=True)
-env['JAVA_TOOL_OPTIONS'] = env.get('JAVA_TOOL_OPTIONS', '') + ' -Djava.io.tmpdir=' + str(java_tmp)
 gradle_home = ROOT / '.cache/test-gate/gradle-home'
 gradle_home.mkdir(parents=True, exist_ok=True)
 original = pathlib.Path(os.environ.get('GRADLE_USER_HOME', pathlib.Path.home() / '.gradle'))
@@ -147,6 +146,9 @@ rows.append({'name': 'setup', 'phase': 'setup', 'seconds': time.monotonic() - st
 def run(item):
     name, command, _ = item
     command = expand(command,project)
+    command_env = dict(env, PODJS_COMMAND_NAME=name, PODJS_SWIFT_REPORT=str(out/(name+'.xml')))
+    if not app and command[:2] == ['bash', 'scripts/test-takeover.sh']:
+        command_env['JAVA_TOOL_OPTIONS'] = env.get('JAVA_TOOL_OPTIONS', '') + ' -Djava.io.tmpdir=' + str(java_tmp)
     if '-m' in command and 'pytest' in command and not any(arg.startswith('--junitxml') for arg in command):
         command+=['--junitxml='+str(out/(name+'.xml'))]
     if command[0] == 'bun' and 'test' in command:
@@ -154,7 +156,7 @@ def run(item):
     begin = time.monotonic()
     command_started_wall_ns=time.time_ns()
     with (out / (name + '.log')).open('w') as log:
-        child = subprocess.Popen(command, cwd=project, env=dict(env, PODJS_COMMAND_NAME=name,PODJS_SWIFT_REPORT=str(out/(name+'.xml'))), stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        child = subprocess.Popen(command, cwd=project, env=command_env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         try:
             code = child.wait(timeout=7200)
         except (subprocess.TimeoutExpired, KeyboardInterrupt) as error:
