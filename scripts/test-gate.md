@@ -78,3 +78,8 @@ nonzero exit and continue independent programs after failures. Dependent
 programs only run after successful fixture builds. Original test sources,
 compiler flags and assertions are unchanged. `native-chain.jsonl` records
 per-program build/test duration and status. Each child has an 1800s watchdog.
+
+The complete app Bun invocation uses a 30-second default watchdog, as approved
+for physical-disk host tests. Explicit per-test deadlines and product timing
+assertions still apply. This is a command argument only: direct `bun test` and
+targeted diagnostic invocations retain Bun's original 5-second default.

@@ -109,7 +109,7 @@ if not args.lint_only:
 commands = []
 if not args.lint_only:
     if app:
-        commands.append(('app-bun', ['bun', 'test', '--path-ignore-patterns=artifacts/**'], False))
+        commands.append(('app-bun', ['bun', 'test', '--timeout=30000', '--path-ignore-patterns=artifacts/**'], False))
         for folder in manifest['appPython']:
             commands.append(('python-' + folder.replace('/', '-'), [sys.executable, '-m', 'pytest', '-q', folder, '--junitxml=' + str(out / (folder.replace('/', '-') + '.xml'))], False))
         commands.append(('offline-selftest', [sys.executable, 'scripts/device/selftest.py'], False))
