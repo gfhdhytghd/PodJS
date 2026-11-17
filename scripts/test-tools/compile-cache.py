@@ -14,6 +14,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import stat
+import zipfile
+import zlib
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BIN = pathlib.Path(__file__).resolve().parent / 'bin'
 name = pathlib.Path(sys.argv[0]).name
@@ -119,6 +122,103 @@ def file(path):
         add(p.read_bytes())
     else:
         add('missing:' + str(p))
+JAVA_CLASSPATH_OPTIONS = ('-cp', '-classpath', '--class-path')
+
+
+def java_classpath():
+    """Return javac's effective classpath. A command option overrides the environment."""
+    value = os.environ.get('CLASSPATH', '.')
+    options = iter(args)
+    for arg in options:
+        if arg in JAVA_CLASSPATH_OPTIONS:
+            value = next(options, None)
+        elif arg.startswith('--class-path='):
+            value = arg.partition('=')[2]
+    return value
+
+
+def java_classpath_files(directory):
+    """Enumerate a bounded tree or decline caching if it cannot be read safely."""
+    directories = [directory]
+    files = []
+    remaining = 4096
+    while directories:
+        with os.scandir(directories.pop()) as children:
+            for child in children:
+                remaining -= 1
+                if not remaining:
+                    return None
+                if child.is_dir():
+                    # pathlib's recursive glob omits symlinked subdirectories.
+                    # Decline rather than miss classes or recurse through a cycle.
+                    if child.is_symlink():
+                        return None
+                    directories.append(child.path)
+                elif child.is_file():
+                    files.append(pathlib.Path(child.path))
+                else:
+                    return None
+    return sorted(files)
+
+
+def hash_java_classpath():
+    value = java_classpath()
+    # Wildcards and injected arguments may expand to additional inputs.
+    if value is None or '*' in value or os.environ.get('JDK_JAVAC_OPTIONS'):
+        return False
+
+    for part in value.split(os.pathsep):
+        # Empty entries in a nonempty path denote the current directory.
+        path = pathlib.Path(part)
+        try:
+            mode = path.stat().st_mode
+        except FileNotFoundError:
+            add('missing-classpath-entry')
+            add(path)
+            continue
+        if stat.S_ISDIR(mode):
+            files = java_classpath_files(path)
+            if files is None:
+                return False
+            # Broad classpaths such as a repository root can contain build
+            # trees and unrelated large artifacts. Compile directly if hashing
+            # the whole tree would dominate the invocation.
+            if sum(child.stat().st_size for child in files) > 256 * 1024**2:
+                return False
+            add('classpath-directory')
+            add(len(files))
+            for child in files:
+                add(child.relative_to(path))
+                with child.open('rb') as stream:
+                    add(hashlib.file_digest(stream, 'sha256').digest())
+        elif stat.S_ISREG(mode):
+            # A manifest Class-Path can load jars outside the supplied path.
+            # Let javac resolve such archives without reusing a cached result.
+            with zipfile.ZipFile(path) as archive:
+                for info in archive.infolist():
+                    if info.filename.upper() != 'META-INF/MANIFEST.MF':
+                        continue
+                    if info.file_size > 65536:
+                        return False
+                    if any(line.lower().startswith(b'class-path:') for line in archive.read(info).splitlines()):
+                        return False
+            add('classpath-archive')
+            add(path.name)
+            with path.open('rb') as stream:
+                add(hashlib.file_digest(stream, 'sha256').digest())
+        else:
+            return False
+    return True
+
+
+if name == 'javac':
+    try:
+        classpath_cacheable = hash_java_classpath()
+    except (OSError, ValueError, zipfile.BadZipFile, zlib.error, NotImplementedError, RuntimeError):
+        classpath_cacheable = False
+    if not classpath_cacheable:
+        uncached()
+
 add(pathlib.Path(__file__).read_bytes())
 add(pathlib.Path(tool).resolve())
 file(pathlib.Path(tool).resolve())
@@ -128,7 +228,13 @@ for i, arg in enumerate(args):
     if i == args.index(option) + 1:
         normalized.append('<output>')
         continue
-    if i and args[i - 1] in ('-cp', '-classpath', '--class-path', '-sourcepath', '--source-path'):
+    if name == 'javac' and arg.startswith('--class-path='):
+        normalized.append('--class-path=<classpath>')
+        continue
+    if name == 'javac' and i and args[i - 1] in JAVA_CLASSPATH_OPTIONS:
+        normalized.append('<classpath>')
+        continue
+    if i and args[i - 1] in ('-sourcepath', '--source-path'):
         parts = []
         for part in arg.split(os.pathsep):
             p = pathlib.Path(part)

@@ -35,6 +35,13 @@ Keep the same mirror and external reference fixtures for comparisons.
 App external paths use the documented `WRSS_SYNCV2_SPEC_ROOT`,
 `PODJS_SYNC_VECTORS_DIR` and `ANDROID_WATCHRSS_ROOT` variables.
 
+Javac fingerprints the effective classpath: a command-line classpath overrides
+`CLASSPATH`, and the current directory is the default. The key includes JAR
+bytes and the relative paths and contents of files in classpath directories,
+so replacing an input at the same path invalidates the result. Wildcards,
+manifest Class-Path entries, injected javac options, and directory trees too
+large or ambiguous to fingerprint use a direct compile.
+
 Java compiler cache keys include explicit/implicit owned sources, JDK modules,
 compiler identity, flags, classpath content and environment compiler options.
 Native keys additionally include compiler-discovered transitive/system headers

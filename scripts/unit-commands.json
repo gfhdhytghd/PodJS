@@ -785,6 +785,16 @@
       ],
       "parallel": false,
       "origin": "existing notebook unit children of test:scaffold; installation/package build remain integration"
+    },
+    {
+      "argv": [
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_compile_cache.py"
+      ],
+      "parallel": false
     }
   ]
 }
