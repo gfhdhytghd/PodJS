@@ -42,7 +42,7 @@ const state=(value:VideoSessionState):VideoState=>({
 interface WarmSlot<S> {direction?:'next'|'prev';id:string;source?:S;identity?:string;ready:boolean;revision:number;recentlyActive?:boolean;prepareSeq?:number;operation?:HostOperation<VideoSessionState>;pending?:Promise<VideoState>}
 export class VideoSessionPool<Source extends {key:string}> {
   private initialPreparation?:{key:string;identity:string;generation:number;operation:HostOperation<VideoState>};
-  private prepareIdentity(options:VideoPrepare){return JSON.stringify([options.bypassCache,options.url,options.videoUrl,options.audioUrl,options.type,options.videoMime,options.videoWidth,options.videoHeight,Object.entries(options.headers??{}).sort()]);}
+  private prepareIdentity(options:VideoPrepare){return JSON.stringify([options.bypassCache,options.url,options.videoUrl,options.audioUrl,options.type,options.videoMime,options.videoWidth,options.videoHeight,options.maxVideoShortEdge,Object.entries(options.headers??{}).sort()]);}
   /** Begin a user-requested foreground prepare while navigation is being saved.
    * Hidden bounds retain the surface. The first visible prepare adopts it once. */
   prime(source:Source,options:VideoPrepare):HostOperation<VideoState>{

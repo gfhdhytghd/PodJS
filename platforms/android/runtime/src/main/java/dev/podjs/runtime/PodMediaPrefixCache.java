@@ -45,6 +45,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
     private final ExecutorService workers=Executors.newFixedThreadPool(2);
     private final ExecutorService cancellations=Executors.newSingleThreadExecutor();
     private final LinkedHashMap<String,Entry> entries=new LinkedHashMap<>(16,.75f,true);
+    private final Set<String> resolutionRejected=new LinkedHashSet<>();
     private final Map<String,Job> jobs=new LinkedHashMap<>();
     private Set<String> protectedTokens=new LinkedHashSet<>();
     private static final java.util.concurrent.atomic.AtomicLong ORDINALS=new java.util.concurrent.atomic.AtomicLong();
@@ -63,13 +64,14 @@ final class PodMediaPrefixCache implements AutoCloseable {
     private void frameBytes(Entry entry){if(frameListener!=null)frameListener.bytes(entry);}
     static final class Entry {
         final long ordinal=ORDINALS.incrementAndGet();final String token,remote;volatile String selectedRemote;List<String> mirrors=Collections.emptyList();boolean raced;long sampleEnd=-1,keyframeEnd=-1;final Map<String,String> headers;final File file;final boolean persistent;
-        String frameAudioUrl="";
+        String frameAudioUrl=""; volatile int maxVideoShortEdge;
+        String windowToken=""; long windowGeneration;
         volatile long expiresAt=Long.MAX_VALUE;volatile long networkBytes,rangeRequests;volatile long length=-1;int captureBytes=MAX_ENTRY;
         File tail(){return new File(file.getParentFile(),token+".tail");}
         Entry(String token,String remote,Map<String,String> headers,File file,boolean persistent){this.token=token;this.remote=remote;this.selectedRemote=remote;this.headers=headers;this.file=file;this.persistent=persistent;}
     }
     final class Job {
-        final Entry entry;final int budget;final long epoch;volatile String itemToken;volatile long sourceGeneration;boolean background,preparing,done,preStore,requireAudio,localReserved;Entry localAudio;String localToken,localKey;JSONObject localMetadata;volatile boolean fetching;long deferredUntil;int stage;volatile boolean active=true;volatile DataSource source;Exception failure;
+        final Entry entry;final int budget;final long epoch;volatile String itemToken;volatile long sourceGeneration;boolean background,preparing,done,preStore,requireAudio,localReserved,localResolutionInspected;Entry localAudio;String localToken,localKey;JSONObject localMetadata;volatile boolean fetching;long deferredUntil;int stage;volatile boolean active=true;volatile DataSource source;Exception failure;
         Job(Entry e,int budget,String itemToken,long sourceGeneration){entry=e;this.budget=budget;epoch=generation;this.itemToken=itemToken;this.sourceGeneration=sourceGeneration;}
         java.util.function.BooleanSupplier requestCurrent=()->true;
         PodMediaPrefixCache owner(){return PodMediaPrefixCache.this;}
@@ -110,19 +112,24 @@ final class PodMediaPrefixCache implements AutoCloseable {
                 throw new IOException("media_cache_metadata_budget");
             if(e!=null){Job old=jobs.remove(token);if(old!=null)old.cancel();}
             e=next;File lengthFile=new File(root,token+".length");if(lengthFile.isFile())try(DataInputStream input=new DataInputStream(new FileInputStream(lengthFile))){long length=input.readLong();if(length>=e.file.length())e.length=length;}catch(IOException ignored){}
+            if(resolutionRejected.contains(token))throw new PodVideoShortEdge.Rejected();
             entries.put(token,e);trim();
         }
         return SCHEME+"://play/"+token+".mp4";
     }
     private String token(String uri){Uri u=Uri.parse(uri);if(!SCHEME.equals(u.getScheme())||!"play".equals(u.getHost()))return null;String p=u.getLastPathSegment();return p!=null&&p.matches("[a-f0-9]{64}\\.mp4")?p.substring(0,64):null;}
-    synchronized Entry target(String uri)throws IOException {String t=token(uri);Entry e=t==null?null:entries.get(t);if(e==null)throw new IOException("media_cache_registration_missing");return e;}
+    synchronized Entry target(String uri)throws IOException {String t=token(uri);if(t!=null&&resolutionRejected.contains(t))throw new PodVideoShortEdge.Rejected();Entry e=t==null?null:entries.get(t);if(e==null)throw new IOException("media_cache_registration_missing");return e;}
+    synchronized void requireResolutionAllowed(String uri)throws PodVideoShortEdge.Rejected {
+        if(resolutionRejected.contains(token(uri)))throw new PodVideoShortEdge.Rejected();
+    }
     synchronized boolean owns(String uri){try{target(uri);return true;}catch(IOException e){return false;}}
     JSONObject execute(String method,JSONObject a)throws Exception {return execute(method,a,()->true);}
     JSONObject execute(String method,JSONObject a,java.util.function.BooleanSupplier current)throws Exception {
         if(!current.getAsBoolean())throw new IOException("media_request_cancelled");
         if(method.equals("video.cache.local.prepare"))return prepareLocal(a,current);
-        if(method.equals("video.cache.local.list"))return new JSONObject().put("items",localStore.list());
-        if(method.equals("video.cache.local.lookup")){JSONObject item=localStore.lookupToken(PodMediaLocalStore.token(a.getString("key")));return new JSONObject().put("item",item==null?JSONObject.NULL:item);}
+        if(method.equals("video.cache.local.list"))return new JSONObject().put("items",localStore.list(a.optInt(PodVideoShortEdge.KEY)));
+        if(method.equals("video.cache.local.remove")){localStore.remove(PodMediaLocalStore.token(a.getString("key")));return new JSONObject();}
+        if(method.equals("video.cache.local.lookup")){JSONObject item=localStore.lookupToken(PodMediaLocalStore.token(a.getString("key")),a.optInt(PodVideoShortEdge.KEY));return new JSONObject().put("item",item==null?JSONObject.NULL:item);}
         if(method.equals("video.cache.local.watched")){localStore.watched(a.getString("key"));return new JSONObject();}
         if(method.equals("video.cache.local.clear")){cancelLocal();localStore.clear();return new JSONObject();}
         if(method.equals("video.cache.local.cancel")){cancelLocal();return new JSONObject();}
@@ -131,16 +138,22 @@ final class PodMediaPrefixCache implements AutoCloseable {
         if(method.equals("video.cache.prepare"))return PodMediaPrefixPreparation.prepare(this,a);
         synchronized(this){
         if(method.equals("video.cache.inspect")){Entry e=target(a.getString("uri"));return new JSONObject().put("prefixBytes",e.file.length()).put("tailBytes",e.tail().length()).put("length",e.length);}
-        if(method.equals("video.cache.remove")){Entry e=target(a.getString("uri"));Job j=jobs.remove(e.token);if(j!=null)j.cancel();entries.remove(e.token);e.file.delete();e.tail().delete();new File(root,e.token+".length").delete();return new JSONObject();}
-        if(method.equals("video.cache.register")){Map<String,String> h=new HashMap<>();JSONObject o=a.optJSONObject("headers");if(o!=null)for(Iterator<String> keys=o.keys();keys.hasNext();){String k=keys.next();h.put(k,o.getString(k));}String uri=register(a.getString("key"),a.getString("url"),h,a.optBoolean("persistent",false),mirrors(a),a.optString("audioUrl",""));target(uri).expiresAt=Math.min(target(uri).expiresAt,a.optLong("expiresAt",Long.MAX_VALUE));return new JSONObject().put("uri",uri);}
+        if(method.equals("video.cache.remove")){remove(target(a.getString("uri")));return new JSONObject();}
+        if(method.equals("video.cache.register")){Map<String,String> h=new HashMap<>();JSONObject o=a.optJSONObject("headers");if(o!=null)for(Iterator<String> keys=o.keys();keys.hasNext();){String k=keys.next();h.put(k,o.getString(k));}String uri=register(a.getString("key"),a.getString("url"),h,a.optBoolean("persistent",false),mirrors(a),a.optString("audioUrl",""));Entry entry=target(uri);entry.expiresAt=Math.min(entry.expiresAt,a.optLong("expiresAt",Long.MAX_VALUE));int limit=a.optInt(PodVideoShortEdge.KEY);if(limit>0)entry.maxVideoShortEdge=entry.maxVideoShortEdge==0?limit:Math.min(limit,entry.maxVideoShortEdge);return new JSONObject().put("uri",uri);}
         if(method.equals("video.cache.stats"))return stats();
         if(method.equals("video.cache.clear")){windowRevision=Math.max(windowRevision,a.optLong("revision",0));long bytes=fileBytes();clear();return new JSONObject().put("removedBytes",bytes);}
         if(method.equals("video.cache.window")){
             long revision=a.optLong("revision",0);if(revision<windowRevision)return stats();windowRevision=revision;
             JSONArray items=a.optJSONArray("items");if(items==null||items.length()>MAX_ENTRIES)throw new IllegalArgumentException("invalid_media_cache_window");
             Set<String> wanted=new LinkedHashSet<>();protectedTokens.clear();foregroundBitrate=Math.max(0,a.optLong("foregroundBitrate",0));
-            for(int i=0;i<items.length();i++){JSONObject item=items.getJSONObject(i);Entry e=target(item.getString("uri"));wanted.add(e.token);protectedTokens.add(e.token);int budget=item.optInt("prefetchBytes",0);if(budget<0||budget>MAX_ENTRY)throw new IllegalArgumentException("invalid_prefix_budget");e.captureBytes=Math.max(budget,Math.min(MAX_ENTRY,item.optInt("captureBytes",MAX_ENTRY)));
-                String itemToken=item.optString("itemToken","");long sourceGeneration=item.optLong("generation",0);if(!itemToken.isEmpty()&&(!itemToken.matches("[A-Za-z0-9_-]{1,96}")||sourceGeneration<0||sourceGeneration>9007199254740991L))throw new IllegalArgumentException("invalid_prefetch_identity");Job existing=jobs.get(e.token);if(budget>e.file.length()&&(existing==null||!existing.active||existing.localToken==null&&existing.budget<budget)){if(existing!=null)existing.cancel();Job j=new Job(e,budget,itemToken,sourceGeneration);j.preStore=item.optBoolean("preStore",false);jobs.put(e.token,j);}else if(existing!=null){existing.itemToken=itemToken;existing.sourceGeneration=sourceGeneration;
+            for(int i=0;i<items.length();i++){JSONObject item=items.getJSONObject(i);Entry e;
+                try{e=target(item.getString("uri"));}
+                catch(PodVideoShortEdge.Rejected rejected){
+                    publishResult(item.optString("itemToken"),item.optLong("generation"),false,0,PodVideoShortEdge.ERROR);
+                    continue;
+                }
+                wanted.add(e.token);protectedTokens.add(e.token);int budget=item.optInt("prefetchBytes",0);if(budget<0||budget>MAX_ENTRY)throw new IllegalArgumentException("invalid_prefix_budget");e.captureBytes=Math.max(budget,Math.min(MAX_ENTRY,item.optInt("captureBytes",MAX_ENTRY)));
+                String itemToken=item.optString("itemToken","");long sourceGeneration=item.optLong("generation",0);if(!itemToken.isEmpty()&&(!itemToken.matches("[A-Za-z0-9_-]{1,96}")||sourceGeneration<0||sourceGeneration>9007199254740991L))throw new IllegalArgumentException("invalid_prefetch_identity");e.windowToken=itemToken;e.windowGeneration=sourceGeneration;Job existing=jobs.get(e.token);if(budget>e.file.length()&&(existing==null||!existing.active||existing.localToken==null&&existing.budget<budget)){if(existing!=null)existing.cancel();Job j=new Job(e,budget,itemToken,sourceGeneration);j.preStore=item.optBoolean("preStore",false);jobs.put(e.token,j);}else if(existing!=null){existing.itemToken=itemToken;existing.sourceGeneration=sourceGeneration;
                     // A stock preparation promoted into the live window must no longer
                     // wait for foreground playback to end. Preserve its bytes and owner.
                     if(budget>0&&existing.localToken==null){existing.background=false;existing.deferredUntil=0;}
@@ -151,11 +164,41 @@ final class PodMediaPrefixCache implements AutoCloseable {
         throw new IllegalArgumentException("unsupported_cache_method");
         }
     }
+    private synchronized void remove(Entry entry){
+        if(entries.get(entry.token)!=entry)return;
+        Job job=jobs.remove(entry.token);
+        if(job!=null){
+            job.cancel();
+            if(job.localAudio!=null)remove(job.localAudio);
+        }
+        entries.remove(entry.token);
+        protectedTokens.remove(entry.token);
+        entry.file.delete();
+        entry.tail().delete();
+        new File(root,entry.token+".length").delete();
+        publishFrameWindow();
+        notifyAll();
+    }
+    void rejectResolution(String uri){
+        if(uri.startsWith("file:")&&ownsLocal(uri)){localStore.removeUri(uri);return;}
+        try{rejectResolution(target(uri));}catch(IOException missing){}
+    }
+    synchronized void rejectResolution(Entry entry){
+        if(entries.get(entry.token)!=entry)return;
+        resolutionRejected.add(entry.token);
+        while(resolutionRejected.size()>200)resolutionRejected.remove(resolutionRejected.iterator().next());
+        if(protectedTokens.contains(entry.token)){
+            Job binding=new Job(entry,0,entry.windowToken,entry.windowGeneration);
+            binding.failure=new PodVideoShortEdge.Rejected();
+            publish(binding,false,0);
+        }
+        remove(entry);
+    }
     private synchronized void cancelLocal(){for(Job job:jobs.values())if(job.localToken!=null)job.cancel();notifyAll();}
     private JSONObject prepareLocal(JSONObject args,java.util.function.BooleanSupplier current)throws Exception {
         String key=args.getString("key"),token=PodMediaLocalStore.token(key);
         JSONObject metadata=args.getJSONObject("metadata");if(metadata.toString().length()>8192)throw new IllegalArgumentException("local_metadata_budget");
-        JSONObject known=localStore.lookupToken(token);if(known!=null){PodMediaLocalStore.requireTracks(known.optInt("audioTracks"),known.optInt("videoTracks"),args.optBoolean("requireAudio"));return new JSONObject().put("ready",true).put("item",known);}
+        JSONObject known=localStore.lookupToken(token,target(args.getString("uri")).maxVideoShortEdge);if(known!=null){PodMediaLocalStore.requireTracks(known.optInt("audioTracks"),known.optInt("videoTracks"),args.optBoolean("requireAudio"));return new JSONObject().put("ready",true).put("item",known);}
         Job job;
         synchronized(this){if(!current.getAsBoolean())throw new IOException("media_request_cancelled");Entry entry=target(args.getString("uri"));checkNetwork(entry);Job old=jobs.get(entry.token);if(old!=null)old.cancel();
             localStore.root.mkdirs();job=new Job(entry,0,"",0);job.requestCurrent=current;job.stage=2;job.preStore=true;job.localToken=token;job.localKey=key;job.localMetadata=metadata;job.requireAudio=args.optBoolean("requireAudio");
@@ -215,7 +258,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
         public void close()throws IOException{int status=Math.max(0,responseCode());try{delegate.close();}finally{if(!logged&&opened>=0){logged=true;android.util.Log.i("PodMediaCache","range_transfer entry="+ordinal+" request="+request+" position="+rangePosition+" requested_bytes="+Math.max(0,requested)+" network_bytes="+transferred+" ttfb_ms="+(first<0?0:Math.max(0,first-opened))+" read_ms="+(first<0?0:Math.max(0,last-first))+" status="+status);}}}
     }
     private void fetchStep(Job job){
-        if(job.localToken!=null){try{localStore.step(job);}catch(BackgroundDeferred paused){job.deferredUntil=android.os.SystemClock.uptimeMillis()+100;}catch(Exception error){job.failure=error;job.done=true;android.util.Log.i("PodMediaCache","complete_store phase=failed reason="+PodMediaLocalStore.failureReason(error)+" status="+httpStatus(error));}finally{synchronized(this){job.fetching=false;notifyAll();}}return;}
+        if(job.localToken!=null){try{localStore.step(job);}catch(BackgroundDeferred paused){job.deferredUntil=android.os.SystemClock.uptimeMillis()+100;}catch(Exception error){job.failure=error;job.done=true;if(error instanceof PodVideoShortEdge.Rejected){synchronized(this){rejectResolution(job.entry);if(job.localAudio!=null)remove(job.localAudio);}}android.util.Log.i("PodMediaCache","complete_store phase=failed reason="+PodMediaLocalStore.failureReason(error)+" status="+httpStatus(error));}finally{synchronized(this){job.fetching=false;notifyAll();}}return;}
         boolean succeeded=false;int status=0;boolean failed=false;
         job.fetching=true;
         try{
@@ -269,7 +312,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
             succeeded=job.current()&&job.entry.file.length()>0&&job.entry.file.length()>=(job.entry.length>0?Math.min(goal,job.entry.length):goal);
             if(succeeded&&job.preparing)PodMediaPrefixPreparation.cacheFallback(this,job);
         }catch(BackgroundDeferred deferred){job.deferredUntil=android.os.SystemClock.uptimeMillis()+100;}
-        catch(Exception error){succeeded=false;job.failure=error;status=httpStatus(error);if(job.current()||status==403){failed=true;synchronized(this){failures++;}android.util.Log.i("PodMediaCache","prefetchFailure category="+(status>0?"http_"+status:"transport"));}}
+        catch(Exception error){succeeded=false;job.failure=error;if(error instanceof PodVideoShortEdge.Rejected)rejectResolution(job.entry);status=httpStatus(error);if(job.current()||status==403){failed=true;synchronized(this){failures++;}android.util.Log.i("PodMediaCache","prefetchFailure category="+(status>0?"http_"+status:"transport"));}}
         finally{synchronized(this){if(succeeded||failed||!job.current()){job.done=true;if(!job.preparing&&jobs.get(job.entry.token)==job)jobs.remove(job.entry.token);}job.fetching=false;if((succeeded||failed)&&(job.current()||status==403))publish(job,succeeded,status);notifyAll();trim();android.util.Log.i("PodMediaCache","prefetchProgress downloadedBytes="+downloadedBytes+" cacheBytes="+fileBytes());}}
     }
     /** Exact range reads account bytes even if cancellation or a short body prevents publication. */
@@ -299,7 +342,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
         Job job=new Job(e,bytes,"",0);job.background=true;job.preparing=true;e.captureBytes=bytes;jobs.put(e.token,job);return job;
     }
     synchronized void endPreparation(Job job){if(jobs.get(job.entry.token)==job)jobs.remove(job.entry.token);job.active=false;trim();}
-    private static final class BackgroundDeferred extends IOException {}
+    static final class BackgroundDeferred extends IOException {}
     static void backgroundTurn(Job job)throws Exception {
         // Never hold the admission ticket across network IO or decoding.
         if(!job.current())throw new IOException("preparation_cancelled");
@@ -338,8 +381,13 @@ final class PodMediaPrefixCache implements AutoCloseable {
         }finally{temporary.delete();}
     }
     private synchronized void publish(Job job,boolean success,int status){
-        if(job.itemToken.isEmpty())return;
-        try{JSONObject value=new JSONObject().put("itemToken",job.itemToken).put("generation",job.sourceGeneration).put("result",success?"success":"failure").put("httpStatus",status).put("category",success?"success":status==403?"http_403":status>=500?"http_5xx":status>=400?"http_4xx":"transport");
+        publishResult(job.itemToken,job.sourceGeneration,success,status,
+            success?"success":job.failure instanceof PodVideoShortEdge.Rejected?PodVideoShortEdge.ERROR:
+            status==403?"http_403":status>=500?"http_5xx":status>=400?"http_4xx":"transport");
+    }
+    private void publishResult(String token,long generation,boolean success,int status,String category){
+        if(token==null||!token.matches("[A-Za-z0-9_-]{1,96}")||generation<0||generation>9007199254740991L)return;
+        try{JSONObject value=new JSONObject().put("itemToken",token).put("generation",generation).put("result",success?"success":"failure").put("httpStatus",status).put("category",category);
             resultSink.accept(new JSONObject().put("t","video.cache.result").put("value",value));
         }catch(Exception ignored){}
     }

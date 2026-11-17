@@ -34,13 +34,14 @@ final class PodVideoFrameCache {
         TreeMap<String,String> headers=new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
         JSONObject raw=source.optJSONObject("headers");int bytes=0;
         if(raw!=null){if(raw.length()>32)throw new IllegalArgumentException("invalid_frame_headers");for(Iterator<String> it=raw.keys();it.hasNext();){String name=it.next(),value=raw.getString(name);bytes+=name.length()+value.length();if(!name.matches("[!#$%&'*+.^_`|~0-9a-zA-Z-]+")||value.indexOf('\r')>=0||value.indexOf('\n')>=0||bytes>32768)throw new IllegalArgumentException("invalid_frame_headers");headers.put(name.toLowerCase(Locale.ROOT),value);}}
-        JSONArray urls=new JSONArray();boolean present=false,allPersistent=true;
+        JSONArray urls=new JSONArray();boolean present=false,allPersistent=true;int shortEdgeLimit=source.optInt(PodVideoShortEdge.KEY);
         for(String name:new String[]{"url","videoUrl","audioUrl"}){
             String value=source.optString(name,"");if(!value.isEmpty())present=true;
             if(value.length()>32768)throw new IllegalArgumentException("invalid_frame_source");
             if(value.startsWith(PodMediaPrefixCache.SCHEME+":")){
                 if(cache==null)throw new IllegalArgumentException("media_cache_registration_missing");
                 PodMediaPrefixCache.Entry entry=cache.target(value);
+                if(entry.maxVideoShortEdge>0)shortEdgeLimit=entry.maxVideoShortEdge;
                 if(entry.persistent)value="podjs-content://"+entry.token;
                 else {allPersistent=false;value=entry.remote;for(Map.Entry<String,String> h:entry.headers.entrySet())headers.put(h.getKey().toLowerCase(Locale.ROOT),h.getValue());}
             }
@@ -51,7 +52,9 @@ final class PodVideoFrameCache {
         if(!present)throw new IllegalArgumentException("frame_source_required");
         if(allPersistent)headers.clear(); // Explicit rendition identity owns both bytes and pixels.
         JSONArray pairs=new JSONArray();for(Map.Entry<String,String> h:headers.entrySet())pairs.put(new JSONArray().put(h.getKey()).put(h.getValue()));
-        return hash(new JSONArray().put(urls).put(pairs).toString());
+        JSONArray identity=new JSONArray().put(urls).put(pairs);
+        if(shortEdgeLimit>0)identity.put(shortEdgeLimit);
+        return hash(identity.toString());
     }
     static Bitmap capture(TextureView view,boolean rendered,long generation,JSONObject args)throws Exception {
         if(view==null||!rendered||generation!=args.getLong("sourceGeneration")||view.getWidth()<1||view.getHeight()<1)throw new IllegalStateException("frame_source_changed");

@@ -36,6 +36,9 @@ final class PodMediaPrefixMp4 {
     /** Cache complete moov independently of the sample prefix, including tail-moov MP4s. */
     static void cacheMetadata(PodMediaPrefixCache cache,PodMediaPrefixCache.Job job)throws Exception {cacheMetadata(cache,job,false);}
     static void cacheMetadata(PodMediaPrefixCache cache,PodMediaPrefixCache.Job job,boolean firstFrame)throws Exception {
+        cacheMetadata(cache,job,firstFrame,false);
+    }
+    static void cacheMetadata(PodMediaPrefixCache cache,PodMediaPrefixCache.Job job,boolean firstFrame,boolean metadataOnly)throws Exception {
         PodMediaPrefixCache.Entry e=job.entry;
         if(e.length<8||e.file.length()<8)return;
         byte[] first=new byte[8];try(java.io.RandomAccessFile file=new java.io.RandomAccessFile(e.file,"r")){file.readFully(first);}if(integer(first,4)!=FTYP)return;
@@ -72,6 +75,8 @@ final class PodMediaPrefixMp4 {
                     if(e.tail().length()<count)cache.saveTail(job,cache.loadRange(job,start,(int)count),PodMediaPrefixCache.MAX_ENTRY);
                     try(java.io.RandomAccessFile input=new java.io.RandomAccessFile(e.tail(),"r")){input.seek(position-(e.length-e.tail().length()));input.readFully(moov);}
                 }
+                if(PodMediaPrefixSamples.exceedsShortEdge(moov,e.maxVideoShortEdge))throw new PodVideoShortEdge.Rejected();
+                if(metadataOnly)return;
                 e.sampleEnd=PodMediaPrefixSamples.prefix(moov,e.length,1500);
                 e.keyframeEnd=PodMediaPrefixSamples.firstKeyframe(moov,e.length);
                 // Extractor reads ahead in bounded blocks. Retain that guard in the contiguous

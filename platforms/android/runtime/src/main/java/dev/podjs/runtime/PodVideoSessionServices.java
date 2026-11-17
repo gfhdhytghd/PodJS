@@ -431,7 +431,16 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         player.setRepeatMode(args.optBoolean("loop", false) ? Player.REPEAT_MODE_ONE : Player.REPEAT_MODE_OFF);
         session.audioPolicy.setVolume(1f, session.prewarming);
         player.addListener(new Player.Listener() {
+            private boolean rejectOversized(int width,int height){
+                if(!own.matches(player,generation)||!PodVideoShortEdge.exceeds(args.optInt(PodVideoShortEdge.KEY),width,height))return false;
+                final boolean prewarming=own.prewarming;
+                failPrepare(own,player,generation,PodVideoShortEdge.ERROR,"Video exceeds the short-edge limit",false);
+                if(mediaPrefixCache!=null)mediaPrefixCache.rejectResolution(args.optString("url"));
+                if(!prewarming)try{callback.stateChanged(own.snapshot());}catch(Exception ignored){}
+                return true;
+            }
             @Override public void onVideoSizeChanged(androidx.media3.common.VideoSize size) {
+                if(rejectOversized(size.width,size.height))return;
                 if (own.matches(player, generation)) {
                     // VideoSize describes the displayed, possibly rotated image.
                     // Codec admission uses encoded dimensions from Tracks.
@@ -449,6 +458,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                         if (!group.isTrackSelected(index)) continue;
                         androidx.media3.common.Format format = group.getTrackFormat(index);
                         if (format.sampleMimeType == null || !format.sampleMimeType.startsWith("video/")) continue;
+                        if(rejectOversized(format.width,format.height))return;
                         own.profile = new PodVideoDecoderCapabilities.Profile(format.sampleMimeType, format.width, format.height);
                         PodVideoDecoderCapabilities.Result capability = decoderCapabilities.inspect(own.profile,own.decoderName);
                         lastProfile = own.profile; lastCapability = capability; decoderBudget.restrictTo(capability.limit);
@@ -500,6 +510,8 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
 
             @Override public void onRenderedFirstFrame() {
                 if (!own.matches(player, generation)) return;
+                androidx.media3.common.VideoSize size=player.getVideoSize();
+                if(rejectOversized(size.width,size.height))return;
                 own.renderedFrame(callback);
             }
 
@@ -1060,6 +1072,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     }
 
     private String sourceValue(String value) throws Exception {
+        if(mediaPrefixCache!=null)mediaPrefixCache.requireResolutionAllowed(value);
         if(mediaPrefixCache!=null&&(mediaPrefixCache.owns(value)||mediaPrefixCache.ownsLocal(value)))return value;
         if (value.startsWith("http://") || value.startsWith("https://")) {
             Uri uri = Uri.parse(value);
@@ -1097,6 +1110,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     }
 
     private static String errorCode(Exception error) {
+        if(error instanceof PodVideoShortEdge.Rejected)return PodVideoShortEdge.ERROR;
         if(PodVideoCodecGate.isAdmissionDenied(error))return "decoder_admission_deferred";
         if (error instanceof SecurityException) return "permission_denied";
         if (error instanceof IllegalArgumentException) return "invalid_argument";

@@ -2,6 +2,28 @@ package dev.podjs.runtime;
 
 /** Bounded ISO-BMFF sample-table planner. Unknown/fragmented layouts keep the caller's byte estimate. */
 final class PodMediaPrefixSamples {
+    static boolean exceedsShortEdge(byte[] moov,int limit){
+        if(limit<=0)return false;
+        try{
+            if(moov.length<8||!type(moov,0,"moov")||next(moov,0,moov.length)!=moov.length)return false;
+            for(int trak=8;trak+8<=moov.length;trak=next(moov,trak,moov.length)){
+                if(!type(moov,trak,"trak"))continue;
+                int mdia=find(moov,trak,"mdia"),hdlr=find(moov,mdia,"hdlr");
+                if(hdlr<0||next(moov,hdlr,moov.length)<hdlr+20||!type(moov,hdlr+12,"vide"))continue;
+                int stsd=find(moov,find(moov,find(moov,mdia,"minf"),"stbl"),"stsd");
+                if(stsd<0)continue;
+                int end=next(moov,stsd,moov.length);
+                for(int sample=stsd+16;sample+8<=end;){
+                    int sampleEnd=next(moov,sample,end);
+                    if(sampleEnd>=sample+36&&PodVideoShortEdge.exceeds(limit,
+                            u16(moov,sample+32),u16(moov,sample+34)))return true;
+                    sample=sampleEnd;
+                }
+            }
+        }catch(IndexOutOfBoundsException|IllegalArgumentException invalid){}
+        return false;
+    }
+    private static int u16(byte[] bytes,int offset){return (bytes[offset]&255)<<8|(bytes[offset+1]&255);}
     /** End of the first independently decodable video sample. Unknown tables fail closed.
      * This is a byte plan, never a decoded-frame readiness claim. */
     static long firstKeyframe(byte[] moov,long length){

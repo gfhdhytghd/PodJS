@@ -182,6 +182,7 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
                 }
                 if(format==null||!current(entry))return null;
                 int width=format.getInteger(MediaFormat.KEY_WIDTH),height=format.getInteger(MediaFormat.KEY_HEIGHT);
+                if(PodVideoShortEdge.exceeds(entry.maxVideoShortEdge,width,height)){cache.rejectResolution(entry);return null;}
                 if(width<1||height<1||(long)width*height>1920L*1080)return null;
                 String mime=format.getString(MediaFormat.KEY_MIME),name=null;
                 if(!softwareOnly&&!hardwareFailed&&android.os.Build.VERSION.SDK_INT>=29&&decoderBudget!=null){
@@ -208,6 +209,10 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
                     }}
                     int output=codec.dequeueOutputBuffer(info,10_000);
                     if(output>=0){
+                        MediaFormat decodedFormat=codec.getOutputFormat(output);
+                        if(PodVideoShortEdge.exceeds(entry.maxVideoShortEdge,decodedFormat.getInteger(MediaFormat.KEY_WIDTH,0),decodedFormat.getInteger(MediaFormat.KEY_HEIGHT,0))){
+                            codec.releaseOutputBuffer(output,false);cache.rejectResolution(entry);return null;
+                        }
                         Bitmap pixels=null;
                         if(reader==null){
                             try(Image image=codec.getOutputImage(output)){if(image!=null&&info.size>0)pixels=bitmap(image);}

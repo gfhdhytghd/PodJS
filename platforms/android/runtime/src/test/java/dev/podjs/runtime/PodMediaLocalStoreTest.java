@@ -50,6 +50,23 @@ public class PodMediaLocalStoreTest {
   try(PodMediaPrefixCache c=cache(root)){good=seed(c,"good",8192,false,1);bad=seed(c,"bad",8192,false,2);Files.write(c.localStore.file(bad,".mp4").toPath(),new byte[]{1});Files.write(c.localStore.file(good,".part").toPath(),new byte[]{1});Files.write(c.localStore.file(PodMediaLocalStore.token("orphan"),".mp4").toPath(),new byte[]{1});}
   try(PodMediaPrefixCache c=cache(root)){assertFalse(c.localStore.file(good,".part").exists());assertNotNull(c.localStore.lookupToken(good));assertNull(c.localStore.lookupToken(bad));assertEquals(1,c.localStore.list().length());assertFalse(c.localStore.file(PodMediaLocalStore.token("orphan"),".mp4").exists());}
  }
+ @Test public void existingStockRejectsActualPortraitDimensionsAndKeepsInCapFiles()throws Exception {
+  try(PodMediaPrefixCache cache=cache(root())){
+   String high=seed(cache,"high",4096,false,1),safe=seed(cache,"safe",4096,false,2);
+   File highMedia=cache.localStore.file(high,".mp4"),safeMedia=cache.localStore.file(safe,".mp4");
+   org.robolectric.shadows.ShadowMediaExtractor.addTrack(org.robolectric.shadows.util.DataSource.toDataSource(highMedia.getAbsolutePath()),
+       android.media.MediaFormat.createVideoFormat("video/avc",1080,1920),new byte[8]);
+   org.robolectric.shadows.ShadowMediaExtractor.addTrack(org.robolectric.shadows.util.DataSource.toDataSource(safeMedia.getAbsolutePath()),
+       android.media.MediaFormat.createVideoFormat("video/avc",720,1280),new byte[8]);
+   JSONArray items=cache.execute("video.cache.local.list",new JSONObject().put("maxVideoShortEdge",720)).getJSONArray("items");
+   assertEquals(1,items.length());
+   assertEquals("safe",items.getJSONObject(0).getString("key"));
+   assertFalse(highMedia.exists());
+   assertFalse(cache.localStore.file(high,".json").exists());
+   assertFalse(cache.localStore.frame(high).exists());
+   assertTrue(safeMedia.exists());
+  }
+ }
  @Test public void evictionUsesWatchedThenOldestAndHonorsCountAndBytes()throws Exception {
   try(PodMediaPrefixCache c=cache(root())){String oldest=seed(c,"old",65536,false,1),watched=seed(c,"watched",65536,true,3),newer=seed(c,"new",65536,false,2);
    c.localStore.configure(new JSONObject().put("count",2).put("totalBytes",132*1024));assertFalse(c.localStore.file(watched,".mp4").exists());assertNotNull(c.localStore.lookupToken(oldest));assertNotNull(c.localStore.lookupToken(newer));
