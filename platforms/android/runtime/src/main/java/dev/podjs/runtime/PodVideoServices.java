@@ -43,7 +43,7 @@ import java.util.Map;
 
 /** One bounded Media3 video session. All player and view operations run on main. */
 public final class PodVideoServices implements AutoCloseable {
-    public interface Callback extends VideoFrameObserver { void complete(JSONObject value); void fail(String code, String message); }
+    public interface Callback extends VideoFrameObserver { void complete(JSONObject value); }
     private void mediaGate(boolean active) {
         boolean before=HostWorkPriority.DEVICE.mediaActive();
         HostWorkPriority.DEVICE.foregroundMedia(this,active);
@@ -78,6 +78,7 @@ public final class PodVideoServices implements AutoCloseable {
     private Callback prepareCallback;
     private String state = "idle";
     private String playbackErrorCode;
+    private int playbackErrorMirrorIndex;
     private boolean hasRenderedFirstFrame;
     private long completedLoops;
     private int observedTextureFrames;
@@ -185,7 +186,7 @@ public final class PodVideoServices implements AutoCloseable {
     private void prepare(JSONObject a, Callback cb) throws Exception {
         PodBenchmark.startup(a.optLong("startupSeq",0),"prepare_start");
         benchmarkAction=PodBenchmark.videoAction(a);benchmarkFramePending=benchmarkAction!=null;
-        firstRevealLogged=false;prepareSequence++;android.util.Log.i("PodVideoTiming","prepareBegin seq="+prepareSequence);hasRenderedFirstFrame=false;observedTextureFrames=0; prepareStartedMs=android.os.SystemClock.elapsedRealtime(); playbackErrorCode=null;
+        firstRevealLogged=false;prepareSequence++;android.util.Log.i("PodVideoTiming","prepareBegin seq="+prepareSequence);hasRenderedFirstFrame=false;observedTextureFrames=0; prepareStartedMs=android.os.SystemClock.elapsedRealtime(); playbackErrorCode=null;playbackErrorMirrorIndex=0;
         if(videoView==null || parent==null) throw new IllegalStateException("video_surface_unavailable");
         String videoUrl = a.optString("videoUrl", ""); String audioUrl = a.optString("audioUrl", "");
         if(videoUrl.isEmpty()&&!audioUrl.isEmpty())videoUrl=a.optString("url", "");
@@ -239,6 +240,8 @@ public final class PodVideoServices implements AutoCloseable {
         final PodVideoAdmissionRetry recovery=playbackService.beginAdmissionRecovery(session);
         admissionRetry=recovery;
         final Callback frameCallback=prepareCallback;
+        final String cacheUri=a.optString("url");
+        final PodMediaPrefixCache.Entry cached=mediaPrefixCache==null?null:mediaPrefixCache.registration(cacheUri);
         completedLoops = 0;
         frameStats=new PodVideoFrameStats();statsSequence=prepareSequence;statsWindowLogged=false;
         player.setAudioAttributes(new AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(),true);
@@ -257,11 +260,15 @@ public final class PodVideoServices implements AutoCloseable {
             private boolean rejectOversized(int width,int height){
                 if(!matches(session,generation,recovery)||!PodVideoShortEdge.exceeds(a.optInt(PodVideoShortEdge.KEY),width,height))return false;
                 state="error";playbackErrorCode=PodVideoShortEdge.ERROR;
+                playbackErrorMirrorIndex=cached==null?0:cached.mirrorIndex();
                 Callback pending=prepareCallback;prepareCallback=null;
                 releasePlayer();
                 if(videoView!=null)videoView.setVisibility(View.GONE);
-                if(mediaPrefixCache!=null)mediaPrefixCache.rejectResolution(a.optString("url"));
-                if(pending!=null)pending.fail(PodVideoShortEdge.ERROR,"Video exceeds the short-edge limit");
+                if(mediaPrefixCache!=null){
+                    if(cached!=null)mediaPrefixCache.rejectResolution(cached);
+                    else mediaPrefixCache.rejectResolution(cacheUri);
+                }
+                if(pending!=null)pending.fail(PodVideoShortEdge.ERROR,"Video exceeds the short-edge limit",playbackErrorMirrorIndex);
                 try{if(frameCallback!=null)frameCallback.stateChanged(state());}catch(Exception ignored){}
                 return true;
             }
@@ -403,7 +410,7 @@ public final class PodVideoServices implements AutoCloseable {
     }
     private int dp(double v) { if(!Double.isFinite(v)) throw new IllegalArgumentException("invalid_bounds"); return Math.max(-100000,Math.min(100000,(int)Math.round(v*density))); }
     private void require(){if(player==null)throw new IllegalStateException("video_not_ready");}
-    private JSONObject state() throws Exception { AudioManager am=(AudioManager)context.getSystemService(Context.AUDIO_SERVICE);return PodVideoSystemAudio.snapshot(context,new JSONObject().put("silenced",audioPolicy!=null&&audioPolicy.silenced()).put("appliedVolume",player==null?null:player.getVolume()).put("audioTrackSelected",player!=null&&player.getAudioFormat()!=null).put("metrics",analytics==null?null:analytics.snapshot()).put("ok",true).put("isBuffering",player!=null&&player.getPlaybackState()==Player.STATE_BUFFERING).put("state",state).put("hasRenderedFirstFrame",hasRenderedFirstFrame).put("sourceGeneration",prepareSequence).put("decoderAdmissionDeferred",admissionRetry!=null&&admissionRetry.deferred()).put("completedLoops",completedLoops).put("loop",player!=null&&player.getRepeatMode()==Player.REPEAT_MODE_ONE).put("speed",player==null?1:player.getPlaybackParameters().speed).put("errorCode", "error".equals(state)?playbackErrorCode:null).put("bufferedMs",player==null?0:Math.max(0,player.getBufferedPosition()-player.getCurrentPosition())).put("networkStalled",analytics!=null&&analytics.networkStalled()).put("positionMs",player==null?0:player.getCurrentPosition()).put("durationMs",player==null?0:Math.max(0,player.getDuration())).put("width",player==null?0:player.getVideoSize().width).put("height",player==null?0:player.getVideoSize().height)); }
+    private JSONObject state() throws Exception { AudioManager am=(AudioManager)context.getSystemService(Context.AUDIO_SERVICE);return PodVideoSystemAudio.snapshot(context,new JSONObject().put("silenced",audioPolicy!=null&&audioPolicy.silenced()).put("appliedVolume",player==null?null:player.getVolume()).put("audioTrackSelected",player!=null&&player.getAudioFormat()!=null).put("metrics",analytics==null?null:analytics.snapshot()).put("ok",true).put("isBuffering",player!=null&&player.getPlaybackState()==Player.STATE_BUFFERING).put("state",state).put("hasRenderedFirstFrame",hasRenderedFirstFrame).put("sourceGeneration",prepareSequence).put("decoderAdmissionDeferred",admissionRetry!=null&&admissionRetry.deferred()).put("completedLoops",completedLoops).put("loop",player!=null&&player.getRepeatMode()==Player.REPEAT_MODE_ONE).put("speed",player==null?1:player.getPlaybackParameters().speed).put("errorCode", "error".equals(state)?playbackErrorCode:null).put("mirrorIndex", "error".equals(state)&&PodVideoShortEdge.ERROR.equals(playbackErrorCode)?playbackErrorMirrorIndex:null).put("bufferedMs",player==null?0:Math.max(0,player.getBufferedPosition()-player.getCurrentPosition())).put("networkStalled",analytics!=null&&analytics.networkStalled()).put("positionMs",player==null?0:player.getCurrentPosition()).put("durationMs",player==null?0:Math.max(0,player.getDuration())).put("width",player==null?0:player.getVideoSize().width).put("height",player==null?0:player.getVideoSize().height)); }
     private String source(JSONObject a,String key)throws Exception{String s=a.optString(key,"");if(s.isEmpty())throw new IllegalArgumentException("missing_url");return sourceValue(s);}
     private String sourceValue(String s)throws Exception{if(mediaPrefixCache!=null&&(mediaPrefixCache.owns(s)||mediaPrefixCache.ownsLocal(s)))return s;if(s.startsWith("http://")||s.startsWith("https://")){Uri u=Uri.parse(s);if(u.getHost()==null)throw new IllegalArgumentException("invalid_url");return s;}File f=new File(mediaRoot,s).getCanonicalFile();if(s.startsWith("/")||!f.getPath().startsWith(mediaRoot.getPath()+File.separator)||!f.isFile())throw new SecurityException("invalid_media_path");return f.toURI().toString();}
     private Map<String,String> headers(JSONObject o)throws Exception{Map<String,String> m=new HashMap<>();if(o==null)return m; if(o.length()>32)throw new IllegalArgumentException("too_many_headers");int total=0;java.util.Iterator<String> i=o.keys();while(i.hasNext()){String k=i.next();String v=o.optString(k,null);if(v==null||k.length()>128||v.length()>65536||k.indexOf('\r')>=0||k.indexOf('\n')>=0||v.indexOf('\r')>=0||v.indexOf('\n')>=0)throw new IllegalArgumentException("invalid_headers");total+=k.length()+v.length();if(total>65536)throw new IllegalArgumentException("headers_too_large");m.put(k,v);}return m;}

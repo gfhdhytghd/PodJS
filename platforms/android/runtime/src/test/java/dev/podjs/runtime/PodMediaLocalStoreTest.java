@@ -81,6 +81,8 @@ public class PodMediaLocalStoreTest {
   }
   try(PodMediaPrefixCache cache=cache(dir)){
    assertNotNull(cache.localStore.lookupToken(safe,720));
+   assertTrue(cache.localStore.file(bad,".mp4").exists());
+   assertEquals(1,cache.localStore.list(720).length());
    assertFalse(cache.localStore.file(bad,".json").exists());
    assertFalse(cache.localStore.file(bad,".mp4").exists());
    assertFalse(cache.localStore.frame(bad).exists());

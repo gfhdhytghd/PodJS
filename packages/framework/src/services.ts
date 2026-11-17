@@ -36,7 +36,7 @@ export function uploadTextureFile(path:string,width:number,height:number,psm:num
 export type SqlValue = string | number | null;
 export interface SqlStatement { sql: string; params?: readonly SqlValue[] }
 export class HostServiceError extends Error {
-  constructor(readonly code: string, message: string) { super(message); this.name = "HostServiceError"; }
+  constructor(readonly code: string, message: string, readonly mirrorIndex?:0|1) { super(message); this.name = "HostServiceError"; }
 }
 export interface HostOperation<T> { result: Promise<T>; cancel(reason?: string): void }
 const pending = new Map<number, { method:string;diagnosticSite:number;resolve(value: unknown): void; reject(error: Error): void; status?:(value:unknown)=>void }>();
@@ -178,7 +178,8 @@ __onHostEvent(event => {
   pending.delete(event.id);
   serviceDiagnosticComplete(request.method,request.diagnosticSite,event.ok===true);
   if (event.ok === true) traceServiceCallback(request.method,'resolve',()=>request.resolve(event.value));
-  else traceServiceCallback(request.method,'reject',()=>request.reject(new HostServiceError(String(event.code ?? "host_error"), String(event.message ?? "Host operation failed"))));
+  else traceServiceCallback(request.method,'reject',()=>request.reject(new HostServiceError(String(event.code ?? "host_error"), String(event.message ?? "Host operation failed"),
+    event.code==='resolution_limit'&&(event.mirrorIndex===0||event.mirrorIndex===1)?event.mirrorIndex:undefined)));
 });
 /** Cancellation stops delivery; a mutation already committed by the host is not undone. */
 export function hostOperation<T>(method: string, args: Record<string, unknown>): HostOperation<T> {
@@ -396,7 +397,7 @@ export interface VideoFrameSource {maxVideoShortEdge?:number;url?:string;videoUr
 export interface VideoFrame {available:true;kind:"actual_frame";path:string;width:number;height:number;positionMs:number;capturedAt:number;capturedGeneration:number}
 export interface VideoFrameCapture {key:string;source:VideoFrameSource;sourceGeneration:number}
 export interface VideoPlaybackMetrics { bytesLoaded:number; droppedFrames:number; rebufferCount:number; rebufferMs:number; firstByteMs?:number; firstFrameMs?:number; throughputBps?:number; [key:string]:number|undefined }
-export interface VideoState {/** Transient video admission; no terminal error or device-capacity downgrade. */decoderAdmissionDeferred?:boolean;/** Native buffering also covers preparation with autoplay disabled. */ isBuffering?:boolean; /** Playback speed; hosts without video.setSpeed omit it. */speed?:number; ringerMode?:"normal"|"vibrate"|"silent"|"unknown";silenced?:boolean; volumeIndex?:number; muted?:boolean; appliedVolume?:number; audioTrackSelected?:boolean; bufferedMs?:number; networkStalled?:boolean; presented?:boolean; metrics?:VideoPlaybackMetrics; sourceGeneration?:number; /** Completed native repeats since prepare; seeks do not increment it. */ completedLoops?:number; loop?:boolean; hasCachedFirstFrame?:boolean; hasRenderedFirstFrame?:boolean; errorCode?:string; ok:boolean; state:string; positionMs:number; durationMs:number; width:number; height:number; volume:number; volumeMax:number }
+export interface VideoState {/** Transient video admission; no terminal error or device-capacity downgrade. */decoderAdmissionDeferred?:boolean;/** Native buffering also covers preparation with autoplay disabled. */ isBuffering?:boolean; /** Playback speed; hosts without video.setSpeed omit it. */speed?:number; ringerMode?:"normal"|"vibrate"|"silent"|"unknown";silenced?:boolean; volumeIndex?:number; muted?:boolean; appliedVolume?:number; audioTrackSelected?:boolean; bufferedMs?:number; networkStalled?:boolean; presented?:boolean; metrics?:VideoPlaybackMetrics; sourceGeneration?:number; /** Completed native repeats since prepare; seeks do not increment it. */ completedLoops?:number; loop?:boolean; hasCachedFirstFrame?:boolean; hasRenderedFirstFrame?:boolean; errorCode?:string; mirrorIndex?:0|1; ok:boolean; state:string; positionMs:number; durationMs:number; width:number; height:number; volume:number; volumeMax:number }
 export const VIDEO_SPEED_RANGE={min:.5,max:2} as const;
 function checkVideoSpeed(speed:number):void{if(!Number.isFinite(speed)||speed<VIDEO_SPEED_RANGE.min||speed>VIDEO_SPEED_RANGE.max)throw new HostServiceError("invalid_argument","Video speed must be between 0.5 and 2");}
 export const video = {
@@ -453,6 +454,7 @@ export interface VideoSessionState { isBuffering?:boolean;
   sourceGeneration?:number;
   completedLoops?:number; loop?:boolean;
   errorCode?:string;
+  mirrorIndex?:0|1;
   ok:boolean; sessionId:string; state:string; positionMs:number; durationMs:number;
   width:number; height:number; muted:boolean; volume:number; prewarming:boolean;
   hasCachedFirstFrame?:boolean; keyframeAvailable?:boolean;

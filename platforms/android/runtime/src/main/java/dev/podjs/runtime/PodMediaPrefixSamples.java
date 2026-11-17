@@ -5,23 +5,44 @@ final class PodMediaPrefixSamples {
     static boolean exceedsShortEdge(byte[] moov,int limit){
         if(limit<=0)return false;
         try{
-            if(moov.length<8||!type(moov,0,"moov")||next(moov,0,moov.length)!=moov.length)return false;
-            for(int trak=8;trak+8<=moov.length;trak=next(moov,trak,moov.length)){
+            if(moov.length<8||!type(moov,0,"moov")||boxEnd(moov,0,moov.length)!=moov.length)return false;
+            for(int trak=payload(moov,0);trak+8<=moov.length;trak=boxEnd(moov,trak,moov.length)){
                 if(!type(moov,trak,"trak"))continue;
-                int mdia=find(moov,trak,"mdia"),hdlr=find(moov,mdia,"hdlr");
-                if(hdlr<0||next(moov,hdlr,moov.length)<hdlr+20||!type(moov,hdlr+12,"vide"))continue;
-                int stsd=find(moov,find(moov,find(moov,mdia,"minf"),"stbl"),"stsd");
+                int mdia=child(moov,trak,"mdia"),hdlr=child(moov,mdia,"hdlr");
+                if(hdlr<0||boxEnd(moov,hdlr,moov.length)<payload(moov,hdlr)+12
+                    ||!type(moov,payload(moov,hdlr)+4,"vide"))continue;
+                int stsd=child(moov,child(moov,child(moov,mdia,"minf"),"stbl"),"stsd");
                 if(stsd<0)continue;
-                int end=next(moov,stsd,moov.length);
-                for(int sample=stsd+16;sample+8<=end;){
-                    int sampleEnd=next(moov,sample,end);
-                    if(sampleEnd>=sample+36&&PodVideoShortEdge.exceeds(limit,
-                            u16(moov,sample+32),u16(moov,sample+34)))return true;
+                int end=boxEnd(moov,stsd,moov.length);
+                for(int sample=payload(moov,stsd)+8;sample+8<=end;){
+                    int sampleEnd=boxEnd(moov,sample,end),fields=payload(moov,sample);
+                    if(sampleEnd-fields>=28&&PodVideoShortEdge.exceeds(limit,
+                            u16(moov,fields+24),u16(moov,fields+26)))return true;
                     sample=sampleEnd;
                 }
             }
         }catch(IndexOutOfBoundsException|IllegalArgumentException invalid){}
         return false;
+    }
+    private static int payload(byte[] box,int offset){return offset+(u32(box,offset)==1?16:8);}
+    private static int boxEnd(byte[] box,int offset,int end){
+        long size=u32(box,offset);
+        int header=8;
+        if(size==1){
+            header=16;
+            if(end-offset<header)throw new IllegalArgumentException();
+            size=u64(box,offset+8);
+        }else if(size==0)size=end-offset;
+        if(size<header||size>end-offset)throw new IllegalArgumentException();
+        return offset+(int)size;
+    }
+    private static int child(byte[] box,int parent,String name){
+        if(parent<0)return -1;
+        int end=boxEnd(box,parent,box.length);
+        for(int offset=payload(box,parent);offset+8<=end;offset=boxEnd(box,offset,end)){
+            if(type(box,offset,name))return offset;
+        }
+        return -1;
     }
     private static int u16(byte[] bytes,int offset){return (bytes[offset]&255)<<8|(bytes[offset+1]&255);}
     /** End of the first independently decodable video sample. Unknown tables fail closed.

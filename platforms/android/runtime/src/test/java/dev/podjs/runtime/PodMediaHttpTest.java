@@ -18,7 +18,8 @@ public class PodMediaHttpTest {
   final ServerSocket server=new ServerSocket(0);final ExecutorService workers=Executors.newCachedThreadPool();
   final AtomicInteger connections=new AtomicInteger(),requests=new AtomicInteger();final List<String> headers=Collections.synchronizedList(new ArrayList<>());
   final int headerDelay,bodyDelay,status;final byte[] body;final CountDownLatch received=new CountDownLatch(1);volatile CountDownLatch responseGate;String location,retryAfter;
-  Server(int headerDelay,int bodyDelay,int status,byte value)throws Exception{this.headerDelay=headerDelay;this.bodyDelay=bodyDelay;this.status=status;body=new byte[1024];Arrays.fill(body,value);
+  Server(int headerDelay,int bodyDelay,int status,byte value)throws Exception{this(headerDelay,bodyDelay,status,new byte[1024]);Arrays.fill(body,value);}
+  Server(int headerDelay,int bodyDelay,int status,byte[] body)throws Exception{this.headerDelay=headerDelay;this.bodyDelay=bodyDelay;this.status=status;this.body=body;
    workers.execute(()->{while(!server.isClosed())try{Socket socket=server.accept();connections.incrementAndGet();workers.execute(()->serve(socket));}catch(IOException ignored){}});
   }
   String url(){return "http://127.0.0.1:"+server.getLocalPort()+"/fixture";}

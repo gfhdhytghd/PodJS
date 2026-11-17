@@ -167,6 +167,111 @@ public class PodMediaResolutionLimitTest {
             assertTrue(lengthFile(safe).isFile());
         }
     }
+    @Test public void cappedRegistrationAndRestartDoNotTouchAnUncappedSource() throws Exception {
+        File root=PodMediaPrefixCacheTest.root();
+        byte[] portrait=PodVideoShortEdgeTest.movie(1080,1920);
+        File uncapped, capped;
+        try(PodMediaPrefixCache cache=new PodMediaPrefixCache(root,new PodMediaStockRangeTest.Ranges(),6L<<20)){
+            String uncappedUri=cache.register("unrelated","https://example.test/video",java.util.Map.of());
+            uncapped=cache.target(uncappedUri).file;
+            java.nio.file.Files.write(uncapped.toPath(),portrait);
+            register(cache,"capped-scope");
+            String cappedUri=register(cache,"unrelated");
+            assertNotEquals(uncappedUri,cappedUri);
+            assertTrue(cache.owns(uncappedUri));
+            assertEquals(portrait.length,uncapped.length());
+            capped=cache.target(cappedUri).file;
+            java.nio.file.Files.write(capped.toPath(),portrait);
+        }
+        try(PodMediaPrefixCache cache=new PodMediaPrefixCache(root,new PodMediaStockRangeTest.Ranges(),6L<<20)){
+            assertTrue(uncapped.isFile());
+            assertEquals(portrait.length,uncapped.length());
+            assertFalse(capped.isFile());
+        }
+    }
+
+    @Test public void extendedLengthMoovIsScrubbedAtRestart() throws Exception {
+        File root=PodMediaPrefixCacheTest.root();
+        byte[] moov=PodVideoShortEdgeTest.movie(1080,1920);
+        byte[] extended=java.nio.ByteBuffer.allocate(moov.length+8).putInt(1).putInt(0x6d6f6f76)
+            .putLong(moov.length+8L).put(moov,8,moov.length-8).array();
+        File prefix;
+        try(PodMediaPrefixCache cache=new PodMediaPrefixCache(root,new PodMediaStockRangeTest.Ranges(),6L<<20)){
+            prefix=cache.target(register(cache,"extended-moov")).file;
+            java.nio.file.Files.write(prefix.toPath(),extended);
+            try(java.io.DataOutputStream out=new java.io.DataOutputStream(new java.io.FileOutputStream(lengthFile(prefix)))){
+                out.writeLong(extended.length);
+            }
+        }
+        try(PodMediaPrefixCache cache=new PodMediaPrefixCache(root,new PodMediaStockRangeTest.Ranges(),6L<<20)){
+            assertFalse(prefix.isFile());
+            assertFalse(lengthFile(prefix).isFile());
+        }
+    }
+
+    @Test public void resolutionResultIdentifiesTheActualMirrorWithoutAnAddress() throws Exception {
+        List<JSONObject> events=new CopyOnWriteArrayList<>();
+        String mirror="https://example.test/mirror";
+        try(PodMediaPrefixCache cache=new PodMediaPrefixCache(PodMediaPrefixCacheTest.root(),portrait(),6L<<20)){
+            cache.setResultSink(events::add);
+            String uri=cache.execute("video.cache.register",new JSONObject().put("key","mirrored")
+                .put("url","https://example.test/primary").put("alternates",new JSONArray().put(mirror))
+                .put("maxVideoShortEdge",720)).getString("uri");
+            // Set the same winning-source state that the HTTP race records.
+            cache.target(uri).selectedRemote=mirror;
+            JSONObject target=new JSONObject().put("uri",uri).put("prefetchBytes",512*1024)
+                .put("captureBytes",512*1024).put("itemToken","mirrored").put("generation",1);
+            cache.execute("video.cache.window",new JSONObject().put("items",new JSONArray().put(target)));
+            long deadline=System.nanoTime()+5_000_000_000L;
+            while(events.isEmpty()&&System.nanoTime()<deadline)Thread.sleep(5);
+            JSONObject result=events.get(0).getJSONObject("value");
+            assertEquals("resolution_limit",result.getString("category"));
+            assertEquals(1,result.optInt("mirrorIndex",-1));
+            assertFalse(result.toString().contains(mirror));
+            assertFalse(cache.owns(uri));
+            assertEquals(0,cache.stats().getLong("bytes"));
+        }
+    }
+
+    @Test public void equivalentMirrorServing1080IsRejectedWithoutPlayableBytes() throws Exception {
+        byte[] media;
+        try(java.io.InputStream asset=getClass().getResourceAsStream("rescap-portrait.mp4")){
+            assertNotNull(asset);media=asset.readAllBytes();
+        }
+        byte[] safe=PodVideoShortEdgeTest.movie(480,854);
+        List<JSONObject> events=new CopyOnWriteArrayList<>();
+        try(PodMediaHttpTest.Server primary=new PodMediaHttpTest.Server(0,800,206,safe);
+            PodMediaHttpTest.Server mirror=new PodMediaHttpTest.Server(40,0,206,media);
+            PodMediaHttp http=new PodMediaHttp();
+            PodMediaPrefixCache cache=new PodMediaPrefixCache(PodMediaPrefixCacheTest.root(),http,6L<<20)){
+            String canonical=mirror.url().replace("/fixture","/bad");
+            String alias=mirror.url().replace("/fixture","/p"+(char)92+".."+(char)92+"bad");
+            assertEquals(okhttp3.HttpUrl.get(canonical),okhttp3.HttpUrl.get(alias));
+            cache.setResultSink(events::add);
+            String uri=cache.execute("video.cache.register",new JSONObject().put("key","equivalent")
+                .put("url",primary.url()).put("alternates",new JSONArray().put(alias))
+                .put("maxVideoShortEdge",720)).getString("uri");
+            File prefix=cache.target(uri).file;
+            JSONObject item=new JSONObject().put("uri",uri).put("prefetchBytes",32*1024)
+                .put("captureBytes",32*1024).put("itemToken","equivalent").put("generation",1);
+            cache.execute("video.cache.window",new JSONObject().put("items",new JSONArray().put(item)));
+            long deadline=System.nanoTime()+5_000_000_000L;
+            while((events.isEmpty()||cache.owns(uri))&&System.nanoTime()<deadline)Thread.sleep(5);
+            JSONObject result=events.get(0).getJSONObject("value");
+            assertEquals("resolution_limit",result.getString("category"));
+            assertEquals(1,result.getInt("mirrorIndex"));
+            assertTrue(mirror.headers.stream().anyMatch(request->request.startsWith("GET /bad HTTP/")));
+            assertTrue(cache.stats().getLong("networkReadBytes")>0);
+            assertEquals(0,cache.stats().getLong("bytes"));
+            assertFalse(prefix.isFile());
+            assertFalse(lengthFile(prefix).exists());
+            assertEquals(1,events.size());
+            androidx.media3.datasource.DataSource playback=cache.factory(http).createDataSource();
+            try{assertThrows(java.io.IOException.class,()->playback.open(new androidx.media3.datasource.DataSpec(android.net.Uri.parse(uri))));}
+            finally{playback.close();}
+        }
+    }
+
     private static File lengthFile(File prefix){return new File(prefix.getParentFile(),prefix.getName().replace(".prefix",".length"));}
 
     private static String register(PodMediaPrefixCache cache,String key) throws Exception {

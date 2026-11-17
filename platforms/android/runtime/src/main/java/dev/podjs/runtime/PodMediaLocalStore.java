@@ -57,19 +57,23 @@ final class PodMediaLocalStore {
         for(String token:ordered()){
             JSONObject value=manifest(token);
             if(value==null)continue;
-            JSONObject metadata=value.optJSONObject("metadata");
-            File media=file(token,".mp4");
-            if(metadata!=null&&(metadata.optInt("resolution")>limit
-                ||PodVideoShortEdge.exceeds(limit,metadata.optInt("width"),metadata.optInt("height")))
-                ||PodMediaPrefixMp4.cachedExceeds(media,null,media.length(),limit))remove(token);
+            if(exceedsCachedResolution(token,value,limit))remove(token);
         }
         recoveredShortEdgeLimit=limit;
     }
+    private boolean exceedsCachedResolution(String token,JSONObject value,int limit){
+        if(limit<=0)return false;
+        JSONObject metadata=value.optJSONObject("metadata");
+        File media=file(token,".mp4");
+        return metadata!=null&&(metadata.optInt("resolution")>limit
+            ||PodVideoShortEdge.exceeds(limit,metadata.optInt("width"),metadata.optInt("height")))
+            ||PodMediaPrefixMp4.cachedExceeds(media,null,media.length(),limit);
+    }
     synchronized JSONObject lookupToken(String token)throws Exception {return lookupToken(token,0);}
     synchronized JSONObject lookupToken(String token,int limit)throws Exception {
-        recoverResolution(limit);
         JSONObject value=manifest(token);File media=file(token,".mp4");
         if(value==null||!media.isFile()||media.length()!=value.getLong("bytes")||!digest(media).equals(value.getString("sha256"))){remove(token);return null;}
+        if(exceedsCachedResolution(token,value,limit)){remove(token);return null;}
         // Older inventories did not describe tracks. Inspect the existing local bytes;
         // no URL refresh or network read is needed for this migration.
         if(value.optInt("version")==1){try{int[] tracks=tracks(media);value.put("version",2).put("audioTracks",tracks[0]).put("videoTracks",tracks[1]);writeManifest(token,value);}catch(Exception invalid){remove(token);return null;}}

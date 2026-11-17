@@ -456,6 +456,7 @@ final class PodServices implements Closeable {
                 public void firstFrame(JSONObject value) { try { if(!closed)sink.complete(new JSONObject().put("t","video.firstFrame").put("value",value).toString()); } catch(Exception error) { android.util.Log.w("PodJS","Video first frame event unavailable"); } }
                 public void complete(JSONObject value){if(requests.remove(id,request))reply(id,true,value,null,null);}
                 public void fail(String code,String message){if(requests.remove(id,request))failure(id,code,message);}
+                public void fail(String code,String message,int mirrorIndex){if(requests.remove(id,request))reply(id,false,null,code,message,mirrorIndex);}
             });
             return;
         }
@@ -473,6 +474,7 @@ final class PodServices implements Closeable {
                 public void firstFrame(JSONObject value) { try { if(!closed)sink.complete(new JSONObject().put("t","video.firstFrame").put("value",value).toString()); } catch(Exception error) { android.util.Log.w("PodJS","Video first frame event unavailable"); } }
                 public void complete(JSONObject value) { if (requests.remove(id,request)) reply(id,true,value,null,null); }
                 public void fail(String code,String message) { if (requests.remove(id,request)) failure(id,code,message); }
+                public void fail(String code,String message,int mirrorIndex){if(requests.remove(id,request))reply(id,false,null,code,message,mirrorIndex);}
             });
             return;
         }
@@ -1023,10 +1025,16 @@ final class PodServices implements Closeable {
     }
     private void failure(int id,String code,String message) { reply(id,false,null,code,message); }
     private void reply(int id,boolean ok,Object value,String code,String message) {
+        reply(id,ok,value,code,message,-1);
+    }
+    private void reply(int id,boolean ok,Object value,String code,String message,int mirrorIndex) {
         try {
             JSONObject event = new JSONObject().put("t","service.result").put("id",id).put("ok",ok);
             if(ok) event.put("value",value == null ? JSONObject.NULL : value);
-            else event.put("code",code).put("message",message);
+            else{
+                event.put("code",code).put("message",message);
+                if(PodVideoShortEdge.ERROR.equals(code)&&(mirrorIndex==0||mirrorIndex==1))event.put("mirrorIndex",mirrorIndex);
+            }
             // Serialize on the calling (worker) thread; the main thread only hands the
             // finished string to the guest so large replies cannot stall frames.
             final byte[] payload=value instanceof JSONObject&&((JSONObject)value).opt("_podBytes") instanceof byte[]?(byte[])((JSONObject)value).remove("_podBytes"):null;

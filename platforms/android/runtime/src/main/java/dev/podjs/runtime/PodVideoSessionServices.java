@@ -44,7 +44,7 @@ import java.util.Map;
  * surface, so no decoder or SurfaceTexture is replaced at the page boundary.
  */
 final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks2 {
-    interface Callback extends VideoFrameObserver { void complete(JSONObject value); void fail(String code, String message); }
+    interface Callback extends VideoFrameObserver { void complete(JSONObject value); }
 
     static final int MAX_SESSIONS = 3;
     static final int TARGET_BUFFER_BYTES = 4 * 1024 * 1024;
@@ -378,7 +378,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         session.autoplay = args.optBoolean("autoplay", true);
         // Old private muted/volume arguments must not survive a new session.
 
-        session.errorCode = null;
+        session.errorCode = null;session.errorMirrorIndex=0;
         session.state = "preparing";
         session.hasRenderedFirstFrame = false;
         session.presented = !session.prewarming && bounds.visible;
@@ -430,12 +430,18 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         session.completedLoops = 0;
         player.setRepeatMode(args.optBoolean("loop", false) ? Player.REPEAT_MODE_ONE : Player.REPEAT_MODE_OFF);
         session.audioPolicy.setVolume(1f, session.prewarming);
+        final String cacheUri=args.optString("url");
+        final PodMediaPrefixCache.Entry cached=mediaPrefixCache==null?null:mediaPrefixCache.registration(cacheUri);
         player.addListener(new Player.Listener() {
             private boolean rejectOversized(int width,int height){
                 if(!own.matches(player,generation)||!PodVideoShortEdge.exceeds(args.optInt(PodVideoShortEdge.KEY),width,height))return false;
                 final boolean prewarming=own.prewarming;
+                own.errorMirrorIndex=cached==null?0:cached.mirrorIndex();
+                if(mediaPrefixCache!=null){
+                    if(cached!=null)mediaPrefixCache.rejectResolution(cached);
+                    else mediaPrefixCache.rejectResolution(cacheUri);
+                }
                 failPrepare(own,player,generation,PodVideoShortEdge.ERROR,"Video exceeds the short-edge limit",false);
-                if(mediaPrefixCache!=null)mediaPrefixCache.rejectResolution(args.optString("url"));
                 if(!prewarming)try{callback.stateChanged(own.snapshot());}catch(Exception ignored){}
                 return true;
             }
@@ -614,7 +620,10 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         session.state = "error";session.errorCode=code;
         if(session.prewarming){if(sessions.get(session.id)==session)sessions.remove(session.id);session.close();}
         else {session.resetPlayer();session.hideOffscreen();}
-        if (pending != null) pending.fail(code, message);
+        if(pending!=null){
+            if(PodVideoShortEdge.ERROR.equals(code))pending.fail(code,message,session.errorMirrorIndex);
+            else pending.fail(code,message);
+        }
     }
 
     private void captureFrame(JSONObject args,Callback callback)throws Exception {
@@ -759,7 +768,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                 .put("backgroundPlayback",args.optBoolean("backgroundPlayback",false)).put("bounds",args.optJSONObject("bounds")).put("autoplay",args.optBoolean("autoplay",true)).put("benchmark",args.optJSONObject("benchmark"));
             if(args.has("loop"))live.put("loop",args.optBoolean("loop"));
             Callback result=new Callback(){public void complete(JSONObject value){try{callback.complete(value.put("replacedHasRenderedFirstFrame",rendered).put("replacedHasCachedFirstFrame",cached));}catch(Exception ignored){}}
-                public void fail(String code,String message){callback.fail(code,message);}public void firstFrame(JSONObject value){callback.firstFrame(value);}public void stateChanged(JSONObject value){callback.stateChanged(value);}};
+                public void fail(String code,String message){callback.fail(code,message);}public void fail(String code,String message,int mirrorIndex){callback.fail(code,message,mirrorIndex);}public void firstFrame(JSONObject value){callback.firstFrame(value);}public void stateChanged(JSONObject value){callback.stateChanged(value);}};
             if(!target.hasCachedFrame()){prepare(live,result);return;}
             // Reveal the retained decoded pixels before releasing a standby or
             // constructing Media3. Those operations can block the UI thread.
@@ -1140,7 +1149,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         Runnable prewarmTimeout;
         PodVideoDecoderCapabilities.Profile profile;
         String state = "idle";
-        String errorCode;
+        String errorCode;int errorMirrorIndex;
         String scaleMode = "standard";
         float rotationDeg, scaleRotationDeg, panX, panY;
         final PodVideoTransformCache liveGeometry=new PodVideoTransformCache(), keyframeGeometry=new PodVideoTransformCache();
@@ -1640,7 +1649,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
 
         JSONObject snapshot() throws Exception {
             return PodVideoSystemAudio.snapshot(context,new JSONObject()
-                    .put("silenced",audioPolicy!=null&&audioPolicy.silenced()).put("appliedVolume",player==null?null:player.getVolume()).put("audioTrackSelected",player!=null&&player.getAudioFormat()!=null).put("metrics",analytics==null?null:analytics.snapshot()).put("ok", true).put("isBuffering",player!=null&&player.getPlaybackState()==Player.STATE_BUFFERING).put("sessionId", id).put("decoderAdmissionDeferred",admissionDeferred).put("state", state).put("errorCode", "error".equals(state) ? errorCode : null)
+                    .put("silenced",audioPolicy!=null&&audioPolicy.silenced()).put("appliedVolume",player==null?null:player.getVolume()).put("audioTrackSelected",player!=null&&player.getAudioFormat()!=null).put("metrics",analytics==null?null:analytics.snapshot()).put("ok", true).put("isBuffering",player!=null&&player.getPlaybackState()==Player.STATE_BUFFERING).put("sessionId", id).put("decoderAdmissionDeferred",admissionDeferred).put("state", state).put("errorCode", "error".equals(state) ? errorCode : null).put("mirrorIndex", "error".equals(state)&&PodVideoShortEdge.ERROR.equals(errorCode)?errorMirrorIndex:null)
                     .put("positionMs", player == null ? 0 : player.getCurrentPosition())
                     .put("bufferedMs",player==null?0:Math.max(0,player.getBufferedPosition()-player.getCurrentPosition()))
                     .put("networkStalled",analytics!=null&&analytics.networkStalled())
