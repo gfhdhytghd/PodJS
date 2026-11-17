@@ -158,6 +158,13 @@ describe("host services", () => {
     host.capabilities=()=>JSON.stringify(["net.discovery"]);const result=discovery.networkSnapshot();expect(emitted[0]).toMatchObject({method:"discovery.networkSnapshot",args:{}});
     const value={active:true,internet:true,validated:true,wifi:false,cellular:false,bluetooth:true};events.push({t:"service.result",id:emitted[0].id,ok:true,value});api.__pumpPodEvents();await expect(result).resolves.toEqual(value);
   });
+  test("debug internet status remains separate from real LAN and route fields",async()=>{
+    host.capabilities=()=>JSON.stringify(["net.discovery"]);
+    const result=discovery.networkSnapshot(),request=emitted.at(-1)!;
+    const value={active:true,internet:false,validated:false,wifi:true,localWifi:true,cellular:false,bluetooth:false,internetStatusOverride:"bluetooth"};
+    events.push({t:"service.result",id:request.id,ok:true,value});api.__pumpPodEvents();
+    await expect(result).resolves.toEqual(value);
+  });
   test("sharing requires capability and forwards the unmodified chooser text",async()=>{
     await expect(sharing.environment()).rejects.toMatchObject({code:"unsupported"});expect(emitted).toHaveLength(0);
     host.capabilities=()=>JSON.stringify(["system.share"]);

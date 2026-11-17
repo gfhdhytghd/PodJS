@@ -13,6 +13,65 @@ public final class PodNetworkServicesTest {
     private JSONObject args(String id)throws Exception{return new JSONObject().put("subscriptionId",id);}
     private Object subscription(PodNetworkServices services,String id)throws Exception{java.lang.reflect.Field field=PodNetworkServices.class.getDeclaredField("subscriptions");field.setAccessible(true);synchronized(services){return ((java.util.Map<?,?>)field.get(services)).get(id);}}
     private boolean field(Object subscription,String name)throws Exception{java.lang.reflect.Field field=subscription.getClass().getDeclaredField(name);field.setAccessible(true);synchronized(subscription){return field.getBoolean(subscription);}}
+    @Test public void onlySocketAndDnsErrorsAreTransportFailures(){
+        assertEquals("network_error",PodNetworkServices.transportFailureCode(new java.net.UnknownHostException()));
+        assertEquals("network_error",PodNetworkServices.transportFailureCode(new java.net.ConnectException()));
+        assertEquals("timeout",PodNetworkServices.transportFailureCode(new java.net.SocketTimeoutException()));
+        assertNull(PodNetworkServices.transportFailureCode(new java.io.IOException("http_status:503")));
+        assertNull(PodNetworkServices.transportFailureCode(new java.io.FileNotFoundException()));
+    }
+    @Test public void parsesOnlyClosedDebugStatuses(){
+        assertEquals("checking",PodNetworkServices.parseDebugInternetStatus("checking"));
+        assertEquals("available",PodNetworkServices.parseDebugInternetStatus(" WIFI "));
+        assertEquals("unavailable",PodNetworkServices.parseDebugInternetStatus("offline"));
+        assertEquals("bluetooth",PodNetworkServices.parseDebugInternetStatus("bt"));
+        assertNull(PodNetworkServices.parseDebugInternetStatus("unexpected"));
+        assertNull(PodNetworkServices.parseDebugInternetStatus(null));
+    }
+    private String shell(String command)throws Exception{
+        android.os.ParcelFileDescriptor pipe=InstrumentationRegistry.getInstrumentation().getUiAutomation().executeShellCommand(command);
+        try(java.io.InputStream input=new android.os.ParcelFileDescriptor.AutoCloseInputStream(pipe)){
+            java.io.ByteArrayOutputStream out=new java.io.ByteArrayOutputStream();byte[] bytes=new byte[1024];int count;
+            while((count=input.read(bytes))!=-1)out.write(bytes,0,count);
+            return out.toString("UTF-8").trim();
+        }
+    }
+    @Test public void releaseContextNeverReadsOrObservesDebugOverride()throws Exception{
+        String key=PodNetworkServices.DEBUG_INTERNET_SETTING,previous=shell("settings get global "+key);
+        Context release=new android.content.ContextWrapper(context()){
+            @Override public Context getApplicationContext(){return this;}
+            @Override public android.content.pm.ApplicationInfo getApplicationInfo(){
+                android.content.pm.ApplicationInfo info=new android.content.pm.ApplicationInfo(super.getApplicationInfo());
+                info.flags&=~android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE;return info;
+            }
+        };
+        try{
+            shell("settings put global "+key+" unavailable");
+            try(PodNetworkServices services=new PodNetworkServices(release,ignored->{})){
+                assertFalse(services.execute("discovery.networkSnapshot",new JSONObject(),new CancellationSignal()).has("internetStatusOverride"));
+                services.execute("discovery.networkSubscribe",args("release"),new CancellationSignal());
+                assertFalse(field(subscription(services,"release"),"overrideRegistered"));
+            }
+        }finally{shell("null".equals(previous)?"settings delete global "+key:"settings put global "+key+" "+previous);}
+    }
+    @Test public void debugOverridePublishesFourStatesAndReleasesObserver()throws Exception{
+        final String key=PodNetworkServices.DEBUG_INTERNET_SETTING;
+        String previous=shell("settings get global "+key);
+        BlockingQueue<String> events=new LinkedBlockingQueue<>();
+        try(PodNetworkServices services=new PodNetworkServices(context(),events::add)){
+            boolean debug=(context().getApplicationInfo().flags&android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE)!=0;
+            services.execute("discovery.networkSubscribe",args("override"),new CancellationSignal());
+            Object owner=subscription(services,"override");assertEquals(debug,field(owner,"overrideRegistered"));
+            for(String status:new String[]{"checking","unavailable","bluetooth","available"}){
+                events.clear();shell("settings put global "+key+" "+status);
+                JSONObject snapshot=services.execute("discovery.networkSnapshot",new JSONObject(),new CancellationSignal());
+                if(debug){assertEquals(status,snapshot.getString("internetStatusOverride"));assertNotNull("setting notification",events.poll(5,TimeUnit.SECONDS));}
+                else assertFalse(snapshot.has("internetStatusOverride"));
+            }
+            services.execute("discovery.networkUnsubscribe",args("override"),new CancellationSignal());
+            assertFalse(field(owner,"overrideRegistered"));
+        }finally{shell("null".equals(previous)?"settings delete global "+key:"settings put global "+key+" "+previous);}
+    }
     @Test public void realNetworkCallbackAndUnsubscribeSuppressLateDelivery()throws Exception{
         BlockingQueue<String> events=new LinkedBlockingQueue<>();
         try(PodNetworkServices services=new PodNetworkServices(context(),events::add)){

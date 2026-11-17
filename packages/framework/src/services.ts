@@ -845,7 +845,8 @@ export const webSockets = {
 };
 
 /** Bounded IPv4 mDNS lookup; callers authenticate any discovered endpoint. */
-export interface NetworkSnapshot {localWifi?:boolean;metered?:boolean;active:boolean;internet:boolean;validated:boolean;wifi:boolean;cellular:boolean;bluetooth:boolean}
+/** internetStatusOverride is emitted only by debuggable Android hosts. Raw route fields stay real. */
+export interface NetworkSnapshot {internetStatusOverride?:"checking"|"unavailable"|"bluetooth"|"available";localWifi?:boolean;metered?:boolean;active:boolean;internet:boolean;validated:boolean;wifi:boolean;cellular:boolean;bluetooth:boolean}
 export const discovery = {
  networkSnapshot:()=>hostOperation<NetworkSnapshot>("discovery.networkSnapshot",{}).result,
  requestPermission:()=>hostOperation<"granted"|"required">("discovery.requestPermission",{}).result,
