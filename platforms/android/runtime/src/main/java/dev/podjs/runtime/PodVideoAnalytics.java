@@ -90,6 +90,7 @@ final class PodVideoAnalytics implements AnalyticsListener, TransferListener {
         // Bounded cause walk. Never send exception messages containing URLs.
         Throwable current = error;
         for (int i = 0; current != null && i < 16; i++, current = current.getCause()) {
+            if (current instanceof PodVideoShortEdge.Rejected) return PodVideoShortEdge.ERROR;
             if (current instanceof HttpDataSource.InvalidResponseCodeException) {
                 int status = ((HttpDataSource.InvalidResponseCodeException) current).responseCode;
                 if (status == 401 || status == 412 || status == 429) return "restricted";

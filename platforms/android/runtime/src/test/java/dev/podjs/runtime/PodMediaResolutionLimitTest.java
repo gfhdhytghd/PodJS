@@ -51,6 +51,65 @@ public class PodMediaResolutionLimitTest {
         }
     }
 
+    @Test public void openPrefixReaderStopsAfterResolutionRejection() throws Exception {
+        PodMediaStockRangeTest.Ranges remote=new PodMediaStockRangeTest.Ranges();
+        try(PodMediaPrefixCache cache=new PodMediaPrefixCache(PodMediaPrefixCacheTest.root(),remote,6L<<20)){
+            String uri=cache.execute("video.cache.register",new JSONObject().put("key","active")
+                .put("url","https://fixture.invalid/clip").put("maxVideoShortEdge",720)).getString("uri");
+            androidx.media3.datasource.DataSource source=cache.factory(remote).createDataSource();
+            byte[] buffer=new byte[64];
+            try {
+                source.open(new androidx.media3.datasource.DataSpec.Builder().setUri(uri).build());
+                assertEquals(64,source.read(buffer,0,buffer.length));
+                assertEquals(64,cache.stats().getLong("bytes"));
+                cache.rejectResolution(uri);
+                assertThrows(PodVideoShortEdge.Rejected.class,()->cache.target(uri));
+                assertEquals(0,cache.stats().getLong("bytes"));
+                int before=remote.readBytes;
+                assertThrows(PodVideoShortEdge.Rejected.class,()->source.read(buffer,0,buffer.length));
+                assertEquals(before,remote.readBytes);
+                assertEquals(0,cache.stats().getLong("bytes"));
+            } finally {source.close();}
+        }
+    }
+
+    @Test public void resolutionRejectionClosesBlockedForegroundRead() throws Exception {
+        java.util.concurrent.CountDownLatch reading=new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch closed=new java.util.concurrent.CountDownLatch(1);
+        androidx.media3.datasource.DataSource.Factory remote=()->new androidx.media3.datasource.DataSource(){
+            android.net.Uri uri;
+            public void addTransferListener(androidx.media3.datasource.TransferListener listener){}
+            public long open(androidx.media3.datasource.DataSpec spec){uri=spec.uri;return 4096;}
+            public int read(byte[] data,int offset,int length)throws java.io.IOException{
+                reading.countDown();
+                try{
+                    if(!closed.await(5,java.util.concurrent.TimeUnit.SECONDS))throw new java.io.IOException("close timed out");
+                }catch(InterruptedException error){Thread.currentThread().interrupt();throw new java.io.IOException(error);}
+                // Simulate bytes returned by the socket as cancellation arrives.
+                return 1;
+            }
+            public android.net.Uri getUri(){return uri;}
+            public void close(){closed.countDown();}
+        };
+        try(PodMediaPrefixCache cache=new PodMediaPrefixCache(PodMediaPrefixCacheTest.root(),remote,6L<<20)){
+            String uri=register(cache,"blocked");
+            androidx.media3.datasource.DataSource source=cache.factory(remote).createDataSource();
+            source.open(new androidx.media3.datasource.DataSpec(android.net.Uri.parse(uri)));
+            java.util.concurrent.FutureTask<Throwable> result=new java.util.concurrent.FutureTask<>(()->{
+                try{source.read(new byte[1],0,1);return null;}catch(Exception error){return error;}
+            });
+            Thread worker=new Thread(result);
+            worker.start();
+            try{
+                assertTrue(reading.await(5,java.util.concurrent.TimeUnit.SECONDS));
+                cache.rejectResolution(uri);
+                assertTrue(closed.await(3,java.util.concurrent.TimeUnit.SECONDS));
+                assertTrue(result.get(3,java.util.concurrent.TimeUnit.SECONDS) instanceof PodVideoShortEdge.Rejected);
+                assertEquals(0,cache.stats().getLong("bytes"));
+            }finally{source.close();worker.join(5000);}
+        }
+    }
+
     private static String register(PodMediaPrefixCache cache,String key) throws Exception {
         return cache.execute("video.cache.register",new JSONObject().put("key",key).put("url","https://example.test/video")
             .put("maxVideoShortEdge",720)).getString("uri");
