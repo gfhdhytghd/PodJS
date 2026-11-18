@@ -964,10 +964,8 @@ public final class PodDeviceServices implements AutoCloseable {
             Files.move(source.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         }
         if(a.optBoolean("syncDirectory",false)){
-            try(FileChannel fd=FileChannel.open(target.getParentFile().toPath(),StandardOpenOption.READ)){fd.force(true);}
-            if(!source.getParentFile().equals(target.getParentFile())){
-                try(FileChannel fd=FileChannel.open(source.getParentFile().toPath(),StandardOpenOption.READ)){fd.force(true);}
-            }
+            forceDirectoryChain(target.getParentFile());
+            if(!source.getParentFile().equals(target.getParentFile()))forceDirectoryChain(source.getParentFile());
         }
         temporaryFiles.remove(source);
         return actual.put("path", required(a, "target")).put("reused", reused);
@@ -1015,7 +1013,22 @@ public final class PodDeviceServices implements AutoCloseable {
     private JSONObject fileStat(JSONObject a) throws Exception {
         File f = safeFile(required(a, "path")); return new JSONObject().put("exists", f.exists()).put("file", f.isFile()).put("directory", f.isDirectory()).put("size", f.isFile() ? f.length() : 0).put("modified", f.exists() ? f.lastModified() : 0).put("changeToken", f.exists()?fileChangeToken(f):"missing").put("usableBytes", root.getUsableSpace());
     }
-    private JSONObject fileDelete(JSONObject a) throws Exception { File f = safeFile(required(a, "path")); return FileCommitGuard.locked(root,f,()->{boolean deleted = f.isFile() && f.delete(); if (deleted || !f.exists()) temporaryFiles.remove(f); return new JSONObject().put("deleted", deleted);}); }
+    private void forceDirectoryChain(File directory) throws IOException {
+        for(File parent=directory;parent!=null&&parent.toPath().startsWith(root.toPath());parent=parent.getParentFile())
+            try(FileChannel fd=FileChannel.open(parent.toPath(),StandardOpenOption.READ)){fd.force(true);}
+    }
+    private JSONObject fileDelete(JSONObject a) throws Exception {
+        File f=safeFile(required(a,"path"));
+        return FileCommitGuard.locked(root,f,()->{
+            boolean deleted=f.isFile()&&f.delete();
+            if(a.optBoolean("syncDirectory",false)){
+                if(f.exists())throw new IOException("staged_file_cleanup_failed");
+                if(f.getParentFile().isDirectory())forceDirectoryChain(f.getParentFile());
+            }
+            if(deleted||!f.exists())temporaryFiles.remove(f);
+            return new JSONObject().put("deleted",deleted);
+        });
+    }
 
     private File safeFile(String path) throws IOException {
         if (path.isEmpty() || path.startsWith("/") || path.indexOf('\0') >= 0) throw new IllegalArgumentException("invalid_path");
