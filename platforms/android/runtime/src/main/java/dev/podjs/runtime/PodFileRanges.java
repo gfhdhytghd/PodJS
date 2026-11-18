@@ -66,14 +66,6 @@ final class PodFileRanges {
 
     interface RangeOpen { FileInputStream open(File root, String relative) throws Exception; }
 
-    static JSONObject execute(File root, JSONObject args, CancellationSignal cancel) throws Exception {
-        return execute(root, args, cancel, PodSyncGuestFiles::open);
-    }
-
-    static JSONObject execute(File root, JSONObject args, CancellationSignal cancel, java.util.function.LongConsumer progress) throws Exception {
-        return execute(root, args, cancel, PodSyncGuestFiles::open, progress);
-    }
-
     static JSONObject execute(File root, JSONObject args, CancellationSignal cancel, RangeOpen source) throws Exception {
         return execute(root, args, cancel, source, ignored -> {});
     }

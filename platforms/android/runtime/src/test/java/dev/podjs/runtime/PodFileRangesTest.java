@@ -86,7 +86,7 @@ public class PodFileRangesTest {
         original(root);
     }
 
-    @Test public void validRangesReplaceExistingFile() throws Exception {
+    @Test public void validRangesReplaceStagedFile() throws Exception {
         File root = setup();
         String sha = PodFileRanges.hex(MessageDigest.getInstance("SHA-256").digest(SOURCE));
         JSONObject result = execute(root,
@@ -95,5 +95,29 @@ public class PodFileRangesTest {
         assertEquals(sha, result.getString("sha256"));
         assertArrayEquals(SOURCE, Files.readAllBytes(new File(root, "target").toPath()));
         assertEquals(2, root.list().length);
+    }
+
+    @Test public void publicationRequiresATemporaryTargetFromThisGuest() throws Exception {
+        File root = setup();
+        PodFileRanges.RangeOpen open = (dir, path) -> new FileInputStream(PodFileConverter.safe(dir, path));
+        try (PodDeviceServices caller = new PodDeviceServices(root, null);
+             PodDeviceServices other = new PodDeviceServices(root, null)) {
+            CancellationSignal cancel = new CancellationSignal();
+            JSONObject args = request(range(2, 2));
+            SecurityException foreign = assertThrows(SecurityException.class,
+                () -> caller.copyFileRanges(args, cancel, open, ignored -> {}));
+            assertEquals("file_target_not_owned", foreign.getMessage());
+            assertArrayEquals(ORIGINAL, Files.readAllBytes(new File(root, "target").toPath()));
+
+            String otherPath = other.execute("file.createTemp", new JSONObject().put("directory", "books")).getString("path");
+            args.put("target", otherPath);
+            assertThrows(SecurityException.class, () -> caller.copyFileRanges(args, cancel, open, ignored -> {}));
+            assertEquals(0, new File(root, otherPath).length());
+
+            String local = caller.execute("file.createTemp", new JSONObject().put("directory", "books")).getString("path");
+            args.put("target", local);
+            caller.copyFileRanges(args, cancel, open, ignored -> {});
+            assertArrayEquals(SOURCE, Files.readAllBytes(new File(root, local).toPath()));
+        }
     }
 }

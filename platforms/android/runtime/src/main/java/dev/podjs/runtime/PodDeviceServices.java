@@ -62,14 +62,14 @@ public final class PodDeviceServices implements AutoCloseable {
     private final PodSecureLease secureLeases;
     private final SecureStoreMemory.State secureMemory;
     private final SecureRandom random = new SecureRandom();
-    private boolean closed;
+    private volatile boolean closed;
     private final java.util.Map<String,SealedGzipSession> sealedGzip = new java.util.HashMap<>();
     private DeviceServiceTrace secureTrace=new DeviceServiceTrace(false,line->{});
     synchronized void enableServiceTrace(boolean enabled){secureTrace=new DeviceServiceTrace(enabled,line->android.util.Log.i("PodJSService",line));}
     boolean hasWarmSecureStore(){return secureMemory.snapshot!=null;}
     private long nextTextReader;
     private final java.util.Map<String,Utf8TextReader> textReaders = new java.util.HashMap<>();
-    private final java.util.Set<File> temporaryFiles = new java.util.HashSet<>();
+    private final java.util.Set<File> temporaryFiles = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     public PodDeviceServices(Context context) {
         this(serviceFiles(context), null);
@@ -870,6 +870,24 @@ public final class PodDeviceServices implements AutoCloseable {
         temporaryFiles.add(file);
         return new JSONObject().put("path", root.toPath().relativize(file.toPath()).toString());
     }
+    JSONObject copyFileRanges(JSONObject args, android.os.CancellationSignal cancel,
+                              java.util.function.LongConsumer progress) throws Exception {
+        return copyFileRanges(args, cancel, PodSyncGuestFiles::open, progress);
+    }
+
+    JSONObject copyFileRanges(JSONObject args, android.os.CancellationSignal cancel,
+                              PodFileRanges.RangeOpen source, java.util.function.LongConsumer progress) throws Exception {
+        if (closed) throw new IllegalStateException("service_closed");
+        String relative = args.optString("target", "");
+        if (relative.isEmpty()) return PodFileRanges.execute(root, args, cancel, source, progress);
+        File target = safeFile(relative);
+        if (!root.toPath().resolve(relative).equals(target.toPath())) throw new SecurityException("file_target_not_owned");
+        return FileCommitGuard.locked(root, target, () -> {
+            if (closed || !temporaryFiles.contains(target)) throw new SecurityException("file_target_not_owned");
+            return PodFileRanges.execute(root, args, cancel, source, progress);
+        });
+    }
+
     synchronized JSONObject executeTrackedFile(String method, JSONObject args, android.os.CancellationSignal cancel,
                                                java.util.function.LongConsumer progress) throws Exception {
         if (closed) throw new IllegalStateException("service_closed");
