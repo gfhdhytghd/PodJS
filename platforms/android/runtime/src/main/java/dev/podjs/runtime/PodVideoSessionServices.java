@@ -193,7 +193,11 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                     default: callback.fail("unsupported_method", "Unsupported video session method: " + method);
                 }
             } catch (Exception error) {
-                if(PodVideoCodecGate.isAdmissionDenied(error)){callback.fail("decoder_admission_deferred","Video prewarm admission deferred");return;}
+                if(PodVideoCodecGate.isAdmissionDenied(error)){
+                    callback.fail("decoder_admission_deferred",PodVideoCodecGate.isByteAdmissionDenied(error)
+                        ?"video_memory_budget_deferred":"Video prewarm admission deferred");
+                    return;
+                }
                 PodVideoFailure.record("sessions",PodVideoFailure.stage(method),errorCode(error),error,args,decoderBudget.inUse(),lastMemoryLimit,parent==null?"missing":parent.isAttachedToWindow()?"attached":"detached","unknown");
                 callback.fail(errorCode(error), error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage());
             }

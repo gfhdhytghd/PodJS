@@ -194,6 +194,7 @@ public class PodMediaMemoryAccountingTest {
             PodVideoPendingAdoptionTest.Reply current=new PodVideoPendingAdoptionTest.Reply();
             service.dispatch("video.session.prepare",source.put("sessionId","reused"),current);
             assertEquals("decoder_admission_deferred",current.error); // injected denial of the next buffer
+            assertEquals("video_memory_budget_deferred",current.message);
             assertEquals(PodMediaMemoryBudget.Priority.CURRENT,observed.get(1).priority);
             assertEquals(PodMediaMemoryBudget.Kind.SURFACE,observed.get(1).kind);
             assertEquals(PodMediaMemoryBudget.Kind.COMPRESSED_BUFFER,observed.get(2).kind);

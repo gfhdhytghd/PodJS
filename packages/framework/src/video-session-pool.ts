@@ -79,7 +79,7 @@ export class VideoSessionPool<Source extends {key:string}> {
   private dragTracksPointer=false;
   private nativeDragKey:string|undefined;
   private latestTransition:{slot:WarmSlot<Source>;trackPointer:boolean;dragEpoch:number;key:string;epoch:number;revision:number;fromId:string;toId:string;progress:number;direction:VideoPagerDirection;bounds:VideoBounds;benchmark?:VideoBenchmarkAction}|undefined;
-  constructor(private readonly port:VideoSessionPort=defaultSessionPort){
+  constructor(private readonly port:VideoSessionPort=defaultSessionPort,private readonly waitForBudget=delay){
     const id=this.poolId;
     this.activeId=`vp${id}a`;this.slots=Array.from({length:7},(_,i)=>({id:`vp${id}${String.fromCharCode(98+i)}`,ready:false,revision:0}));
   }
@@ -143,14 +143,29 @@ export class VideoSessionPool<Source extends {key:string}> {
     const own=++this.generation;this.activePrepareSeq=undefined;this.loop=options.loop===true;this.activeKey=source.key;this.activeSource=source;this.activeIdentity=this.prepareIdentity(options);
     const retired=this.slots.filter(slot=>slot.source||slot.operation).map(slot=>({slot,revision:slot.revision}));
     for(const {slot} of retired)void this.evict(slot,'stale');
-    const foreground=options;
-    const operation=this.port.prepare({...foreground,sessionId:this.activeId,sourceOrdinal:this.ordinal(source.key),slotOrdinal:this.slotOrdinal(this.activeId),prewarm:false,autoplay:options.autoplay===true});
-    return {cancel:()=>operation.cancel(),result:operation.result.then(value=>{
-      if(own!==this.generation)throw new Error('stale video session preparation');
+    const foreground={...options,sessionId:this.activeId,sourceOrdinal:this.ordinal(source.key),slotOrdinal:this.slotOrdinal(this.activeId),prewarm:false,autoplay:options.autoplay===true};
+    let operation=this.port.prepare(foreground),wait:HostOperation<void>|undefined,cancelled=false;
+    const current=()=>!cancelled&&own===this.generation;
+    const result=(async()=>{
+      let value:VideoSessionState;
+      try{value=await operation.result;}catch(error){
+        const failure=error as {code?:string;message?:string}|undefined;
+        if(!current()||failure?.code!=='decoder_admission_deferred'||failure.message!=='video_memory_budget_deferred')throw error;
+        // The outgoing surface can still be in the last PSS observation.
+        // Give the process sampler one cycle, then reserve for the same source.
+        wait=this.waitForBudget(1100);
+        await wait.result;
+        if(!current())throw new Error('stale video session preparation');
+        wait=undefined;
+        operation=this.port.prepare(foreground);
+        value=await operation.result;
+      }
+      if(!current())throw new Error('stale video session preparation');
       // Reveal a cached native frame before releasing unrelated codec leases.
       if(this.keyframeCache)for(const {slot,revision} of retired)if(slot.revision===revision)void this.evict(slot,'stale');
       return this.syncLoop(this.activeId).then(state);
-    })};
+    })();
+    return {result,cancel:()=>{cancelled=true;(wait??operation).cancel();}};
   }
   /** A released gesture owns this source now. Keep its in-flight transport,
    * extractor and decoder instead of cancelling them and preparing it again. */

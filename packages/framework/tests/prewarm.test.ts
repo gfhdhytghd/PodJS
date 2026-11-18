@@ -40,6 +40,43 @@ class Model {
 }
 const source=(n:number)=>({key:String(n)}),options=(n:number)=>({url:'https://fixture.invalid/'+n,bounds:{x:0,y:0,width:233,height:233}});
 
+test('one cold foreground prepare waits for memory sampling before retrying the same source',async()=>{
+ const model=new Model(),prepare=model.port.prepare;
+ const requests:unknown[]=[];
+ const refusal=Object.assign(new Error('video_memory_budget_deferred'),{code:'decoder_admission_deferred'});
+ model.port.prepare=(args)=>{
+  requests.push(args);
+  return requests.length===1?{result:Promise.reject(refusal),cancel(){}}:prepare(args);
+ };
+ let resume!:()=>void;
+ const wait=()=>({result:new Promise<void>(resolve=>{resume=resolve;}),cancel(){}});
+ const pool=new VideoSessionPool(model.port,wait);
+ const result=pool.prepare(source(1),options(1)).result.catch(error=>error);
+ await model.advance(0);
+ expect(requests).toHaveLength(1);
+ expect(resume).toBeFunction();
+ resume();await model.advance(500);
+ expect(await result).toMatchObject({state:'playing'});
+ expect(requests).toHaveLength(2);
+ expect(requests[1]).toBe(requests[0]);
+});
+
+test('retiring the route while waiting for memory never submits another prepare',async()=>{
+ const model=new Model();let calls=0,resume!:()=>void;
+ model.port.prepare=()=>{
+  calls++;
+  return {result:Promise.reject(Object.assign(new Error('video_memory_budget_deferred'),{code:'decoder_admission_deferred'})),cancel(){}};
+ };
+ const pool=new VideoSessionPool(model.port,()=>({result:new Promise<void>(resolve=>{resume=resolve;}),cancel(){}}));
+ const result=pool.prepare(source(1),options(1)).result.catch(error=>error);
+ await model.advance(0);
+ expect(resume).toBeFunction();
+ await pool.releaseAll();
+ resume();await model.advance(500);
+ expect(await result).toBeInstanceOf(Error);
+ expect(calls).toBe(1);
+});
+
 test('production pool: both neighbours under 3x CPU cost and queued restore load; model thresholds only',async()=>{
  const m=new Model(),pool=new VideoSessionPool(m.port);expect(await pool.supportsPrewarm()).toBe(true);
  const start=pool.prepare(source(10),options(10)).result;await m.advance(400);await start;m.foregroundMedia=true;
