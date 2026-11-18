@@ -869,6 +869,27 @@ public final class PodDeviceServices implements AutoCloseable {
         temporaryFiles.add(file);
         return new JSONObject().put("path", root.toPath().relativize(file.toPath()).toString());
     }
+    JSONObject spoolStream(PodByteStreamServices streams, JSONObject args, android.os.CancellationSignal cancellation) throws Exception {
+        final JSONObject temporary;
+        synchronized(this){
+            if(closed)throw new IOException("File service closed");
+            temporary=fileCreateTemp(new JSONObject().put("directory","sync-frame"));
+        }
+        boolean published=false;
+        try {
+            final JSONObject result;
+            try (java.io.OutputStream output=Files.newOutputStream(safeFile(temporary.getString("path")).toPath(),
+                    java.nio.file.StandardOpenOption.WRITE,java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                result=streams.execute("stream.spool",args,cancellation,output);
+            }
+            cancellation.throwIfCanceled();
+            result.put("path",temporary.getString("path"));
+            published=true;
+            return result;
+        } finally {
+            if(!published)discardTemporary(temporary);
+        }
+    }
     /** Hash files on the host with bounded memory; file contents never cross the bridge. */
     private JSONObject fileHash(JSONObject a) throws Exception {
         File source = safeFile(required(a, "path"));

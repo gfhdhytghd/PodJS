@@ -78,7 +78,7 @@ const methods: Record<string, PodCapabilityId> = {
   "provision.start": "net.ble.provision", "provision.receive": "net.ble.provision", "provision.check": "net.ble.provision", "provision.sessionRequest": "net.ble.provision", "provision.respond": "net.ble.provision", "provision.close": "net.ble.provision", "provision.requestPermission": "net.ble.provision",
   "discovery.mdns": "net.discovery", "discovery.status": "net.discovery", "discovery.requestPermission": "net.discovery", "discovery.bleReadCharacteristic": "net.discovery",
   "websocket.connect": "net.websocket", "websocket.readText": "net.websocket", "websocket.writeText": "net.websocket", "websocket.close": "net.websocket",
-  "stream.read": "net.stream", "stream.write": "net.stream", "stream.close": "net.stream", "stream.prepareFile":"net.stream", "stream.dropFile":"net.stream", "stream.readFile":"net.stream", "stream.writeFile":"net.stream",
+  "stream.spool": "net.stream", "stream.read": "net.stream", "stream.write": "net.stream", "stream.close": "net.stream", "stream.prepareFile":"net.stream", "stream.dropFile":"net.stream", "stream.readFile":"net.stream", "stream.writeFile":"net.stream",
   "runtime.delay": "runtime.timer", "runtime.afterPaint":"runtime.timer",
   "display.state": "display.power", "display.keepAwake": "display.power",
   "audio.silenceState": "media.audio", "audio.silenceEnabled": "media.audio", "audio.silenceLease": "media.audio",
@@ -843,6 +843,7 @@ export const tcp = {
  addresses:()=>hostOperation<{addresses:string[]}>("tcp.addresses",{}).result,
 };
 export const byteStreams = {
+  spool:(id:string,size:number,timeoutMs:number)=>hostOperation<{path:string;size:number}>("stream.spool",{id,size,timeoutMs}),
   prepareFile:(id:string,range:{path:string;offset:number;size:number;sha256:string})=>hostOperation<{reference:string}>("stream.prepareFile",{id,...range}),
   readFile:(id:string,size:number,timeoutMs:number,retain:boolean,sha256?:string)=>hostOperation<{reference?:string;error?:string}>("stream.readFile",{id,size,timeoutMs,retain,...(sha256===undefined?{}:{sha256})}),
   writeFile:(id:string,reference:string,header:Uint8Array,timeoutMs:number)=>hostOperation<{written:number}>("stream.writeFile",{id,reference,header:Array.from(header),timeoutMs}),

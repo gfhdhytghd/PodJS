@@ -80,6 +80,9 @@ final class PodByteStreamServices implements Closeable {
      * loopback sockets; it is not a guest API or a Bluetooth acceptance claim. */
     synchronized String attach(InputStream input,OutputStream output,Closeable owner){capacity();String id="stream-"+(++sequence);streams.put(id,new Endpoint(input,output,owner));return id;}
     JSONObject execute(String method,JSONObject args,CancellationSignal cancellation)throws Exception {
+        return execute(method,args,cancellation,null);
+    }
+    JSONObject execute(String method, JSONObject args, CancellationSignal cancellation, OutputStream spool) throws Exception {
         openCheck();cancellation.throwIfCanceled();
         if("tcp.addresses".equals(method)){
             JSONArray addresses=new JSONArray();ConnectivityManager manager=context.getSystemService(ConnectivityManager.class);
@@ -123,7 +126,7 @@ final class PodByteStreamServices implements Closeable {
             synchronized(endpoint.incoming){endpoint.incoming.remove(args.getString("reference"));}
             return new JSONObject();
         }
-        boolean read=method.equals("stream.read")||method.equals("stream.readFile");
+        boolean read=method.equals("stream.read")||method.equals("stream.readFile")||spool!=null;
         if(!read&&!method.equals("stream.write")&&!method.equals("stream.writeFile"))throw new IllegalArgumentException("Unknown stream method");
         int timeout=number(args,"timeoutMs",1,900000);
         AtomicBoolean busy=read?endpoint.reading:endpoint.writing;
@@ -133,13 +136,28 @@ final class PodByteStreamServices implements Closeable {
         try{
             timer=deadlines.schedule(()->{if(finished.compareAndSet(false,true)){timedOut.set(true);removeStream(id);}},timeout,TimeUnit.MILLISECONDS);
             JSONObject result;
-            if(method.equals("stream.readFile"))result=readFileChunk(endpoint,args);
+            if(spool!=null){
+                int count=number(args,"size",1,2*1024*1024);
+                spoolExact(endpoint.input,spool,count,cancellation);
+                result=new JSONObject().put("size",count);
+            }
+            else if(method.equals("stream.readFile"))result=readFileChunk(endpoint,args);
             else if(method.equals("stream.writeFile"))result=writeFileChunk(endpoint,args);
             else if("stream.read".equals(method)){int max=number(args,"maxBytes",1,MAX_BYTES);byte[] data=new byte[max];int count=endpoint.input.read(data);if(count==0)throw new IOException("Stream read made no progress");if(count<0){removeStream(id);result=PodBytePayload.output(args,new JSONObject().put("eof",true),new byte[0]);}else result=args.optBoolean("_podByteMode")?PodBytePayload.output(args,new JSONObject().put("eof",false),count==data.length?data:java.util.Arrays.copyOf(data,count)):new JSONObject().put("eof",false).put("dataBase64",Base64.encodeToString(data,0,count,Base64.NO_WRAP));}
             else{if(!args.optBoolean("_podByteMode")&&args.getString("dataBase64").length()>4*((MAX_BYTES+2)/3))throw new IllegalArgumentException("Stream write too large");byte[] bytes=PodBytePayload.input(args);if(bytes.length<1||bytes.length>MAX_BYTES)throw new IllegalArgumentException("Invalid stream write size");endpoint.output.write(bytes);endpoint.output.flush();result=new JSONObject().put("written",bytes.length);}
             if(!finished.compareAndSet(false,true))throw new IOException("Stream operation timed out");cancellation.throwIfCanceled();return result;
         }catch(Exception error){removeStream(id);if(timedOut.get())throw new IOException("Stream operation timed out",error);throw error;}
         finally{finished.set(true);if(timer!=null)timer.cancel(false);cancellation.setOnCancelListener(null);busy.set(false);}
+    }
+    static void spoolExact(InputStream input, OutputStream output, int count, CancellationSignal cancellation) throws IOException {
+        byte[] buffer=new byte[Math.min(count,16*1024)];
+        while(count>0){
+            cancellation.throwIfCanceled();
+            int received=input.read(buffer,0,Math.min(count,buffer.length));
+            if(received<=0)throw new java.io.EOFException("Truncated sync stream");
+            output.write(buffer,0,received);
+            count-=received;
+        }
     }
     byte[] takeChunk(JSONObject args) throws Exception {
         Endpoint endpoint=stream(args.getString("stream"));
