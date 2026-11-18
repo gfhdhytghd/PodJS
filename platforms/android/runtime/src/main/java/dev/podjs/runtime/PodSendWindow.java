@@ -59,6 +59,7 @@ final class PodSendWindow {
     private int retries;
     private String resultError;
     private boolean pumping;
+    private int reading;
     private Chunk prepared;
     private CompletableFuture<byte[]> prefetch;
 
@@ -119,7 +120,7 @@ final class PodSendWindow {
         } catch (Exception failure) {
             stop(failure);
         } finally {
-            synchronized (this) { pumping = false; kick(); }
+            synchronized (this) { pumping = false; kick(); notifyAll(); }
         }
     }
 
@@ -128,6 +129,7 @@ final class PodSendWindow {
         prepared=chunk;
         CompletableFuture<byte[]> next=new CompletableFuture<>();
         prefetch=next;
+        reading++;
         sourceWorker.execute(()->{
             try{
                 byte[] body=source.read(chunk);
@@ -135,6 +137,7 @@ final class PodSendWindow {
                     throw new IOException("SOURCE_CHANGED");
                 next.complete(body);
             }catch(Exception error){next.completeExceptionally(error);}
+            finally {synchronized(this){reading--;notifyAll();}}
         });
     }
 
@@ -199,6 +202,10 @@ final class PodSendWindow {
             ready.clear();
             kick();
         }else stop(new IOException(result));
+    }
+
+    synchronized void awaitDrained() throws InterruptedException {
+        while(pumping||reading!=0)wait();
     }
 
     synchronized void stop(Exception error) {

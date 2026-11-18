@@ -82,6 +82,7 @@ const methods: Record<string, PodCapabilityId> = {
   "stream.framedEnable":"net.stream","stream.framedBind":"net.stream","stream.framedApplied":"net.stream",
   "stream.framedControl":"net.stream","stream.framedAck":"net.stream","stream.framedData":"net.stream",
   "stream.framedSend":"net.stream","stream.framedSendRejected":"net.stream",
+  "stream.framedRevoke":"net.stream",
   "stream.framedState":"net.stream","stream.framedRetire":"net.stream",
   "stream.claim": "net.stream", "stream.read": "net.stream", "stream.write": "net.stream", "stream.close": "net.stream", "stream.prepareFile":"net.stream", "stream.dropFile":"net.stream", "stream.readFile":"net.stream", "stream.writeFile":"net.stream",
   "runtime.delay": "runtime.timer", "runtime.afterPaint":"runtime.timer",
@@ -108,7 +109,7 @@ const methods: Record<string, PodCapabilityId> = {
   "video.surface.open":"media.video", "video.surface.update":"media.video", "video.surface.state":"media.video", "video.surface.close":"media.video",
   "share.environment": "system.share", "share.text": "system.share",
   "image.decode": "data.images", "image.decodeRegion": "data.images", "image.release": "data.images", "browser.authorize": "system.browser.auth", "browser.authorizeWithStatus": "system.browser.auth.status",
-  "sql.query": "data.sqlite", "sql.gzipJson": "data.sqlite", "sql.execute": "data.sqlite", "sql.transaction": "data.sqlite",
+  "sql.query": "data.sqlite", "sql.gzipJson": "data.sqlite", "sql.execute": "data.sqlite", "sql.transaction": "data.sqlite", "sql.transactionGuarded":"data.sqlite","sql.transactionFull":"data.sqlite",
   "input.text": "input.text", "input.text.pending": "input.text.state", "input.text.dismiss": "input.text.state", "secure.get": "data.secure", "secure.set": "data.secure", "secure.delete": "data.secure", "secure.update": "data.secure", "secure.compareAndSet": "data.secure",
   "input.inline.open": "input.text", "input.inline.close": "input.text", "input.inline.set": "input.text",
   "text.layout": "text.layout", "text.layoutBatch": "text.layout", "text.measure": "text.layout", "text.raster": "text.raster", "text.environment": "text.environment",
@@ -255,6 +256,14 @@ export const sqlite = {
     await hostOperation("sql.transaction", { statements:statements.some(s=>(s as any).program)?await materializeSqlPrograms(statements):statements }).result;
   },
   /** SQLite changes() after each statement, returned only after commit. */
+  async transactionChangesGuarded(channel:string,epoch:number,statements:readonly SqlStatement[]):Promise<number[]> {
+    return hostOperation<number[]>("sql.transactionGuarded",{channel,epoch,reportChanges:true,
+      statements:statements.some(s=>(s as any).program)?await materializeSqlPrograms(statements):statements}).result;
+  },
+  async transactionChangesFull(statements:readonly SqlStatement[]):Promise<number[]> {
+    return hostOperation<number[]>("sql.transactionFull",{reportChanges:true,
+      statements:statements.some(s=>(s as any).program)?await materializeSqlPrograms(statements):statements}).result;
+  },
   transactionChanges(statements: readonly SqlStatement[]): Promise<number[]> {
     if(!statements.some(s=>(s as any).program))return hostOperation<number[]>("sql.transaction", {statements,reportChanges:true}).result;return materializeSqlPrograms(statements).then(values=>hostOperation<number[]>("sql.transaction", { statements:values, reportChanges: true }).result);
   },
@@ -862,6 +871,7 @@ export const framedStreams = {
   data:(id:string,header:Uint8Array,bytes:Uint8Array)=>byteHostOperation<void>("stream.framedData",{id,header:Array.from(header),timeoutMs:60000},bytes).result,
   state:(id:string)=>hostOperation<{progress:number}>("stream.framedState",{id}).result,
   retire:(id:string)=>hostOperation<void>("stream.framedRetire",{id}).result,
+  revoke:(id:string)=>hostOperation<void>("stream.framedRevoke",{id}).result,
   send:(id:string,plan:FramedSendPlan)=>hostOperation<{tx:number;ack:number;staged:string[];error?:string}>("stream.framedSend",{id,...plan}).result,
   sendRejected:(id:string,value:FramedSendRejection)=>hostOperation<void>("stream.framedSendRejected",{id,...value}).result,
 };

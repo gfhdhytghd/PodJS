@@ -13,6 +13,7 @@ import android.widget.EditText;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.Closeable;
+import java.io.IOException;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
@@ -149,6 +150,7 @@ final class PodServices implements Closeable {
     private final PodBleProvisionServices provisioning;
     private final PodBluetoothPermission provisionPermission;
     private final PodNetworkServices networks;
+    private final ExecutorService frameRevocation=serviceExecutor("FrameRevocation");
     private final ExecutorService streamWorkers=Executors.newFixedThreadPool(9);
     private final ExecutorService imageWorkers=Executors.newFixedThreadPool(PodProcessMemoryBudget.limit()>0?1:4);
     private final PodBrowserServices browser;
@@ -743,7 +745,7 @@ final class PodServices implements Closeable {
         if (!("secure.get".equals(method)&&!headlessWork&&device.hasWarmSecureStore()) && !method.endsWith(".release") && !method.equals("file.copyRanges") && !trackedFile && (method.startsWith("secure.") || method.startsWith("crypto.") || method.startsWith("file.") || "log.append".equals(method) || "uri.parse".equals(method)))
             request.priority = HostWorkPriority.DEVICE.reserve(headlessWork);
         final long queuedAt=System.nanoTime();
-        try { request.future = (method.startsWith("provision.") || method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.") || method.startsWith("discovery.") ? streamWorkers : (method.equals("file.copyRanges") || trackedFile) ? rangeWorker : method.startsWith("content.") ? contentWorker : method.startsWith("http.") ? transfers : method.startsWith("sql.") ? sqlWorker : method.startsWith("text.") ? textWorker : method.startsWith("secure.") ? secureWorker : worker).submit(() -> {
+        try { request.future = (method.equals("stream.framedRevoke") ? frameRevocation : method.startsWith("provision.") || method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.") || method.startsWith("discovery.") ? streamWorkers : (method.equals("file.copyRanges") || trackedFile) ? rangeWorker : method.startsWith("content.") ? contentWorker : method.startsWith("http.") ? transfers : method.startsWith("sql.") ? sqlWorker : method.startsWith("text.") ? textWorker : method.startsWith("secure.") ? secureWorker : worker).submit(() -> {
             long workAt=0,cpuAt=android.os.Debug.threadCpuTimeNanos();boolean workSuccess=false;
             try {
                 if (request.priority != null) request.priority.enter();
@@ -959,8 +961,31 @@ final class PodServices implements Closeable {
             return sqlForeground(method,args,cancellation);
         }
     }
+    private static long synchronous(SQLiteDatabase database){
+        try(android.database.sqlite.SQLiteStatement query=database.compileStatement("PRAGMA synchronous")){
+            return query.simpleQueryForLong();
+        }
+    }
+
+    private Object fullTransaction(JSONObject args,CancellationSignal cancellation,PodTransferFence fence)throws Exception {
+        SQLiteDatabase database=db();
+        long saved=synchronous(database);
+        if(saved<0||saved>3)throw new IOException("LOCAL_IO");
+        try{
+            database.execSQL("PRAGMA synchronous=FULL");
+            JSONObject options=new JSONObject(args.toString()).put("guardedFull",true);
+            if(fence==null)return sqlForeground("sql.transaction",options,cancellation);
+            return fence.publish(()->sqlForeground("sql.transaction",options,cancellation));
+        }finally{database.execSQL("PRAGMA synchronous="+saved);}
+    }
+
     private Object sqlForeground(String method, JSONObject args, CancellationSignal cancellation) throws Exception {
         if ("sql.notify".equals(method)) {ProcessDataSignals.publish(context.getPackageName(),args.getString("topic"));return JSONObject.NULL;}
+        if ("sql.transactionGuarded".equals(method)) {
+            PodTransferFence fence=byteStreams.guard(args.getString("channel"),args.getLong("epoch"));
+            return fullTransaction(args,cancellation,fence);
+        }
+        if ("sql.transactionFull".equals(method)) return fullTransaction(args,cancellation,null);
         if ("sql.transaction".equals(method)) {
             JSONArray statements = args.getJSONArray("statements");
             if (statements.length() > 2048) throw new IllegalArgumentException("Transaction too large");
@@ -973,6 +998,8 @@ final class PodServices implements Closeable {
             else if ("exclusive".equals(mode)) db().beginTransaction();
             else throw new IllegalArgumentException("Invalid SQL transaction mode");
             try {
+                if(args.optBoolean("guardedFull")&&synchronous(db())<2)
+                    throw new IOException("LOCAL_IO");
                 for (int i=0;i<statements.length();i++) {
                     cancellation.throwIfCanceled();
                     if(statements.getJSONObject(i).has("program")) PodSqlProgram.execute(db(),statements.getJSONObject(i).getJSONObject("program"),cancellation);
@@ -1156,7 +1183,7 @@ final class PodServices implements Closeable {
         main.post(browser::close);
         http.close();if(contentHttp!=null)contentHttp.close();
         provisioning.close(); networks.close(); bleDiscovery.close(); discovery.close(); webSockets.close(); byteStreams.close();
-        streamWorkers.shutdownNow();
+        streamWorkers.shutdownNow();frameRevocation.shutdown();
         rangeWorker.shutdownNow();
         transfers.shutdownNow();
         textWorker.execute(paragraphLayouts::clear);

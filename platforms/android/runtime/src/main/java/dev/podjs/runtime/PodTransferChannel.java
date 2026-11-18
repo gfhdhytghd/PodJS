@@ -323,7 +323,7 @@ final class PodTransferChannel {
             throw error;
         }finally{
             active.stop(new IOException("AUTH_REVOKED"));
-            sender=null;
+            try{active.awaitDrained();}finally{sender=null;}
         }
     }
 
@@ -331,6 +331,22 @@ final class PodTransferChannel {
         PodSendWindow active=sender;
         if(active==null||!active.accepts(args.getInt("stream"),args.getLong("epoch")))throw new IOException("STALE_EPOCH");
         active.negative(args.getString("operation"),args.getString("digest"),args.getString("code"),args.getInt("retryAfterMillis"));
+    }
+
+    PodTransferFence guard(long expectedEpoch) throws IOException {
+        PodReceiveWindow active=window;
+        if(closed||active==null||expectedEpoch!=epoch)throw new IOException("STALE_EPOCH");
+        PodTransferFence fence=active.fence();
+        fence.check();
+        return fence;
+    }
+
+    void awaitClosed() throws InterruptedException {
+        PodReceiveWindow active=window;
+        if(active!=null)active.awaitRevoked();
+        PodSendWindow outgoing=sender;
+        if(outgoing!=null)outgoing.awaitDrained();
+        synchronized(frameWrite){while(pendingAcks.get()!=0)frameWrite.wait();}
     }
 
     long progress() {return progress.get();}

@@ -180,7 +180,7 @@ final class PodReceiveWindow {
             hashWorker.execute(() -> hash(new Verified(header, bytes, alreadyApplied)));
             return null;
         } catch (IOException | RejectedExecutionException error) {
-            pool.offer(bytes);
+            releaseBuffer(bytes);
             throw error;
         }
     }
@@ -203,7 +203,7 @@ final class PodReceiveWindow {
         } catch (Exception failure) {
             fail(failure);
         } finally {
-            if (!queued) pool.offer(chunk.bytes);
+            if (!queued) releaseBuffer(chunk.bytes);
         }
     }
 
@@ -240,7 +240,7 @@ final class PodReceiveWindow {
             fail(failure);
         } finally {
             // Replenish payload buffers before the peer can act on an ACK.
-            for (Verified item : batch) pool.offer(item.bytes);
+            for (Verified item : batch) releaseBuffer(item.bytes);
             synchronized (this) {
                 writingJournal = false;
                 schedule();
@@ -291,17 +291,25 @@ final class PodReceiveWindow {
         return applied[header.slot] ? 2 : 1;
     }
 
-    void awaitRevoked() throws InterruptedException { fence.awaitRevoked(); }
+    PodTransferFence fence(){return fence;}
+    void awaitRevoked() throws InterruptedException {
+        fence.awaitRevoked();
+        synchronized(this){while(pool.size()!=window)wait();}
+    }
 
     void close() {
         fence.revoke();
         synchronized (this) {
             closed = true;
             if (tail != null) tail.cancel(false);
-            while (!verified.isEmpty()) pool.offer(verified.removeFirst().bytes);
+            while (!verified.isEmpty()) releaseBuffer(verified.removeFirst().bytes);
         }
     }
 
+    private synchronized void releaseBuffer(byte[] bytes) {
+        if(!pool.offer(bytes))throw new IllegalStateException("Duplicate transfer buffer release");
+        notifyAll();
+    }
     private void fail(Exception error) {
         if (fence.live()) {
             close();
