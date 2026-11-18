@@ -1,7 +1,12 @@
 export interface FrameTiming {bytes:number;readMs:number;decodeMs:number;encodeMs:number;writeMs:number;direction:'read'|'write'}
 export interface TransferByteProgress {direction:'read'|'write';bytes:number}
+export interface FrameSpool {path:string;size:number}
 export interface FrameCodec<T> {
  maxFrameBytes:number;chunkBytes?:number;
+ spoolAboveBytes?:number;
+ spoolIdleTimeoutMs?:number;
+ /** Consume and release the owned file even when decoding or cancellation fails. */
+ decodeSpool?(spool:FrameSpool,options:{cancelled:()=>boolean}):Promise<T>;
  encode(frame:T,options:{cancelled:()=>boolean}):Promise<Uint8Array>;
  decode(frame:Uint8Array,options:{cancelled:()=>boolean}):Promise<T>;
 }
@@ -9,6 +14,7 @@ export const TRANSFER_CHUNK_BYTES=16*1024;
 export interface FrameByteStream {
  /** Return at most maxBytes; null is EOF. Empty reads are not progress. */
  read(maxBytes:number,timeoutMs:number):Promise<Uint8Array|null>;
+ spool?(size:number,timeoutMs:number,idleTimeoutMs?:number):Promise<FrameSpool>;
  /** Resolve only after all bytes have been handed to the transport. */
  write(bytes:Uint8Array):Promise<void>;
  close():Promise<void>;
@@ -29,6 +35,9 @@ export class StreamFrameConnection<T> {
  private writing=false;
  private timing:((sample:FrameTiming)=>void)|undefined;
  private readBytesComplete:(()=>void)|undefined;
+ private nativeReadStarted:(()=>void)|undefined;
+ /** A native spool owns its byte-idle deadline and cannot report each chunk to JS. */
+ setNativeReadStarted(listener:(()=>void)|undefined){this.nativeReadStarted=listener;}
  /** Byte input is complete; codec work may still be running. */
  setReadBytesComplete(listener:(()=>void)|undefined){this.readBytesComplete=listener;}
  setFrameTiming(listener:((sample:FrameTiming)=>void)|undefined){this.timing=listener;}
@@ -47,8 +56,22 @@ export class StreamFrameConnection<T> {
    const deadline=this.now()+timeoutMs;
    const began=this.now();const header=new Uint8Array(4);await this.readInto(header,deadline);
    const length=new DataView(header.buffer).getInt32(0,false);if(length<1||length>this.codec.maxFrameBytes)throw new FrameLengthError(length,this.codec.maxFrameBytes);
-   const frame=new Uint8Array(length+4);frame.set(header);await this.readInto(frame.subarray(4),deadline);const received=this.now();try{this.readBytesComplete?.();}catch{}const value=await this.codec.decode(frame,{cancelled:()=>this.closed});this.reportTiming({direction:'read',bytes:frame.length,readMs:Math.max(0,received-began),decodeMs:Math.max(0,this.now()-received),encodeMs:0,writeMs:0});return value;
+   const remaining=deadline-this.now();
+   if(remaining<=0)throw new Error('Sync frame read timed out');
+   const canSpool=this.stream.spool&&this.codec.decodeSpool&&length>(this.codec.spoolAboveBytes??Infinity);
+   if(canSpool)try{this.nativeReadStarted?.();}catch{}
+   const data=canSpool?await this.stream.spool!(length,remaining,this.codec.spoolIdleTimeoutMs):await this.readBuffer(header,length,deadline);
+   const received=this.now();
+   try{this.readBytesComplete?.();}catch{}
+   const options={cancelled:()=>this.closed};
+   const value=data instanceof Uint8Array?await this.codec.decode(data,options):await this.codec.decodeSpool!(data,options);
+   if(this.closed)throw new Error('Sync connection closed');
+   if(!(data instanceof Uint8Array))this.progress?.({direction:'read',bytes:length});
+   this.reportTiming({direction:'read',bytes:length+4,readMs:Math.max(0,received-began),decodeMs:Math.max(0,this.now()-received),encodeMs:0,writeMs:0});return value;
   }catch(error){await this.close();throw error;}finally{this.reading=false;streamReaders.delete(this.stream);}
+ }
+ private async readBuffer(header:Uint8Array,length:number,deadline:number):Promise<Uint8Array>{
+  const frame=new Uint8Array(length+4);frame.set(header);await this.readInto(frame.subarray(4),deadline);return frame;
  }
  private async readInto(target:Uint8Array,deadline:number,report=true):Promise<void>{
   let offset=0;

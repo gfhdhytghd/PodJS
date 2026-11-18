@@ -84,7 +84,7 @@ const methods: Record<string, PodCapabilityId> = {
   "stream.framedSend":"net.stream","stream.framedSendRejected":"net.stream",
   "stream.framedRevoke":"net.stream",
   "stream.framedState":"net.stream","stream.framedRetire":"net.stream",
-  "stream.claim": "net.stream", "stream.read": "net.stream", "stream.write": "net.stream", "stream.close": "net.stream", "stream.prepareFile":"net.stream", "stream.dropFile":"net.stream", "stream.readFile":"net.stream", "stream.writeFile":"net.stream",
+  "stream.claim": "net.stream", "stream.spool": "net.stream", "stream.read": "net.stream", "stream.write": "net.stream", "stream.close": "net.stream", "stream.prepareFile":"net.stream", "stream.dropFile":"net.stream", "stream.readFile":"net.stream", "stream.writeFile":"net.stream",
   "runtime.delay": "runtime.timer", "runtime.afterPaint":"runtime.timer",
   "display.state": "display.power", "display.keepAwake": "display.power",
   "audio.silenceState": "media.audio", "audio.silenceEnabled": "media.audio", "audio.silenceLease": "media.audio",
@@ -887,6 +887,7 @@ export const framedStreams = {
 
 export const byteStreams = {
   claim:(id:string)=>hostOperation<{id:string}>("stream.claim",{id}),
+  spool:(id:string,size:number,timeoutMs:number,idleTimeoutMs?:number)=>hostOperation<{path:string;size:number}>("stream.spool",{id,size,timeoutMs,...(idleTimeoutMs===undefined?{}:{idleTimeoutMs})}),
   prepareFile:(id:string,range:{path:string;offset:number;size:number;sha256:string})=>hostOperation<{reference:string}>("stream.prepareFile",{id,...range}),
   readFile:(id:string,size:number,timeoutMs:number,retain:boolean,sha256?:string)=>hostOperation<{reference?:string;error?:string}>("stream.readFile",{id,size,timeoutMs,retain,...(sha256===undefined?{}:{sha256})}),
   writeFile:(id:string,reference:string,header:Uint8Array,timeoutMs:number)=>hostOperation<{written:number}>("stream.writeFile",{id,reference,header:Array.from(header),timeoutMs}),

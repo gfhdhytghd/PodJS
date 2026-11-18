@@ -777,6 +777,8 @@ final class PodServices implements Closeable {
                     if(!java.util.Arrays.asList("crypto.v2.encrypt","crypto.v2.decrypt","crypto.v2.gunzip","crypto.hash","crypto.hmacSha256","crypto.hkdfSha256","crypto.random","crypto.aesGcmDecrypt","crypto.gzip").contains(nativeMethod))throw new SecurityException("unsupported_content_crypto");
                     if(contentDevice==null)contentDevice=new PodDeviceServices(context);
                     value=contentDevice.execute(nativeMethod,args);
+                } else if ("stream.spool".equals(method)) {
+                    value=device.spoolStream(byteStreams,args,request.cancellation);
                 } else if (method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.")) {
                     value=method.startsWith("websocket.")?webSockets.execute(method,args,request.cancellation):byteStreams.execute(method,args,request.cancellation);
                 } else if (method.startsWith("provision.")) {
@@ -819,7 +821,7 @@ final class PodServices implements Closeable {
                 else if ("websocket.connect".equals(method) && value instanceof JSONObject) webSockets.discard((JSONObject)value);
                 else if (("rfcomm.listen".equals(method) || "rfcomm.accept".equals(method) || "tcp.listen".equals(method) || "tcp.accept".equals(method)) && value instanceof JSONObject) byteStreams.discard((JSONObject)value);
                 else if ("file.openText".equals(method) && value instanceof JSONObject) device.discardTextReader((JSONObject)value);
-                else if (("crypto.openSealedParts".equals(method) || "crypto.largeAesGcmEncrypt".equals(method) || "crypto.largeAesGcmDecrypt".equals(method) || "crypto.gzip".equals(method) || "crypto.gunzip".equals(method) || "file.htmlText".equals(method) || "file.projectJson".equals(method) || "file.createTemp".equals(method) || "file.gzip".equals(method) || "file.gunzip".equals(method)) && value instanceof JSONObject) device.discardTemporary((JSONObject)value);
+                else if (("crypto.openSealedParts".equals(method) || "crypto.largeAesGcmEncrypt".equals(method) || "crypto.largeAesGcmDecrypt".equals(method) || "crypto.gzip".equals(method) || "crypto.gunzip".equals(method) || "file.htmlText".equals(method) || "file.projectJson".equals(method) || "stream.spool".equals(method) || "file.createTemp".equals(method) || "file.gzip".equals(method) || "file.gunzip".equals(method)) && value instanceof JSONObject) device.discardTemporary((JSONObject)value);
                 else if ("text.raster".equals(method)) PodTextRasterServices.discard(context,value);
                 else if ("http.download".equals(method) && value instanceof JSONObject) http.discard((JSONObject)value);
                 else if ("content.http".equals(method) && value instanceof JSONObject) contentHttp.discard((JSONObject)value);

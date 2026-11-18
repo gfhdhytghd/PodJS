@@ -5,8 +5,16 @@ import android.os.CancellationSignal;
 import android.os.Looper;
 import androidx.test.core.app.ApplicationProvider;
 import java.io.*;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Scanner;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import org.json.JSONArray;
@@ -61,6 +69,114 @@ public class PodByteBridgeTest {
             assertEquals(1,closed.get());
         }
     }
+    @Test public void nativeSpoolKeepsTheNextFrameAndRejectsTruncation()throws Exception {
+        Context context=ApplicationProvider.getApplicationContext();
+        int length=1_577_359;
+        byte[] wire=new byte[length+1];
+        for(int i=0;i<length;i++)wire[i]=(byte)i;
+        wire[length]=91;
+        try(PodByteStreamServices streams=new PodByteStreamServices(context)){
+            String id=streams.attach(new ByteArrayInputStream(wire),new ByteArrayOutputStream(),()->{});
+            JSONObject request=new JSONObject().put("id",id).put("size",length).put("timeoutMs",5000);
+            ByteArrayOutputStream file=new ByteArrayOutputStream();
+            JSONObject result=streams.execute("stream.spool",request,new CancellationSignal(),file);
+            assertEquals(length,result.getInt("size"));
+            assertArrayEquals(Arrays.copyOf(wire,length),file.toByteArray());
+            JSONObject next=streams.execute("stream.read",args(id,1),new CancellationSignal());
+            assertArrayEquals(new byte[]{91},android.util.Base64.decode(next.getString("dataBase64"),0));
+            try{
+                streams.execute("stream.spool",request,new CancellationSignal(),new ByteArrayOutputStream());
+                fail("Truncated frame was accepted");
+            }catch(EOFException expected){}
+        }
+    }
+
+    @Test public void spoolBeforeHandoffLeavesFramedChannelInControl() throws Exception {
+        Context context=ApplicationProvider.getApplicationContext();
+        byte[] control=ByteBuffer.allocate(18).putInt(14).putInt(0x4c425632)
+                .putInt(1 << 24).putInt(2).put(new byte[]{'{','}'}).array();
+        ByteArrayOutputStream input=new ByteArrayOutputStream();
+        input.write(new byte[]{1,2,3});
+        input.write(control);
+        try(PodByteStreamServices streams=new PodByteStreamServices(context)){
+            String original=streams.attach(new ByteArrayInputStream(input.toByteArray()),new ByteArrayOutputStream(),()->{});
+            CancellationSignal signal=new CancellationSignal();
+            JSONObject spool=new JSONObject().put("id",original).put("size",3).put("timeoutMs",1000);
+            ByteArrayOutputStream copied=new ByteArrayOutputStream();
+            streams.execute("stream.spool",spool,signal,copied);
+            assertArrayEquals(new byte[]{1,2,3},copied.toByteArray());
+
+            String owner=streams.execute("stream.claim",new JSONObject().put("id",original),signal).getString("id");
+            try{
+                streams.execute("stream.spool",spool,signal,new ByteArrayOutputStream());
+                fail("Old handle spooled bytes after the handoff");
+            }catch(IllegalArgumentException expected){
+                assertEquals("Unknown stream",expected.getMessage());
+            }
+            streams.execute("stream.framedOpen",new JSONObject().put("id",owner),signal);
+            try{
+                streams.execute("stream.spool",spool.put("id",owner),signal,new ByteArrayOutputStream());
+                fail("Raw spool consumed a framed record");
+            }catch(IOException expected){
+                assertEquals("AUTH_REVOKED",expected.getMessage());
+            }
+            JSONObject next=streams.execute("stream.framedNext",args(owner,1),signal);
+            assertEquals(PodTransferFrames.CONTROL,next.getInt("kind"));
+            assertEquals("{}",next.getString("control"));
+            streams.execute("stream.framedRevoke",new JSONObject().put("id",owner),signal);
+        }
+    }
+
+    @Test public void spoolRefreshesIdleDeadlineAndPreventsHandoffUntilReadFinishes() throws Exception {
+        Context context=ApplicationProvider.getApplicationContext();
+        InetAddress loopback=InetAddress.getLoopbackAddress();
+        ExecutorService reader=Executors.newSingleThreadExecutor();
+        try(ServerSocket listener=new ServerSocket(0,1,loopback);
+            Socket peer=new Socket(loopback,listener.getLocalPort());
+            Socket endpoint=listener.accept();
+            PodByteStreamServices streams=new PodByteStreamServices(context)){
+            String id=streams.attach(endpoint.getInputStream(),endpoint.getOutputStream(),endpoint);
+            JSONObject request=new JSONObject().put("id",id).put("size",5)
+                    .put("timeoutMs",5000).put("idleTimeoutMs",750);
+            CountDownLatch first=new CountDownLatch(1);
+            ByteArrayOutputStream file=new ByteArrayOutputStream(){
+                @Override public synchronized void write(byte[] bytes,int offset,int length){
+                    super.write(bytes,offset,length);
+                    first.countDown();
+                }
+            };
+            Future<JSONObject> spooling=reader.submit(()->streams.execute("stream.spool",request,new CancellationSignal(),file));
+            peer.getOutputStream().write(1);
+            assertTrue(first.await(3,TimeUnit.SECONDS));
+            try{
+                streams.execute("stream.claim",new JSONObject().put("id",id),new CancellationSignal());
+                fail("Claim succeeded during the spool read");
+            }catch(IllegalStateException expected){
+                assertEquals("Stream is not at a handoff boundary",expected.getMessage());
+            }
+            for(int index=2;index<=5;index++){
+                Thread.sleep(330);
+                peer.getOutputStream().write(index);
+            }
+            assertEquals(5,spooling.get(3,TimeUnit.SECONDS).getInt("size"));
+            assertArrayEquals(new byte[]{1,2,3,4,5},file.toByteArray());
+
+            // A quiet peer must be closed before the independent overall deadline.
+            peer.setSoTimeout(3000);
+            Future<JSONObject> stalled=reader.submit(()->streams.execute("stream.spool",
+                    request.put("size",1).put("idleTimeoutMs",200),new CancellationSignal(),new ByteArrayOutputStream()));
+            assertEquals(-1,peer.getInputStream().read());
+            try{
+                stalled.get(3,TimeUnit.SECONDS);
+                fail("Expected idle timeout");
+            }catch(java.util.concurrent.ExecutionException expected){
+                assertEquals("Stream operation timed out",expected.getCause().getMessage());
+            }
+        }finally{
+            reader.shutdownNow();
+        }
+    }
+
     @Test public void writeDifferentialAndCancellation()throws Exception {
         Context context=ApplicationProvider.getApplicationContext();
         try(PodByteStreamServices streams=new PodByteStreamServices(context)){

@@ -32,6 +32,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** Guest-scoped RFCOMM listeners and bounded byte streams. No application
  * protocol, peer trust policy or automatic discovery is embedded here. */
@@ -164,6 +165,9 @@ final class PodByteStreamServices implements Closeable {
      * loopback sockets; it is not a guest API or a Bluetooth acceptance claim. */
     synchronized String attach(InputStream input,OutputStream output,Closeable owner){capacity();String id="stream-"+(++sequence);streams.put(id,new Endpoint(id,input,output,owner));return id;}
     JSONObject execute(String method,JSONObject args,CancellationSignal cancellation)throws Exception {
+        return execute(method,args,cancellation,null);
+    }
+    JSONObject execute(String method, JSONObject args, CancellationSignal cancellation, OutputStream spool) throws Exception {
         openCheck();cancellation.throwIfCanceled();
         if("tcp.addresses".equals(method)){
             JSONArray addresses=new JSONArray();ConnectivityManager manager=context.getSystemService(ConnectivityManager.class);
@@ -210,13 +214,13 @@ final class PodByteStreamServices implements Closeable {
         String id=args.getString("id");
         if("stream.claim".equals(method))return claim(id);
         Endpoint endpoint=enterStream(id);
-        try{return executeStream(method,args,cancellation,id,endpoint);}
+        try{return executeStream(method,args,cancellation,id,endpoint,spool);}
         finally{leaveStream(endpoint);}
     }
-    private JSONObject executeStream(String method,JSONObject args,CancellationSignal cancellation,String id,Endpoint endpoint)throws Exception {
+    private JSONObject executeStream(String method,JSONObject args,CancellationSignal cancellation,String id,Endpoint endpoint,OutputStream spool)throws Exception {
         if("stream.framedOpen".equals(method)){
             synchronized(endpoint){
-                if(endpoint.originalId.equals(id)||endpoint.closed.get()||endpoint.channel!=null)
+                if(endpoint.originalId.equals(id)||endpoint.closed.get()||endpoint.channel!=null||endpoint.reading.get()||endpoint.writing.get())
                     throw new IOException("AUTH_REVOKED");
                 PodTransferChannel prepared=new PodTransferChannel(endpoint.input,endpoint.output,frameHashes,
                         frameJournal,frameWriter,framedJournal,()->removeStream(id),deadlines,frameSource,frameSender);
@@ -264,17 +268,35 @@ final class PodByteStreamServices implements Closeable {
             synchronized(endpoint.incoming){endpoint.incoming.remove(args.getString("reference"));}
             return new JSONObject();
         }
-        boolean read=method.equals("stream.read")||method.equals("stream.readFile")||method.equals("stream.framedNext");
+        boolean read=method.equals("stream.read")||method.equals("stream.readFile")||method.equals("stream.framedNext")||spool!=null;
         if(!read&&!method.equals("stream.write")&&!method.equals("stream.writeFile")&&!method.equals("stream.framedControl")&&!method.equals("stream.framedAck")&&!method.equals("stream.framedData"))throw new IllegalArgumentException("Unknown stream method");
         int timeout=number(args,"timeoutMs",1,900000);
         AtomicBoolean busy=read?endpoint.reading:endpoint.writing;
-        if(!busy.compareAndSet(false,true))throw new IllegalStateException("Concurrent stream operation");
-        AtomicBoolean timedOut=new AtomicBoolean(),finished=new AtomicBoolean();ScheduledFuture<?> timer=null;
+        synchronized(endpoint){
+            if(spool!=null&&endpoint.channel!=null)throw new IOException("AUTH_REVOKED");
+            if(!busy.compareAndSet(false,true))throw new IllegalStateException("Concurrent stream operation");
+        }
+        AtomicBoolean timedOut=new AtomicBoolean(),finished=new AtomicBoolean();ScheduledFuture<?> timer=null,idleTimer=null;
         cancellation.setOnCancelListener(()->removeStream(id));
         try{
             timer=deadlines.schedule(()->{if(finished.compareAndSet(false,true)){timedOut.set(true);removeStream(id);}},timeout,TimeUnit.MILLISECONDS);
             JSONObject result;
-            if(method.equals("stream.framedNext"))result=channel.next();
+            if(spool!=null){
+                int count=number(args,"size",1,2*1024*1024);
+                int idle=args.has("idleTimeoutMs")?number(args,"idleTimeoutMs",1,900000):0;
+                AtomicLong activity=new AtomicLong(System.nanoTime());
+                if(idle>0){
+                    long interval=Math.min(500,idle);
+                    idleTimer=deadlines.scheduleWithFixedDelay(()->{
+                        if(System.nanoTime()-activity.get()>=TimeUnit.MILLISECONDS.toNanos(idle)&&finished.compareAndSet(false,true)){
+                            timedOut.set(true);
+                            removeStream(id);
+                        }
+                    },interval,interval,TimeUnit.MILLISECONDS);
+                }
+                spoolExact(endpoint.input,spool,count,cancellation,activity);
+                result=new JSONObject().put("size",count);
+            } else if(method.equals("stream.framedNext"))result=channel.next();
             else if(method.equals("stream.framedControl")){
                 channel.writeControl(args.getString("control"),args.optBoolean("activate"),args.optLong("rejected"));result=new JSONObject();
             }
@@ -292,7 +314,18 @@ final class PodByteStreamServices implements Closeable {
             else{if(!args.optBoolean("_podByteMode")&&args.getString("dataBase64").length()>4*((MAX_BYTES+2)/3))throw new IllegalArgumentException("Stream write too large");byte[] bytes=PodBytePayload.input(args);if(bytes.length<1||bytes.length>MAX_BYTES)throw new IllegalArgumentException("Invalid stream write size");endpoint.output.write(bytes);endpoint.output.flush();result=new JSONObject().put("written",bytes.length);}
             if(!finished.compareAndSet(false,true))throw new IOException("Stream operation timed out");cancellation.throwIfCanceled();return result;
         }catch(Exception error){removeStream(id);if(timedOut.get())throw new IOException("Stream operation timed out",error);throw error;}
-        finally{finished.set(true);if(timer!=null)timer.cancel(false);cancellation.setOnCancelListener(null);busy.set(false);}
+        finally{finished.set(true);if(timer!=null)timer.cancel(false);if(idleTimer!=null)idleTimer.cancel(false);cancellation.setOnCancelListener(null);busy.set(false);}
+    }
+    private static void spoolExact(InputStream input, OutputStream output, int count, CancellationSignal cancellation, AtomicLong activity) throws IOException {
+        byte[] buffer=new byte[Math.min(count,16*1024)];
+        while(count>0){
+            cancellation.throwIfCanceled();
+            int received=input.read(buffer,0,Math.min(count,buffer.length));
+            if(received<=0)throw new java.io.EOFException("Truncated sync stream");
+            activity.set(System.nanoTime());
+            output.write(buffer,0,received);
+            count-=received;
+        }
     }
     byte[] takeChunk(JSONObject args) throws Exception {
         Endpoint endpoint=stream(args.getString("stream"));
