@@ -58,6 +58,8 @@ final class PodByteStreamServices implements Closeable {
     }
     private static final class Endpoint implements Closeable {
         final InputStream input; final OutputStream output; final Closeable owner;
+        final Map<String,byte[]> incoming = new HashMap<>();
+        final Map<String,byte[]> outgoing = new HashMap<>();
         final AtomicBoolean reading=new AtomicBoolean(),writing=new AtomicBoolean(),closed=new AtomicBoolean();
         Endpoint(InputStream input,OutputStream output,Closeable owner){this.input=input;this.output=output;this.owner=owner;}
         public void close() throws IOException {if(closed.compareAndSet(false,true))owner.close();}
@@ -115,20 +117,93 @@ final class PodByteStreamServices implements Closeable {
             finally{if(socket!=null)closeQuietly(socket);cancellation.setOnCancelListener(null);listener.accepting.set(false);}
         }
         String id=args.getString("id");Endpoint endpoint=stream(id);
-        if(!"stream.read".equals(method)&&!"stream.write".equals(method))throw new IllegalArgumentException("Unknown stream method");
-        int timeout=number(args,"timeoutMs",1,900000);AtomicBoolean busy="stream.read".equals(method)?endpoint.reading:endpoint.writing;
+        if("stream.prepareFile".equals(method))return prepareFile(endpoint,args,cancellation);
+        if("stream.dropFile".equals(method)){
+            synchronized(endpoint.outgoing){endpoint.outgoing.remove(args.getString("reference"));}
+            synchronized(endpoint.incoming){endpoint.incoming.remove(args.getString("reference"));}
+            return new JSONObject();
+        }
+        boolean read=method.equals("stream.read")||method.equals("stream.readFile");
+        if(!read&&!method.equals("stream.write")&&!method.equals("stream.writeFile"))throw new IllegalArgumentException("Unknown stream method");
+        int timeout=number(args,"timeoutMs",1,900000);
+        AtomicBoolean busy=read?endpoint.reading:endpoint.writing;
         if(!busy.compareAndSet(false,true))throw new IllegalStateException("Concurrent stream operation");
         AtomicBoolean timedOut=new AtomicBoolean(),finished=new AtomicBoolean();ScheduledFuture<?> timer=null;
         cancellation.setOnCancelListener(()->removeStream(id));
         try{
             timer=deadlines.schedule(()->{if(finished.compareAndSet(false,true)){timedOut.set(true);removeStream(id);}},timeout,TimeUnit.MILLISECONDS);
             JSONObject result;
-            if("stream.read".equals(method)){int max=number(args,"maxBytes",1,MAX_BYTES);byte[] data=new byte[max];int count=endpoint.input.read(data);if(count==0)throw new IOException("Stream read made no progress");if(count<0){removeStream(id);result=PodBytePayload.output(args,new JSONObject().put("eof",true),new byte[0]);}else result=args.optBoolean("_podByteMode")?PodBytePayload.output(args,new JSONObject().put("eof",false),count==data.length?data:java.util.Arrays.copyOf(data,count)):new JSONObject().put("eof",false).put("dataBase64",Base64.encodeToString(data,0,count,Base64.NO_WRAP));}
+            if(method.equals("stream.readFile"))result=readFileChunk(endpoint,args);
+            else if(method.equals("stream.writeFile"))result=writeFileChunk(endpoint,args);
+            else if("stream.read".equals(method)){int max=number(args,"maxBytes",1,MAX_BYTES);byte[] data=new byte[max];int count=endpoint.input.read(data);if(count==0)throw new IOException("Stream read made no progress");if(count<0){removeStream(id);result=PodBytePayload.output(args,new JSONObject().put("eof",true),new byte[0]);}else result=args.optBoolean("_podByteMode")?PodBytePayload.output(args,new JSONObject().put("eof",false),count==data.length?data:java.util.Arrays.copyOf(data,count)):new JSONObject().put("eof",false).put("dataBase64",Base64.encodeToString(data,0,count,Base64.NO_WRAP));}
             else{if(!args.optBoolean("_podByteMode")&&args.getString("dataBase64").length()>4*((MAX_BYTES+2)/3))throw new IllegalArgumentException("Stream write too large");byte[] bytes=PodBytePayload.input(args);if(bytes.length<1||bytes.length>MAX_BYTES)throw new IllegalArgumentException("Invalid stream write size");endpoint.output.write(bytes);endpoint.output.flush();result=new JSONObject().put("written",bytes.length);}
             if(!finished.compareAndSet(false,true))throw new IOException("Stream operation timed out");cancellation.throwIfCanceled();return result;
         }catch(Exception error){removeStream(id);if(timedOut.get())throw new IOException("Stream operation timed out",error);throw error;}
         finally{finished.set(true);if(timer!=null)timer.cancel(false);cancellation.setOnCancelListener(null);busy.set(false);}
     }
+    byte[] takeChunk(JSONObject args) throws Exception {
+        Endpoint endpoint=stream(args.getString("stream"));
+        synchronized(endpoint.incoming) {
+            byte[] bytes=endpoint.incoming.remove(args.getString("reference"));
+            if(bytes==null)throw new IOException("STALE_EPOCH");
+            return bytes;
+        }
+    }
+
+    private JSONObject prepareFile(Endpoint endpoint,JSONObject args,CancellationSignal cancellation) throws Exception {
+        byte[] bytes=new byte[number(args,"size",1,MAX_BYTES)];
+        long offset=PodFileRanges.number(args,"offset",0,512L*1024*1024);
+        try(android.os.ParcelFileDescriptor.AutoCloseInputStream in=PodSyncGuestFiles.open(PodTakeover.filesRoot(context),args.getString("path"))) {
+            in.getChannel().position(offset);
+            PodFileRanges.readExact(in,bytes,bytes.length);
+            if(!PodFileRanges.hex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes)).equals(args.getString("sha256")))
+                throw new IOException("SOURCE_CHANGED");
+        } catch(IOException error) { throw new IOException("SOURCE_CHANGED",error); }
+        cancellation.throwIfCanceled();
+        synchronized(endpoint.outgoing) {
+            if(endpoint.closed.get())throw new IOException("Stream closed");
+            if(endpoint.outgoing.size()>=2)throw new IOException("Too many outgoing file references");
+            String reference=UUID.randomUUID().toString();
+            endpoint.outgoing.put(reference,bytes);
+            return new JSONObject().put("reference",reference);
+        }
+    }
+
+    private JSONObject readFileChunk(Endpoint endpoint,JSONObject args) throws Exception {
+        int size=number(args,"size",1,MAX_BYTES);
+        boolean retain=args.getBoolean("retain");
+        if(retain)synchronized(endpoint.incoming) {
+            if(endpoint.incoming.size()>=8)throw new IOException("Too many incoming file references");
+        }
+        byte[] bytes=new byte[size];
+        PodFileRanges.readExact(endpoint.input,bytes,size);
+        if(args.has("sha256")&&!PodFileRanges.hex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes)).equals(args.getString("sha256")))
+            return new JSONObject().put("error","HASH_MISMATCH");
+        if(!retain)return new JSONObject();
+        synchronized(endpoint.incoming) {
+            String reference=UUID.randomUUID().toString();
+            endpoint.incoming.put(reference,bytes);
+            return new JSONObject().put("reference",reference);
+        }
+    }
+
+    private JSONObject writeFileChunk(Endpoint endpoint,JSONObject args) throws Exception {
+        JSONArray values=args.getJSONArray("header");
+        if(values.length()!=96)throw new IOException("Invalid frame header");
+        byte[] header=new byte[96],bytes;
+        for(int i=0;i<header.length;i++){
+            int value=values.getInt(i);
+            if(value<0||value>255)throw new IOException("Invalid frame header");
+            header[i]=(byte)value;
+        }
+        synchronized(endpoint.outgoing) { bytes=endpoint.outgoing.remove(args.getString("reference")); }
+        if(bytes==null||java.nio.ByteBuffer.wrap(header).getInt(44)!=bytes.length)throw new IOException("Invalid file reference");
+        endpoint.output.write(header);
+        endpoint.output.write(bytes);
+        endpoint.output.flush();
+        return new JSONObject().put("written",header.length+bytes.length);
+    }
+
     /** Dispose a handle created after its cancelled request lost delivery. */
     void discard(JSONObject value){String id=value.optString("id","");if(id.startsWith("stream-"))removeStream(id);else if(id.startsWith("listener-"))removeListener(id);else if(id.startsWith("tcp-listener-"))removeTcpListener(id);}
     public void close(){ArrayList<Closeable> handles=new ArrayList<>();synchronized(this){if(closed)return;closed=true;handles.addAll(streams.values());handles.addAll(listeners.values());handles.addAll(tcpListeners.values());streams.clear();listeners.clear();tcpListeners.clear();}for(Closeable handle:handles)closeQuietly(handle);deadlines.shutdownNow();}

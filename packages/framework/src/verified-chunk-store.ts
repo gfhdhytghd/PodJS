@@ -10,7 +10,8 @@ export interface VerifiedObjectStatus {state:'PENDING'|'PARTIAL'|'STAGED';missin
 export interface VerifiedRequestBinding {id:string;digest:string}
 export interface VerifiedChunkReceipt {index:number;bytes:number;sha256:string;bindingId:string;requestDigest:string;durable:true}
 export interface VerifiedPublication {path:string;size:number;sha256:string}
-export interface VerifiedChunkRuntime {version:1;methods:readonly string[];chunkBytes:65536;maxObjectBytes:number;maxInFlightObjects:number;maxStagingBytes:number;maxJournalBytes:number;durable:true;fencing:true;chunkReceipt?:true;requestBindings?:true;elapsedMillis:number}
+export interface StreamFileChunk {stream:string;reference:string}
+export interface VerifiedChunkRuntime {version:1;methods:readonly string[];chunkBytes:65536;maxObjectBytes:number;maxInFlightObjects:number;maxStagingBytes:number;maxJournalBytes:number;durable:true;fencing:true;chunkReceipt?:true;requestBindings?:true;fileRefs?:true;elapsedMillis:number}
 const REQUEST_BINDING_PAGE_SIZE=128;
 const requestId=(value:string)=>/^[0-9a-f]{32}$/.test(value);
 export type ChunkHost=<T>(method:string,args:Record<string,unknown>)=>Promise<T>;
@@ -70,6 +71,14 @@ export class VerifiedChunkStore {
   const result=await this.writeChunk<VerifiedChunkReceipt>(lease,object,index,bytes,request,true);
   if(result?.durable!==true||result.index!==index||result.bytes!==bytes.length||result.sha256!==object.chunkHashes[index]||
     result.bindingId!==request.id||result.requestDigest!==request.digest)throw Error('invalid_verified_chunk_receipt');
+  return result;
+ }
+ async stageFileReceipt(lease:ObjectLease,object:VerifiedObject,index:number,fileChunk:StreamFileChunk,request:VerifiedRequestBinding):Promise<VerifiedChunkReceipt>{
+  validateVerifiedObject(object);
+  if(!Number.isSafeInteger(index)||index<0||index>=object.chunkHashes.length||!requestId(request.id)||!hex(request.digest))throw Error('invalid_verified_chunk');
+  const result=await this.invoke<VerifiedChunkReceipt>('file.resumable.stage',{...lease,object,index,fileChunk,bindingId:request.id,requestDigest:request.digest,receiptOnly:true});
+  if(result?.durable!==true||result.index!==index||result.bytes!==Math.min(VERIFIED_CHUNK_BYTES,object.size-index*VERIFIED_CHUNK_BYTES)||
+    result.sha256!==object.chunkHashes[index]||result.bindingId!==request.id||result.requestDigest!==request.digest)throw Error('invalid_verified_chunk_receipt');
   return result;
  }
  private async writeChunk<T>(lease:ObjectLease,object:VerifiedObject,index:number,bytes:Uint8Array,request:{id:string;digest:string},receiptOnly:boolean):Promise<T>{

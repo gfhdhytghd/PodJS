@@ -109,6 +109,7 @@ final class PodServices implements Closeable {
     },"Pod"+lane+(headlessWork?"BG":"FG")));}
     private final ExecutorService worker = serviceExecutor("Device");
     private final ExecutorService contentWorker = serviceExecutor("Content");
+    private final ExecutorService rangeWorker = serviceExecutor("FileRanges");
     private PodDeviceServices contentDevice;
     private PodResumableObjects resumableObjects;
     private PodContentFiles contentFiles;
@@ -738,10 +739,10 @@ final class PodServices implements Closeable {
         if(method.startsWith("provision."))request.cancellation.setOnCancelListener(()->provisioning.cancelOperation(method,args,request.cancelReason));
         // Only shared device/secure work uses this gate. Network transfers and
         // main-thread dialogs never hold an admission ticket while awaiting IO.
-        if (!("secure.get".equals(method)&&!headlessWork&&device.hasWarmSecureStore()) && !method.endsWith(".release") && (method.startsWith("secure.") || method.startsWith("crypto.") || method.startsWith("file.") || "log.append".equals(method) || "uri.parse".equals(method)))
+        if (!("secure.get".equals(method)&&!headlessWork&&device.hasWarmSecureStore()) && !method.endsWith(".release") && !method.equals("file.copyRanges") && (method.startsWith("secure.") || method.startsWith("crypto.") || method.startsWith("file.") || "log.append".equals(method) || "uri.parse".equals(method)))
             request.priority = HostWorkPriority.DEVICE.reserve(headlessWork);
         final long queuedAt=System.nanoTime();
-        try { request.future = (method.startsWith("provision.") || method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.") || method.startsWith("discovery.") ? streamWorkers : method.startsWith("content.") ? contentWorker : method.startsWith("http.") ? transfers : method.startsWith("sql.") ? sqlWorker : method.startsWith("text.") ? textWorker : method.startsWith("secure.") ? secureWorker : worker).submit(() -> {
+        try { request.future = (method.startsWith("provision.") || method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.") || method.startsWith("discovery.") ? streamWorkers : method.equals("file.copyRanges") ? rangeWorker : method.startsWith("content.") ? contentWorker : method.startsWith("http.") ? transfers : method.startsWith("sql.") ? sqlWorker : method.startsWith("text.") ? textWorker : method.startsWith("secure.") ? secureWorker : worker).submit(() -> {
             long workAt=0,cpuAt=android.os.Debug.threadCpuTimeNanos();boolean workSuccess=false;
             try {
                 if (request.priority != null) request.priority.enter();
@@ -754,7 +755,11 @@ final class PodServices implements Closeable {
                 Object value;
                 if (method.startsWith("file.resumable.")) {
                     if(resumableObjects==null)resumableObjects=new PodResumableObjects(context);
-                    value=resumableObjects.execute(method,args);
+                    byte[] reference = method.equals("file.resumable.stage") && args.has("fileChunk")
+                        ? byteStreams.takeChunk(args.getJSONObject("fileChunk")) : null;
+                    value=resumableObjects.execute(method,args,reference);
+                } else if ("file.copyRanges".equals(method)) {
+                    value=PodFileRanges.execute(PodTakeover.filesRoot(context),args,request.cancellation);
                 } else if ("content.http".equals(method) || "content.http.release".equals(method)) {
                     if(contentHttp==null)contentHttp=new PodHttpServices(context);
                     value=contentHttp.execute("content.http.release".equals(method)?"http.release":"http.download",args);
@@ -805,6 +810,7 @@ final class PodServices implements Closeable {
                 if (requests.remove(id, request)) reply(id, true, value, null, null);
                 else if ("provision.start".equals(method) && value instanceof JSONObject) provisioning.cancel(((JSONObject)value).optString("sessionId"),request.cancelReason);
                 else if ("discovery.networkSubscribe".equals(method)) networks.discard(args.getString("subscriptionId"));
+                else if (("stream.prepareFile".equals(method)||"stream.readFile".equals(method)) && value instanceof JSONObject) byteStreams.discard(new JSONObject().put("id",args.getString("id")));
                 else if ("websocket.connect".equals(method) && value instanceof JSONObject) webSockets.discard((JSONObject)value);
                 else if (("rfcomm.listen".equals(method) || "rfcomm.accept".equals(method) || "tcp.listen".equals(method) || "tcp.accept".equals(method)) && value instanceof JSONObject) byteStreams.discard((JSONObject)value);
                 else if ("file.openText".equals(method) && value instanceof JSONObject) device.discardTextReader((JSONObject)value);
@@ -1126,6 +1132,7 @@ final class PodServices implements Closeable {
         http.close();if(contentHttp!=null)contentHttp.close();
         provisioning.close(); networks.close(); bleDiscovery.close(); discovery.close(); webSockets.close(); byteStreams.close();
         streamWorkers.shutdownNow();
+        rangeWorker.shutdownNow();
         transfers.shutdownNow();
         textWorker.execute(paragraphLayouts::clear);
         textWorker.shutdown();

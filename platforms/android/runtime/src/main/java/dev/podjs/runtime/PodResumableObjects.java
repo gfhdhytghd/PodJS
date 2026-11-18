@@ -73,15 +73,16 @@ final class PodResumableObjects {
             if(!PROCESS.equals(c.getString(2))||SystemClock.elapsedRealtime()>=c.getLong(3))throw new IOException("LEASE_EXPIRED");
         }
     }
-    JSONObject execute(String method,JSONObject a)throws Exception {
-        try{return executeUnchecked(method,a);}catch(IOException error){
+    JSONObject execute(String method,JSONObject a)throws Exception {return execute(method,a,null);}
+    JSONObject execute(String method,JSONObject a,byte[] fileChunk)throws Exception {
+        try{return executeUnchecked(method,a,fileChunk);}catch(IOException error){
             String detail=error.getMessage(),code=detail==null?null:detail.split(":",2)[0];
             if(code!=null && java.util.Arrays.asList("INVALID_FRAME","OBJECT_CONFLICT","STALE_EPOCH","LEASE_EXPIRED","BUSY","WINDOW_FULL","HASH_MISMATCH","CHUNKS_MISSING","LOCAL_IO","REQUEST_CONFLICT","JOB_CANCELLED","JOURNAL_CORRUPT","PUBLICATION_CONFLICT").contains(code))return new JSONObject().put("error",code).put("detail",detail);
             throw error;
         }
     }
-    private JSONObject executeUnchecked(String method,JSONObject a)throws Exception {
-        if("file.resumable.status".equals(method)&&"probe".equals(a.optString("operation")))return new JSONObject().put("version",1).put("elapsedMillis",SystemClock.elapsedRealtime()).put("chunkBytes",65536).put("maxObjectBytes",16777216).put("maxInFlightObjects",4).put("maxStagingBytes",64*1024*1024).put("maxJournalBytes",JOURNAL_BYTES).put("durable",true).put("fencing",true).put("chunkReceipt",true).put("requestBindings",true).put("methods",new JSONArray(new String[]{"file.resumable.stage","file.resumable.status","file.resumable.missing","file.resumable.finalize","file.resumable.release"}));
+    private JSONObject executeUnchecked(String method,JSONObject a,byte[] fileChunk)throws Exception {
+        if("file.resumable.status".equals(method)&&"probe".equals(a.optString("operation")))return new JSONObject().put("version",1).put("elapsedMillis",SystemClock.elapsedRealtime()).put("chunkBytes",65536).put("maxObjectBytes",16777216).put("maxInFlightObjects",4).put("maxStagingBytes",64*1024*1024).put("maxJournalBytes",JOURNAL_BYTES).put("durable",true).put("fencing",true).put("chunkReceipt",true).put("requestBindings",true).put("fileRefs",true).put("methods",new JSONArray(new String[]{"file.resumable.stage","file.resumable.status","file.resumable.missing","file.resumable.finalize","file.resumable.release"}));
         String scope=id(a,"scope",64);
         try(RandomAccessFile lf=new RandomAccessFile(lock,"rw")){
             FileLock held;try{held=lf.getChannel().tryLock();}catch(OverlappingFileLockException e){throw new IOException("BUSY");}if(held==null)throw new IOException("BUSY");
@@ -104,7 +105,7 @@ final class PodResumableObjects {
                     if("file.resumable.status".equals(method)&&"readOnly".equals(a.optString("operation"))){db.execSQL("UPDATE scopes SET read_only=1 WHERE scope=?",new Object[]{scope});result=new JSONObject();}
                     else if("file.resumable.status".equals(method)&&"check".equals(a.optString("operation")))result=new JSONObject();
                     else if("file.resumable.status".equals(method)&&"requestBindings".equals(a.optString("operation")))result=requestBindings(db,a,scope);
-                    else result=object(db,method,a,scope);
+                    else result=object(db,method,a,scope,fileChunk);
                     db.execSQL("UPDATE scopes SET deadline=?,retain_until=max(retain_until,?),retain_elapsed=max(retain_elapsed,?) WHERE scope=?",new Object[]{SystemClock.elapsedRealtime()+LEASE,System.currentTimeMillis()+RETENTION,SystemClock.elapsedRealtime()+RETENTION,scope});
                     db.setTransactionSuccessful();return result;
                 }finally{db.endTransaction();try(FileChannel fd=FileChannel.open(journal.getParentFile().toPath(),StandardOpenOption.READ)){fd.force(true);}}
@@ -122,7 +123,7 @@ final class PodResumableObjects {
         }
         return new JSONObject().put("entries",entries);
     }
-    private JSONObject object(SQLiteDatabase db,String method,JSONObject a,String scope)throws Exception {
+    private JSONObject object(SQLiteDatabase db,String method,JSONObject a,String scope,byte[] fileChunk)throws Exception {
         JSONObject m=manifest(a.getJSONObject("object"));String oid=m.getString("transfer_id"),saved=scalar(db,"SELECT manifest FROM objects WHERE scope=? AND id=?",scope,oid);
         if(saved!=null&&!saved.equals(m.toString()))throw new IOException("OBJECT_CONFLICT");
         boolean stage="file.resumable.stage".equals(method),finish="file.resumable.finalize".equals(method),release="file.resumable.release".equals(method);
@@ -130,9 +131,9 @@ final class PodResumableObjects {
         byte[] bytes=null;String rid=null,rd=null;int index=-1;
         if(stage){
             index=(int)integer(a,"index",255);if(index>=m.getJSONArray("chunk_hashes").length())throw new IOException("INVALID_FRAME");
-            String encoded=a.optBoolean("_podByteMode")?null:a.getString("dataBase64");if(encoded!=null&&encoded.length()>87384)throw new IOException("INVALID_FRAME");
-            bytes=encoded==null?PodBytePayload.input(a):Base64.decode(encoded,Base64.NO_WRAP);
-            if((encoded!=null&&!encoded.equals(Base64.encodeToString(bytes,Base64.NO_WRAP)))||bytes.length!=Math.min(65536,m.getLong("size")-(long)index*65536)||!hash(bytes).equals(m.getJSONArray("chunk_hashes").getString(index)))throw new IOException("HASH_MISMATCH");
+            String encoded=fileChunk!=null||a.optBoolean("_podByteMode")?null:a.getString("dataBase64");if(encoded!=null&&encoded.length()>87384)throw new IOException("INVALID_FRAME");
+            bytes=fileChunk!=null?fileChunk:encoded==null?PodBytePayload.input(a):Base64.decode(encoded,Base64.NO_WRAP);
+            if((encoded!=null&&!encoded.equals(Base64.encodeToString(bytes,Base64.NO_WRAP)))||bytes.length!=Math.min(65536,m.getLong("size")-(long)index*65536)||(fileChunk==null&&!hash(bytes).equals(m.getJSONArray("chunk_hashes").getString(index))))throw new IOException("HASH_MISMATCH");
             rid=id(a,"bindingId",32);rd=id(a,"requestDigest",64);String old=scalar(db,"SELECT digest FROM requests WHERE scope=? AND id=?",scope,rid);
             if(old!=null&&!old.equals(rd))throw new IOException("REQUEST_CONFLICT");
         }
@@ -161,7 +162,7 @@ final class PodResumableObjects {
             core(receiver,new JSONObject().put("method","offer").put("manifest",m));
             if(stage){
                 JSONObject chunk=command("chunk",oid).put("index",index);
-                if(a.optBoolean("_podByteMode"))core(receiver,chunk,bytes);
+                if(fileChunk!=null||a.optBoolean("_podByteMode"))core(receiver,chunk,bytes);
                 else core(receiver,chunk.put("data_base64",a.getString("dataBase64")));
                 db.execSQL("INSERT OR IGNORE INTO requests VALUES(?,?,?)",new Object[]{scope,rid,rd});
                 // The outer FULL transaction commits the request binding

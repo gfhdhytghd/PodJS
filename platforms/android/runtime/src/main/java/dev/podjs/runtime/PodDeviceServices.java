@@ -7,6 +7,8 @@ import android.util.Base64;
 
 import org.json.JSONObject;
 
+import java.nio.channels.FileChannel;
+import java.nio.file.StandardOpenOption;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -960,6 +962,12 @@ public final class PodDeviceServices implements AutoCloseable {
             if (!parent.isDirectory() && !parent.mkdirs()) throw new IOException("parent_unavailable");
             // Do not replace a valid old file using a non-atomic fallback.
             Files.move(source.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        }
+        if(a.optBoolean("syncDirectory",false)){
+            try(FileChannel fd=FileChannel.open(target.getParentFile().toPath(),StandardOpenOption.READ)){fd.force(true);}
+            if(!source.getParentFile().equals(target.getParentFile())){
+                try(FileChannel fd=FileChannel.open(source.getParentFile().toPath(),StandardOpenOption.READ)){fd.force(true);}
+            }
         }
         temporaryFiles.remove(source);
         return actual.put("path", required(a, "target")).put("reused", reused);
