@@ -31,7 +31,17 @@ int main(){
  // must not break UI cleanup when TOTAL PSS still has ample headroom.
  assert(priority.available(QuickJs)==0);assert(priority.reserve(QuickJs,4000000));priority.cancel(QuickJs,4000000);
  auto observed=priority.sampleStart();priority.sample(120000000,observed);
- assert(priority.reserve(QuickJs,4000000));priority.commit(QuickJs,4000000);assert(!priority.reserve(QuickJs,1));
+ assert(priority.reserve(QuickJs,4000000));priority.commit(QuickJs,4000000);
+ assert(!priority.reserve(QuickJs,64*1024));
+ assert(!priority.reserve(QuickJs,256,true));
+ assert(priority.reserve(QuickJs,256));priority.cancel(QuickJs,256);
+ observed=priority.sampleStart();priority.sample(128000000,observed);
+ assert(!priority.reserve(QuickJs,1)); // small control allocations still obey the cap
+
+ Budget guarded;guarded.configure(128000000);
+ observed=guarded.sampleStart();guarded.sample(100000000,observed);
+ assert(!guarded.reserve(Media,8000000,false,true,12*1024*1024));
+ assert(guarded.reserve(Media,8000000)); // same starting budget can play a current source
  // A codec factory may span several PSS observations. Its unallocated
  // promise stays pending until physical construction reports completion.
  Budget delayed;delayed.configure(128000000);assert(delayed.reserve(Media,6000000));

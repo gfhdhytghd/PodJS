@@ -28,11 +28,20 @@ final class PodProcessMemoryReader {
     }
     interface Source {Reading local();Reading system();}
     static final class Snapshot {
-        final long totalKiB,localKiB,graphicsKiB,correctionKiB,protectedQueryAgeMs;
+        final long totalKiB,localKiB,localGraphicsKiB,graphicsKiB,correctionKiB,protectedQueryAgeMs;
         Snapshot(Reading local,Reading system,long age){
-            localKiB=local.totalKiB;graphicsKiB=Math.max(local.graphicsKiB,system.graphicsKiB);
+            localKiB=local.totalKiB;localGraphicsKiB=local.graphicsKiB;graphicsKiB=Math.max(local.graphicsKiB,system.graphicsKiB);
             correctionKiB=graphicsKiB-local.graphicsKiB;
             totalKiB=Math.addExact(localKiB,correctionKiB);protectedQueryAgeMs=Math.max(0,age);
+        }
+        /** OWW242 admission estimate. The privileged graphics sample can lag
+         * both allocation and retirement of a codec. Keep the fresh local
+         * reading and bound only its system-side correction. */
+        long oww242BudgetKiB(int videoDecoders){
+            long graphicsFloor=24_000;
+            if(videoDecoders>0)graphicsFloor+=14_000L+10_000L*(videoDecoders-1);
+            long graphics=Math.max(graphicsFloor,Math.min(graphicsKiB,graphicsFloor+4096));
+            return Math.addExact(localKiB,Math.max(0,graphics-localGraphicsKiB));
         }
     }
     private static PodProcessMemoryReader process;

@@ -924,4 +924,4 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudg
 }
 
 extern "C" JNIEXPORT jlong JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget_nativeJsAvailable(JNIEnv*,jclass){return podjs_memory::process.available(podjs_memory::QuickJs);}
-extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget_nativeReserveOptionalMedia(JNIEnv*,jclass,jlong bytes){return bytes>=0&&podjs_memory::process.reserve(podjs_memory::Media,bytes,false,true);}
+extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget_nativeReserveOptionalMedia(JNIEnv*,jclass,jlong bytes,jlong extraHeadroom){return bytes>=0&&extraHeadroom>=0&&podjs_memory::process.reserve(podjs_memory::Media,bytes,false,true,extraHeadroom);}

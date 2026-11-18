@@ -17,12 +17,16 @@ public final class PodProcessMemoryBudget implements ComponentCallbacks2 {
     private final Handler main=new Handler(Looper.getMainLooper());
     private final CopyOnWriteArrayList<java.util.function.IntConsumer> listeners=new CopyOnWriteArrayList<>();
     private final long limit;
+    private final boolean oww242Graphics;
+    private static final long OWW242_OPTIONAL_MEDIA_HEADROOM=12L*1024*1024;
     private final PodProcessMemoryReader memory;
     private volatile long pss;
     private volatile int lastLevel;
     private long lastPressure,lastPurge;
     private PodProcessMemoryBudget(Context context,long bytes) {
-        limit=bytes;memory=PodProcessMemoryReader.get(context);nativeConfigure(bytes);
+        limit=bytes;
+        oww242Graphics=bytes>0&&"OWW242".equals(android.os.Build.DEVICE);
+        memory=PodProcessMemoryReader.get(context);nativeConfigure(bytes);
         if(bytes==0)return;
         context.registerComponentCallbacks(this);
         Executors.newSingleThreadScheduledExecutor(r->{Thread t=new Thread(r,"PodMemoryBudget");t.setDaemon(true);return t;})
@@ -68,12 +72,13 @@ public final class PodProcessMemoryBudget implements ComponentCallbacks2 {
       try {
         long start=nativeSampleStart();
         PodProcessMemoryReader.Snapshot value=memory.snapshot();
-        long measured=Math.multiplyExact(value.totalKiB,1024L);
+        long admissionKiB=oww242Graphics?value.oww242BudgetKiB(PodVideoAnalytics.liveDecoderInstances()):value.totalKiB;
+        long measured=Math.multiplyExact(admissionKiB,1024L);
         if(measured<=0)throw new IllegalStateException("PSS unavailable");
         pss=measured;nativeSample(pss,start);
         int level=pss>=limit-12_000_000?3:pss>=limit-32_000_000?2:0;
         boolean denied=nativePressure();if(denied)level=Math.max(level,2);
-        if(denied)android.util.Log.i("PodMemoryBudget","allocationPressure pssBytes="+pss+" upperBytes="+nativeUpper()+" "+nativeResidents());
+        if(denied)android.util.Log.i("PodMemoryBudget","allocationPressure budgetPssBytes="+pss+" measuredPssKiB="+value.totalKiB+" upperBytes="+nativeUpper()+" "+nativeResidents());
         if(level!=0||lastLevel!=0)pressure(level);
         long now=android.os.SystemClock.elapsedRealtime();
         if(level>0&&now-lastPurge>=3000){nativePurge();lastPurge=now;}
@@ -83,7 +88,11 @@ public final class PodProcessMemoryBudget implements ComponentCallbacks2 {
     static boolean deferBackground(){return limit()>0&&(nativeUpper()+4_000_000>limit()||nativeJsAvailable()<4_000_000);}
     static Lease reserveMedia(long bytes,boolean optional){
         if(bytes<0)return null;
-        if(limit()!=0&&!(optional?nativeReserveOptionalMedia(bytes):nativeReserve(MEDIA,bytes)))return null;
+        PodProcessMemoryBudget budget=instance;
+        if(budget!=null&&budget.limit!=0){
+            long guard=budget.oww242Graphics?OWW242_OPTIONAL_MEDIA_HEADROOM:0;
+            if(!(optional?nativeReserveOptionalMedia(bytes,guard):nativeReserve(MEDIA,bytes)))return null;
+        }
         return new Lease(MEDIA,bytes);
     }
     public static Lease reserve(int owner,long bytes) {
@@ -107,7 +116,7 @@ public final class PodProcessMemoryBudget implements ComponentCallbacks2 {
     private static native void nativePurge();
     private static native long nativeUpper();
     private static native long nativeJsAvailable();
-    private static native boolean nativeReserveOptionalMedia(long bytes);
+    private static native boolean nativeReserveOptionalMedia(long bytes,long extraHeadroom);
     private static native String nativeResidents();
     private static native boolean nativeReserve(int owner,long bytes);
     private static native long nativeCommit(int owner,long bytes);

@@ -24,7 +24,7 @@ class Budget {
     std::lock_guard lock(mutex_); pss_=pss; observed_=start;
     cohorts_.erase(cohorts_.begin(),cohorts_.lower_bound(start));
   }
-  bool reserve(uint32_t owner,uint64_t bytes,bool background=false,bool quietQuota=false) {
+  bool reserve(uint32_t owner,uint64_t bytes,bool background=false,bool quietQuota=false,uint64_t extraHeadroom=0) {
     std::lock_guard lock(mutex_);
     if(owner>=OwnerCount)return false;
     if(!limit_) { pending_[owner]+=bytes;return true; }
@@ -32,7 +32,16 @@ class Budget {
     const uint64_t cap=owner==QuickJs?(background?quotaBytes-std::min<uint64_t>(quotaBytes,4000000):limit_):quotaBytes;
     if(owner==QuickJs&&resident_[owner]+pending_[owner]+bytes>quotaBytes*3/4)pressure_=true;
     if(bytes>cap || resident_[owner]+pending_[owner]>cap-bytes) {if(!quietQuota)pressure_=true;return false;}
-    if(bytes>limit_ || upperLocked(((owner==QuickJs&&!background)||owner==Graphics)?4000000:12000000)>limit_-bytes) { pressure_=true;return false; }
+    if(bytes>limit_ || extraHeadroom>limit_-bytes) {pressure_=true;return false;}
+    const uint64_t margin=((owner==QuickJs&&!background)||owner==Graphics)?4000000:12000000;
+    const uint64_t remaining=limit_-bytes-extraHeadroom;
+    if(upperLocked(margin)>remaining) {
+      pressure_=true;
+      // Leave the foreground result and input pumps enough room to process
+      // reclamation while there is still space below the budget. Large guest
+      // buffers and headless jobs do not borrow this margin.
+      if(owner!=QuickJs||background||bytes>32*1024||upperLocked(0)>remaining)return false;
+    }
     pending_[owner]+=bytes;return true;
   }
   uint64_t commit(uint32_t owner,uint64_t bytes) {
