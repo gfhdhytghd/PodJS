@@ -1,5 +1,5 @@
 import {benchmark,type VideoBenchmarkAction} from './benchmark.ts';
-import {videoSessions,hostOperation,delay,type HostOperation,type VideoBounds,type VideoTransform,type VideoFrameCapture,type VideoFrame,type VideoPrepare,type VideoSessionCapabilities,type VideoSessionState,type VideoSessionTransitionState,type VideoState} from './services.ts';
+import {videoSessions,hostOperation,delay,type HostOperation,type VideoBounds,type VideoTransform,type VideoFrameCapture,type VideoFrame,type VideoPrepare,type VideoSessionCapabilities,type VideoSessionState,type VideoSessionTransition,type VideoSessionTransitionState,type VideoState} from './services.ts';
 import type {VideoPagerDirection} from './video-paging.ts';
 type VideoDecoderProfile=Pick<VideoPrepare,'videoMime'|'videoWidth'|'videoHeight'>;
 
@@ -21,7 +21,7 @@ export interface VideoSessionPort {
   setLoop(sessionId:string,loop:boolean):Promise<VideoSessionState>;
   setSpeed?(sessionId:string,speed:number):Promise<VideoSessionState>;
   promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean;loop?:boolean;adoptPreparing?:boolean;transform?:VideoTransform;backgroundPlayback?:boolean;benchmark?:VideoBenchmarkAction}):Promise<VideoSessionState>;
-  transition(options:{fromSessionId:string;toSessionId:string;progress:number;direction:VideoPagerDirection;bounds?:VideoBounds;benchmark?:VideoBenchmarkAction;trackPointer?:boolean}):Promise<VideoSessionTransitionState>;
+  transition(options:VideoSessionTransition):Promise<VideoSessionTransitionState>;
 }
 
 const defaultSessionPort:VideoSessionPort={
@@ -78,7 +78,7 @@ export class VideoSessionPool<Source extends {key:string}> {
   private dragEpoch=0;
   private dragTracksPointer=false;
   private nativeDragKey:string|undefined;
-  private latestTransition:{slot:WarmSlot<Source>;trackPointer:boolean;dragEpoch:number;key:string;epoch:number;revision:number;fromId:string;toId:string;progress:number;direction:VideoPagerDirection;bounds:VideoBounds;benchmark?:VideoBenchmarkAction}|undefined;
+  private latestTransition:(VideoSessionTransition & {slot:WarmSlot<Source>;dragEpoch:number;key:string;epoch:number;revision:number})|undefined;
   constructor(private readonly port:VideoSessionPort=defaultSessionPort,private readonly waitForBudget=delay){
     const id=this.poolId;
     this.activeId=`vp${id}a`;this.slots=Array.from({length:7},(_,i)=>({id:`vp${id}${String.fromCharCode(98+i)}`,ready:false,revision:0}));
@@ -343,22 +343,22 @@ export class VideoSessionPool<Source extends {key:string}> {
   /** Rebound and programmatic transitions must never reacquire a live pointer. */
   endDrag(){this.dragTracksPointer=false;this.invalidateNativeDrag();}
   private invalidateNativeDrag(){this.dragEpoch++;this.nativeDragKey=undefined;this.latestTransition=undefined;}
-  async transition(progress:number,direction:VideoPagerDirection,bounds:VideoBounds,benchmark?:VideoBenchmarkAction):Promise<void>{
+  async transition(progress:number,direction:VideoPagerDirection,bounds:VideoBounds,benchmark?:VideoBenchmarkAction,rotationDeg?:number):Promise<void>{
     if(this.promoting)throw Error('stale video session transition during promotion');
     const slot=this.selected??this.slots.find(s=>s.ready);if(!slot?.source||!(slot.ready||this.independentKeyframes&&slot.operation))throw new Error('video session target is not prewarmed');
-    const key=JSON.stringify([this.generation,slot.revision,this.activeId,slot.id,direction,bounds]);
+    const key=JSON.stringify([this.generation,slot.revision,this.activeId,slot.id,direction,bounds,rotationDeg]);
     if(!benchmark&&this.nativeDragKey===key)return;
-    this.selected=slot;this.latestTransition={slot,trackPointer:this.dragTracksPointer,dragEpoch:this.dragEpoch,key,epoch:this.generation,revision:slot.revision,fromId:this.activeId,toId:slot.id,progress:Math.max(0,Math.min(1,progress)),direction,bounds,...(benchmark?{benchmark}:{})};
+    this.selected=slot;this.latestTransition={slot,trackPointer:this.dragTracksPointer,dragEpoch:this.dragEpoch,key,epoch:this.generation,revision:slot.revision,fromSessionId:this.activeId,toSessionId:slot.id,progress:Math.max(0,Math.min(1,progress)),direction,bounds,rotationDeg,...(benchmark?{benchmark}:{})};
     if(this.transitionRunning)return this.transitionRunning;
     this.transitionRunning=(async()=>{while(this.latestTransition){
-      const {slot,dragEpoch,key,epoch,revision,fromId,toId,...next}=this.latestTransition;this.latestTransition=undefined;
-      if(epoch!==this.generation||revision!==slot.revision||fromId===toId||!next.benchmark&&this.nativeDragKey===key)continue;
-      const reply=await this.port.transition({fromSessionId:fromId,toSessionId:toId,...next});
+      const {slot,dragEpoch,key,epoch,revision,...next}=this.latestTransition;this.latestTransition=undefined;
+      if(epoch!==this.generation||revision!==slot.revision||next.fromSessionId===next.toSessionId||!next.benchmark&&this.nativeDragKey===key)continue;
+      const reply=await this.port.transition(next);
       if(reply.nativeTracking===true&&dragEpoch===this.dragEpoch&&epoch===this.generation&&revision===slot.revision)this.nativeDragKey=key;
     }})();
     try{await this.transitionRunning;}finally{this.transitionRunning=undefined;}
   }
-  async promote(direction:VideoPagerDirection,bounds:VideoBounds,autoplay=true,benchmark?:VideoBenchmarkAction,retainKeys:readonly string[]=[]):Promise<{source:Source;state:VideoState}>{
+  async promote(direction:VideoPagerDirection,bounds:VideoBounds,autoplay=true,benchmark?:VideoBenchmarkAction,retainKeys:readonly string[]=[],transform?:VideoTransform):Promise<{source:Source;state:VideoState}>{
     const slot=this.selected??this.slots.find(s=>s.ready),target=slot?.source;if(!slot||!target||!slot.ready)throw new Error('video session target is not prewarmed');
     if(this.promoting)throw Error('stale video session promotion');
     this.endDrag();this.promoting=true;
@@ -368,7 +368,7 @@ export class VideoSessionPool<Source extends {key:string}> {
     const loop=this.loop;
     // The ready receipt can outlive its cached pixels. A committed selection
     // still owns this authorized source and may finish preparing on black.
-    const promoted=await this.port.promote(id,{replaceSessionId:this.activeId,bounds,autoplay,loop,adoptPreparing:true,backgroundPlayback:this.backgroundPlayback,...(benchmark?{benchmark}:{})});
+    const promoted=await this.port.promote(id,{replaceSessionId:this.activeId,bounds,autoplay,loop,adoptPreparing:true,transform,backgroundPlayback:this.backgroundPlayback,...(benchmark?{benchmark}:{})});
     // A fast swipe can retire the initial active before it decoded anything.
     // Retain its source, but never label that surface ready without host proof.
     const retired=typeof promoted.replacedHasRenderedFirstFrame==='boolean'?{hasRenderedFirstFrame:promoted.replacedHasRenderedFirstFrame,state:'prewarmed'}:await this.port.state(this.activeId).catch(()=>undefined);

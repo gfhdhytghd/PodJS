@@ -53,7 +53,13 @@ public class PodVideoPreviewTransformTest {
      rect(settled,mapped(image.getImageMatrix(),image.getDrawable().getIntrinsicWidth(),image.getDrawable().getIntrinsicHeight()));
      View black=(View)field(t,"background").get(next);assertEquals(w,black.getLayoutParams().width);assertEquals(h,black.getLayoutParams().height);assertEquals(y,black.getTranslationY(),0);
     }
-    call(s,"promote",new JSONObject().put("sessionId","next").put("replaceSessionId","old").put("bounds",bounds).put("autoplay",false));assertEquals(0,image.getTranslationY(),0);assertEquals("shrunk",field(t,"scaleMode").get(next));
+    call(s,"promote",new JSONObject().put("sessionId","next").put("replaceSessionId","old").put("bounds",bounds).put("autoplay",false)
+      .put("transform",new JSONObject().put("scaleMode","shrunk").put("rotationDeg",90)));
+    assertEquals(0,image.getTranslationY(),0);assertEquals("shrunk",field(t,"scaleMode").get(next));
+    float[] imageAxis={1,0}, textureAxis={1,0};
+    image.getImageMatrix().mapVectors(imageAxis);texture.getTransform(new Matrix()).mapVectors(textureAxis);
+    assertTrue("cached overlay already faces 90 degrees at promotion",imageAxis[1]>0);
+    assertTrue("live texture already faces 90 degrees at promotion",textureAxis[1]>0);
     field(t,"cachedFrame").set(next,null);field(t,"keyframeView").set(next,null);parent.removeView(image);bitmap.recycle();
    }
   }finally{s.close();Shadows.shadowOf(Looper.getMainLooper()).idle();}

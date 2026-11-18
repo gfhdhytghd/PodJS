@@ -201,6 +201,8 @@ public final class PodVideoServices implements AutoCloseable {
         PodVideoCodecGate.PROCESS.reclaim(this,PodVideoCodecGate.PREWARM);
         if(!decoderBudget.acquire())throw new IllegalStateException("video_decoder_limit");
         decoderLease=true;
+        JSONObject transform = a.optJSONObject("transform");
+        if (transform != null) readTransform(transform);
         applyBounds(a.optJSONObject("bounds")); autoplay=a.optBoolean("autoplay", true); mediaGate(true); backgroundPlayback=a.optBoolean("backgroundPlayback",false); lifecyclePaused=false; density=context.getResources().getDisplayMetrics().density;
         Map<String,String> headers = headers(a.optJSONObject("headers"));
         analytics=new PodVideoAnalytics();analytics.startupSeq=a.optLong("startupSeq",0);
@@ -380,7 +382,8 @@ public final class PodVideoServices implements AutoCloseable {
         c.complete(new JSONObject().put("ok",true));
     }
     private void clearBackdrop(){opaqueBackdrop=false;if(backdrop!=null){backdrop.setImageDrawable(null);backdrop.setVisibility(View.GONE);}if(backdropBitmap!=null&&!backdropBitmap.isRecycled())backdropBitmap.recycle();backdropBitmap=null;}
-    private void transform(JSONObject a, Callback c)throws Exception { String mode=a.optString("scaleMode","standard");if(!mode.equals("standard")&&!mode.equals("expanded")&&!mode.equals("shrunk"))throw new IllegalArgumentException("invalid_scale_mode");float rot=(float)a.optDouble("rotationDeg",0);if(!Float.isFinite(rot)||Math.abs(rot)>100000)throw new IllegalArgumentException("invalid_rotation");float scaleRot=(float)a.optDouble("scaleRotationDeg",rot);if(!Float.isFinite(scaleRot)||Math.abs(scaleRot)>100000)throw new IllegalArgumentException("invalid_scale_rotation");rotationDeg=Math.round(rot*100f)/100f;scaleRotationDeg=Math.round(scaleRot*100f)/100f;scaleMode=mode;panX=(float)a.optDouble("panX",0);panY=(float)a.optDouble("panY",0);if(!Float.isFinite(panX)||!Float.isFinite(panY))throw new IllegalArgumentException("invalid_pan");fitVideo();c.complete(state()); }
+    private void transform(JSONObject a, Callback c)throws Exception {readTransform(a);fitVideo();c.complete(state()); }
+    private void readTransform(JSONObject a)throws Exception { String mode=a.optString("scaleMode","standard");if(!mode.equals("standard")&&!mode.equals("expanded")&&!mode.equals("shrunk"))throw new IllegalArgumentException("invalid_scale_mode");float rot=(float)a.optDouble("rotationDeg",0);if(!Float.isFinite(rot)||Math.abs(rot)>100000)throw new IllegalArgumentException("invalid_rotation");float scaleRot=(float)a.optDouble("scaleRotationDeg",rot);if(!Float.isFinite(scaleRot)||Math.abs(scaleRot)>100000)throw new IllegalArgumentException("invalid_scale_rotation");rotationDeg=Math.round(rot*100f)/100f;scaleRotationDeg=Math.round(scaleRot*100f)/100f;scaleMode=mode;panX=(float)a.optDouble("panX",0);panY=(float)a.optDouble("panY",0);if(!Float.isFinite(panX)||!Float.isFinite(panY))throw new IllegalArgumentException("invalid_pan"); }
     private void setLoop(JSONObject a, Callback c)throws Exception { require(); Object loop=a.opt("loop"); if(!(loop instanceof Boolean))throw new IllegalArgumentException("loop_must_be_boolean"); player.setRepeatMode((Boolean)loop?Player.REPEAT_MODE_ONE:Player.REPEAT_MODE_OFF); c.complete(state()); }
     private void setSpeed(JSONObject a, Callback c)throws Exception { require(); player.setPlaybackSpeed(PodVideoSpeed.parse(a)); c.complete(state()); }
     private void setVolume(JSONObject a, Callback c)throws Exception {PodVideoSystemAudio.update(context,a);if(audioPolicy!=null)audioPolicy.refresh();c.complete(state());}

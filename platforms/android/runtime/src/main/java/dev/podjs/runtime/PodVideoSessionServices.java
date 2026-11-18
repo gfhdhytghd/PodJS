@@ -851,7 +851,9 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             target.backgroundPlayback=args.optBoolean("backgroundPlayback",false);target.prewarming=false;target.presented=target.bounds.visible;
             target.autoplay=args.optBoolean("autoplay",true);target.state="preparing";
             target.benchmarkAction=PodBenchmark.videoAction(args);target.benchmarkFramePending=false;
-            target.applyBounds(target.bounds);target.showPresented();hideStandbys();mediaGate(!lifecyclePaused);
+            target.applyBounds(target.bounds);
+            if(transform!=null)target.fitVideo();
+            target.showPresented();hideStandbys();mediaGate(!lifecyclePaused);
             long own=target.generation;
             PodBenchmark.VideoAction action=target.benchmarkAction;
             PodBenchmark.swapStage(action,"surface_promoted",own);
@@ -906,6 +908,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         mediaGate(!lifecyclePaused);
         target.presented = requested.visible;
         target.applyBounds(requested);
+        if(transform!=null)target.fitVideo();
         // Reveal the retained first-frame surface before hiding the old one.
         target.showPresented();
         hideStandbys();
@@ -937,6 +940,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     private View pagerBackground;
     private Bounds dragBounds;
     private String dragDirection;
+    private int dragAxisX, dragAxisY;
     private final PodVideoDragInput dragInput = new PodVideoDragInput();
     private final PodVideoReleaseFrame releaseFrame=new PodVideoReleaseFrame();
 
@@ -961,18 +965,29 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             }
         }
         if (dragInput.accept(event) && dragFrom != null && dragTo != null && dragBounds != null)
-            drawDrag(dragInput.distanceY());
+            drawDrag();
     }
 
-    private void drawDrag(float distance) {
-        float y = Math.max(-dragBounds.heightPx, Math.min(dragBounds.heightPx, distance));
-        dragFrom.setTranslation(dragBounds.translateXPx, dragBounds.translateYPx + y);
-        boolean matching = "up".equals(dragDirection) ? y <= 0 : y >= 0;
+    private float dragLength() {
+        return dragAxisX == 0 ? dragBounds.heightPx : dragBounds.widthPx;
+    }
+
+    private void placeDragPage(Session page, float offset) {
+        page.setTranslation(dragBounds.translateXPx + offset * dragAxisX,
+                dragBounds.translateYPx + offset * dragAxisY);
+    }
+
+    private void drawDrag() {
+        float length = dragLength();
+        float distance = dragInput.distanceX() * dragAxisX + dragInput.distanceY() * dragAxisY;
+        float offset = Math.max(-length, Math.min(length, distance));
+        placeDragPage(dragFrom, offset);
+        boolean up = "up".equals(dragDirection);
+        boolean matching = up ? offset <= 0 : offset >= 0;
         dragTo.videoView.setAlpha(matching ? 1f : 0f);
         if(dragTo.keyframeView!=null)dragTo.keyframeView.setAlpha(matching ? 1f : 0f);
         dragTo.background.setVisibility(matching ? View.VISIBLE : View.GONE);
-        if (matching) dragTo.setTranslation(dragBounds.translateXPx,
-                dragBounds.translateYPx + y + ("up".equals(dragDirection) ? dragBounds.heightPx : -dragBounds.heightPx));
+        if (matching) placeDragPage(dragTo, offset + (up ? length : -length));
     }
 
     private void endDrag() {
@@ -1018,20 +1033,30 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         // main. Keep the authorized incoming decoder for promotion; there is
         // no outgoing surface to compose or acknowledge as a presented frame.
         if(from==null){endDrag();callback.complete(new JSONObject().put("fromSessionId",fromId).put("toSessionId",toId).put("progress",progress).put("direction",direction).put("composited",false).put("nativeTracking",false));return;}
+        float angle = finite(args, "rotationDeg", 0, -100000, 100000);
+        if (angle % 90 != 0) throw new IllegalArgumentException("invalid_rotationDeg");
+        int quarter = Math.floorMod((int) angle / 90, 4);
+        dragAxisX = quarter == 1 ? -1 : quarter == 3 ? 1 : 0;
+        dragAxisY = quarter == 0 ? 1 : quarter == 2 ? -1 : 0;
         // Cold pages expose black; decoded pages keep their own aspect matrix.
         boolean changedPair = dragFrom != from || dragTo != to;
         dragFrom = from; dragTo = to; dragBounds = bounds; dragDirection = direction;
         if(changedPair) { showPagerBackground(bounds); hideStandbys(); }
         // The strip uses one display transform for every page, including
         // a retained paused texture and a cold target without decoded pixels.
+        boolean settleRotation = args.has("rotationDeg") && (from.rotationDeg != angle || from.scaleRotationDeg != angle);
+        if (settleRotation) {
+            from.rotationDeg = from.scaleRotationDeg = angle;
+            from.recordPresentationTransform();
+        }
         boolean transformChanged=!to.scaleMode.equals(from.scaleMode)||to.rotationDeg!=from.rotationDeg
                 ||to.scaleRotationDeg!=from.scaleRotationDeg||to.panX!=from.panX||to.panY!=from.panY;
         if(transformChanged) {
             to.scaleMode=from.scaleMode;to.rotationDeg=from.rotationDeg;to.scaleRotationDeg=from.scaleRotationDeg;to.panX=from.panX;to.panY=from.panY;
-            if(to.frameSource!=null)to.frameSource.put("transform",new JSONObject().put("scaleMode",to.scaleMode)
-                    .put("rotationDeg",to.rotationDeg).put("scaleRotationDeg",to.scaleRotationDeg).put("panX",to.panX).put("panY",to.panY));
+            to.recordPresentationTransform();
         }
         from.bounds = bounds; to.bounds = bounds; from.applyBounds(bounds, false); to.applyBounds(bounds, false);
+        if(settleRotation)from.fitVideo();
         to.fitVideo();
         if(changedPair) { to.raisePresented(); from.raisePresented(); }
         from.videoView.setVisibility(View.VISIBLE); to.videoView.setVisibility(View.VISIBLE);
@@ -1040,19 +1065,20 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         from.videoView.setAlpha(1f); to.videoView.setAlpha(1f);
         if(to.keyframeView!=null){to.keyframeView.setVisibility(View.VISIBLE);to.keyframeView.setAlpha(1f);}
         from.background.setVisibility(View.VISIBLE); to.background.setVisibility(View.VISIBLE);
-        float[] offsets = transitionOffsets(bounds.heightPx, progress, direction);
-        if (args.optBoolean("trackPointer", false) && dragInput.arm()) drawDrag(dragInput.distanceY());
+        float[] offsets = transitionOffsets(dragLength(), progress, direction);
+        if (args.optBoolean("trackPointer", false) && dragInput.arm()) drawDrag();
         else {
             dragInput.disarm();
-            from.setTranslation(bounds.translateXPx, offsets[0] + bounds.translateYPx);
-            to.setTranslation(bounds.translateXPx, offsets[1] + bounds.translateYPx);
+            placeDragPage(from, offsets[0]);
+            placeDragPage(to, offsets[1]);
         }
         PodBenchmark.VideoAction action=PodBenchmark.videoAction(args);
-        if(progress==0&&action!=null){long own=from.generation;PodBenchmark.present(from.videoView,action.event("snap_back"),()->from.generation==own&&from.geometryReady&&from.hasRenderedFirstFrame&&from.videoView.getTranslationY()==bounds.translateYPx);}
+        if(progress==0&&action!=null){long own=from.generation;PodBenchmark.present(from.videoView,action.event("snap_back"),()->from.generation==own&&from.geometryReady&&from.hasRenderedFirstFrame&&from.videoView.getTranslationX()==bounds.translateXPx&&from.videoView.getTranslationY()==bounds.translateYPx);}
         callback.complete(new JSONObject()
                 .put("fromSessionId", fromId).put("toSessionId", toId)
                 .put("progress", progress).put("direction", direction)
-                .put("fromOffsetYPx", offsets[0]).put("toOffsetYPx", offsets[1])
+                .put("fromOffsetXPx", offsets[0] * dragAxisX).put("toOffsetXPx", offsets[1] * dragAxisX)
+                .put("fromOffsetYPx", offsets[0] * dragAxisY).put("toOffsetYPx", offsets[1] * dragAxisY)
                 .put("composited", true).put("nativeTracking", dragInput.tracking()));
     }
 
@@ -1709,6 +1735,13 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                 keyframeView=null;
             }
             if(cachedFrame!=null){keyframes.unpin(cachedFrame);cachedFrame=null;}
+        }
+
+        void recordPresentationTransform() throws Exception {
+            if (frameSource == null) return;
+            frameSource.put("transform", new JSONObject().put("scaleMode", scaleMode)
+                    .put("rotationDeg", rotationDeg).put("scaleRotationDeg", scaleRotationDeg)
+                    .put("panX", panX).put("panY", panY));
         }
 
         void readTransform(JSONObject args) throws Exception {
