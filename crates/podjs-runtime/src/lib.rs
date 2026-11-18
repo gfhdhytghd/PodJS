@@ -755,7 +755,14 @@ pub extern "C" fn pod_runtime_create(config: *const PodRuntimeConfig) -> *mut Po
         set_error("capabilities_json must be a JSON string array");
         return std::ptr::null_mut();
     };
-    let guest = match if memory_budget::limit()==0 {Guest::new()} else {Guest::new_with_alloc(memory_budget::ProcessAllocator::default())} {
+    let guest = match {
+        let _startup = memory_budget::ForegroundStartup::enter();
+        if memory_budget::limit() == 0 {
+            Guest::new()
+        } else {
+            Guest::new_with_alloc(memory_budget::ProcessAllocator::default())
+        }
+    } {
         Ok(value) => value,
         Err(error) => {
             set_error(format!("QuickJS create failed: {error}"));
@@ -1192,6 +1199,7 @@ pub extern "C" fn pod_runtime_eval_bundle(
         set_error("bundle is not UTF-8");
         return ERR_ARGUMENT;
     };
+    let _startup = memory_budget::ForegroundStartup::enter();
     if let Err(error) = mount_runtime(runtime) {
         set_error(format!("surface mount failed: {error}"));
         return ERR_GUEST;
@@ -1240,6 +1248,7 @@ pub extern "C" fn pod_runtime_eval_bundle_bytecode(
         return ERR_STATE;
     }
     let began = Instant::now();
+    let _startup = memory_budget::ForegroundStartup::enter();
     if let Err(error) = mount_runtime(runtime) {
         set_error(format!("surface mount failed: {error}"));
         return ERR_GUEST;

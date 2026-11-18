@@ -44,6 +44,13 @@ class Budget {
     }
     pending_[owner]+=bytes;return true;
   }
+  bool reserveQuickJsStartup(uint64_t bytes) {
+    std::lock_guard lock(mutex_);
+    pending_[QuickJs]+=bytes;
+    if(limit_&&(upperLocked(4000000)>limit_||
+                resident_[QuickJs]+pending_[QuickJs]>quota(QuickJs)*3/4))pressure_=true;
+    return true;
+  }
   uint64_t commit(uint32_t owner,uint64_t bytes) {
     std::lock_guard lock(mutex_);if(owner>=OwnerCount)return 0;
     bytes=std::min(bytes,pending_[owner]);pending_[owner]-=bytes;
@@ -86,6 +93,7 @@ inline Budget process;
 inline uint64_t allocation(uint32_t owner,size_t bytes,uint32_t action,uint64_t generation) {
   switch(action){case 0:return process.reserve(owner,bytes);case 1:return process.commit(owner,bytes);
     case 4:return process.reserve(owner,bytes,true);
+    case 5:return owner==QuickJs&&process.reserveQuickJsStartup(bytes);
     case 2:process.cancel(owner,bytes);break;case 3:process.release(owner,bytes,generation);break;default:return false;}
   return true;
 }
