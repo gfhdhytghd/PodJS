@@ -123,7 +123,8 @@ final class PodFileRanges {
         JSONArray segments = new JSONArray(), chunks = new JSONArray();
         byte[] buffer = new byte[BLOCK];
         long total = 0, segmentSize = 0;
-        Path temp = file == null ? null : Files.createTempFile(file.toPath().getParent(), ".pod-range-", ".tmp");
+        Path scratch = file == null ? null : PodScratchFiles.create(file.toPath().getParent(), ".pod-range-", ".tmp");
+        Path temp = scratch;
         try {
           JSONObject result;
           try (FileChannel out = temp == null ? null : FileChannel.open(temp, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)) {
@@ -167,7 +168,10 @@ final class PodFileRanges {
           }
           return result;
         } finally {
-          if (temp != null) Files.deleteIfExists(temp);
+          if (scratch != null) {
+              try { if (temp != null) Files.deleteIfExists(temp); }
+              finally { PodScratchFiles.release(scratch); }
+          }
         }
     }
 }

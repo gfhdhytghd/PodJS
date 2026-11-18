@@ -147,6 +147,7 @@ public final class PodDeviceServices implements AutoCloseable {
             case "file.readTextChunk": return fileReadTextChunk(args);
             case "file.closeText": return fileCloseText(args);
             case "file.createTemp": return fileCreateTemp(args);
+            case "file.scratch": return fileScratch(args);
             case "file.commit": return fileCommit(args);
             case "file.compose": return fileCompose(args);
             case "file.list": return fileList(args);
@@ -163,7 +164,7 @@ public final class PodDeviceServices implements AutoCloseable {
         // Secrets belong to the process, not to a foreground view/worker window.
         closed = true;
         secureLeases.close();
-        for (File file : temporaryFiles) file.delete();
+        for (File file : temporaryFiles) { file.delete(); PodScratchFiles.release(file.toPath()); }
         temporaryFiles.clear();
         for (java.io.Reader reader : textReaders.values()) try { reader.close(); } catch (IOException ignored) { }
         textReaders.clear();
@@ -175,7 +176,7 @@ public final class PodDeviceServices implements AutoCloseable {
     synchronized void discardTemporary(JSONObject value) {
         try {
             File file = safeFile(value.getString("path"));
-            if (temporaryFiles.remove(file)) file.delete();
+            if (temporaryFiles.remove(file)) { file.delete(); PodScratchFiles.release(file.toPath()); }
         } catch (Exception ignored) { }
     }
 
@@ -865,7 +866,7 @@ public final class PodDeviceServices implements AutoCloseable {
         if (temporaryFiles.size() >= 8) throw new IllegalStateException("too_many_temporary_files");
         File directory = safeFile(required(a, "directory"));
         if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("parent_unavailable");
-        File file = Files.createTempFile(directory.toPath(), ".pod-write-", ".part").toFile();
+        File file = PodScratchFiles.create(directory.toPath(), ".pod-write-", ".part").toFile();
         temporaryFiles.add(file);
         return new JSONObject().put("path", root.toPath().relativize(file.toPath()).toString());
     }
@@ -1012,7 +1013,7 @@ public final class PodDeviceServices implements AutoCloseable {
             forceDirectoryChain(target.getParentFile());
             if(!source.getParentFile().equals(target.getParentFile()))forceDirectoryChain(source.getParentFile());
         }
-        temporaryFiles.remove(source);
+        if (temporaryFiles.remove(source)) PodScratchFiles.release(source.toPath());
         return actual.put("path", required(a, "target")).put("reused", reused);
     }
     private static long exactFileSize(JSONObject a, String field) {
@@ -1021,6 +1022,13 @@ public final class PodDeviceServices implements AutoCloseable {
         double size = ((Number)value).doubleValue();
         if (!Double.isFinite(size) || size < 0 || size > 9007199254740991d || size != Math.rint(size)) throw new IllegalArgumentException("invalid_" + field);
         return (long)size;
+    }
+    private JSONObject fileScratch(JSONObject args) throws Exception {
+        String relative = required(args, "path");
+        File directory = safeFile(relative);
+        if (!root.toPath().resolve(relative).equals(directory.toPath()))
+            throw new IOException("invalid_scratch_directory");
+        return new JSONObject().put("bytes", PodScratchFiles.orphanBytes(directory.toPath(), args.optBoolean("collect")));
     }
     private JSONObject fileList(JSONObject a) throws Exception {
         File directory = safeFile(required(a, "path"));
@@ -1070,7 +1078,7 @@ public final class PodDeviceServices implements AutoCloseable {
                 if(f.exists())throw new IOException("staged_file_cleanup_failed");
                 if(f.getParentFile().isDirectory())forceDirectoryChain(f.getParentFile());
             }
-            if(deleted||!f.exists())temporaryFiles.remove(f);
+            if ((deleted || !f.exists()) && temporaryFiles.remove(f)) PodScratchFiles.release(f.toPath());
             return new JSONObject().put("deleted",deleted);
         });
     }
