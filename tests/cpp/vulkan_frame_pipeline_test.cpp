@@ -1091,6 +1091,29 @@ static void cpuFallbackReservesBeforeAllocationAndReleasesOnPause() {
   assert(renderer.fallbackCapacityBytes()==0&&budget.resident(podjs_memory::Scratch)==0);
 }
 
+static void budgetedRendererGrowsOnlyTheClipBufferOfTheAvailableSlot() {
+  ANativeWindow window{};
+  VulkanRenderer renderer(&window, 466, 466, 466, 466);
+  assert(renderer.valid());
+  const auto initial = renderer.memoryStats();
+  assert(initial.stagingAllocatedBytes == 0);
+  assert(initial.clipAllocatedBytes <= 2 * 64 * 32);
+  assert(draw(renderer, clippedImage(1), 701));
+  assert(draw(renderer, clippedImage(2), 702));
+  const auto other = submissions.back();
+  std::vector<uint32_t> manyClips;
+  const auto oneClip = clippedImage(2);
+  for (int i = 0; i < 257; ++i)
+    manyClips.insert(manyClips.end(), oneClip.begin(), oneClip.end());
+  assert(draw(renderer, manyClips, 703));
+  assert(fences.at(other.fence).pending);
+  verifyPending();
+  const auto grown = renderer.memoryStats();
+  assert(grown.clipAllocatedBytes >= (257 + 1) * 32);
+  assert(grown.clipAllocatedBytes <= (512 + 64) * 32);
+  assert(grown.stagingAllocatedBytes < renderer.rasterBytes());
+}
+
 int main() {
   emptyReplacedAndDetachedSnapshotsRecover();
   unchangedSnapshotAfterPauseIsPresented();
@@ -1103,6 +1126,7 @@ int main() {
   capMax = 2; // The surface is permitted to clamp minImageCount + 1.
   twoPendingFramesKeepBuffersAndTexturesAlive();
   cpuFallbackReservesBeforeAllocationAndReleasesOnPause();
+  budgetedRendererGrowsOnlyTheClipBufferOfTheAvailableSlot();
   std::puts("vulkan_frame_pipeline_test: all synchronization scenarios passed "
             "(host mock)");
 }

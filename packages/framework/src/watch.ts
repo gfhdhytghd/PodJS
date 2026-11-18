@@ -28,6 +28,7 @@ export interface DisplayMetrics {
 
 interface PodHost {
   takeEvents(): string | undefined;
+  takeEvent?(): PodEvent | undefined;
   emit(line: string): void;
   displayMetrics(): string;
   capabilities(): string;
@@ -269,37 +270,43 @@ type PodEvent =
   | { t: "touchCancel" }
   | { t: "accessibility.action"; nodeId: number; action: string };
 
-export function __pumpPodEvents(): void {
-  const batch = host()?.takeEvents();
-  if (!batch) return;
-  const events = JSON.parse(batch) as PodEvent[];
-  for (const event of events) {
-    if (event.t === "touchCancel" || (event.t === "lifecycle" && event.state !== "active")) cancelActiveTouches();
-    if ((event as {t:string}).t === 'diagnostic.serviceTrace') __setServiceTraceEnabled((event as unknown as {enabled?:boolean}).enabled===true);
-    if ((event as {t:string}).t === 'diagnostic.jsStack') {
-      __setServiceCallbackTraceEnabled((event as unknown as {enabled?:boolean}).enabled===true);
-      continue; // Host diagnostic control is not a product event.
-    }
-    if(event.t === "lifecycle" && event.state !== "active")checkpoint(event.state);
-    else if(event.t === "checkpoint" && event.reason === "screen-off")checkpoint("screen-off");
-    dispatchMemoryPressure(event as unknown as Record<string,unknown>);
-    for (const handler of hostEventHandlers) handler(event as unknown as Record<string, unknown>);
-    if (event.t === "accessibility.action") {
-      dispatchAccessibilityAction(event.nodeId, event.action);
-    } else if (event.t === "axis" && Number.isInteger(event.delta) && event.delta !== 0) {
-      for (const handler of axisHandlers.get(event.axis) ?? []) handler(event.delta);
-    } else if (event.t === "lifecycle") {
-      lifecycleState = event.state;
-      for (const handler of lifecycleHandlers) handler(event.state);
-    } else if (event.t === "theme") {
-      themeState = event.theme;
-      for (const handler of themeHandlers) handler(event.theme);
-    } else if (event.t === "back") {
-      for (let i = backHandlers.length - 1; i >= 0; i--) {
-        if (backHandlers[i]() === true) break;
-      }
+function dispatchPodEvent(event:PodEvent):void {
+  if (event.t === "touchCancel" || (event.t === "lifecycle" && event.state !== "active")) cancelActiveTouches();
+  if ((event as {t:string}).t === 'diagnostic.serviceTrace') __setServiceTraceEnabled((event as unknown as {enabled?:boolean}).enabled===true);
+  if ((event as {t:string}).t === 'diagnostic.jsStack') {
+    __setServiceCallbackTraceEnabled((event as unknown as {enabled?:boolean}).enabled===true);
+    return; // Host diagnostic control is not a product event.
+  }
+  if(event.t === "lifecycle" && event.state !== "active")checkpoint(event.state);
+  else if(event.t === "checkpoint" && event.reason === "screen-off")checkpoint("screen-off");
+  dispatchMemoryPressure(event as unknown as Record<string,unknown>);
+  for (const handler of hostEventHandlers) handler(event as unknown as Record<string, unknown>);
+  if (event.t === "accessibility.action") {
+    dispatchAccessibilityAction(event.nodeId, event.action);
+  } else if (event.t === "axis" && Number.isInteger(event.delta) && event.delta !== 0) {
+    for (const handler of axisHandlers.get(event.axis) ?? []) handler(event.delta);
+  } else if (event.t === "lifecycle") {
+    lifecycleState = event.state;
+    for (const handler of lifecycleHandlers) handler(event.state);
+  } else if (event.t === "theme") {
+    themeState = event.theme;
+    for (const handler of themeHandlers) handler(event.theme);
+  } else if (event.t === "back") {
+    for (let i = backHandlers.length - 1; i >= 0; i--) {
+      if (backHandlers[i]() === true) break;
     }
   }
+}
+
+export function __pumpPodEvents(): void {
+  const source = host();
+  if (source?.takeEvent) {
+    for (let event = source.takeEvent(); event; event = source.takeEvent()) dispatchPodEvent(event);
+    return;
+  }
+  const batch = source?.takeEvents();
+  if (!batch) return;
+  for (const event of JSON.parse(batch) as PodEvent[]) dispatchPodEvent(event);
 }
 
 // Host events are realm-scoped input, not component-scoped UI lifecycle.

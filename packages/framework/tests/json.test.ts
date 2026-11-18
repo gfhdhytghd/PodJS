@@ -10,6 +10,20 @@ test('fallback preserves JSON errors and nonobject or mismatched types',async()=
  for(const raw of ['','{"x":1,}','[1,2','{"x":"\\uZZZZ"}'])await expect(projectJsonAsync(raw,{x:null})).rejects.toThrow(SyntaxError);
  for(const raw of ['null','4','[1,2]','{"rows":false}'])expect(await projectJsonAsync(raw,{rows:[{n:null}]})).toEqual(projectJsonValue(JSON.parse(raw),{rows:[{n:null}]}));
 });
+test('projection reports upload and native read or fallback without including source data',async()=>{
+ const previous=(globalThis as any).pod;
+ const phases:string[]=[];
+ const host={jsonProjectionBegin:()=>1,jsonProjectionAppend:()=>true,jsonProjectionNext:()=>[2,'',-1,''],jsonProjectionCancel:()=>{}};
+ (globalThis as any).pod=host;
+ try{
+  await projectJsonAsync('{"x":"fixture"}',{x:null},{onProjectionPhase:phase=>phases.push(phase)});
+  expect(phases).toEqual(['upload','native']);
+  phases.length=0;
+  host.jsonProjectionAppend=()=>false;
+  expect(await projectJsonAsync('{"x":1}',{x:null},{onProjectionPhase:phase=>phases.push(phase)})).toEqual({x:1});
+  expect(phases).toEqual(['upload','fallback']);
+ }finally{(globalThis as any).pod=previous;}
+});
 test('cancel closes native job before publication and bounds upload',async()=>{
  const previous=(globalThis as any).pod;let freed=0;let largest=0;let published=0;const pending:any[]=[];
  (globalThis as any).pod={jsonProjectionBegin:()=>3,jsonProjectionAppend:(_:number,part:string)=>{largest=Math.max(largest,part.length);return true;},jsonProjectionNext:()=>[0,'',-1,''],jsonProjectionCancel:()=>freed++};

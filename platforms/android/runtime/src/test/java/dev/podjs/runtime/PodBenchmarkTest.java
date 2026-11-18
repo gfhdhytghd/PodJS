@@ -10,6 +10,17 @@ import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLog;
 @RunWith(RobolectricTestRunner.class) @Config(sdk=30)
 public class PodBenchmarkTest {
+ @Test public void feedStagesOnlyCarryClosedWaitPoints()throws Exception {
+  ShadowLog.clear();
+  JSONObject row=new JSONObject().put("code","feed_stage").put("feed_stage","project_upload");
+  long seq=PodBenchmark.dispatch(row.toString());assertTrue(seq>0);
+  row.put("seq",seq).put("feed_stage","mapping");
+  assertEquals(seq,PodBenchmark.dispatch(row.toString()));
+  assertEquals(seq,PodBenchmark.dispatch(row.put("feed_stage","request_auth").toString()));
+  assertEquals(0,PodBenchmark.dispatch(new JSONObject(row.toString()).put("cursor","PRIVATE").toString()));
+  assertEquals(0,PodBenchmark.dispatch(row.put("feed_stage","PRIVATE").toString()));
+  assertEquals(3,ShadowLog.getLogsForTag("DYBENCH").size());
+ }
  @org.junit.Test public void coldPrepareStagesStayClosedAndNativeAdoptionDoesNotInventADecode() throws Exception {
   long seq=PodBenchmark.begin("entry_start",new org.json.JSONObject());
   for(String stage:new String[]{"prepare_admitted","player_constructed","prepare_dispatched","video_format_ready","initial_frame_adopted"})

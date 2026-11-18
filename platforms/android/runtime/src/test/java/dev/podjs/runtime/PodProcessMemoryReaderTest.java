@@ -37,6 +37,25 @@ public class PodProcessMemoryReaderTest {
         source.unavailable=false;source.local=new PodProcessMemoryReader.Reading(80000,6400);now[0]=5001;
         assertEquals(121600,reader.snapshot().totalKiB);assertEquals(3,source.queries);
     }
+    @Test public void oww242BudgetKeepsLocalPssAndBoundsStaleGraphicsAfterRetirement(){
+        Source source=new Source();source.local=new PodProcessMemoryReader.Reading(73000,7000);
+        PodProcessMemoryReader.Snapshot snapshot=new PodProcessMemoryReader(source,()->0L).snapshot();
+        assertEquals(114000,snapshot.totalKiB);
+        assertEquals(94096,snapshot.oww242BudgetKiB(0));
+        assertEquals(114000,snapshot.oww242BudgetKiB(1));
+        assertEquals(114000,snapshot.oww242BudgetKiB(2));
+        source.local=new PodProcessMemoryReader.Reading(125000,54000);
+        snapshot=new PodProcessMemoryReader(source,()->0L).snapshot();
+        assertEquals(125000,snapshot.oww242BudgetKiB(0));
+    }
+    @Test public void oww242BudgetAccountsForActiveGraphicsBeforeTheSystemReadingCatchesUp(){
+        Source source=new Source();source.local=new PodProcessMemoryReader.Reading(85000,7000);
+        source.system=new PodProcessMemoryReader.Reading(74000,24000);
+        PodProcessMemoryReader.Snapshot snapshot=new PodProcessMemoryReader(source,()->0L).snapshot();
+        assertEquals(102000,snapshot.totalKiB);
+        assertEquals(122000,snapshot.oww242BudgetKiB(1));
+        assertEquals(126000,snapshot.oww242BudgetKiB(2));
+    }
     @Test public void invalidMeasurementsCannotWrapTheProcessBudget(){
         for(long[] value:new long[][]{{0,0},{100,-1},{100,101}}){
             try{new PodProcessMemoryReader.Reading(value[0],value[1]);fail("invalid memory accepted");}catch(IllegalArgumentException expected){}
