@@ -36,7 +36,12 @@ export function uploadTextureFile(path:string,width:number,height:number,psm:num
 export type SqlValue = string | number | null;
 export interface SqlStatement { sql: string; params?: readonly SqlValue[] }
 export class HostServiceError extends Error {
-  constructor(readonly code: string, message: string, readonly mirrorIndex?:0|1) { super(message); this.name = "HostServiceError"; }
+  readonly nativeTransportFailure?:true;
+  constructor(readonly code: string, message: string, readonly mirrorIndex?:0|1, nativeTransportFailure?:true) {
+    super(message);
+    this.name = "HostServiceError";
+    if(nativeTransportFailure===true)this.nativeTransportFailure=true;
+  }
 }
 export interface HostOperation<T> { result: Promise<T>; cancel(reason?: string): void }
 const pending = new Map<number, { method:string;diagnosticSite:number;resolve(value: unknown): void; reject(error: Error): void; status?:(value:unknown)=>void }>();
@@ -179,7 +184,8 @@ __onHostEvent(event => {
   serviceDiagnosticComplete(request.method,request.diagnosticSite,event.ok===true);
   if (event.ok === true) traceServiceCallback(request.method,'resolve',()=>request.resolve(event.value));
   else traceServiceCallback(request.method,'reject',()=>request.reject(new HostServiceError(String(event.code ?? "host_error"), String(event.message ?? "Host operation failed"),
-    event.code==='resolution_limit'&&(event.mirrorIndex===0||event.mirrorIndex===1)?event.mirrorIndex:undefined)));
+    event.code==='resolution_limit'&&(event.mirrorIndex===0||event.mirrorIndex===1)?event.mirrorIndex:undefined,
+    event.nativeTransportFailure===true?true:undefined)));
 });
 /** Cancellation stops delivery; a mutation already committed by the host is not undone. */
 export function hostOperation<T>(method: string, args: Record<string, unknown>): HostOperation<T> {

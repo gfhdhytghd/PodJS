@@ -5,10 +5,11 @@ import android.os.CancellationSignal;
 import android.os.Looper;
 import androidx.test.core.app.ApplicationProvider;
 import java.io.*;
-import java.net.SocketException;
 import java.util.Arrays;
+import java.util.Scanner;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -57,7 +58,13 @@ public class PodByteBridgeTest {
         assertEquals(0,PodBytePayload.input(new JSONObject().put("_podByteMode",true).put("_podBytes",new byte[0])).length);
         for(Object bad:new Object[]{"wrong",new byte[65537]})try{PodBytePayload.input(new JSONObject().put("_podByteMode",true).put("_podBytes",bad));fail();}catch(IllegalArgumentException expected){}
     }
-    @Test public void nativeByteReadPreservesTheHostErrorForConnectionReset()throws Exception {
+    @Test public void nativeByteReadKeepsBaselineCodesAcrossTheTransportErrorTable()throws Exception {
+        InputStream resource=getClass().getResourceAsStream("/transport-error-cases.json");
+        assertNotNull("transport error table",resource);
+        JSONArray cases;
+        try(Scanner reader=new Scanner(resource,"UTF-8")){
+            cases=new JSONArray(reader.useDelimiter("\\A").next());
+        }
         LinkedBlockingQueue<String> results=new LinkedBlockingQueue<>();
         try(PodServices host=new PodServices(ApplicationProvider.getApplicationContext(),results::add)){
             host.attachByteBridge(new PodServices.ByteBridge(){
@@ -66,25 +73,38 @@ public class PodByteBridgeTest {
                 public void drop(int id){throw new AssertionError("unexpected dropped attachment");}
             });
             PodByteStreamServices streams=ReflectionHelpers.getField(host,"byteStreams");
-            String id=streams.attach(new InputStream(){
-                @Override public int read()throws IOException{throw new SocketException("Connection reset");}
-            },new ByteArrayOutputStream(),()->{});
-            host.dispatch(new JSONObject().put("t","service.request").put("version",1).put("id",1)
-                    .put("method","stream.read.bytes").put("args",args(id,1)));
+            for(int i=0;i<cases.length();i++){
+                JSONObject row=cases.getJSONObject(i);
+                if(row.isNull("exception"))continue; // Guest and WebView codes do not pass through the Java exception catch.
+                String name=row.getString("name"),code=row.getString("baselineCode");
+                String message=row.isNull("message")?null:row.getString("message");
+                Exception failure=Class.forName(row.getString("exception")).asSubclass(Exception.class)
+                        .getConstructor(String.class).newInstance(message);
+                String id=streams.attach(new InputStream(){
+                    @Override public int read()throws IOException{
+                        if(failure instanceof IOException)throw (IOException)failure;
+                        throw (RuntimeException)failure;
+                    }
+                },new ByteArrayOutputStream(),()->{});
+                int requestId=i+1;
+                host.dispatch(new JSONObject().put("t","service.request").put("version",1).put("id",requestId)
+                        .put("method","stream.read.bytes").put("args",args(id,1)));
 
-            long expires=System.nanoTime()+TimeUnit.SECONDS.toNanos(5);
-            while(results.isEmpty()&&System.nanoTime()<expires){
-                shadowOf(Looper.getMainLooper()).idle();
-                Thread.sleep(1);
+                long expires=System.nanoTime()+TimeUnit.SECONDS.toNanos(5);
+                while(results.isEmpty()&&System.nanoTime()<expires){
+                    shadowOf(Looper.getMainLooper()).idle();
+                    Thread.sleep(1);
+                }
+                String line=results.poll();
+                assertNotNull(name,line);
+                JSONObject reply=new JSONObject(line);
+                assertEquals(name,"service.result",reply.getString("t"));
+                assertEquals(name,requestId,reply.getInt("id"));
+                assertFalse(name,reply.getBoolean("ok"));
+                assertEquals(name,code,reply.getString("code"));
+                assertEquals(name,message==null?failure.getClass().getSimpleName():message,reply.getString("message"));
+                assertEquals(name,!code.equals(row.getString("r15Code")),reply.optBoolean("nativeTransportFailure"));
             }
-            String line=results.poll();
-            assertNotNull("native read result",line);
-            JSONObject reply=new JSONObject(line);
-            assertEquals("service.result",reply.getString("t"));
-            assertEquals(1,reply.getInt("id"));
-            assertFalse(reply.getBoolean("ok"));
-            assertEquals("host_error",reply.getString("code"));
-            assertEquals("Connection reset",reply.getString("message"));
         }
     }
     private static JSONObject args(String id,int max)throws Exception{return new JSONObject().put("id",id).put("maxBytes",max).put("timeoutMs",1000);}

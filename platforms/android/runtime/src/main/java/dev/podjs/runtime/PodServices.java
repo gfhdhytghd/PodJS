@@ -13,6 +13,9 @@ import android.widget.EditText;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.Closeable;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ExecutorService;
@@ -805,7 +808,8 @@ final class PodServices implements Closeable {
             } catch (Exception error) {
                 if (requests.remove(id, request)) failure(id,
                     error instanceof SecureStoreLimits.Failure ? ((SecureStoreLimits.Failure)error).code : error instanceof SecurityException ? "permission_denied" : error instanceof ProvisioningSession.Failure ? "provision_"+((ProvisioningSession.Failure)error).reason : error instanceof UnsupportedOperationException ? "unsupported" : error instanceof IllegalArgumentException ? "invalid_argument" : "host_error",
-                    error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage());
+                    error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage(),
+                    error instanceof SocketTimeoutException || error instanceof SocketException || error instanceof UnknownHostException);
             } finally {
                 if (request.priority != null) request.priority.close();
                 long ended=System.nanoTime(),chars=0;
@@ -1024,15 +1028,23 @@ final class PodServices implements Closeable {
         }
     }
     private void failure(int id,String code,String message) { reply(id,false,null,code,message); }
+    private void failure(int id,String code,String message,boolean nativeTransportFailure) {
+        reply(id,false,null,code,message,-1,nativeTransportFailure);
+    }
     private void reply(int id,boolean ok,Object value,String code,String message) {
         reply(id,ok,value,code,message,-1);
     }
     private void reply(int id,boolean ok,Object value,String code,String message,int mirrorIndex) {
+        reply(id,ok,value,code,message,mirrorIndex,false);
+    }
+    private void reply(int id,boolean ok,Object value,String code,String message,int mirrorIndex,boolean nativeTransportFailure) {
         try {
             JSONObject event = new JSONObject().put("t","service.result").put("id",id).put("ok",ok);
             if(ok) event.put("value",value == null ? JSONObject.NULL : value);
             else{
                 event.put("code",code).put("message",message);
+                // Carry the exception type without changing the public service error code.
+                if(nativeTransportFailure)event.put("nativeTransportFailure",true);
                 if(PodVideoShortEdge.ERROR.equals(code)&&(mirrorIndex==0||mirrorIndex==1))event.put("mirrorIndex",mirrorIndex);
             }
             // Serialize on the calling (worker) thread; the main thread only hands the

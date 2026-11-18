@@ -1,6 +1,7 @@
 package dev.podjs.runtime;
 
 import android.content.Context;
+import android.os.Looper;
 import androidx.test.core.app.ApplicationProvider;
 import java.io.*;
 import java.net.*;
@@ -14,6 +15,7 @@ import org.junit.runner.RunWith;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.annotation.Config;
 import static org.junit.Assert.*;
+import static org.robolectric.Shadows.shadowOf;
 
 /** Model TLS close_notify throwing on the lifecycle caller, with real pooled/in-flight sockets. */
 @RunWith(RobolectricTestRunner.class)
@@ -21,6 +23,47 @@ import static org.junit.Assert.*;
 public class PodHttpServicesCloseTest {
     @Test public void idleSocketEvictionRunsOffLifecycleCaller()throws Exception {close(false);}
     @Test public void activeCallCancellationRunsOffLifecycleCaller()throws Exception {close(true);}
+
+    @Test public void stalledHttpBodyPreservesTheCodeAndReportsTheTypedTransportFailure()throws Exception {
+        Context context=ApplicationProvider.getApplicationContext();
+        BlockingQueue<String> results=new LinkedBlockingQueue<>();
+        CountDownLatch releasePeer=new CountDownLatch(1);
+        ExecutorService worker=Executors.newSingleThreadExecutor();
+        try(ServerSocket server=new ServerSocket(0,1,InetAddress.getByName("127.0.0.1"));
+            PodServices host=new PodServices(context,results::add)){
+            Future<?> served=worker.submit(()->{
+                try(Socket peer=server.accept()){
+                    BufferedReader reader=new BufferedReader(new InputStreamReader(peer.getInputStream()));
+                    while(!reader.readLine().isEmpty()){}
+                    peer.getOutputStream().write("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\na".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+                    peer.getOutputStream().flush();
+                    assertTrue(releasePeer.await(5,TimeUnit.SECONDS));
+                }catch(Exception error){throw new RuntimeException(error);}
+            });
+            try{
+                JSONObject args=new JSONObject().put("url","http://127.0.0.1:"+server.getLocalPort()+"/")
+                        .put("path","stalled-body-test").put("readTimeoutMs",250);
+                host.dispatch(new JSONObject().put("t","service.request").put("version",1).put("id",1)
+                        .put("method","http.download").put("args",args));
+                long expires=System.nanoTime()+TimeUnit.SECONDS.toNanos(5);
+                while(results.isEmpty()&&System.nanoTime()<expires){
+                    shadowOf(Looper.getMainLooper()).idle();
+                    Thread.sleep(1);
+                }
+                String line=results.poll();
+                assertNotNull("native download result",line);
+                JSONObject reply=new JSONObject(line);
+                assertFalse(reply.getBoolean("ok"));
+                assertEquals("host_error",reply.getString("code"));
+                assertEquals("timeout",reply.getString("message"));
+                assertTrue(reply.toString(),reply.optBoolean("nativeTransportFailure"));
+            }finally{
+                releasePeer.countDown();
+                served.get(5,TimeUnit.SECONDS);
+            }
+        }finally{worker.shutdownNow();}
+    }
+
     private void close(boolean active)throws Exception {
         Context context=ApplicationProvider.getApplicationContext();Thread caller=Thread.currentThread();
         AtomicBoolean armed=new AtomicBoolean(),closedOnCaller=new AtomicBoolean();
