@@ -120,4 +120,38 @@ public class PodFileRangesTest {
             assertArrayEquals(SOURCE, Files.readAllBytes(new File(root, local).toPath()));
         }
     }
+
+    @Test public void reportsFileSyncAndPublicationAfterHashing() throws Exception {
+        File root = setup();
+        java.util.List<String> phases = new java.util.ArrayList<>();
+        PodFileProgress progress = new PodFileProgress() {
+            long bytes;
+            @Override public void accept(long count) { bytes += count; }
+            @Override public void phase(String phase) {
+                assertEquals(4, bytes);
+                phases.add(phase);
+            }
+        };
+        PodFileRanges.execute(root, request(range(2, 2)), new CancellationSignal(),
+            (dir, path) -> new FileInputStream(PodFileConverter.safe(dir, path)), progress);
+        assertEquals(java.util.List.of("syncFile", "publish"), phases);
+    }
+
+    @Test public void commitReportsFileSyncPublicationAndDirectorySync() throws Exception {
+        File root = setup();
+        java.util.List<String> phases = new java.util.ArrayList<>();
+        try (PodDeviceServices caller = new PodDeviceServices(root, null)) {
+            PodFileProgress progress = new PodFileProgress() {
+                @Override public void accept(long count) {}
+                @Override public void phase(String phase) {
+                    phases.add(phase);
+                    assertEquals(phase.equals("syncDirectory") ? 4 : 2, new File(root, "target").length());
+                }
+            };
+            caller.executeTrackedFile("file.commit", new JSONObject().put("path", "source").put("target", "target")
+                .put("expectedSize", 4).put("expectedSha256", PodFileRanges.hex(MessageDigest.getInstance("SHA-256").digest(SOURCE)))
+                .put("syncDirectory", true), new CancellationSignal(), progress);
+        }
+        assertEquals(java.util.List.of("syncFile", "publish", "syncDirectory"), phases);
+    }
 }

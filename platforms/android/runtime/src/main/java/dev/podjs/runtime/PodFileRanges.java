@@ -71,7 +71,7 @@ final class PodFileRanges {
     }
 
     static JSONObject execute(File root, JSONObject args, CancellationSignal cancel, RangeOpen source,
-                                      java.util.function.LongConsumer progress) throws Exception {
+                                      PodFileProgress progress) throws Exception {
         JSONArray ranges = args.getJSONArray("ranges");
         if (ranges.length() < 1 || ranges.length() > 32) throw new IOException("INVALID_FRAME");
         int segmentBytes = args.optBoolean("index") ? (int)number(args, "segmentBytes", BLOCK, 16777216) : 0;
@@ -150,11 +150,15 @@ final class PodFileRanges {
             String digest = hex(whole.digest());
             if (total != expected || (!sha.isEmpty() && !sha.equals(digest))) throw new IOException("HASH_MISMATCH");
             cancel.throwIfCanceled();
-            if (out != null) out.force(true);
+            if (out != null) {
+                progress.phase("syncFile");
+                out.force(true);
+            }
             result = new JSONObject().put("size", total).put("sha256", digest).put("segments", segments);
           }
           cancel.throwIfCanceled();
           if (temp != null) {
+              progress.phase("publish");
               Files.move(temp, file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
               temp = null;
           }

@@ -871,12 +871,12 @@ public final class PodDeviceServices implements AutoCloseable {
         return new JSONObject().put("path", root.toPath().relativize(file.toPath()).toString());
     }
     JSONObject copyFileRanges(JSONObject args, android.os.CancellationSignal cancel,
-                              java.util.function.LongConsumer progress) throws Exception {
+                              PodFileProgress progress) throws Exception {
         return copyFileRanges(args, cancel, PodSyncGuestFiles::open, progress);
     }
 
     JSONObject copyFileRanges(JSONObject args, android.os.CancellationSignal cancel,
-                              PodFileRanges.RangeOpen source, java.util.function.LongConsumer progress) throws Exception {
+                              PodFileRanges.RangeOpen source, PodFileProgress progress) throws Exception {
         if (closed) throw new IllegalStateException("service_closed");
         String relative = args.optString("target", "");
         if (relative.isEmpty()) return PodFileRanges.execute(root, args, cancel, source, progress);
@@ -889,7 +889,7 @@ public final class PodDeviceServices implements AutoCloseable {
     }
 
     synchronized JSONObject executeTrackedFile(String method, JSONObject args, android.os.CancellationSignal cancel,
-                                               java.util.function.LongConsumer progress) throws Exception {
+                                               PodFileProgress progress) throws Exception {
         if (closed) throw new IllegalStateException("service_closed");
         if ("file.hash".equals(method)) return hashFile(safeFile(required(args,"path")), cancel, progress);
         return FileCommitGuard.locked(root,safeFile(required(args,"path")),safeFile(required(args,"target")),
@@ -993,7 +993,7 @@ public final class PodDeviceServices implements AutoCloseable {
         return FileCommitGuard.locked(root,safeFile(required(a,"path")),safeFile(required(a,"target")),()->fileCommitLocked(a,null,ignored -> {}));
     }
     private JSONObject fileCommitLocked(JSONObject a, android.os.CancellationSignal cancel,
-                                        java.util.function.LongConsumer progress) throws Exception {
+                                        PodFileProgress progress) throws Exception {
         File source = safeFile(required(a, "path")), target = safeFile(required(a, "target"));
         if (source.equals(target)) throw new IllegalArgumentException("same_commit_path");
         long expectedSize = exactFileSize(a, "expectedSize");
@@ -1003,6 +1003,7 @@ public final class PodDeviceServices implements AutoCloseable {
         if (actual.getLong("size") != expectedSize || !actual.getString("sha256").equalsIgnoreCase(expectedHash)) throw new IOException("commit_checksum_mismatch");
         // This also flushes a staged file supplied by a caller other than file.write.
         if (cancel != null) cancel.throwIfCanceled();
+        progress.phase("syncFile");
         try (java.io.RandomAccessFile file = new java.io.RandomAccessFile(source, "rw")) { file.getFD().sync(); }
         // Presence of this field opts into CAS. JSON null means absent. Check
         // under the same cross-guest/process lock as the final atomic rename.
@@ -1019,6 +1020,7 @@ public final class PodDeviceServices implements AutoCloseable {
             reused = hashFile(target,cancel,progress).getString("sha256").equalsIgnoreCase(expectedHash);
         }
         if (cancel != null) cancel.throwIfCanceled();
+        progress.phase("publish");
         if (reused) {
             if (!source.delete()) throw new IOException("staged_file_cleanup_failed");
         } else {
@@ -1028,6 +1030,7 @@ public final class PodDeviceServices implements AutoCloseable {
             Files.move(source.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         }
         if(a.optBoolean("syncDirectory",false)){
+            progress.phase("syncDirectory");
             forceDirectoryChain(target.getParentFile());
             if(!source.getParentFile().equals(target.getParentFile()))forceDirectoryChain(source.getParentFile());
         }

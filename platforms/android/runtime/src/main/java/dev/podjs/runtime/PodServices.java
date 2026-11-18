@@ -1082,19 +1082,27 @@ final class PodServices implements Closeable {
     private void failure(int id,String code,String message,boolean nativeTransportFailure) {
         reply(id,false,null,code,message,-1,nativeTransportFailure);
     }
-    private java.util.function.LongConsumer fileProgress(int id, Request request, JSONObject args) {
+    private PodFileProgress fileProgress(int id, Request request, JSONObject args) {
         if (!args.optBoolean("trackProgress")) return ignored -> {};
-        return new java.util.function.LongConsumer() {
+        return new PodFileProgress() {
             long bytes;
             long next;
             @Override public void accept(long count) {
                 bytes += count;
                 long now = android.os.SystemClock.elapsedRealtime();
-                if (count <= 0 || now < next || requests.get(id) != request) return;
+                if (count <= 0 || now < next) return;
                 next = now + 1000;
+                emit(null);
+            }
+            @Override public void phase(String name) {
+                emit(name);
+            }
+            private void emit(String phase) {
+                if (requests.get(id) != request) return;
                 try {
-                    sink.complete(new JSONObject().put("t","service.progress").put("id",id)
-                        .put("value",new JSONObject().put("bytes",bytes)).toString());
+                    JSONObject value = new JSONObject().put("bytes", bytes);
+                    if (phase != null) value.put("phase", phase);
+                    sink.complete(new JSONObject().put("t","service.progress").put("id",id).put("value",value).toString());
                 } catch (Exception ignored) { /* Progress does not change the transaction result. */ }
             }
         };
