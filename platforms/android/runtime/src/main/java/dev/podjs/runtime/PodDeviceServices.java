@@ -868,17 +868,37 @@ public final class PodDeviceServices implements AutoCloseable {
         temporaryFiles.add(file);
         return new JSONObject().put("path", root.toPath().relativize(file.toPath()).toString());
     }
+    synchronized JSONObject executeTrackedFile(String method, JSONObject args, android.os.CancellationSignal cancel,
+                                               java.util.function.LongConsumer progress) throws Exception {
+        if (closed) throw new IllegalStateException("service_closed");
+        if ("file.hash".equals(method)) return hashFile(safeFile(required(args,"path")), cancel, progress);
+        return FileCommitGuard.locked(root,safeFile(required(args,"path")),safeFile(required(args,"target")),
+            () -> fileCommitLocked(args,cancel,progress));
+    }
+
     /** Hash files on the host with bounded memory; file contents never cross the bridge. */
     private JSONObject fileHash(JSONObject a) throws Exception {
         File source = safeFile(required(a, "path"));
         return hashFile(source);
     }
     private static JSONObject hashFile(File source) throws Exception {
+        return hashFile(source, null, ignored -> {});
+    }
+    private static JSONObject hashFile(File source, android.os.CancellationSignal cancel,
+                                       java.util.function.LongConsumer progress) throws Exception {
         if (!source.isFile()) throw new IOException("file_not_found");
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
         long size = 0; byte[] chunk = new byte[65536];
         try (FileInputStream input = new FileInputStream(source)) {
-            int count; while ((count = input.read(chunk)) != -1) { digest.update(chunk, 0, count); size += count; }
+            int count;
+            while (true) {
+                if (cancel != null) cancel.throwIfCanceled();
+                count = input.read(chunk);
+                if (count < 0) break;
+                digest.update(chunk, 0, count);
+                size += count;
+                progress.accept(count);
+            }
         }
         return new JSONObject().put("size", size).put("sha256", hexDigest(digest.digest()));
     }
@@ -929,17 +949,19 @@ public final class PodDeviceServices implements AutoCloseable {
     private static String hexDigest(byte[] bytes){char[] out=new char[bytes.length*2];String alphabet="0123456789abcdef";for(int i=0;i<bytes.length;i++){out[i*2]=alphabet.charAt((bytes[i]&255)>>>4);out[i*2+1]=alphabet.charAt(bytes[i]&15);}return new String(out);}
     /** Verify the complete staged file before atomically publishing its final path. */
     private JSONObject fileCommit(JSONObject a) throws Exception {
-        return FileCommitGuard.locked(root,safeFile(required(a,"path")),safeFile(required(a,"target")),()->fileCommitLocked(a));
+        return FileCommitGuard.locked(root,safeFile(required(a,"path")),safeFile(required(a,"target")),()->fileCommitLocked(a,null,ignored -> {}));
     }
-    private JSONObject fileCommitLocked(JSONObject a) throws Exception {
+    private JSONObject fileCommitLocked(JSONObject a, android.os.CancellationSignal cancel,
+                                        java.util.function.LongConsumer progress) throws Exception {
         File source = safeFile(required(a, "path")), target = safeFile(required(a, "target"));
         if (source.equals(target)) throw new IllegalArgumentException("same_commit_path");
         long expectedSize = exactFileSize(a, "expectedSize");
         String expectedHash = required(a, "expectedSha256");
         if (!expectedHash.matches("[0-9a-fA-F]{64}")) throw new IllegalArgumentException("invalid_expected_hash");
-        JSONObject actual = hashFile(source);
+        JSONObject actual = hashFile(source,cancel,progress);
         if (actual.getLong("size") != expectedSize || !actual.getString("sha256").equalsIgnoreCase(expectedHash)) throw new IOException("commit_checksum_mismatch");
         // This also flushes a staged file supplied by a caller other than file.write.
+        if (cancel != null) cancel.throwIfCanceled();
         try (java.io.RandomAccessFile file = new java.io.RandomAccessFile(source, "rw")) { file.getFD().sync(); }
         // Presence of this field opts into CAS. JSON null means absent. Check
         // under the same cross-guest/process lock as the final atomic rename.
@@ -948,13 +970,14 @@ public final class PodDeviceServices implements AutoCloseable {
             if(wanted==JSONObject.NULL) { if(target.exists())throw new IOException("file_target_changed"); }
             else {
                 if(!(wanted instanceof String)||!((String)wanted).matches("[a-f0-9]{64}"))throw new IllegalArgumentException("invalid_target_hash");
-                if(!target.isFile()||!hashFile(target).getString("sha256").equals(wanted))throw new IOException("file_target_changed");
+                if(!target.isFile()||!hashFile(target,cancel,progress).getString("sha256").equals(wanted))throw new IOException("file_target_changed");
             }
         }
         boolean reused = false;
         if (target.isFile() && target.length() == expectedSize) {
-            reused = hashFile(target).getString("sha256").equalsIgnoreCase(expectedHash);
+            reused = hashFile(target,cancel,progress).getString("sha256").equalsIgnoreCase(expectedHash);
         }
+        if (cancel != null) cancel.throwIfCanceled();
         if (reused) {
             if (!source.delete()) throw new IOException("staged_file_cleanup_failed");
         } else {

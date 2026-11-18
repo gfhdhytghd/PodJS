@@ -169,7 +169,7 @@ __onHostEvent(event => {
    else {event.ok=false;event.code='invalid_bytes';event.message='Missing byte attachment';}
   }
   if (typeof event.id !== "number") return;
-  if (event.t === "browser.auth.status") {
+  if (event.t === "browser.auth.status" || event.t === "service.progress") {
     const request = pending.get(event.id);
     try { if(request?.status)traceServiceCallback(request.method,'status',()=>request.status!(event.value)); } catch { /* Observers cannot break service settlement. */ }
     return;
@@ -188,8 +188,8 @@ __onHostEvent(event => {
     event.nativeTransportFailure===true?true:undefined)));
 });
 /** Cancellation stops delivery; a mutation already committed by the host is not undone. */
-export function hostOperation<T>(method: string, args: Record<string, unknown>): HostOperation<T> {
-  return serviceOperation(method, args);
+export function hostOperation<T>(method: string, args: Record<string, unknown>, progress?:(value:unknown)=>void): HostOperation<T> {
+  return serviceOperation(method, args, progress);
 }
 function serviceOperation<T>(method: string, args: Record<string, unknown>, status?:(value:unknown)=>void): HostOperation<T> {
   const id = nextId++;

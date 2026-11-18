@@ -70,7 +70,16 @@ final class PodFileRanges {
         return execute(root, args, cancel, PodSyncGuestFiles::open);
     }
 
+    static JSONObject execute(File root, JSONObject args, CancellationSignal cancel, java.util.function.LongConsumer progress) throws Exception {
+        return execute(root, args, cancel, PodSyncGuestFiles::open, progress);
+    }
+
     static JSONObject execute(File root, JSONObject args, CancellationSignal cancel, RangeOpen source) throws Exception {
+        return execute(root, args, cancel, source, ignored -> {});
+    }
+
+    static JSONObject execute(File root, JSONObject args, CancellationSignal cancel, RangeOpen source,
+                                      java.util.function.LongConsumer progress) throws Exception {
         JSONArray ranges = args.getJSONArray("ranges");
         if (ranges.length() < 1 || ranges.length() > 32) throw new IOException("INVALID_FRAME");
         int segmentBytes = args.optBoolean("index") ? (int)number(args, "segmentBytes", BLOCK, 16777216) : 0;
@@ -129,6 +138,7 @@ final class PodFileRanges {
                         copy(in, out, buffer, length);
                         whole.update(buffer, 0, length);
                         total += length;
+                        progress.accept(length);
                         if (segmentBytes > 0) {
                             block.update(buffer, 0, length);
                             chunks.put(hex(block.digest()));

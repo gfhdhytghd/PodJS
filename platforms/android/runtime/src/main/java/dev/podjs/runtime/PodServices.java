@@ -736,13 +736,14 @@ final class PodServices implements Closeable {
             return;
         }
         args.put("requestId", id);
+        final boolean trackedFile = args.optBoolean("trackProgress") && ("file.hash".equals(method) || "file.commit".equals(method));
         if(method.startsWith("provision."))request.cancellation.setOnCancelListener(()->provisioning.cancelOperation(method,args,request.cancelReason));
         // Only shared device/secure work uses this gate. Network transfers and
         // main-thread dialogs never hold an admission ticket while awaiting IO.
-        if (!("secure.get".equals(method)&&!headlessWork&&device.hasWarmSecureStore()) && !method.endsWith(".release") && !method.equals("file.copyRanges") && (method.startsWith("secure.") || method.startsWith("crypto.") || method.startsWith("file.") || "log.append".equals(method) || "uri.parse".equals(method)))
+        if (!("secure.get".equals(method)&&!headlessWork&&device.hasWarmSecureStore()) && !method.endsWith(".release") && !method.equals("file.copyRanges") && !trackedFile && (method.startsWith("secure.") || method.startsWith("crypto.") || method.startsWith("file.") || "log.append".equals(method) || "uri.parse".equals(method)))
             request.priority = HostWorkPriority.DEVICE.reserve(headlessWork);
         final long queuedAt=System.nanoTime();
-        try { request.future = (method.startsWith("provision.") || method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.") || method.startsWith("discovery.") ? streamWorkers : method.equals("file.copyRanges") ? rangeWorker : method.startsWith("content.") ? contentWorker : method.startsWith("http.") ? transfers : method.startsWith("sql.") ? sqlWorker : method.startsWith("text.") ? textWorker : method.startsWith("secure.") ? secureWorker : worker).submit(() -> {
+        try { request.future = (method.startsWith("provision.") || method.startsWith("rfcomm.") || method.startsWith("tcp.") || method.startsWith("stream.") || method.startsWith("websocket.") || method.startsWith("discovery.") ? streamWorkers : (method.equals("file.copyRanges") || trackedFile) ? rangeWorker : method.startsWith("content.") ? contentWorker : method.startsWith("http.") ? transfers : method.startsWith("sql.") ? sqlWorker : method.startsWith("text.") ? textWorker : method.startsWith("secure.") ? secureWorker : worker).submit(() -> {
             long workAt=0,cpuAt=android.os.Debug.threadCpuTimeNanos();boolean workSuccess=false;
             try {
                 if (request.priority != null) request.priority.enter();
@@ -759,7 +760,9 @@ final class PodServices implements Closeable {
                         ? byteStreams.takeChunk(args.getJSONObject("fileChunk")) : null;
                     value=reference==null ? resumableObjects.execute(method,args) : resumableObjects.execute(method,args,reference);
                 } else if ("file.copyRanges".equals(method)) {
-                    value=PodFileRanges.execute(PodTakeover.filesRoot(context),args,request.cancellation);
+                    value=PodFileRanges.execute(PodTakeover.filesRoot(context),args,request.cancellation,fileProgress(id,request,args));
+                } else if (trackedFile) {
+                    value=device.executeTrackedFile(method,args,request.cancellation,fileProgress(id,request,args));
                 } else if ("content.http".equals(method) || "content.http.release".equals(method)) {
                     if(contentHttp==null)contentHttp=new PodHttpServices(context);
                     value=contentHttp.execute("content.http.release".equals(method)?"http.release":"http.download",args);
@@ -1044,6 +1047,23 @@ final class PodServices implements Closeable {
     private void failure(int id,String code,String message) { reply(id,false,null,code,message); }
     private void failure(int id,String code,String message,boolean nativeTransportFailure) {
         reply(id,false,null,code,message,-1,nativeTransportFailure);
+    }
+    private java.util.function.LongConsumer fileProgress(int id, Request request, JSONObject args) {
+        if (!args.optBoolean("trackProgress")) return ignored -> {};
+        return new java.util.function.LongConsumer() {
+            long bytes;
+            long next;
+            @Override public void accept(long count) {
+                bytes += count;
+                long now = android.os.SystemClock.elapsedRealtime();
+                if (count <= 0 || now < next || requests.get(id) != request) return;
+                next = now + 1000;
+                try {
+                    sink.complete(new JSONObject().put("t","service.progress").put("id",id)
+                        .put("value",new JSONObject().put("bytes",bytes)).toString());
+                } catch (Exception ignored) { /* Progress does not change the transaction result. */ }
+            }
+        };
     }
     private void reply(int id,boolean ok,Object value,String code,String message) {
         reply(id,ok,value,code,message,-1);

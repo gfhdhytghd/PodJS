@@ -73,6 +73,19 @@ public class PodFileRangesTest {
         original(root);
     }
 
+    @Test public void cancellationDuringRangeWorkPreservesTarget() throws Exception {
+        File root = setup();
+        CancellationSignal cancel = new CancellationSignal();
+        java.util.concurrent.atomic.AtomicLong completed = new java.util.concurrent.atomic.AtomicLong();
+        assertThrows(OperationCanceledException.class, () -> PodFileRanges.execute(root, request(range(2, 2)),
+            cancel, (dir, path) -> new FileInputStream(PodFileConverter.safe(dir, path)), count -> {
+                completed.addAndGet(count);
+                cancel.cancel();
+            }));
+        assertEquals(2, completed.get());
+        original(root);
+    }
+
     @Test public void validRangesReplaceExistingFile() throws Exception {
         File root = setup();
         String sha = PodFileRanges.hex(MessageDigest.getInstance("SHA-256").digest(SOURCE));
