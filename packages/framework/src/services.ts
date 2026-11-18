@@ -843,7 +843,7 @@ export const tcp = {
  addresses:()=>hostOperation<{addresses:string[]}>("tcp.addresses",{}).result,
 };
 export const byteStreams = {
-  spool:(id:string,size:number,timeoutMs:number)=>hostOperation<{path:string;size:number}>("stream.spool",{id,size,timeoutMs}),
+  spool:(id:string,size:number,timeoutMs:number,idleTimeoutMs?:number)=>hostOperation<{path:string;size:number}>("stream.spool",{id,size,timeoutMs,...(idleTimeoutMs===undefined?{}:{idleTimeoutMs})}),
   prepareFile:(id:string,range:{path:string;offset:number;size:number;sha256:string})=>hostOperation<{reference:string}>("stream.prepareFile",{id,...range}),
   readFile:(id:string,size:number,timeoutMs:number,retain:boolean,sha256?:string)=>hostOperation<{reference?:string;error?:string}>("stream.readFile",{id,size,timeoutMs,retain,...(sha256===undefined?{}:{sha256})}),
   writeFile:(id:string,reference:string,header:Uint8Array,timeoutMs:number)=>hostOperation<{written:number}>("stream.writeFile",{id,reference,header:Array.from(header),timeoutMs}),

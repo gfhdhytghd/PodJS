@@ -4,6 +4,7 @@ export interface FrameSpool {path:string;size:number}
 export interface FrameCodec<T> {
  maxFrameBytes:number;chunkBytes?:number;
  spoolAboveBytes?:number;
+ spoolIdleTimeoutMs?:number;
  /** Consume and release the owned file even when decoding or cancellation fails. */
  decodeSpool?(spool:FrameSpool,options:{cancelled:()=>boolean}):Promise<T>;
  encode(frame:T,options:{cancelled:()=>boolean}):Promise<Uint8Array>;
@@ -13,7 +14,7 @@ export const TRANSFER_CHUNK_BYTES=16*1024;
 export interface FrameByteStream {
  /** Return at most maxBytes; null is EOF. Empty reads are not progress. */
  read(maxBytes:number,timeoutMs:number):Promise<Uint8Array|null>;
- spool?(size:number,timeoutMs:number):Promise<FrameSpool>;
+ spool?(size:number,timeoutMs:number,idleTimeoutMs?:number):Promise<FrameSpool>;
  /** Resolve only after all bytes have been handed to the transport. */
  write(bytes:Uint8Array):Promise<void>;
  close():Promise<void>;
@@ -34,6 +35,9 @@ export class StreamFrameConnection<T> {
  private writing=false;
  private timing:((sample:FrameTiming)=>void)|undefined;
  private readBytesComplete:(()=>void)|undefined;
+ private nativeReadStarted:(()=>void)|undefined;
+ /** A native spool owns its byte-idle deadline and cannot report each chunk to JS. */
+ setNativeReadStarted(listener:(()=>void)|undefined){this.nativeReadStarted=listener;}
  /** Byte input is complete; codec work may still be running. */
  setReadBytesComplete(listener:(()=>void)|undefined){this.readBytesComplete=listener;}
  setFrameTiming(listener:((sample:FrameTiming)=>void)|undefined){this.timing=listener;}
@@ -55,7 +59,8 @@ export class StreamFrameConnection<T> {
    const remaining=deadline-this.now();
    if(remaining<=0)throw new Error('Sync frame read timed out');
    const canSpool=this.stream.spool&&this.codec.decodeSpool&&length>(this.codec.spoolAboveBytes??Infinity);
-   const data=canSpool?await this.stream.spool!(length,remaining):await this.readBuffer(header,length,deadline);
+   if(canSpool)try{this.nativeReadStarted?.();}catch{}
+   const data=canSpool?await this.stream.spool!(length,remaining,this.codec.spoolIdleTimeoutMs):await this.readBuffer(header,length,deadline);
    const received=this.now();
    try{this.readBytesComplete?.();}catch{}
    const options={cancelled:()=>this.closed};

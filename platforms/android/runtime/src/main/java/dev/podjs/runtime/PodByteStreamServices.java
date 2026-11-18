@@ -32,6 +32,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** Guest-scoped RFCOMM listeners and bounded byte streams. No application
  * protocol, peer trust policy or automatic discovery is embedded here. */
@@ -131,14 +132,25 @@ final class PodByteStreamServices implements Closeable {
         int timeout=number(args,"timeoutMs",1,900000);
         AtomicBoolean busy=read?endpoint.reading:endpoint.writing;
         if(!busy.compareAndSet(false,true))throw new IllegalStateException("Concurrent stream operation");
-        AtomicBoolean timedOut=new AtomicBoolean(),finished=new AtomicBoolean();ScheduledFuture<?> timer=null;
+        AtomicBoolean timedOut=new AtomicBoolean(),finished=new AtomicBoolean();ScheduledFuture<?> timer=null,idleTimer=null;
         cancellation.setOnCancelListener(()->removeStream(id));
         try{
             timer=deadlines.schedule(()->{if(finished.compareAndSet(false,true)){timedOut.set(true);removeStream(id);}},timeout,TimeUnit.MILLISECONDS);
             JSONObject result;
             if(spool!=null){
                 int count=number(args,"size",1,2*1024*1024);
-                spoolExact(endpoint.input,spool,count,cancellation);
+                int idle=args.has("idleTimeoutMs")?number(args,"idleTimeoutMs",1,900000):0;
+                AtomicLong activity=new AtomicLong(System.nanoTime());
+                if(idle>0){
+                    long interval=Math.min(500,idle);
+                    idleTimer=deadlines.scheduleWithFixedDelay(()->{
+                        if(System.nanoTime()-activity.get()>=TimeUnit.MILLISECONDS.toNanos(idle)&&finished.compareAndSet(false,true)){
+                            timedOut.set(true);
+                            removeStream(id);
+                        }
+                    },interval,interval,TimeUnit.MILLISECONDS);
+                }
+                spoolExact(endpoint.input,spool,count,cancellation,activity);
                 result=new JSONObject().put("size",count);
             }
             else if(method.equals("stream.readFile"))result=readFileChunk(endpoint,args);
@@ -147,14 +159,15 @@ final class PodByteStreamServices implements Closeable {
             else{if(!args.optBoolean("_podByteMode")&&args.getString("dataBase64").length()>4*((MAX_BYTES+2)/3))throw new IllegalArgumentException("Stream write too large");byte[] bytes=PodBytePayload.input(args);if(bytes.length<1||bytes.length>MAX_BYTES)throw new IllegalArgumentException("Invalid stream write size");endpoint.output.write(bytes);endpoint.output.flush();result=new JSONObject().put("written",bytes.length);}
             if(!finished.compareAndSet(false,true))throw new IOException("Stream operation timed out");cancellation.throwIfCanceled();return result;
         }catch(Exception error){removeStream(id);if(timedOut.get())throw new IOException("Stream operation timed out",error);throw error;}
-        finally{finished.set(true);if(timer!=null)timer.cancel(false);cancellation.setOnCancelListener(null);busy.set(false);}
+        finally{finished.set(true);if(timer!=null)timer.cancel(false);if(idleTimer!=null)idleTimer.cancel(false);cancellation.setOnCancelListener(null);busy.set(false);}
     }
-    static void spoolExact(InputStream input, OutputStream output, int count, CancellationSignal cancellation) throws IOException {
+    private static void spoolExact(InputStream input, OutputStream output, int count, CancellationSignal cancellation, AtomicLong activity) throws IOException {
         byte[] buffer=new byte[Math.min(count,16*1024)];
         while(count>0){
             cancellation.throwIfCanceled();
             int received=input.read(buffer,0,Math.min(count,buffer.length));
             if(received<=0)throw new java.io.EOFException("Truncated sync stream");
+            activity.set(System.nanoTime());
             output.write(buffer,0,received);
             count-=received;
         }
