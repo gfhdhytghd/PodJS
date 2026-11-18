@@ -757,7 +757,7 @@ final class PodServices implements Closeable {
                     if(resumableObjects==null)resumableObjects=new PodResumableObjects(context);
                     byte[] reference = method.equals("file.resumable.stage") && args.has("fileChunk")
                         ? byteStreams.takeChunk(args.getJSONObject("fileChunk")) : null;
-                    value=resumableObjects.execute(method,args,reference);
+                    value=reference==null ? resumableObjects.execute(method,args) : resumableObjects.execute(method,args,reference);
                 } else if ("file.copyRanges".equals(method)) {
                     value=PodFileRanges.execute(PodTakeover.filesRoot(context),args,request.cancellation);
                 } else if ("content.http".equals(method) || "content.http.release".equals(method)) {
