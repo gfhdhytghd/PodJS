@@ -39,7 +39,8 @@ final class PodProcessMemoryReader {
          * reading and bound only its system-side correction. */
         long oww242BudgetKiB(int videoDecoders){
             long graphicsFloor=24_000;
-            if(videoDecoders>0)graphicsFloor+=14_000L+10_000L*(videoDecoders-1);
+            if(videoDecoders>0)graphicsFloor=44_000;
+            if(videoDecoders>1)graphicsFloor=48_000L+10_000L*(videoDecoders-2);
             long graphics=Math.max(graphicsFloor,Math.min(graphicsKiB,graphicsFloor+4096));
             return Math.addExact(localKiB,Math.max(0,graphics-localGraphicsKiB));
         }

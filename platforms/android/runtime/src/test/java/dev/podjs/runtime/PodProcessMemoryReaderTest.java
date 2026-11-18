@@ -42,6 +42,7 @@ public class PodProcessMemoryReaderTest {
         PodProcessMemoryReader.Snapshot snapshot=new PodProcessMemoryReader(source,()->0L).snapshot();
         assertEquals(114000,snapshot.totalKiB);
         assertEquals(94096,snapshot.oww242BudgetKiB(0));
+        assertEquals(114000,snapshot.oww242BudgetKiB(1));
         assertEquals(114000,snapshot.oww242BudgetKiB(2));
         source.local=new PodProcessMemoryReader.Reading(125000,54000);
         snapshot=new PodProcessMemoryReader(source,()->0L).snapshot();
@@ -52,7 +53,7 @@ public class PodProcessMemoryReaderTest {
         source.system=new PodProcessMemoryReader.Reading(74000,24000);
         PodProcessMemoryReader.Snapshot snapshot=new PodProcessMemoryReader(source,()->0L).snapshot();
         assertEquals(102000,snapshot.totalKiB);
-        assertEquals(116000,snapshot.oww242BudgetKiB(1));
+        assertEquals(122000,snapshot.oww242BudgetKiB(1));
         assertEquals(126000,snapshot.oww242BudgetKiB(2));
     }
     @Test public void invalidMeasurementsCannotWrapTheProcessBudget(){
