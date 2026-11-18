@@ -138,7 +138,10 @@ final class PodMediaPrefixCache implements AutoCloseable {
     private String register(String key,String remote,Map<String,String> headers,boolean persistent,List<String> alternates,String frameAudioUrl,String replacesUri,int limit)throws Exception {
         if(!frameAudioUrl.isEmpty()){Uri audio=Uri.parse(frameAudioUrl);if(frameAudioUrl.length()>32768||!("https".equals(audio.getScheme())||"http".equals(audio.getScheme()))||audio.getHost()==null||audio.getUserInfo()!=null)throw new IllegalArgumentException("invalid_frame_audio_source");}
         if(closed)throw new IOException("cache_closed");Uri u=Uri.parse(remote);
-        if(key.isEmpty()||key.length()>2048||!("https".equals(u.getScheme())||"http".equals(u.getScheme()))||(u.getHost()==null||u.getHost().isEmpty())||u.getUserInfo()!=null||remote.length()>32768)throw new IllegalArgumentException("invalid_media_cache_source");
+        // Keep the original validation and limits; expose only a closed reason,
+        // never the source, key, signed query or credentials.
+        String invalid=key.isEmpty()?"key_empty":key.length()>2048?"key_length":!("https".equals(u.getScheme())||"http".equals(u.getScheme()))?"scheme":u.getHost()==null||u.getHost().isEmpty()?"host":u.getUserInfo()!=null?"credentials":remote.length()>32768?"url_length":null;
+        if(invalid!=null)throw new IllegalArgumentException("invalid_media_cache_source_"+invalid);
         List<String> mirrors=new ArrayList<>();mirrors.add(remote);
         if(alternates.size()>1)throw new IllegalArgumentException("too_many_media_mirrors");
         for(String alternate:alternates){Uri m=Uri.parse(alternate);if(alternate.length()>32768||!u.getScheme().equals(m.getScheme())||m.getHost()==null||m.getHost().isEmpty()||m.getUserInfo()!=null)throw new IllegalArgumentException("invalid_media_mirror");if(!mirrors.contains(alternate))mirrors.add(alternate);}
@@ -631,14 +634,15 @@ final class PodMediaPrefixCache implements AutoCloseable {
     }
     private void clear(){trafficStoppedUntil=0;if(upstream instanceof PodMediaHttp)((PodMediaHttp)upstream).recover();verifiedLocal.clear();if(frameListener!=null)frameListener.clear();generation++;for(Job j:jobs.values())j.cancel();jobs.clear();for(Entry entry:entries.values())revoke(entry);entries.clear();protectedTokens.clear();for(File f:root.listFiles()==null?new File[0]:root.listFiles())if(f.getName().matches("[a-f0-9]{64}\\.(prefix|length|tail|limit|limit\\.tmp)"))f.delete();}
     @Override public synchronized void close(){closed=true;verifiedLocal.clear();generation++;for(Job j:jobs.values())j.cancel();jobs.clear();protectedTokens.clear();for(Entry entry:entries.values())revoke(entry);entries.clear();wakeups.shutdownNow();workers.shutdownNow();cancellations.shutdown();if(upstream instanceof PodMediaHttp)((PodMediaHttp)upstream).close();notifyAll();}
-    DataSource.Factory factory(DataSource.Factory fallback){return ()->new PrefixDataSource(fallback);}
+    DataSource.Factory factory(DataSource.Factory fallback){return factory(fallback,false);}
+    DataSource.Factory factory(DataSource.Factory fallback,boolean bypass){return ()->new PrefixDataSource(fallback,bypass);}
     private final class PrefixDataSource implements DataSource {
-        private final DataSource.Factory fallback;private final List<TransferListener> listeners=new ArrayList<>();private DataSource network;private DataSpec spec;private Entry entry;private long position,remaining,epoch;private boolean ended,hitLogged,networkCounted,cacheTransfer;private String localPin;
-        PrefixDataSource(DataSource.Factory f){fallback=f;}
+        private final DataSource.Factory fallback;private final boolean bypass;private final List<TransferListener> listeners=new ArrayList<>();private DataSource network;private DataSpec spec;private Entry entry;private long position,remaining,epoch;private boolean ended,hitLogged,networkCounted,cacheTransfer;private String localPin;
+        PrefixDataSource(DataSource.Factory f,boolean bypass){fallback=f;this.bypass=bypass;}
         @Override public void addTransferListener(TransferListener l){listeners.add(l);if(network!=null)network.addTransferListener(l);}
         @Override public long open(DataSpec data)throws IOException {
             close();spec=data;position=data.position;remaining=data.length;epoch=generation;ended=false;
-            if(SCHEME.equals(data.uri.getScheme())){entry=target(data.uri.toString());cacheTransfer=true;for(TransferListener l:listeners){l.onTransferInitializing(this,data,false);l.onTransferStart(this,data,false);}if(entry.length>=0&&position>=entry.length){ended=true;return 0;}if(position>=entry.file.length()&&!(entry.tail().isFile()&&entry.length>=0&&position>=entry.length-entry.tail().length()&&position<entry.length))openNetwork();return remaining>=0?remaining:entry.length>=0?Math.max(0,entry.length-position):C.LENGTH_UNSET;}
+            if(SCHEME.equals(data.uri.getScheme())){entry=target(data.uri.toString());cacheTransfer=true;for(TransferListener l:listeners){l.onTransferInitializing(this,data,false);l.onTransferStart(this,data,false);}if(!bypass&&entry.length>=0&&position>=entry.length){ended=true;return 0;}if(bypass||position>=entry.file.length()&&!(entry.tail().isFile()&&entry.length>=0&&position>=entry.length-entry.tail().length()&&position<entry.length))openNetwork();return remaining>=0?remaining:entry.length>=0?Math.max(0,entry.length-position):C.LENGTH_UNSET;}
             if("file".equals(data.uri.getScheme())){File file=new File(data.uri.getPath());if(file.getParentFile().equals(localStore.root)&&file.getName().matches("[a-f0-9]{64}\\.mp4")){localPin=file.getName().substring(0,64);synchronized(PodMediaPrefixCache.this){pinnedLocal.put(localPin,pinnedLocal.getOrDefault(localPin,0)+1);}}}
             network=fallback.createDataSource();for(TransferListener l:listeners)network.addTransferListener(l);return network.open(data);
         }
@@ -646,7 +650,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
         @Override public int read(byte[] b,int offset,int length)throws IOException {
             checkRevocation(entry);if(length==0)return 0;if(ended||remaining==0)return C.RESULT_END_OF_INPUT;if(spec==null)throw new IOException("source_not_open");int wanted=remaining<0?length:(int)Math.min(length,remaining);int n=0;
             if(entry!=null&&network==null){n=PodMediaPrefixCache.this.read(entry,position,b,offset,wanted);if(n>0)for(TransferListener l:listeners)l.onBytesTransferred(this,spec,false,n);if(n>0&&!hitLogged){hitLogged=true;android.util.Log.i("PodMediaCache","prefixHit bytes="+n+" position="+position);}}
-            if(n==0){if(entry!=null&&entry.length>=0&&position>=entry.length){ended=true;return C.RESULT_END_OF_INPUT;}if(network==null)openNetwork();if(entry!=null)beginNetworkReader();try{n=network.read(b,offset,wanted);}finally{releaseNetworkReader();}if(n<0){ended=true;releaseNetworkReader();return n;}if(entry!=null){append(entry,position,b,offset,n,epoch);}}
+            if(n==0){if(entry!=null&&entry.length>=0&&position>=entry.length){ended=true;return C.RESULT_END_OF_INPUT;}if(network==null)openNetwork();if(entry!=null)beginNetworkReader();try{n=network.read(b,offset,wanted);}finally{releaseNetworkReader();}if(n<0){ended=true;releaseNetworkReader();return n;}if(entry!=null&&!bypass){append(entry,position,b,offset,n,epoch);}}
             checkRevocation(entry);position+=n;if(remaining>=0){remaining-=n;if(remaining==0)releaseNetworkReader();}return n;
         }
         // A paused loader can retain an open response without using bandwidth.

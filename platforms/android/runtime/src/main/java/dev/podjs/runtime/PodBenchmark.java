@@ -204,10 +204,10 @@ final class PodBenchmark {
             swapStage(action,"observer_armed",action.sourceGeneration);
             committingVideos.put(seq,ready);
             final long[] commitAt={-1};
-            ready.cancelCommit=PodAfterPaint.await(ready.retainedFrame||surface.get()==null?view:surface.get(),new Handler(Looper.getMainLooper()),ready.retainedFrame?1:2,(frame,at)->{commitAt[0]=at;swapStage(action,frame==1?"window_commit_1":"window_commit_2",action.sourceGeneration,at);},committed->{
+            ready.cancelCommit=PodAfterPaint.await(ready.retainedFrame||surface.get()==null?view:surface.get(),new Handler(Looper.getMainLooper()),ready.retainedFrame?1:2,1000,(frame,at)->{commitAt[0]=at;swapStage(action,frame==1?"window_commit_1":"window_commit_2",action.sourceGeneration,at);},committed->{
                 synchronized(PodBenchmark.class){if(committingVideos.get(seq)!=ready)return;committingVideos.remove(seq);}
                 if(committed&&view.isAttachedToWindow()&&view.isShown()&&view.hasWindowFocus()&&view.getAlpha()>0&&guard.getAsBoolean()){emit(action.event("incoming_first_frame"),commitAt[0]);if(action.delta==2)try{emit(action.event("fling_done").put("delta",2),commitAt[0]);}catch(Exception ignored){}}
-                else emit(action.event("error"),SystemClock.uptimeMillis());
+                else try{emit(action.event("error").put("failure_code",committed?"stale":"timeout").put("failure_stage","bounds").put("exception_kind","unknown").put("reason",committed?"stale":"timeout"),SystemClock.uptimeMillis());}catch(Exception ignored){}
             });
         }
     }

@@ -74,6 +74,26 @@ public class PodMediaResolutionLimitTest {
         }
     }
 
+    @Test public void bypassedCapabilityStillStopsOnResolutionRevocationWithoutCachingBytes() throws Exception {
+        PodMediaStockRangeTest.Ranges remote=new PodMediaStockRangeTest.Ranges();
+        try(PodMediaPrefixCache cache=new PodMediaPrefixCache(PodMediaPrefixCacheTest.root(),remote,6L<<20)){
+            String uri=register(cache,"bypass-revocation");
+            androidx.media3.datasource.DataSource source=cache.factory(remote,true).createDataSource();
+            byte[] buffer=new byte[64];
+            try {
+                source.open(new androidx.media3.datasource.DataSpec.Builder().setUri(uri).build());
+                assertEquals(64,source.read(buffer,0,buffer.length));
+                assertEquals(0,cache.stats().getLong("bytes"));
+                cache.rejectResolution(uri);
+                int before=remote.readBytes;
+                assertThrows(PodVideoShortEdge.Rejected.class,()->source.read(buffer,0,buffer.length));
+                assertEquals(before,remote.readBytes);
+                assertEquals(0,cache.stats().getLong("bytes"));
+                assertThrows(java.io.IOException.class,()->cache.target(uri));
+            } finally {source.close();}
+        }
+    }
+
     @Test public void resolutionRejectionClosesBlockedForegroundRead() throws Exception {
         java.util.concurrent.CountDownLatch reading=new java.util.concurrent.CountDownLatch(1);
         java.util.concurrent.CountDownLatch closed=new java.util.concurrent.CountDownLatch(1);

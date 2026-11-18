@@ -24,6 +24,18 @@ int main() {
   assert(drag.nextFrame()[0].x == 80);  // Only intermediate moves coalesce.
   assert(drag.nextFrame().empty());
 
+  TouchSnapshotQueue terminal;
+  terminal.submit(point(20));
+  assert(terminal.nextFrame()[0].x==20);
+  terminal.submit(point(120));  // UP endpoint when Android omitted every MOVE.
+  terminal.submit({});
+  terminal.submit(point(30));  // A new DOWN cannot overwrite that release.
+  assert(terminal.nextFrame()[0].x==120);
+  assert(terminal.nextFrame().empty());
+  assert(terminal.nextFrame()[0].x==30);
+  terminal.clear();
+  assert(!terminal.needsFrame());
+
   TouchSnapshotQueue multitouch;
   multitouch.submit(point(20));
   multitouch.submit({{0, 20, 10}, {1, 30, 10}});

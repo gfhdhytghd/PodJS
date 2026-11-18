@@ -76,9 +76,16 @@ final class PodVideoAnalytics implements AnalyticsListener, TransferListener {
         if(firstFrameMs<0)PodBenchmark.startup(startupSeq,"decoded_first_frame");
         if (firstFrameMs < 0) firstFrameMs = Math.max(0, SystemClock.elapsedRealtime() - startedMs);
     }
+    private boolean completedLogged;
+    synchronized void retired(long generation,long positionMs){retired(generation,positionMs,0,false);}
+    synchronized void retired(long generation,long positionMs,long durationMs,boolean ended){playbackEnd("retired",generation,positionMs,durationMs,ended);}
+    synchronized void completed(long generation,long positionMs,long durationMs){if(completedLogged)return;completedLogged=playbackEnd("completed",generation,positionMs,durationMs,true);}
+    private boolean playbackEnd(String kind,long generation,long positionMs,long durationMs,boolean ended){
+        try {JSONObject m=snapshot();android.util.Log.i("PodVideoStats",kind+" source_ordinal="+Math.max(0,sourceOrdinal)+" source_generation="+Math.max(0,generation)+" position_ms="+Math.max(0,positionMs)+" first_frame_ms="+m.optLong("firstFrameMs",-1)+" rebuffer_count="+m.optLong("rebufferCount",0)+" dropped_frames="+m.optLong("droppedFrames",0)+" duration_ms="+Math.max(0,durationMs)+" ended="+(ended?1:0));return true;}catch(Exception ignored){return false;}
+    }
     synchronized JSONObject snapshot() throws Exception {
         androidx.media3.exoplayer.analytics.PlaybackStats stats=playbackStats.getPlaybackStats();
-        JSONObject result = new JSONObject().put("bytesLoaded", bytes).put("droppedFrames", dropped)
+        JSONObject result = new JSONObject().put("sourceOrdinal",sourceOrdinal).put("bytesLoaded", bytes).put("droppedFrames", dropped)
             .put("rebufferCount", stats==null?0:stats.totalRebufferCount).put("rebufferMs", stats==null?0:stats.getTotalRebufferTimeMs());
         if (firstByteMs >= 0) result.put("firstByteMs", firstByteMs);
         if (firstFrameMs >= 0) result.put("firstFrameMs", firstFrameMs);
@@ -91,6 +98,7 @@ final class PodVideoAnalytics implements AnalyticsListener, TransferListener {
         Throwable current = error;
         for (int i = 0; current != null && i < 16; i++, current = current.getCause()) {
             if (current instanceof PodVideoShortEdge.Rejected) return PodVideoShortEdge.ERROR;
+            if (current instanceof java.io.IOException && "media_source_expired".equals(current.getMessage())) return "source_expired";
             if (current instanceof HttpDataSource.InvalidResponseCodeException) {
                 int status = ((HttpDataSource.InvalidResponseCodeException) current).responseCode;
                 if (status == 401 || status == 412 || status == 429) return "restricted";

@@ -403,7 +403,7 @@ export interface VideoFrameSource {maxVideoShortEdge?:number;url?:string;videoUr
 export interface VideoFrame {available:true;kind:"actual_frame";path:string;width:number;height:number;positionMs:number;capturedAt:number;capturedGeneration:number}
 export interface VideoFrameCapture {key:string;source:VideoFrameSource;sourceGeneration:number}
 export interface VideoPlaybackMetrics { bytesLoaded:number; droppedFrames:number; rebufferCount:number; rebufferMs:number; firstByteMs?:number; firstFrameMs?:number; throughputBps?:number; [key:string]:number|undefined }
-export interface VideoState {/** Transient video admission; no terminal error or device-capacity downgrade. */decoderAdmissionDeferred?:boolean;/** Native buffering also covers preparation with autoplay disabled. */ isBuffering?:boolean; /** Playback speed; hosts without video.setSpeed omit it. */speed?:number; ringerMode?:"normal"|"vibrate"|"silent"|"unknown";silenced?:boolean; volumeIndex?:number; muted?:boolean; appliedVolume?:number; audioTrackSelected?:boolean; bufferedMs?:number; networkStalled?:boolean; presented?:boolean; metrics?:VideoPlaybackMetrics; sourceGeneration?:number; /** Completed native repeats since prepare; seeks do not increment it. */ completedLoops?:number; loop?:boolean; hasCachedFirstFrame?:boolean; hasRenderedFirstFrame?:boolean; errorCode?:string; mirrorIndex?:0|1; ok:boolean; state:string; positionMs:number; durationMs:number; width:number; height:number; volume:number; volumeMax:number }
+export interface VideoState {/** Transient video admission; no terminal error or device-capacity downgrade. */decoderAdmissionDeferred?:boolean;playWhenReady?:boolean;nativePlaybackState?:number;playbackSuppressionReason?:number;loading?:boolean;frameHandoffPending?:boolean;/** Native buffering also covers preparation with autoplay disabled. */ isBuffering?:boolean; /** Playback speed; hosts without video.setSpeed omit it. */speed?:number; ringerMode?:"normal"|"vibrate"|"silent"|"unknown";silenced?:boolean; volumeIndex?:number; muted?:boolean; appliedVolume?:number; audioTrackSelected?:boolean; bufferedMs?:number; networkStalled?:boolean; presented?:boolean; metrics?:VideoPlaybackMetrics; sourceGeneration?:number; /** Completed native repeats since prepare; seeks do not increment it. */ completedLoops?:number; loop?:boolean; hasCachedFirstFrame?:boolean; hasRenderedFirstFrame?:boolean; errorCode?:string; mirrorIndex?:0|1; ok:boolean; state:string; positionMs:number; durationMs:number; width:number; height:number; volume:number; volumeMax:number }
 export const VIDEO_SPEED_RANGE={min:.5,max:2} as const;
 function checkVideoSpeed(speed:number):void{if(!Number.isFinite(speed)||speed<VIDEO_SPEED_RANGE.min||speed>VIDEO_SPEED_RANGE.max)throw new HostServiceError("invalid_argument","Video speed must be between 0.5 and 2");}
 export const video = {
@@ -448,7 +448,7 @@ export interface VideoSessionPrepare extends VideoPrepare {
   /** Decode frame zero into the bounded native cache and release this codec. */
   keyframeOnly?:boolean;
 }
-export interface VideoSessionState { isBuffering?:boolean;
+export interface VideoSessionState { isBuffering?:boolean;playWhenReady?:boolean;nativePlaybackState?:number;playbackSuppressionReason?:number;loading?:boolean;frameHandoffPending?:boolean;
   /** Transient process admission; not a device limit or a terminal playback error. */
   decoderAdmissionDeferred?:boolean;
   speed?:number;
@@ -471,12 +471,17 @@ export interface VideoSessionState { isBuffering?:boolean;
 export interface VideoSessionTransition {
   fromSessionId:string; toSessionId:string; progress:number; direction:"up"|"down"; bounds?:VideoBounds; benchmark?:VideoBenchmarkAction; trackPointer?:boolean;
 }
-export interface VideoSessionTransitionState {
+export type VideoSessionTransitionState = {
   fromSessionId:string; toSessionId:string; progress:number; direction:"up"|"down";
+} & ({
   fromOffsetYPx:number; toOffsetYPx:number; composited:true;
   /** Current touch is driven by native coordinates until the caller ends its drag. */
   nativeTracking?:boolean;
-}
+} | {
+  /** The outgoing surface was reclaimed. The incoming slot remains available
+   * for normal promotion; no composition offsets or frame proof are supplied. */
+  composited:false; nativeTracking?:false; fromOffsetYPx?:never; toOffsetYPx?:never;
+});
 /** Two retained Android TextureView sessions for immersive pager playback.
  * The capability is intentionally separate from legacy media.video so an old
  * one-player host rejects every request before transport.
@@ -499,7 +504,7 @@ export const videoSessions = {
   setMuted(sessionId:string,muted:boolean):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setVolume",{sessionId,muted}).result; },
   setVolume(sessionId:string,volume:number,crownDirection?:-1|1):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.setVolume",{sessionId,volume,...(crownDirection?{crownDirection}:{})}).result; },
   /** Reveals the retained target first frame before hiding the replaced session. */
-  promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean;loop?:boolean;adoptPreparing?:boolean;backgroundPlayback?:boolean;benchmark?:VideoBenchmarkAction}={}):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.promote",{sessionId,...options}).result; },
+  promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean;loop?:boolean;adoptPreparing?:boolean;transform?:VideoTransform;backgroundPlayback?:boolean;benchmark?:VideoBenchmarkAction}={}):Promise<VideoSessionState> { return hostOperation<VideoSessionState>("video.session.promote",{sessionId,...options}).result; },
   /** Atomically translates both native surfaces. Call promote after progress reaches one. */
   transition(options:VideoSessionTransition):Promise<VideoSessionTransitionState> { return hostOperation<VideoSessionTransitionState>("video.session.transition",options as unknown as Record<string,unknown>).result; },
 };

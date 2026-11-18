@@ -40,3 +40,24 @@ test('prepare deadline cancels current generation and ignores cancelled, stale o
  guard.arm(100,timer,()=>current,()=>expired++);guard.cancel();finish();await Promise.resolve();expect(expired).toBe(1);
  guard.arm(100,timer,()=>current,()=>expired++);current=false;finish();await Promise.resolve();expect(expired).toBe(1);expect(cancelled).toBeGreaterThan(0);
 });
+
+function progressClock(){
+ let now=0,bytes=0;const pending:Array<{at:number;resolve:()=>void;cancelled:boolean}>=[];
+ const timer=(ms:number)=>{let resolve!:()=>void;const result=new Promise<void>(r=>resolve=r),item={at:now+ms,resolve,cancelled:false};pending.push(item);return {result,cancel(){item.cancelled=true;}};};
+ return {timer,now:()=>now,read:()=>bytes,async second(productive=true){now+=1000;if(productive)bytes+=8192;for(const item of pending.splice(0)){if(item.at<=now){if(!item.cancelled)item.resolve();}else pending.push(item);}await Promise.resolve();}};
+}
+test('productive media parsing outlives 20 seconds but an idle source still expires',async()=>{
+ const c=progressClock(),guard=new PlaybackPrepareDeadline();let expired=0;
+ guard.arm(20_000,c.timer,()=>true,()=>expired++,{read:c.read,now:c.now,maxMs:120_000});
+ for(let i=0;i<35;i++)await c.second();expect(expired).toBe(0);
+ for(let i=0;i<19;i++)await c.second(false);expect(expired).toBe(0);
+ await c.second(false);expect(expired).toBe(1);
+});
+test('continuous preparation progress cannot extend the absolute bound or a cancelled generation',async()=>{
+ const c=progressClock(),guard=new PlaybackPrepareDeadline();let expired=0;
+ guard.arm(20_000,c.timer,()=>true,()=>expired++,{read:c.read,now:c.now,maxMs:120_000});
+ for(let i=0;i<119;i++)await c.second();expect(expired).toBe(0);
+ await c.second();expect(expired).toBe(1);
+ guard.arm(20_000,c.timer,()=>true,()=>expired++,{read:c.read,now:c.now,maxMs:120_000});guard.cancel();
+ for(let i=0;i<120;i++)await c.second();expect(expired).toBe(1);
+});

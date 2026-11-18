@@ -93,4 +93,14 @@ public class PodBenchmarkTest {
   assertEquals(seq,PodBenchmark.mark("startup_stage",seq,new JSONObject().put("startup_stage","stock_saved").put("slots",3)));
   assertEquals(0,PodBenchmark.mark("startup_stage",seq,new JSONObject().put("startup_stage","stock_saved").put("slots",4)));
  }
+ @Test public void missingPresentationProofEmitsATypedTimeoutInsteadOfAnUnclassifiedPlayerError()throws Exception{
+  ShadowLog.clear();long seq=PodBenchmark.begin("gesture_down",new JSONObject());
+  android.view.View view=new android.view.View(org.robolectric.RuntimeEnvironment.getApplication());
+  PodBenchmark.watchVideo(view,new PodBenchmark.VideoAction(seq,1,2,1),()->true);
+  PodBenchmark.dispatch(new JSONObject().put("video_frame",seq).put("generation",1).toString());
+  List<ShadowLog.LogItem> logs=ShadowLog.getLogsForTag("DYBENCH");
+  assertTrue(logs.stream().anyMatch(row->row.msg.contains("code=error ")&&row.msg.contains("failure_code=timeout")&&row.msg.contains("failure_stage=bounds")));
+  assertFalse(logs.stream().anyMatch(row->row.msg.contains("code=incoming_first_frame ")));
+ }
+
 }

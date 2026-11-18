@@ -47,4 +47,21 @@ public class PodVideoAnalyticsTest {
   }
  }
 
+ @Test public void nativeCacheExpiryHasAnExpiredSourceCodeWithoutLeakingItsMessage(){
+  assertEquals("source_expired",PodVideoAnalytics.errorCode(new PlaybackException("private",new java.io.IOException("media_source_expired"),PlaybackException.ERROR_CODE_IO_UNSPECIFIED)));
+  assertEquals("prepare_failed",PodVideoAnalytics.errorCode(new PlaybackException("private",new java.io.IOException("unrelated"),PlaybackException.ERROR_CODE_IO_UNSPECIFIED)));
+ }
+
+ @Test public void outgoingPlaybackCountersUseNumericSourceIdentityWithoutPrivateFields()throws Exception {
+  org.robolectric.shadows.ShadowLog.clear();PodVideoAnalytics a=new PodVideoAnalytics();a.sourceOrdinal=7;
+  a.onBytesTransferred(null,new DataSpec(Uri.parse("https://fixture.invalid/PRIVATE?token=SECRET")),true,128);a.onDroppedVideoFrames(null,3,10);a.retired(12,9000);
+  String line=org.robolectric.shadows.ShadowLog.getLogsForTag("PodVideoStats").get(0).msg;
+  assertTrue(line.contains("source_ordinal=7 source_generation=12 position_ms=9000"));assertTrue(line.contains("dropped_frames=3"));assertFalse(line.contains("PRIVATE"));assertFalse(line.contains("SECRET"));assertEquals(7,a.snapshot().getLong("sourceOrdinal"));
+ }
+
+ @Test public void nativeCompletionReceiptIsOncePerPreparationAndCarriesTheEndedDuration(){
+  org.robolectric.shadows.ShadowLog.clear();PodVideoAnalytics a=new PodVideoAnalytics();a.sourceOrdinal=4;a.completed(2,10003,10000);a.completed(2,10003,10000);
+  java.util.List<org.robolectric.shadows.ShadowLog.LogItem> lines=org.robolectric.shadows.ShadowLog.getLogsForTag("PodVideoStats");assertEquals(1,lines.size());assertTrue(lines.get(0).msg.startsWith("completed source_ordinal=4 source_generation=2"));assertTrue(lines.get(0).msg.endsWith("duration_ms=10000 ended=1"));
+ }
+
 }

@@ -1,3 +1,4 @@
+import {videoPagerDelta,videoPagerReleaseVelocity} from '../src/video-paging.ts';
 import {expect,test} from 'bun:test';
 import {VideoFirstFrameWait,videoPagerOffsets,videoPagerSettleProgress} from '../src/video-paging';
 test('strip edges touch from the first pixel in both directions, including snapback',()=>{
@@ -15,4 +16,10 @@ test('first-frame spinner waits 400ms from settle and never flashes for a render
 });
 test('default first-frame clock is constructed as in production',()=>{
  const wait=new VideoFirstFrameWait();wait.reset();expect(wait.visible()).toBe(false);
+});
+
+test('terminal-only movement has positional paging but cannot fabricate a double-skip velocity',()=>{
+ expect(videoPagerDelta(.43,videoPagerReleaseVelocity({frames:1,vy:-6000}),'up')).toBe(1);
+ expect(videoPagerDelta(.43,videoPagerReleaseVelocity({frames:6,vy:-2000}),'up')).toBe(2);
+ expect(videoPagerDelta(.05,videoPagerReleaseVelocity({frames:1,vy:-6000}),'up')).toBe(0);
 });

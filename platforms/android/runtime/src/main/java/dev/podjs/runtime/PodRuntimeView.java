@@ -99,6 +99,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private final Choreographer.FrameCallback frameCallback = new Choreographer.FrameCallback() {
         @Override public void doFrame(long frameTime) {
             frameScheduled=false;
+            if(android.util.Log.isLoggable("PodInput",android.util.Log.DEBUG)&&inputReceipt!=inputFrameReceipt){inputFrameReceipt=inputReceipt;if(inputFrameLogs++<512)android.util.Log.i("PodInput","frame receipt="+inputReceipt+" frames="+idleFramePasses+" active="+(active?1:0)+" epoch_ms="+System.currentTimeMillis());}
             if (host != 0 && active) {
                 hangPhase(MainThreadWatchdog.Phase.FRAME);
                 try {
@@ -652,6 +653,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     }
 
     @Override protected void onDetachedFromWindow() {
+        touchReleasePolicy.reset();
         PodSystemFontFallback.cancelWarm();
         if (screenCheckpointRegistered) {
             getContext().unregisterReceiver(screenCheckpoint);
@@ -682,7 +684,13 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     }
 
     private int tracedInputs, tracedMoves;
+    private int inputReceipt, inputMoves, inputLogs, inputFrameLogs, inputFrameReceipt;
+    private final PodTouchReleasePolicy touchReleasePolicy=new PodTouchReleasePolicy();
     @Override public boolean onTouchEvent(MotionEvent event) {
+        if(android.util.Log.isLoggable("PodInput",android.util.Log.DEBUG)){
+            int action=event.getActionMasked();if(action==MotionEvent.ACTION_DOWN)inputMoves=0;else if(action==MotionEvent.ACTION_MOVE)inputMoves=Math.min(1000000,inputMoves+1);
+            if(action!=MotionEvent.ACTION_MOVE){inputReceipt++;if(inputLogs++<512)android.util.Log.i("PodInput","runtime action="+action+" event_ms="+event.getEventTime()+" received_ms="+android.os.SystemClock.uptimeMillis()+" epoch_ms="+System.currentTimeMillis()+" moves="+inputMoves+" active="+(active?1:0)+" frames="+idleFramePasses+" receipt="+inputReceipt);}
+        }
         if(serviceResultTrace.enabled){
             if(event.getActionMasked()==MotionEvent.ACTION_DOWN)tracedMoves=0;
             else if(event.getActionMasked()==MotionEvent.ACTION_MOVE)tracedMoves=Math.min(1000000,tracedMoves+1);
@@ -698,14 +706,20 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
             nativePostEvent(host, "{\"t\":\"touchCancel\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
         }
         int count = Math.min(event.getPointerCount(), 8);
+        boolean terminalMove=touchReleasePolicy.observe(event.getActionMasked(),event.getPointerCount(),count>0?event.getPointerId(0):-1,
+                count>0?event.getX(0):0,count>0?event.getY(0):0,android.view.ViewConfiguration.get(getContext()).getScaledTouchSlop());
         int[] ids = new int[count]; float[] xy = new float[count * 2];
-        if (event.getActionMasked() != MotionEvent.ACTION_UP && event.getActionMasked() != MotionEvent.ACTION_CANCEL) {
+        if (terminalMove || event.getActionMasked() != MotionEvent.ACTION_UP && event.getActionMasked() != MotionEvent.ACTION_CANCEL) {
             for (int i = 0; i < count; i++) {
                 ids[i] = event.getPointerId(i);
                 xy[i * 2] = event.getX(i);
                 xy[i * 2 + 1] = event.getY(i);
             }
-        } else count = 0;
+        }
+        // DOWN injection can block longer than an adb swipe's duration, leaving
+        // only DOWN/UP. Keep the actual endpoint; the queue preserves both edges.
+        if(terminalMove)nativeInput(host,ids,xy,count,0);
+        if(event.getActionMasked()==MotionEvent.ACTION_UP||event.getActionMasked()==MotionEvent.ACTION_CANCEL)count=0;
         activeTouchCount=count;nativeInput(host, ids, xy, count, 0);requestFrame();
         return true;
     }
@@ -835,6 +849,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     @Override public void onWindowFocusChanged(boolean focused) {super.onWindowFocusChanged(focused);if(services!=null)services.acousticFocus(focused);}
 
     public void setLifecycle(int state) {
+        if(state!=0)touchReleasePolicy.reset();
         lifecycleState=state;
         hangPhase(MainThreadWatchdog.Phase.LIFECYCLE);
         try {

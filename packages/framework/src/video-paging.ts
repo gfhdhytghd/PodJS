@@ -19,6 +19,11 @@ export function videoPagerOffsets(progress:number,height:number,direction:VideoP
 }
 /** Fast releases cross two items; slower gestures keep the positional rule. */
 export const VIDEO_PAGER_SKIP_VELOCITY=1800;
+/** A single sampled displacement has no trustworthy fling duration. In
+ * particular, an Android terminal-only endpoint must not invent a double skip. */
+export function videoPagerReleaseVelocity(contact:{frames:number;vy:number}):number {
+  return contact.frames<=1?0:contact.vy;
+}
 export function videoPagerDelta(progress:number,velocityY:number,direction:VideoPagerDirection):0|1|2 {
   if(!shouldSettleVideoPager(progress,velocityY,direction))return 0;
   return Math.abs(velocityY)>=VIDEO_PAGER_SKIP_VELOCITY?2:1;

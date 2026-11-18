@@ -47,6 +47,24 @@ public class PodVideoHttpDataSourcesTest {
             assertEquals("bytes=7-8",seek.get("range"));assertEquals("Mozilla/5.0",seek.get("user-agent"));
         } finally { server.close(); }
     }
+    @Test public void bypassStillResolvesCacheCapabilitiesAndPreservesAuthorizationAndRanges() throws Exception {
+        android.content.Context context=androidx.test.core.app.ApplicationProvider.getApplicationContext();
+        ArrayBlockingQueue<Map<String,String>> received=new ArrayBlockingQueue<>(8);
+        try(WireServer server=new WireServer(received);PodMediaPrefixCache cache=new PodMediaPrefixCache(java.nio.file.Files.createTempDirectory(context.getCacheDir().toPath(),"bypass-").toFile())){
+            String uri=cache.register("fixture","http://127.0.0.1:"+server.port()+"/media?signature=synthetic",Map.of("X-Fixture","registered"));
+            byte[] stale=new byte[16];java.util.Arrays.fill(stale,(byte)127);java.nio.file.Files.write(cache.target(uri).file.toPath(),stale);cache.target(uri).length=16;
+            DataSpec spec=new DataSpec.Builder().setUri(uri).setPosition(7).setLength(2).build();
+            androidx.media3.datasource.DataSource cached=PodVideoHttpDataSources.playback(context,cache,Map.of(),false).createDataSource();
+            try{cached.open(spec);byte[] bytes=new byte[2];assertEquals(2,cached.read(bytes,0,2));assertArrayEquals(new byte[]{127,127},bytes);}finally{cached.close();}
+            assertNull(received.poll());
+            androidx.media3.datasource.DataSource fresh=PodVideoHttpDataSources.playback(context,cache,Map.of("X-Fixture","argument"),true).createDataSource();
+            try{fresh.open(spec);byte[] bytes=new byte[2];assertEquals(2,fresh.read(bytes,0,2));assertArrayEquals(new byte[]{0,0},bytes);}finally{fresh.close();}
+            Map<String,String> request=received.poll(5,TimeUnit.SECONDS);assertNotNull(request);assertEquals("registered",request.get("x-fixture"));assertEquals("bytes=7-8",request.get("range"));
+            assertArrayEquals(stale,java.nio.file.Files.readAllBytes(cache.target(uri).file.toPath()));
+            cache.stopTraffic();androidx.media3.datasource.DataSource stopped=PodVideoHttpDataSources.playback(context,cache,Map.of(),true).createDataSource();
+            try{assertEquals("media_traffic_stopped",assertThrows(java.io.IOException.class,()->stopped.open(spec)).getMessage());}finally{stopped.close();}
+        }
+    }
     private static final class WireServer implements AutoCloseable {
         private final ServerSocket socket;
         private final Thread worker;

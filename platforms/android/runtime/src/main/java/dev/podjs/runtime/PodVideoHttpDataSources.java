@@ -25,5 +25,10 @@ final class PodVideoHttpDataSources {
             public void close()throws IOException{DataSource previous=source;source=null;if(previous!=null)previous.close();}
         };
     }
+    static DataSource.Factory playback(android.content.Context context,PodMediaPrefixCache cache,Map<String,String> headers,boolean bypassCache){
+        DataSource.Factory direct=new DefaultDataSource.Factory(context,create(headers,null));
+        // Capability resolution is mandatory even when cached bytes are bypassed.
+        return cache==null?direct:cache.factory(direct,bypassCache);
+    }
     private PodVideoHttpDataSources(){}
 }

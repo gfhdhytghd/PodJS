@@ -67,6 +67,9 @@ final class PodVideoFailure {
     static String codec(String mime){return "video/avc".equals(mime)?"avc":"video/hevc".equals(mime)?"hevc":"video/x-vnd.on2.vp9".equals(mime)?"vp9":"video/av01".equals(mime)?"av1":"unknown";}
     static String source(JSONObject args){String url=args==null?"":args.optString("url",args.optString("videoUrl",""));return url.isEmpty()?"missing":url.startsWith("podjs-media-cache:")?"cache":url.startsWith("http:")||url.startsWith("https:")?"network":"local";}
     static void record(String origin,String stage,String code,Throwable error,JSONObject args,int inUse,int limit,String surface,String content){
+        record(origin,stage,code,error,args,inUse,limit,surface,content,args!=null&&args.optBoolean("prewarm",false));
+    }
+    static void record(String origin,String stage,String code,Throwable error,JSONObject args,int inUse,int limit,String surface,String content,boolean prewarming){
         try{
             int media3=error instanceof PlaybackException?((PlaybackException)error).errorCode:0;
             String kind=kind(error);if(kind.equals("unknown")&&error instanceof PlaybackException)kind="media3";
@@ -74,7 +77,7 @@ final class PodVideoFailure {
                 .put("failure_code",fault(code,error)).put("exception_kind",kind).put("media3_code",Math.max(0,media3))
                 .put("decoder_count",Math.max(0,Math.min(8,inUse))).put("slot_limit",Math.max(0,Math.min(8,limit)))
                 .put("source_kind",source(args)).put("surface_state",surface).put("content_kind",content)
-                .put("is_prewarm",args!=null&&args.optBoolean("prewarm",false)).put("codec_kind",codec(args==null?"":args.optString("videoMime","")))
+                .put("is_prewarm",prewarming).put("codec_kind",codec(args==null?"":args.optString("videoMime","")))
                 .put("video_width",args==null?0:Math.max(0,Math.min(16384,args.optInt("videoWidth",0))))
                 .put("video_height",args==null?0:Math.max(0,Math.min(16384,args.optInt("videoHeight",0))));
             PodBenchmark.begin("error_page",row);

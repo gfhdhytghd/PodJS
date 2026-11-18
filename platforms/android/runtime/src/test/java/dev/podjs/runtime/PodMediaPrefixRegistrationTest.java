@@ -11,6 +11,11 @@ import org.robolectric.RobolectricTestRunner;
 import org.robolectric.annotation.Config;
 @RunWith(RobolectricTestRunner.class) @Config(sdk=30)
 public class PodMediaPrefixRegistrationTest {
+ @Test public void invalidSourceDiagnosticsDistinguishClosedValidationReasonsWithoutTheSource()throws Exception {
+  Context c=ApplicationProvider.getApplicationContext();PodMediaPrefixCache cache=new PodMediaPrefixCache(new File(c.getCacheDir(),"registration-source-reasons"));
+  String[][] rejected={{"","https://fixture.invalid/PRIVATE","key_empty"},{"x".repeat(2049),"https://fixture.invalid/PRIVATE","key_length"},{"fixture","podjs-media-cache://play/PRIVATE","scheme"},{"fixture","https:///PRIVATE","host"},{"fixture","https://PRIVATE@fixture.invalid/a","credentials"},{"fixture","https://fixture.invalid/"+"x".repeat(32768),"url_length"}};
+  try{for(String[] row:rejected){try{cache.register(row[0],row[1],Collections.emptyMap());fail(row[2]);}catch(IllegalArgumentException error){assertEquals("invalid_media_cache_source_"+row[2],error.getMessage());assertEquals("invalid_source_"+row[2],PodMediaPrefixFailure.reason(error));assertEquals("invalid_argument",PodMediaPrefixFailure.code(error,false));assertFalse(error.getMessage().contains("PRIVATE"));}}}finally{cache.close();}
+ }
  @Test public void issuedUrisSurviveOffWindowMetadataChurn()throws Exception {
   Context c=ApplicationProvider.getApplicationContext();PodMediaPrefixCache cache=new PodMediaPrefixCache(new File(c.getCacheDir(),"registration-lifetime"));
   try{String first=cache.register("first","https://fixture.invalid/first",Collections.emptyMap());

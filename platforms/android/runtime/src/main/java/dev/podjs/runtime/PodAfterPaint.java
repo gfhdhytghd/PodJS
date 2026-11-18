@@ -15,13 +15,7 @@ final class PodAfterPaint {
   return await(view,main,2,observed,complete);
  }
  static Runnable await(View view,Handler main,int required,java.util.function.BiConsumer<Integer,Long> observed,Consumer<Boolean> complete){
-  return await(new Commits(){
-   public boolean available(){return view.isAttachedToWindow()&&view.isHardwareAccelerated()&&view.isShown();}
-   public Runnable next(Runnable committed){
-    ViewTreeObserver observer=view.getViewTreeObserver();observer.registerFrameCommitCallback(committed);view.invalidate();
-    return ()->{if(observer.isAlive())observer.unregisterFrameCommitCallback(committed);};
-   }
-  },main,required,observed,complete);
+  return await(view,main,required,250,observed,complete);
  }
  static Runnable await(Commits commits,Handler main,Consumer<Boolean> complete){
   return await(commits,main,(frame,at)->{},complete);
@@ -30,7 +24,20 @@ final class PodAfterPaint {
   return await(commits,main,2,observed,complete);
  }
  static Runnable await(Commits commits,Handler main,int required,java.util.function.BiConsumer<Integer,Long> observed,Consumer<Boolean> complete){
+  return await(commits,main,required,250,observed,complete);
+ }
+ static Runnable await(View view,Handler main,int required,long timeoutMs,java.util.function.BiConsumer<Integer,Long> observed,Consumer<Boolean> complete){
+  return await(new Commits(){
+   public boolean available(){return view.isAttachedToWindow()&&view.isHardwareAccelerated()&&view.isShown();}
+   public Runnable next(Runnable committed){
+    ViewTreeObserver observer=view.getViewTreeObserver();observer.registerFrameCommitCallback(committed);view.getRootView().invalidate();
+    return ()->{if(observer.isAlive())observer.unregisterFrameCommitCallback(committed);};
+   }
+  },main,required,timeoutMs,observed,complete);
+ }
+ static Runnable await(Commits commits,Handler main,int required,long timeoutMs,java.util.function.BiConsumer<Integer,Long> observed,Consumer<Boolean> complete){
   if(required<1||required>2)throw new IllegalArgumentException("invalid_commit_count");
+  if(timeoutMs<1||timeoutMs>5000)throw new IllegalArgumentException("invalid_commit_timeout");
   class Wait {
    boolean done;int frames;Runnable unregister=()->{};
    final Runnable timeout=()->finish(false);
@@ -42,6 +49,6 @@ final class PodAfterPaint {
    }
    void cancel(){if(done)return;done=true;main.removeCallbacks(timeout);unregister.run();}
   }
-  Wait wait=new Wait();main.postDelayed(wait.timeout,250);wait.arm();return ()->main.post(wait::cancel);
+  Wait wait=new Wait();main.postDelayed(wait.timeout,timeoutMs);wait.arm();return ()->main.post(wait::cancel);
  }
 }

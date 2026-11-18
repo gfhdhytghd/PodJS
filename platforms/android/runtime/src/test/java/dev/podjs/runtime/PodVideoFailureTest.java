@@ -30,4 +30,10 @@ public class PodVideoFailureTest {
   assertEquals("not_ready",PodVideoFailure.fault("video_session_error",new IllegalStateException("video_not_ready")));
   assertEquals("surface_error",PodVideoFailure.fault("video_session_error",new IllegalStateException("video_surface_unavailable")));
  }
+ @Test public void aPromotedSourceIsNotReportedAsPrewarmFromItsOriginalPrepareArguments()throws Exception{
+  ShadowLog.clear();JSONObject source=new JSONObject().put("url","podjs-media-cache://play/private.mp4").put("prewarm",true);
+  PodVideoFailure.record("sessions","playback","source_expired",null,source,1,3,"attached","mp4",false);
+  String log=ShadowLog.getLogsForTag("DYBENCH").get(0).msg;assertTrue(log.contains("is_prewarm=false"));assertFalse(log.contains("private"));
+ }
+
 }

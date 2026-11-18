@@ -468,7 +468,7 @@ final class PodServices implements Closeable {
         }
         if (method.equals("video.cache.local.hide")) {main.post(()->{if(mediaPrefixCache.startupPreview!=null)mediaPrefixCache.startupPreview.hide(args.optLong("token"));if(requests.remove(id,request))reply(id,true,new JSONObject(),null,null);});return;}
         if (method.startsWith("video.cache.")) {
-            streamWorkers.execute(()->{try{JSONObject result=mediaPrefixCache.execute(method,args,()->!closed&&requests.get(id)==request);if(requests.remove(id,request))reply(id,true,result,null,null);}catch(Exception error){if(requests.remove(id,request))failure(id,error instanceof PodVideoShortEdge.Rejected?PodVideoShortEdge.ERROR:mediaPrefixCache.trafficStopped()?"media_traffic_stopped":"media_cache_error","Media prefix operation failed");}});return;
+            streamWorkers.execute(()->{try{JSONObject result=mediaPrefixCache.execute(method,args,()->!closed&&requests.get(id)==request);if(requests.remove(id,request))reply(id,true,result,null,null);}catch(Exception error){PodMediaPrefixFailure.record(method,error,mediaPrefixCache);if(requests.remove(id,request))failure(id,error instanceof PodVideoShortEdge.Rejected?PodVideoShortEdge.ERROR:PodMediaPrefixFailure.code(error,mediaPrefixCache.trafficStopped()),"Media prefix operation failed");}});return;
         }
         if (method.startsWith("video.")) {
             video.dispatch(method, args, new PodVideoServices.Callback() {

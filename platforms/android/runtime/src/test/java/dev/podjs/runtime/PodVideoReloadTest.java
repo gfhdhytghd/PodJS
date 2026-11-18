@@ -35,18 +35,22 @@ public class PodVideoReloadTest {
    Shadows.shadowOf(Looper.getMainLooper()).idle();assertEquals("error",value[0].getString("state"));assertEquals("source_expired",value[0].getString("errorCode"));
   }finally{service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();}
  }
- @Test public void freshSessionPrepareBypassesPrefixCacheFactory()throws Exception{
+ @Test public void freshSessionPrepareBypassesCachedBytesButResolvesCacheCapability()throws Exception{
   android.content.Context context=androidx.test.core.app.ApplicationProvider.getApplicationContext();
   java.io.File root=java.nio.file.Files.createTempDirectory(context.getCacheDir().toPath(),"reload-cache-").toFile();
-  try(PodMediaPrefixCache cache=new PodMediaPrefixCache(root)){
+  PodMediaPrefixCacheTest.Remote remote=new PodMediaPrefixCacheTest.Remote(16);
+  try(PodMediaPrefixCache cache=new PodMediaPrefixCache(root,remote,6*1024*1024)){
+   String uri=cache.register("fixture","https://fixture.invalid/synthetic.mp4",java.util.Map.of());
+   byte[] stale=new byte[16];java.util.Arrays.fill(stale,(byte)127);java.nio.file.Files.write(cache.target(uri).file.toPath(),stale);cache.target(uri).length=16;
    PodVideoSessionServices host=new PodVideoSessionServices(context,new PodVideoDecoderBudget(3),cache);
    try{
     java.lang.reflect.Method factory=PodVideoSessionServices.class.getDeclaredMethod("mediaSource",JSONObject.class,PodVideoAnalytics.class);factory.setAccessible(true);
     for(boolean bypass:new boolean[]{false,true}){
-     Object media=factory.invoke(host,new JSONObject().put("url","http://127.0.0.1/synthetic.mp4").put("bypassCache",bypass),new PodVideoAnalytics());
+     Object media=factory.invoke(host,new JSONObject().put("url",uri).put("bypassCache",bypass),new PodVideoAnalytics());
      java.lang.reflect.Field field=media.getClass().getDeclaredField("dataSourceFactory");field.setAccessible(true);
      androidx.media3.datasource.DataSource data=((androidx.media3.datasource.DataSource.Factory)field.get(media)).createDataSource();
-     assertEquals(!bypass,data.getClass().getSimpleName().contains("PrefixDataSource"));data.close();
+     try{data.open(new DataSpec(Uri.parse(uri)));byte[] bytes=new byte[2];assertEquals(2,data.read(bytes,0,2));assertArrayEquals(bypass?java.util.Arrays.copyOf(remote.body,2):new byte[]{127,127},bytes);}finally{data.close();}
+     assertArrayEquals(stale,java.nio.file.Files.readAllBytes(cache.target(uri).file.toPath()));
     }
    }finally{host.close();Shadows.shadowOf(Looper.getMainLooper()).idle();}
   }

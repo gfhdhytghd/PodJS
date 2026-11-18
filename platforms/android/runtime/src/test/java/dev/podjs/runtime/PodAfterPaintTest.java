@@ -41,4 +41,29 @@ public class PodAfterPaintTest {
   values.clear();PodAfterPaint.await(new Commits(),new Handler(Looper.getMainLooper()),1,(frame,at)->{},values::add);
   shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(251));assertEquals(Arrays.asList(false),values);
  }
+ @Test public void diagnosticWindowWaitsForALateRealSecondCommitWithoutChangingProductTimeout(){
+  Handler main=new Handler(Looper.getMainLooper());Commits commits=new Commits();List<Boolean> values=new ArrayList<>();
+  PodAfterPaint.await(commits,main,2,1000,(frame,at)->{},values::add);
+  commits.callbacks.get(0).run();shadowOf(Looper.getMainLooper()).idle();
+  shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(400));assertTrue(values.isEmpty());
+  commits.callbacks.get(1).run();shadowOf(Looper.getMainLooper()).idle();assertEquals(Arrays.asList(true),values);
+  Commits missing=new Commits();values.clear();PodAfterPaint.await(missing,main,2,1000,(frame,at)->{},values::add);
+  shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1001));assertEquals(Arrays.asList(false),values);
+ }
+
+ @Test public void cachedTextureWaitInvalidatesTheWindowRootRatherThanAnOccludedChild(){
+  final int[] roots={0},children={0};
+  View root=new View(RuntimeEnvironment.getApplication()){@Override public void invalidate(){roots[0]++;}};
+  View texture=new View(RuntimeEnvironment.getApplication()){
+   @Override public boolean isAttachedToWindow(){return true;}
+   @Override public boolean isHardwareAccelerated(){return true;}
+   @Override public boolean isShown(){return true;}
+   @Override public View getRootView(){return root;}
+   @Override public void invalidate(){children[0]++;}
+  };
+  roots[0]=children[0]=0;
+  Runnable cancel=PodAfterPaint.await(texture,new Handler(Looper.getMainLooper()),1,(frame,at)->{},ok->{});
+  assertEquals(1,roots[0]);assertEquals(0,children[0]);cancel.run();shadowOf(Looper.getMainLooper()).idle();
+ }
+
 }

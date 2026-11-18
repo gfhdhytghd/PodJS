@@ -34,10 +34,22 @@ export class PlaybackPrepareDeadline {
   private revision=0;
   private timer?:{cancel():void};
   cancel(){this.revision++;this.timer?.cancel();this.timer=undefined;}
-  arm(ms:number, timer:(ms:number)=>{result:Promise<unknown>;cancel():void}, current:()=>boolean, expire:()=>void){
+  arm(ms:number, timer:(ms:number)=>{result:Promise<unknown>;cancel():void}, current:()=>boolean, expire:()=>void,
+      progress?:{read:()=>number;maxMs:number;now?:()=>number}){
     this.cancel();const revision=this.revision;
-    const operation=timer(Math.max(1,Math.floor(ms)));this.timer=operation;
-    void operation.result.then(()=>{if(this.revision===revision&&current()){this.timer=undefined;expire();}},()=>{});
+    if(!progress){const operation=timer(Math.max(1,Math.floor(ms)));this.timer=operation;void operation.result.then(()=>{if(this.revision===revision&&current()){this.timer=undefined;expire();}},()=>{});return;}
+    const now=progress.now??Date.now,started=now();
+    let lastProgress=started,lastBytes=0;
+    const tick=()=>{
+      if(this.revision!==revision||!current())return;
+      const at=now();
+      if(progress){const bytes=progress.read();if(Number.isFinite(bytes)&&bytes>lastBytes){lastBytes=bytes;lastProgress=at;}}
+      const left=progress?Math.min(progress.maxMs-(at-started),ms-(at-lastProgress)):ms-(at-started);
+      if(left<=0){this.timer=undefined;expire();return;}
+      const operation=timer(Math.max(1,Math.floor(progress?Math.min(1000,left):left)));this.timer=operation;
+      void operation.result.then(tick,()=>{});
+    };
+    tick();
   }
 }
 /** Known Unix-second CDN expiry fields only; opaque signatures are never decoded. */

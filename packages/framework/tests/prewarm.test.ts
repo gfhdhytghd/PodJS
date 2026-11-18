@@ -499,3 +499,29 @@ for(const method of ['setTransform','setLoop'] as const)test(`DYWAIT-B ${method}
  await expect(method==='setTransform'?pool.setTransform({scaleMode:'standard'}):pool.setLoop(false)).rejects.toMatchObject({code:'decode_error'});
  await pool.releaseAll();
 });
+
+
+test('NOPLAY pending adoption claims the host deadline before applying foreground transform',async()=>{
+ const m=new Model(),pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();
+ const active=pool.prepare(source(1),options(1));await m.advance(400);await active.result;
+ let resolveWarm!:(value:VideoSessionState)=>void,claimed=false;const events:string[]=[];
+ const original=m.port.prepare;m.port.prepare=(o:any)=>{if(!o.prewarm)return original(o);m.prepareCount++;m.states.set(o.sessionId,{...m.value(o.sessionId,true),hasRenderedFirstFrame:false,state:'buffering'});return {result:new Promise<VideoSessionState>(resolve=>{resolveWarm=resolve;}),cancel:()=>{m.cancelCount++;}};};
+ m.port.promote=async(id:string,o:any)=>{events.push('claim');expect(o.transform).toEqual({rotationDeg:90});claimed=true;const value={...m.states.get(id)!,prewarming:false,presented:true};m.states.set(id,value);return value;};
+ m.port.setTransform=async(id:string)=>{events.push('transform');if(!claimed)throw Error('transform reached an unclaimed expiring standby');return m.states.get(id)!;};
+ const warm=pool.prewarm(source(2),options(2)).catch(()=>undefined);await m.advance(1);
+ const selected=pool.prepare(source(2),{...options(2),transform:{rotationDeg:90}});selected.result.catch(()=>{});await m.advance(40);
+ await expect(selected.result).resolves.toMatchObject({hasRenderedFirstFrame:false});expect(events).toEqual(['claim','transform']);expect(m.prepareCount).toBe(2);
+ resolveWarm(m.value('retired',true));await warm;await pool.releaseAll();
+});
+
+test('NOPLAY only the closed expired-prewarm acknowledgement permits a cold foreground fallback',async()=>{
+ for(const expired of [true,false]){
+  const m=new Model(),pool=new VideoSessionPool(m.port);await pool.supportsPrewarm();const active=pool.prepare(source(1),options(1));await m.advance(400);await active.result;
+  const warm=pool.prewarm(source(2),options(2)).catch(()=>undefined);
+  const error=Object.assign(Error(expired?'video_prewarm_unavailable':'video_not_ready'),{code:'not_ready'});m.port.promote=async()=>{throw error;};m.port.retire=async id=>m.states.get(id)!;
+  const selected=pool.prepare(source(2),options(2));selected.result.catch(()=>{});await m.advance(800);
+  if(expired){await expect(selected.result).resolves.toMatchObject({hasRenderedFirstFrame:true});expect(m.prepareCount).toBe(3);}
+  else{await expect(selected.result).rejects.toBe(error);expect(m.prepareCount).toBe(2);}
+  await warm;await pool.releaseAll();
+ }
+});

@@ -20,7 +20,7 @@ export interface VideoSessionPort {
   setMuted?(sessionId:string,muted:boolean):Promise<VideoSessionState>;
   setLoop(sessionId:string,loop:boolean):Promise<VideoSessionState>;
   setSpeed?(sessionId:string,speed:number):Promise<VideoSessionState>;
-  promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean;loop?:boolean;adoptPreparing?:boolean;backgroundPlayback?:boolean;benchmark?:VideoBenchmarkAction}):Promise<VideoSessionState>;
+  promote(sessionId:string,options:{replaceSessionId?:string;bounds?:VideoBounds;autoplay?:boolean;loop?:boolean;adoptPreparing?:boolean;transform?:VideoTransform;backgroundPlayback?:boolean;benchmark?:VideoBenchmarkAction}):Promise<VideoSessionState>;
   transition(options:{fromSessionId:string;toSessionId:string;progress:number;direction:VideoPagerDirection;bounds?:VideoBounds;benchmark?:VideoBenchmarkAction;trackPointer?:boolean}):Promise<VideoSessionTransitionState>;
 }
 
@@ -31,7 +31,7 @@ const defaultSessionPort:VideoSessionPort={
 
 let nextPoolId=1;
 const state=(value:VideoSessionState):VideoState=>({
-  isBuffering:value.isBuffering,appliedVolume:value.appliedVolume,audioTrackSelected:value.audioTrackSelected,bufferedMs:value.bufferedMs,networkStalled:value.networkStalled,presented:value.presented,metrics:value.metrics,ok:value.ok,state:value.state,positionMs:value.positionMs,durationMs:value.durationMs,completedLoops:value.completedLoops,loop:value.loop,
+  isBuffering:value.isBuffering,playWhenReady:value.playWhenReady,nativePlaybackState:value.nativePlaybackState,playbackSuppressionReason:value.playbackSuppressionReason,loading:value.loading,frameHandoffPending:value.frameHandoffPending,appliedVolume:value.appliedVolume,audioTrackSelected:value.audioTrackSelected,bufferedMs:value.bufferedMs,networkStalled:value.networkStalled,presented:value.presented,metrics:value.metrics,ok:value.ok,state:value.state,positionMs:value.positionMs,durationMs:value.durationMs,completedLoops:value.completedLoops,loop:value.loop,
   width:value.width,height:value.height,volume:value.volume,volumeMax:value.volumeMax??15,volumeIndex:value.volumeIndex,muted:value.muted,
   hasCachedFirstFrame:value.hasCachedFirstFrame,sourceGeneration:value.sourceGeneration,errorCode:value.errorCode,hasRenderedFirstFrame:value.hasRenderedFirstFrame,speed:value.speed,
 });
@@ -171,13 +171,20 @@ export class VideoSessionPool<Source extends {key:string}> {
     const result=(async()=>{
       const loop=this.loop;
       let promoted:VideoSessionState;
-      try{if(Object.keys(this.transform).length)await this.port.setTransform(id,this.transform);promoted=await this.port.promote(id,{replaceSessionId:replacedId,bounds:options.bounds,autoplay:options.autoplay===true,loop,adoptPreparing:true,backgroundPlayback:this.backgroundPlayback,...(options.benchmark?{benchmark:options.benchmark}:{})});}
+      try{
+        // Claim the pending decoder and cancel its speculative deadline in one
+        // host command. Transform-first could lose the slot at the 10s boundary.
+        promoted=await this.port.promote(id,{replaceSessionId:replacedId,bounds:options.bounds,autoplay:options.autoplay===true,loop,adoptPreparing:true,transform:this.transform,backgroundPlayback:this.backgroundPlayback,...(options.benchmark?{benchmark:options.benchmark}:{})});
+        // Older hosts ignore the atomic transform argument.
+        if(Object.keys(this.transform).length)await this.port.setTransform(id,this.transform);
+      }
       catch(error){
         const failure=error as {code?:string;message?:string};
         // Native expiry can win between guest selection and host promotion.
         // Only this absent-session acknowledgement permits one cold prepare.
         // Transport, authorization and decoder failures remain terminal.
-        if(failure.code!=='invalid_argument'||failure.message!=='unknown_video_session'||cancelled||own!==this.generation)throw error;
+        const expired= failure.code==='not_ready'&&failure.message==='video_prewarm_unavailable'||failure.code==='invalid_argument'&&failure.message==='unknown_video_session';
+        if(!expired||cancelled||own!==this.generation)throw error;
         const foreground=options;
         await this.port.retire(replacedId,true).catch(()=>undefined);
         if(cancelled||own!==this.generation)throw Error('stale video session adoption');
@@ -368,7 +375,7 @@ export class VideoSessionPool<Source extends {key:string}> {
     // whose receipt failed; a reused slot belongs to a newer request.
     void work.catch(async()=>{if(slot.revision===revision&&slot.id===id)await this.evict(slot,'failure');}).catch(()=>{});
   }
-  async setLoop(loop:boolean):Promise<void>{this.loop=loop;for(const slot of this.slots.filter(s=>s.ready))this.neighbourUpdate(slot,this.syncLoop(slot.id));if(this.activeKey)await this.syncLoop(this.activeId);}
+  async setLoop(loop:boolean):Promise<void>{if(loop===this.loop)return;this.loop=loop;for(const slot of this.slots.filter(s=>s.ready))this.neighbourUpdate(slot,this.syncLoop(slot.id));if(this.activeKey)await this.syncLoop(this.activeId);}
   /** Active session only; neighbours start at 1x and the caller re-applies its speed after a page change. */
   setSpeed(speed:number):Promise<VideoState>{if(!this.port.setSpeed)return Promise.reject(Object.assign(new Error("video.session.setSpeed is unavailable"),{code:"unsupported"}));return this.port.setSpeed(this.activeId,speed).then(state);}
   play():Promise<VideoState>{return this.port.play(this.activeId,{backgroundPlayback:this.backgroundPlayback}).then(state);}

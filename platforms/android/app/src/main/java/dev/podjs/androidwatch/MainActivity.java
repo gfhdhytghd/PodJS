@@ -7,6 +7,7 @@ public final class MainActivity extends Activity {
   private boolean resumed;
   private static final String POD_SAVED_STATE = "dev.podjs.activity-state";
   @Override public void onRequestPermissionsResult(int code,String[] permissions,int[] results){super.onRequestPermissionsResult(code,permissions,results);if(pod!=null)pod.notificationPermissionResult(code,results);}
+  private int inputLogs;
   private float swipeStartX, swipeStartY;
   private boolean swipeActive, swipeClaimed, platformSwipeDismiss;
   @Override public void onCreate(Bundle b){long began=PodStartupTrace.now();try{splash=dev.podjs.runtime.PodSplash.install(this);platformSwipeDismiss=PodRuntimeView.requestPlatformSwipeDismiss(this);super.onCreate(b);pendingState=b;if(dev.podjs.runtime.PodTakeover.showRecoveryIfNeeded(this,this::startRuntime))return;startRuntime();}finally{PodStartupTrace.stage("activityOnCreate",began);}}
@@ -22,6 +23,7 @@ public final class MainActivity extends Activity {
   @Override protected void onStop(){resumed=false;if(pod!=null)pod.setLifecycle(2);super.onStop();}
   @Override public boolean dispatchTouchEvent(MotionEvent e) {
     boolean swipeAllowed = pod != null && pod.canSwipeDismiss();
+    if(e.getActionMasked()!=MotionEvent.ACTION_MOVE&&android.util.Log.isLoggable("PodInput",android.util.Log.DEBUG)&&inputLogs++<512)android.util.Log.i("PodInput","activity action="+e.getActionMasked()+" event_ms="+e.getEventTime()+" epoch_ms="+System.currentTimeMillis()+" dismiss="+(swipeAllowed?1:0)+" platform="+(platformSwipeDismiss?1:0));
     if (!swipeAllowed) { swipeActive = false; swipeClaimed = false; }
     if (pod != null && pod.getParent() != null)
       pod.getParent().requestDisallowInterceptTouchEvent(!swipeAllowed || !platformSwipeDismiss);
