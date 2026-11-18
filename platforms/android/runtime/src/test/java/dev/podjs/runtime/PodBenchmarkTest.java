@@ -16,9 +16,10 @@ public class PodBenchmarkTest {
   long seq=PodBenchmark.dispatch(row.toString());assertTrue(seq>0);
   row.put("seq",seq).put("feed_stage","mapping");
   assertEquals(seq,PodBenchmark.dispatch(row.toString()));
+  assertEquals(seq,PodBenchmark.dispatch(row.put("feed_stage","request_auth").toString()));
   assertEquals(0,PodBenchmark.dispatch(new JSONObject(row.toString()).put("cursor","PRIVATE").toString()));
   assertEquals(0,PodBenchmark.dispatch(row.put("feed_stage","PRIVATE").toString()));
-  assertEquals(2,ShadowLog.getLogsForTag("DYBENCH").size());
+  assertEquals(3,ShadowLog.getLogsForTag("DYBENCH").size());
  }
  @org.junit.Test public void coldPrepareStagesStayClosedAndNativeAdoptionDoesNotInventADecode() throws Exception {
   long seq=PodBenchmark.begin("entry_start",new org.json.JSONObject());

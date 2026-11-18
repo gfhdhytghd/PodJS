@@ -90,6 +90,29 @@ unsafe impl Allocator for ProcessAllocator {
   unsafe fn dealloc(&mut self,p:*mut u8){unsafe{RustAllocator.dealloc(p)}}
   unsafe fn usable_size(p:*mut u8)->usize{unsafe{RustAllocator::usable_size(p)}}
  }
+ #[test]
+ fn registered_promise_reactions_survive_settlement_without_allocation(){
+  for (reject, expected) in [(false,"first:42,second:42"),(true,"catch:42") ]{
+   let countdown=Arc::new(AtomicIsize::new(-1));
+   let guest=pocket_mod::Guest::new_with_alloc(FailOnce(countdown.clone(),true)).unwrap();
+   guest.eval("register promise reactions",r#"
+    globalThis.received=[];
+    const pending=new Promise((resolve,reject)=>{globalThis.succeed=resolve;globalThis.fail=reject;});
+    pending.then(value=>received.push('first:'+value),value=>received.push('catch:'+value));
+    (async()=>{try{received.push('second:'+(await pending));}catch{}})();
+    globalThis.frame=()=>{};
+   "#).unwrap();
+   guest.with(|ctx|{
+    let settle:rquickjs::Function=ctx.globals().get(if reject{"fail"}else{"succeed"}).unwrap();
+    countdown.store(0,Ordering::Relaxed);
+    let result=settle.call::<_,()>((42,));
+    countdown.store(-1,Ordering::Relaxed);
+    result.unwrap();
+   });
+   guest.drain_jobs();
+   guest.eval("verify promise reactions",&format!("if(received.join(',')!=={expected:?}) throw Error('registered promise reactions were lost');")).unwrap();
+  }
+ }
  #[test] fn async_allocation_denials_preserve_recoverable_guest(){
   for arrays in [false,true] {for compile in [false,true] {for persistent in [false,true] {for fail_at in 0..160 {
    eprintln!("arrays={arrays} compile={compile} persistent={persistent} fail_at={fail_at}");
