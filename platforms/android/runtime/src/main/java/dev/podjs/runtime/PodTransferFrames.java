@@ -18,6 +18,19 @@ final class PodTransferFrames {
     private static final int MAGIC = 0x4c425632;
     private static final long MAX_INTEGER = 9007199254740991L;
 
+    static final class Rate {
+        private final int burst, perSecond;
+        private double tokens;
+        private long at=System.nanoTime();
+        Rate(int burst,int perSecond){this.burst=burst;this.perSecond=perSecond;tokens=burst;}
+        synchronized void take()throws IOException{
+            long now=System.nanoTime();
+            tokens=Math.min(burst,tokens+(now-at)*perSecond/1e9);at=now;
+            if(tokens<1)throw new IOException("RATE_LIMITED");
+            tokens--;
+        }
+    }
+
     static final class Header {
         final byte[] bytes;
         final int kind;

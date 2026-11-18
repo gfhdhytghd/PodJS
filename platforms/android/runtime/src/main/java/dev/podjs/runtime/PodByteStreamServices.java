@@ -44,6 +44,8 @@ final class PodByteStreamServices implements Closeable {
     private final Map<String,TcpListener> tcpListeners=new HashMap<>();
     private final java.util.concurrent.ExecutorService frameHashes=Executors.newSingleThreadExecutor();
     private final ScheduledExecutorService frameJournal=Executors.newSingleThreadScheduledExecutor();
+    private final java.util.concurrent.ExecutorService frameSender=Executors.newSingleThreadExecutor();
+    private final java.util.concurrent.ExecutorService frameSource=Executors.newSingleThreadExecutor();
     private final java.util.concurrent.ExecutorService frameWriter=Executors.newSingleThreadExecutor();
     private final ScheduledExecutorService deadlines=Executors.newSingleThreadScheduledExecutor();
     private boolean closed;
@@ -169,7 +171,7 @@ final class PodByteStreamServices implements Closeable {
             return new JSONObject().put("version",1).put("codec","length-prefixed-chunks-v1")
                     .put("chunkBytes",65536).put("windows",new JSONArray().put(1).put(8))
                     .put("methods",new JSONArray(new String[]{"open","next","register","enable","bind",
-                        "applied","control","ack","data","state","retire"}));
+                        "applied","control","ack","data","state","retire","send","sendRejected"}));
         }
         String id=args.getString("id");
         if("stream.claim".equals(method))return claim(id);
@@ -183,12 +185,20 @@ final class PodByteStreamServices implements Closeable {
                 if(endpoint.originalId.equals(id)||endpoint.closed.get()||endpoint.channel!=null)
                     throw new IOException("AUTH_REVOKED");
                 endpoint.channel=new PodTransferChannel(endpoint.input,endpoint.output,frameHashes,
-                        frameJournal,frameWriter,framedJournal,()->removeStream(id),deadlines);
+                        frameJournal,frameWriter,framedJournal,()->removeStream(id),deadlines,frameSource,frameSender);
             }
             return new JSONObject();
         }
         PodTransferChannel channel=endpoint.channel;
         if(method.startsWith("stream.framed")&&channel==null)throw new IOException("AUTH_REVOKED");
+        if("stream.framedSend".equals(method)){
+            cancellation.setOnCancelListener(()->removeStream(id));
+            try{return channel.send(args,chunk->readRange(chunk.path,chunk.offset,chunk.size));}
+            finally{cancellation.setOnCancelListener(null);}
+        }
+        if("stream.framedSendRejected".equals(method)){
+            channel.rejectSend(args);return new JSONObject();
+        }
         if("stream.framedRegister".equals(method)){
             channel.register(args.getJSONArray("page"));return new JSONObject();
         }
@@ -252,15 +262,21 @@ final class PodByteStreamServices implements Closeable {
         }
     }
 
-    private JSONObject prepareFile(Endpoint endpoint,JSONObject args,CancellationSignal cancellation) throws Exception {
-        byte[] bytes=new byte[number(args,"size",1,MAX_BYTES)];
-        long offset=PodFileRanges.number(args,"offset",0,512L*1024*1024);
-        try(android.os.ParcelFileDescriptor.AutoCloseInputStream in=PodSyncGuestFiles.open(PodTakeover.filesRoot(context),args.getString("path"))) {
+    private byte[] readRange(String path,long offset,int size)throws Exception {
+        byte[] bytes=new byte[size];
+        try(android.os.ParcelFileDescriptor.AutoCloseInputStream in=PodSyncGuestFiles.open(PodTakeover.filesRoot(context),path)){
             in.getChannel().position(offset);
             PodFileRanges.readExact(in,bytes,bytes.length);
-            if(!PodFileRanges.hex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes)).equals(args.getString("sha256")))
-                throw new IOException("SOURCE_CHANGED");
-        } catch(IOException error) { throw new IOException("SOURCE_CHANGED",error); }
+        }catch(IOException error){throw new IOException("SOURCE_CHANGED",error);}
+        return bytes;
+    }
+
+    private JSONObject prepareFile(Endpoint endpoint,JSONObject args,CancellationSignal cancellation) throws Exception {
+        int size=number(args,"size",1,MAX_BYTES);
+        long offset=PodFileRanges.number(args,"offset",0,512L*1024*1024);
+        byte[] bytes=readRange(args.getString("path"),offset,size);
+        if(!PodFileRanges.hex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes)).equals(args.getString("sha256")))
+            throw new IOException("SOURCE_CHANGED");
         cancellation.throwIfCanceled();
         synchronized(endpoint.outgoing) {
             if(endpoint.closed.get())throw new IOException("Stream closed");
@@ -322,5 +338,5 @@ final class PodByteStreamServices implements Closeable {
 
     /** Dispose a handle created after its cancelled request lost delivery. */
     void discard(JSONObject value){String id=value.optString("id","");if(id.startsWith("stream-"))removeStream(id);else if(id.startsWith("listener-"))removeListener(id);else if(id.startsWith("tcp-listener-"))removeTcpListener(id);}
-    public void close(){ArrayList<Closeable> handles=new ArrayList<>();synchronized(this){if(closed)return;closed=true;handles.addAll(streams.values());handles.addAll(listeners.values());handles.addAll(tcpListeners.values());streams.clear();handedOff.clear();listeners.clear();tcpListeners.clear();}for(Closeable handle:handles)closeQuietly(handle);deadlines.shutdownNow();frameHashes.shutdown();frameJournal.shutdown();frameWriter.shutdown();}
+    public void close(){ArrayList<Closeable> handles=new ArrayList<>();synchronized(this){if(closed)return;closed=true;handles.addAll(streams.values());handles.addAll(listeners.values());handles.addAll(tcpListeners.values());streams.clear();handedOff.clear();listeners.clear();tcpListeners.clear();}for(Closeable handle:handles)closeQuietly(handle);deadlines.shutdownNow();frameHashes.shutdown();frameJournal.shutdown();frameWriter.shutdown();frameSource.shutdown();frameSender.shutdown();}
 }

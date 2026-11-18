@@ -29,6 +29,10 @@ final class PodTransferChannel {
     private final Executor verifier;
     private final ScheduledExecutorService durable;
     private final Executor writer;
+    private final Executor sourceWorker, senderWorker;
+    private volatile PodSendWindow sender;
+    private final PodTransferFrames.Rate ackBudget=new PodTransferFrames.Rate(256,128);
+    private final PodTransferFrames.Rate staleBudget=new PodTransferFrames.Rate(32,16);
     private final Journal journal;
     private final Runnable abort;
     private final Object frameWrite = new Object();
@@ -49,7 +53,7 @@ final class PodTransferChannel {
     private long nextAck = 1;
 
     PodTransferChannel(InputStream input, OutputStream output, Executor verifier,
-                       ScheduledExecutorService durable, Executor writer, Journal journal, Runnable abort, ScheduledExecutorService deadlines) {
+                       ScheduledExecutorService durable, Executor writer, Journal journal, Runnable abort, ScheduledExecutorService deadlines, Executor sourceWorker, Executor senderWorker) {
         this.input = input;
         this.output = output;
         this.verifier = verifier;
@@ -58,6 +62,8 @@ final class PodTransferChannel {
         this.journal = journal;
         this.abort = abort;
         this.deadlines = deadlines;
+        this.sourceWorker = sourceWorker;
+        this.senderWorker = senderWorker;
     }
 
     synchronized void register(JSONArray page) throws Exception {
@@ -166,6 +172,7 @@ final class PodTransferChannel {
                 if (frame.kind == PodTransferFrames.DATA && (current != null||!retired.isEmpty())) {
                     PodTransferFrames.Chunk data = new PodTransferFrames.Chunk(frame.bytes, frame.body);
                     if (retired.contains(data.epoch)) {
+                        staleBudget.take();
                         for(int left=frame.body;left>0;){
                             int length=Math.min(left,scratch.length);
                             PodTransferFrames.readExact(input,scratch,0,length);
@@ -198,6 +205,13 @@ final class PodTransferChannel {
                     bytes = new byte[frame.bytes.length + frame.body];
                     System.arraycopy(frame.bytes, 0, bytes, 0, frame.bytes.length);
                     PodTransferFrames.readExact(input, bytes, frame.bytes.length, frame.body);
+                    PodSendWindow active=sender;
+                    ByteBuffer ack=ByteBuffer.wrap(bytes);
+                    if(active!=null&&active.accepts(ack.getInt(16),ack.getLong(24))){
+                        ackBudget.take();
+                        if(active.acknowledge(bytes))progress.incrementAndGet();
+                        continue;
+                    }
                 }
                 return numbers(frame.kind,bytes);
             }
@@ -272,6 +286,53 @@ final class PodTransferChannel {
         output.flush();
     }
 
+    JSONObject send(JSONObject configuration,PodSendWindow.ReadRange readRange) throws Exception {
+        if(closed)throw new IOException("AUTH_REVOKED");
+        JSONArray rows=configuration.getJSONArray("chunks");
+        if(rows.length()<1||rows.length()>1024)throw new IOException("LIMIT_EXCEEDED");
+        List<PodSendWindow.Chunk> plan=new ArrayList<>(rows.length());
+        for(int i=0;i<rows.length();i++){
+            JSONObject row=rows.getJSONObject(i);
+            int size=bounded(row.getInt("size"),1,65536);
+            long offset=row.getLong("offset");
+            if(offset<0||offset>536870912L-size)throw new IOException("SOURCE_CHANGED");
+            PodSendWindow.Chunk chunk=new PodSendWindow.Chunk(bounded(row.getInt("slot"),0,511),
+                    bounded(row.getInt("index"),0,255),size,offset,row.getString("path"),
+                    row.getString("operation"),row.getString("digest"),row.getString("sha256"));
+            plan.add(chunk);
+        }
+        PodSendWindow active=new PodSendWindow(configuration.getInt("stream"),configuration.getLong("epoch"),
+                configuration.getInt("window"),configuration.getLong("tx"),configuration.getLong("ack"),
+                plan,senderWorker,sourceWorker,deadlines,readRange,(lane,chunk,body)->{
+                    synchronized(frameWrite){
+                        awaitPriority();
+                        if(closed)throw new IOException("AUTH_REVOKED");
+                        writeLocked(lane.reserve(chunk),body,null);
+                        progress.addAndGet(body.length);
+                    }
+                });
+        synchronized(this){
+            if(sender!=null||closed)throw new IOException("BUSY");
+            sender=active;
+        }
+        try{
+            PodSendWindow.Result result=active.start().get();
+            return new JSONObject().put("tx",result.tx).put("ack",result.ack).put("staged",new JSONArray(result.staged)).put("error",result.error);
+        }catch(java.util.concurrent.ExecutionException error){
+            if(error.getCause() instanceof Exception)throw (Exception)error.getCause();
+            throw error;
+        }finally{
+            active.stop(new IOException("AUTH_REVOKED"));
+            sender=null;
+        }
+    }
+
+    void rejectSend(JSONObject args) throws Exception {
+        PodSendWindow active=sender;
+        if(active==null||!active.accepts(args.getInt("stream"),args.getLong("epoch")))throw new IOException("STALE_EPOCH");
+        active.negative(args.getString("operation"),args.getString("digest"),args.getString("code"),args.getInt("retryAfterMillis"));
+    }
+
     long progress() {return progress.get();}
 
     void retire() throws InterruptedException {
@@ -292,6 +353,7 @@ final class PodTransferChannel {
 
     void close() {
         closed=true;
+        PodSendWindow active=sender;if(active!=null)active.stop(new IOException("AUTH_REVOKED"));
         PodReceiveWindow current = window;
         if (current != null) current.close();
     }

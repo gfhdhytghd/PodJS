@@ -81,6 +81,7 @@ const methods: Record<string, PodCapabilityId> = {
   "stream.framedRuntime":"net.stream","stream.framedOpen":"net.stream","stream.framedNext":"net.stream","stream.framedRegister":"net.stream",
   "stream.framedEnable":"net.stream","stream.framedBind":"net.stream","stream.framedApplied":"net.stream",
   "stream.framedControl":"net.stream","stream.framedAck":"net.stream","stream.framedData":"net.stream",
+  "stream.framedSend":"net.stream","stream.framedSendRejected":"net.stream",
   "stream.framedState":"net.stream","stream.framedRetire":"net.stream",
   "stream.claim": "net.stream", "stream.read": "net.stream", "stream.write": "net.stream", "stream.close": "net.stream", "stream.prepareFile":"net.stream", "stream.dropFile":"net.stream", "stream.readFile":"net.stream", "stream.writeFile":"net.stream",
   "runtime.delay": "runtime.timer", "runtime.afterPaint":"runtime.timer",
@@ -845,6 +846,9 @@ export interface FramedTransferDescriptor {
   compatibility:boolean;
 }
 export interface FramedTransferBinding {requestId:string;requestDigest:string}
+export interface FramedSourceRange {slot:number;index:number;path:string;offset:number;size:number;sha256:string;operation:string;digest:string}
+export interface FramedSendPlan {stream:number;epoch:number;window:number;tx:number;ack:number;chunks:readonly FramedSourceRange[]}
+export interface FramedSendRejection {stream:number;epoch:number;operation:string;digest:string;code:string;retryAfterMillis:number}
 export const framedStreams = {
   runtime:()=>hostOperation<{version:number;codec:string;chunkBytes:number;windows:number[];methods:string[]}>("stream.framedRuntime",{}).result,
   open:(id:string)=>hostOperation<void>("stream.framedOpen",{id}).result,
@@ -858,6 +862,8 @@ export const framedStreams = {
   data:(id:string,header:Uint8Array,bytes:Uint8Array)=>byteHostOperation<void>("stream.framedData",{id,header:Array.from(header),timeoutMs:60000},bytes).result,
   state:(id:string)=>hostOperation<{progress:number}>("stream.framedState",{id}).result,
   retire:(id:string)=>hostOperation<void>("stream.framedRetire",{id}).result,
+  send:(id:string,plan:FramedSendPlan)=>hostOperation<{tx:number;ack:number;staged:string[];error?:string}>("stream.framedSend",{id,...plan}).result,
+  sendRejected:(id:string,value:FramedSendRejection)=>hostOperation<void>("stream.framedSendRejected",{id,...value}).result,
 };
 
 export const byteStreams = {
