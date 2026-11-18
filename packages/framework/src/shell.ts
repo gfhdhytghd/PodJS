@@ -39,5 +39,7 @@ export interface ShellDiagnostics {
  pssLocalKb?:number;pssGraphicsKb?:number;pssCorrectionKb?:number;
  pssProtectedQueryAgeMs?:number;pssProtectedMayBeCached?:boolean;
  sql:Record<string,{count:number;queueNs:number;workNs:number;cpuNs:number;failures:number}>;
- videoSessions:{active:number;created:number;released:number;mediaMemory?:Partial<Record<"VIDEO_CODEC"|"AUDIO_CODEC"|"RETRIEVER"|"COMPRESSED_BUFFER"|"SURFACE"|"KEYFRAME"|"FRAME_CAPTURE",{estimatedBytes:number;allocations:number}>>};
+ videoSessions:{active:number;created:number;released:number;
+  surfaceViews?:{attached:number;available:number;idleAvailable:number;playingWidth:number;playingHeight:number};
+  mediaMemory?:Partial<Record<"VIDEO_CODEC"|"AUDIO_CODEC"|"RETRIEVER"|"COMPRESSED_BUFFER"|"SURFACE"|"KEYFRAME"|"FRAME_CAPTURE",{estimatedBytes:number;allocations:number}>>};
 }

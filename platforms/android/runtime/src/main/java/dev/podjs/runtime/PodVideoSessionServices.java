@@ -77,7 +77,29 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     private ViewGroup parent;
     private boolean closed;
     private long shellCreated,shellReleased;
-    JSONObject shellCounters() throws Exception {return new JSONObject().put("active",sessions.size()).put("created",shellCreated).put("released",shellReleased).put("mediaMemory",PodMediaMemoryAccounting.stats());}
+    JSONObject shellCounters() throws Exception {
+        int attached=0,available=0,idleAvailable=0,width=0,height=0;
+        for(Session session:sessions.values()){
+            TextureView view=session.videoView;
+            if(view!=null&&view.isAttachedToWindow())attached++;
+            if(view!=null&&view.isAvailable()){
+                available++;
+                if(session.player==null)idleAvailable++;
+            }
+            if(session.player!=null&&session.player.isPlaying()){
+                androidx.media3.common.VideoSize size=session.player.getVideoSize();
+                if((long)size.width*size.height>(long)width*height){
+                    width=size.width;
+                    height=size.height;
+                }
+            }
+        }
+        JSONObject surfaces=new JSONObject().put("attached",attached).put("available",available)
+                .put("idleAvailable",idleAvailable).put("playingWidth",width).put("playingHeight",height);
+        return new JSONObject().put("active",sessions.size()).put("created",shellCreated)
+                .put("released",shellReleased).put("mediaMemory",PodMediaMemoryAccounting.stats())
+                .put("surfaceViews",surfaces);
+    }
     private boolean lifecyclePaused;
     private int lastMemoryLimit=MAX_SESSIONS;
     private long lastSystemHeadroom;

@@ -5,6 +5,7 @@
 #include <vulkan/vulkan_android.h>
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cstring>
 #include <limits>
@@ -274,7 +275,7 @@ bool VulkanRenderer::createUploadResources() {
 }
 
 bool VulkanRenderer::createFrameUploadResources(FrameSlot &slot) {
-  if (!ensureStagingCapacity(slot, rasterBytes()))
+  if (!podjs_memory::process.limit() && !ensureStagingCapacity(slot, rasterBytes()))
     return false;
 
   VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -316,14 +317,16 @@ bool VulkanRenderer::createFrameUploadResources(FrameSlot &slot) {
 }
 
 bool VulkanRenderer::createClipResources() {
+  const uint32_t capacity = podjs_memory::process.limit()
+      ? kInitialRoundedClipCapacity : kRoundedClipCapacity;
   for (auto &slot : frames_)
-    if (!createFrameClipResources(slot))
+    if (!createClipStorage(slot.clips, capacity))
       return false;
   return true;
 }
 
-bool VulkanRenderer::createFrameClipResources(FrameSlot &slot) {
-  const VkDeviceSize bytes = VkDeviceSize{kRoundedClipCapacity} *
+bool VulkanRenderer::createClipStorage(ClipStorage& storage, uint32_t capacity) {
+  const VkDeviceSize bytes = VkDeviceSize{capacity} *
                              sizeof(podjs_gpu::RoundedClipData);
   VkPhysicalDeviceProperties properties{};
   vkGetPhysicalDeviceProperties(physical_, &properties);
@@ -334,9 +337,9 @@ bool VulkanRenderer::createFrameClipResources(FrameSlot &slot) {
   buffer.size = bytes;
   buffer.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   buffer.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  POD_VK(vkCreateBuffer(device_, &buffer, nullptr, &slot.clipBuffer));
+  POD_VK(vkCreateBuffer(device_, &buffer, nullptr, &storage.buffer));
   VkMemoryRequirements requirements{};
-  vkGetBufferMemoryRequirements(device_, slot.clipBuffer, &requirements);
+  vkGetBufferMemoryRequirements(device_, storage.buffer, &requirements);
   const uint32_t memoryType = findMemoryType(
       requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -346,9 +349,32 @@ bool VulkanRenderer::createFrameClipResources(FrameSlot &slot) {
   VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
   allocation.allocationSize = requirements.size;
   allocation.memoryTypeIndex = memoryType;
-  POD_VK(budgetAllocate(device_, allocation, &slot.clipMemory,slot.clipBudget,slot.clipGeneration));
-  POD_VK(vkBindBufferMemory(device_, slot.clipBuffer, slot.clipMemory, 0));
-  POD_VK(vkMapMemory(device_, slot.clipMemory, 0, bytes, 0, &slot.clipMapped));
+  POD_VK(budgetAllocate(device_, allocation, &storage.memory, storage.budget, storage.generation));
+  POD_VK(vkBindBufferMemory(device_, storage.buffer, storage.memory, 0));
+  POD_VK(vkMapMemory(device_, storage.memory, 0, bytes, 0, &storage.mapped));
+  storage.capacity = capacity;
+  return true;
+}
+
+bool VulkanRenderer::ensureClipCapacity(uint32_t required) {
+  if (required <= frame().clips.capacity) return true;
+  ClipStorage replacement{};
+  OnExit cleanup{[&] { destroyClipStorage(replacement); }};
+  if (!createClipStorage(replacement, std::bit_ceil(required))) return false;
+  std::swap(frame().clips, replacement);
+  // The slot's fence has been waited. Other slots still reference their own
+  // clip buffers and descriptor sets while their GPU work remains in flight.
+  const VkDescriptorBufferInfo buffer{frame().clips.buffer, 0,
+      VkDeviceSize{frame().clips.capacity} * sizeof(podjs_gpu::RoundedClipData)};
+  VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+  write.dstBinding = 1;
+  write.descriptorCount = 1;
+  write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  write.pBufferInfo = &buffer;
+  for (auto& entry : textureCache_) {
+    write.dstSet = entry.second.descriptors[frameIndex_];
+    vkUpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+  }
   return true;
 }
 
@@ -779,9 +805,9 @@ bool VulkanRenderer::createTextureResource(const GpuImage& source, uint64_t key,
   imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   for (uint32_t i = 0; i < kFramesInFlight; ++i) {
     VkDescriptorBufferInfo bufferInfo{};
-    bufferInfo.buffer = frames_[i].clipBuffer;
+    bufferInfo.buffer = frames_[i].clips.buffer;
     bufferInfo.range =
-        VkDeviceSize{kRoundedClipCapacity} * sizeof(podjs_gpu::RoundedClipData);
+        VkDeviceSize{frames_[i].clips.capacity} * sizeof(podjs_gpu::RoundedClipData);
     VkWriteDescriptorSet writes[2]{};
     writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     writes[0].dstSet = texture.descriptors[i];
@@ -1305,6 +1331,8 @@ bool VulkanRenderer::submitDrawList(GpuResourceSource runtime,
   if (decodedFrame.roundedClips.size() > kRoundedClipCapacity) {
     return gpuFailureOnce("rounded clip table exceeds Vulkan buffer capacity");
   }
+  if (!ensureClipCapacity(static_cast<uint32_t>(decodedFrame.roundedClips.size())))
+    return false;
   for (const auto &primitive : decodedFrame.primitives) {
     if (primitive.type != GpuPrimitiveType::Tri &&
         primitive.type != GpuPrimitiveType::TexTri) {
@@ -1340,7 +1368,7 @@ bool VulkanRenderer::submitDrawList(GpuResourceSource runtime,
     frame().uploadKeys.push_back(upload.key);
   }
   auto *clipData =
-      static_cast<podjs_gpu::RoundedClipData *>(frame().clipMapped);
+      static_cast<podjs_gpu::RoundedClipData *>(frame().clips.mapped);
   for (size_t i = 0; i < decodedFrame.roundedClips.size(); ++i) {
     clipData[i] = podjs_gpu::makeRoundedClipData(decodedFrame.roundedClips[i]);
   }
@@ -1502,17 +1530,14 @@ void VulkanRenderer::destroyUploadResources() {
 
 void VulkanRenderer::destroyClipResources() {
   if (!device_) return;
-  for (auto &slot : frames_) {
-    if (slot.clipMapped)
-      vkUnmapMemory(device_, slot.clipMemory);
-    if (slot.clipBuffer)
-      vkDestroyBuffer(device_, slot.clipBuffer, nullptr);
-    if (slot.clipMemory)
-      budgetFree(device_,slot.clipMemory,slot.clipBudget,slot.clipGeneration);
-    slot.clipMapped = nullptr;
-    slot.clipBuffer = VK_NULL_HANDLE;
-    slot.clipMemory = VK_NULL_HANDLE;
-  }
+  for (auto &slot : frames_) destroyClipStorage(slot.clips);
+}
+
+void VulkanRenderer::destroyClipStorage(ClipStorage& storage) {
+  if (storage.mapped) vkUnmapMemory(device_, storage.memory);
+  if (storage.buffer) vkDestroyBuffer(device_, storage.buffer, nullptr);
+  if (storage.memory) budgetFree(device_, storage.memory, storage.budget, storage.generation);
+  storage = {};
 }
 
 VulkanRenderer::~VulkanRenderer() {
@@ -1568,7 +1593,7 @@ VulkanRenderer::MemoryStats VulkanRenderer::memoryStats() const {
     stats.inFlightSlots += slot.pending;
     stats.stagingCapacityBytes += slot.stagingCapacity;
     if (slot.stagingMemory) stats.stagingAllocatedBytes += bufferBytes(slot.stagingBuffer);
-    if (slot.clipMemory) stats.clipAllocatedBytes += bufferBytes(slot.clipBuffer);
+    if (slot.clips.memory) stats.clipAllocatedBytes += bufferBytes(slot.clips.buffer);
     if (slot.rasterMemory) stats.rasterAllocatedBytes += imageBytes(slot.rasterImage);
     stats.slotImageRefs += slot.images.size();
     stats.slotSnapshotCapacityBytes += slot.images.capacity() * sizeof(GpuImage)

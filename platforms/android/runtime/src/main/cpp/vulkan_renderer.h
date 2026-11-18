@@ -104,6 +104,13 @@ class VulkanRenderer {
     VkImageView view{};
     std::array<VkDescriptorSet, kFramesInFlight> descriptors{};
   };
+  struct ClipStorage {
+    VkBuffer buffer{};
+    VkDeviceMemory memory{};
+    void* mapped{};
+    uint64_t budget{}, generation{};
+    uint32_t capacity{};
+  };
   struct FrameSlot {
     VkCommandBuffer command{};
     VkSemaphore acquired{};
@@ -114,10 +121,8 @@ class VulkanRenderer {
     VkDeviceMemory stagingMemory{};
     VkDeviceSize stagingCapacity{};
     void *stagingMapped{};
-    uint64_t stagingBudget{},stagingGeneration{},rasterBudget{},rasterGeneration{},clipBudget{},clipGeneration{};
-    VkBuffer clipBuffer{};
-    VkDeviceMemory clipMemory{};
-    void *clipMapped{};
+    uint64_t stagingBudget{},stagingGeneration{},rasterBudget{},rasterGeneration{};
+    ClipStorage clips;
     VkImage rasterImage{};
     VkDeviceMemory rasterMemory{};
     VkImageView rasterView{};
@@ -129,7 +134,9 @@ class VulkanRenderer {
   };
   FrameSlot &frame() { return frames_[frameIndex_]; }
   bool createFrameUploadResources(FrameSlot &slot);
-  bool createFrameClipResources(FrameSlot &slot);
+  bool createClipStorage(ClipStorage& storage, uint32_t capacity);
+  void destroyClipStorage(ClipStorage& storage);
+  bool ensureClipCapacity(uint32_t required);
   bool ensureStagingCapacity(FrameSlot &slot, VkDeviceSize required);
   bool textureInFlight(const TextureResource &texture) const;
   void retireTexture(TextureResource *texture);
@@ -172,6 +179,7 @@ class VulkanRenderer {
   void destroySurface();
 
   static constexpr uint32_t kDescriptorCapacity = 4096;
+  static constexpr uint32_t kInitialRoundedClipCapacity = 64;
   static constexpr uint32_t kRoundedClipCapacity = 65536;
   static constexpr uint32_t kTextureCacheCapacity = 1024;
   static constexpr size_t kTextureCacheByteCapacity = size_t{32} * 1024 * 1024;
