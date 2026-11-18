@@ -33,6 +33,7 @@ pub mod html;
 pub mod html_preview;
 pub mod xml;
 pub mod json_projection;
+pub mod file_json_projection;
 pub mod text_wrap;
 mod pak_reader;
 mod pak_integrity;
@@ -70,6 +71,7 @@ const IDLE: i32 = 1;
 const ERR_ARGUMENT: i32 = -1;
 const ERR_STATE: i32 = -2;
 const ERR_GUEST: i32 = -3;
+const ERR_SERVICE_DEFERRED: i32 = -4;
 const PAK_INTEGRITY_NONE: u32 = 0;
 const PAK_INTEGRITY_LEGACY_FULL_FNV: u32 = 1;
 const PAK_INTEGRITY_ENTRY_SHA256: u32 = 2;
@@ -284,7 +286,6 @@ impl HttpTransport for HostTransport {
 pub struct PodRuntime {
     last_glyph:Option<std::sync::Arc<[u8]>>,
     guest: Guest,
-    collection_limit:pocket_mod::CollectionLimit,
     surface: UiSurface,
     fs: Rc<RefCell<FsModule>>,
     net: NetSurface<HostTransport>,
@@ -456,23 +457,50 @@ fn budget_upload_texture(surface:&UiSurface,bridge:Option<&Rc<RefCell<PodBridge>
 }
 
 fn is_service_event(raw: &str) -> bool {
-    serde_json::from_str::<Value>(raw).is_ok_and(|event| {
-        matches!(event.get("t").and_then(Value::as_str), Some("service.result" | "browser.auth.status"))
-    })
+    #[derive(serde::Deserialize)]
+    struct EventType<'a> {
+        #[serde(borrow)]
+        t: Option<std::borrow::Cow<'a, str>>,
+    }
+    serde_json::from_str::<EventType<'_>>(raw)
+        .is_ok_and(|event| matches!(event.t.as_deref(), Some("service.result" | "browser.auth.status")))
 }
 
-fn take_pod_event<'js>(ctx: Ctx<'js>, bridge: &mut PodBridge) -> rquickjs::Result<Option<rquickjs::Value<'js>>> {
-    let index = if bridge.service_results_only {
+fn next_pod_event(bridge: &PodBridge) -> Option<usize> {
+    if bridge.service_results_only {
         bridge.events.iter().position(|raw| is_service_event(raw))
     } else {
         (!bridge.events.is_empty()).then_some(0)
-    };
+    }
+}
+
+fn take_pod_event<'js>(ctx: Ctx<'js>, bridge: &mut PodBridge) -> rquickjs::Result<Option<rquickjs::Value<'js>>> {
+    let index = next_pod_event(bridge);
     let Some(index) = index else { return Ok(None) };
     // Parse before removing the event. The next turn retains the reply if
     // QuickJS cannot allocate its value.
     let event = ctx.json_parse(bridge.events[index].as_bytes())?;
     bridge.events.remove(index);
     Ok(Some(event))
+}
+
+fn dispatch_pod_event<'js>(ctx: Ctx<'js>, dispatch: Function<'js>, bridge: &RefCell<PodBridge>) -> rquickjs::Result<bool> {
+    let (index, event, raw) = {
+        let mut bridge = bridge.borrow_mut();
+        let Some(index) = next_pod_event(&bridge) else { return Ok(false) };
+        let event = ctx.json_parse(bridge.events[index].as_bytes())?;
+        (index, event, bridge.events.remove(index).unwrap())
+    };
+    let denials = memory_budget::denial_count();
+    let result = dispatch.call::<_, ()>((event,));
+    if result.is_err() && memory_budget::denial_count() != denials && is_service_event(&raw) {
+        // The callback may need to construct a rejection before it can settle
+        // the request. Retry the queued reply without repeating host IO.
+        let mut bridge = bridge.borrow_mut();
+        let index = index.min(bridge.events.len());
+        bridge.events.insert(index, raw);
+    }
+    result.map(|()| true)
 }
 
 fn mount_pod(
@@ -536,6 +564,11 @@ fn mount_pod(
         ns.set(
             "takeEvent",
             Function::new(ctx.clone(), move |ctx| take_pod_event(ctx, &mut b.borrow_mut()))?,
+        )?;
+        let b = bridge.clone();
+        ns.set(
+            "dispatchEvent",
+            Function::new(ctx.clone(), move |ctx, dispatch| dispatch_pod_event(ctx, dispatch, &b))?,
         )?;
         let b = bridge.clone();
         ns.set(
@@ -755,7 +788,14 @@ pub extern "C" fn pod_runtime_create(config: *const PodRuntimeConfig) -> *mut Po
         set_error("capabilities_json must be a JSON string array");
         return std::ptr::null_mut();
     };
-    let guest = match if memory_budget::limit()==0 {Guest::new()} else {Guest::new_with_alloc(memory_budget::ProcessAllocator::default())} {
+    let guest = match {
+        let _startup = memory_budget::ForegroundStartup::enter();
+        if memory_budget::limit() == 0 {
+            Guest::new()
+        } else {
+            Guest::new_with_alloc(memory_budget::ProcessAllocator::default())
+        }
+    } {
         Ok(value) => value,
         Err(error) => {
             set_error(format!("QuickJS create failed: {error}"));
@@ -822,7 +862,6 @@ pub extern "C" fn pod_runtime_create(config: *const PodRuntimeConfig) -> *mut Po
     let net = NetSurface::new(transport.clone());
     Box::into_raw(Box::new(PodRuntime {
         guest,
-        collection_limit:pocket_mod::CollectionLimit::new(if memory_budget::limit()>0{24_000_000}else{0}),
         surface,
         last_glyph:None,
         fs,
@@ -1192,6 +1231,7 @@ pub extern "C" fn pod_runtime_eval_bundle(
         set_error("bundle is not UTF-8");
         return ERR_ARGUMENT;
     };
+    let _startup = memory_budget::ForegroundStartup::enter();
     if let Err(error) = mount_runtime(runtime) {
         set_error(format!("surface mount failed: {error}"));
         return ERR_GUEST;
@@ -1240,6 +1280,7 @@ pub extern "C" fn pod_runtime_eval_bundle_bytecode(
         return ERR_STATE;
     }
     let began = Instant::now();
+    let _startup = memory_budget::ForegroundStartup::enter();
     if let Err(error) = mount_runtime(runtime) {
         set_error(format!("surface mount failed: {error}"));
         return ERR_GUEST;
@@ -1464,11 +1505,7 @@ pub extern "C" fn pod_runtime_pump_services(runtime: *mut PodRuntime) -> i32 {
     // Unlike frame(), this does not tick the UI surface or advance its committed
     // draw snapshot. Hosts call it for lifecycle/IO completion, never as a timer.
     runtime.net.begin_tick();
-    if let Err(error) = call_service_pump(&runtime.guest) {
-        set_error(format!("guest service pump failed: {error}"));
-        return ERR_GUEST;
-    }
-    OK
+    finish_service_pump(memory_budget::denial_count(), call_service_pump(&runtime.guest))
 }
 
 fn call_service_pump(guest: &Guest) -> anyhow::Result<()> {
@@ -1537,15 +1574,17 @@ pub extern "C" fn pod_runtime_pump_service_results(runtime: *mut PodRuntime) -> 
     let denials = memory_budget::denial_count();
     let result = call_service_pump(&runtime.guest);
     runtime.bridge.borrow_mut().service_results_only = previous_mode;
-    if let Err(error) = result {
-        if memory_budget::denial_count() != denials {
-            set_error("memory budget deferred service result delivery");
-        } else {
-            set_error(format!("guest service result pump failed: {error}"));
-        }
-        return ERR_GUEST;
+    finish_service_pump(denials, result)
+}
+
+fn finish_service_pump(denials: usize, result: anyhow::Result<()>) -> i32 {
+    let Err(error) = result else { return OK };
+    if memory_budget::denial_count() != denials {
+        set_error("memory budget deferred service result delivery");
+        return ERR_SERVICE_DEFERRED;
     }
-    OK
+    set_error(format!("guest service pump failed: {error}"));
+    ERR_GUEST
 }
 
 #[unsafe(no_mangle)]
@@ -1604,8 +1643,10 @@ pub extern "C" fn pod_runtime_frame(runtime: *mut PodRuntime, input: *const PodI
     } else {
         input.analog
     };
+    // Keep QuickJS's adaptive threshold for the foreground realm. Its live
+    // heap can exceed an advisory partition. The process ledger still enforces
+    // admission and memory.pressure requests an explicit collection.
     let guest_began = Instant::now();
-    runtime.guest.with(|ctx|runtime.collection_limit.run_turn(&ctx,||()));
     if let Err(error) =
         runtime
             .guest
@@ -1616,7 +1657,6 @@ pub extern "C" fn pod_runtime_frame(runtime: *mut PodRuntime, input: *const PodI
         set_error(format!("guest frame failed: {error}"));
         return ERR_GUEST;
     }
-    runtime.guest.with(|ctx|runtime.collection_limit.run_turn(&ctx,||()));
     runtime.guest_micros = guest_began.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
     let surface_began = Instant::now();
     runtime.surface.tick();

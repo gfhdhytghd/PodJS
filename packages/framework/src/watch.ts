@@ -29,6 +29,7 @@ export interface DisplayMetrics {
 interface PodHost {
   takeEvents(): string | undefined;
   takeEvent?(): PodEvent | undefined;
+  dispatchEvent?(dispatch: (event: PodEvent) => void): boolean;
   emit(line: string): void;
   displayMetrics(): string;
   capabilities(): string;
@@ -300,6 +301,10 @@ function dispatchPodEvent(event:PodEvent):void {
 
 export function __pumpPodEvents(): void {
   const source = host();
+  if (source?.dispatchEvent) {
+    while (source.dispatchEvent(dispatchPodEvent)) { /* Drain until the queue is empty. */ }
+    return;
+  }
   if (source?.takeEvent) {
     for (let event = source.takeEvent(); event; event = source.takeEvent()) dispatchPodEvent(event);
     return;

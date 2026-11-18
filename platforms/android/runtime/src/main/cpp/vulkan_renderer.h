@@ -138,6 +138,7 @@ class VulkanRenderer {
   void destroyClipStorage(ClipStorage& storage);
   bool ensureClipCapacity(uint32_t required);
   bool ensureStagingCapacity(FrameSlot &slot, VkDeviceSize required);
+  void destroyStaging(FrameSlot& slot);
   bool textureInFlight(const TextureResource &texture) const;
   void retireTexture(TextureResource *texture);
   void collectRetiredTextures();
@@ -179,6 +180,7 @@ class VulkanRenderer {
   void destroySurface();
 
   static constexpr uint32_t kDescriptorCapacity = 4096;
+  static constexpr VkDeviceSize kRetainedStagingBytes = 256 * 1024;
   static constexpr uint32_t kInitialRoundedClipCapacity = 64;
   static constexpr uint32_t kRoundedClipCapacity = 65536;
   static constexpr uint32_t kTextureCacheCapacity = 1024;

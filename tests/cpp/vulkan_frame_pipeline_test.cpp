@@ -65,6 +65,7 @@ std::vector<VkFence> waits;
 std::vector<VkSemaphore> acquired;
 std::vector<Submission> submissions;
 uint32_t nextImage{}, rebuilds{}, drains{}, capMax{};
+bool budgetedSwapchain{};
 bool failBegin{}, failEnd{}, failSubmit{}, failDrain{};
 VkResult acquireResult = VK_SUCCESS, presentResult = VK_SUCCESS;
 void assertUnused(uint64_t resource) {
@@ -357,7 +358,7 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateSwapchainKHR(
     VkDevice device, const VkSwapchainCreateInfoKHR *pCreateInfo,
     const VkAllocationCallbacks *pAllocator, VkSwapchainKHR *pSwapchain) {
   assert(pCreateInfo->presentMode == VK_PRESENT_MODE_FIFO_KHR);
-  assert(pCreateInfo->minImageCount == (capMax == 2 ? 2 : 3));
+  assert(pCreateInfo->minImageCount == (capMax == 2 || budgetedSwapchain ? 2 : 3));
   ++rebuilds;
   *pSwapchain = make<VkSwapchainKHR>();
   swapImages.clear();
@@ -1057,11 +1058,12 @@ static void emptyReplacedAndDetachedSnapshotsRecover() {
   releasePresent();awaitPins(0);
   assert(!renderer.needsRedraw(503));
   renderer.poll(503);
-  // An actually consumed empty list uses the existing CPU clear path. A later
-  // nonempty snapshot must still be accepted and presented.
+  // An empty list clears the transparent layer on the GPU. A later nonempty
+  // snapshot must still be accepted and presented.
   const auto cpuBefore=fallbackCalls.load();
   gatePresent();assert(renderer.handoff(pinned({},504),504));
-  awaitPresent();assert(fallbackCalls==cpuBefore+1);releasePresent();awaitPins(0);
+  awaitPresent();assert(fallbackCalls==cpuBefore);releasePresent();awaitPins(0);
+  assert(renderer.poll(504).completed.back().gpu);
   gatePresent();assert(renderer.handoff(pinned(rect,505),505));
   awaitPresent();releasePresent();awaitPins(0);
   assert(renderer.poll(505).completed.back().gpu);
@@ -1087,6 +1089,12 @@ static void cpuFallbackReservesBeforeAllocationAndReleasesOnPause() {
   gatePresent();assert(renderer.handoff(pinned({999},602),602));awaitPresent();
   assert(fallbackCalls==before+1&&renderer.fallbackCapacityBytes()==renderer.rasterBytes());
   assert(budget.resident(podjs_memory::Scratch)==renderer.rasterBytes());
+  releasePresent();awaitPins(0);
+  gatePresent();assert(renderer.handoff(pinned(rect,603),603));awaitPresent();
+  releasePresent();awaitPins(0);
+  assert(renderer.fallbackCapacityBytes()==0&&budget.resident(podjs_memory::Scratch)==0);
+  gatePresent();assert(renderer.handoff(pinned({999},604),604));awaitPresent();
+  assert(renderer.fallbackCapacityBytes()==renderer.rasterBytes());
   releasePresent();renderer.setPaused(true);
   assert(renderer.fallbackCapacityBytes()==0&&budget.resident(podjs_memory::Scratch)==0);
 }
@@ -1114,6 +1122,29 @@ static void budgetedRendererGrowsOnlyTheClipBufferOfTheAvailableSlot() {
   assert(grown.stagingAllocatedBytes < renderer.rasterBytes());
 }
 
+static void budgetedRendererReleasesUnusedTexturesAndLargeStagingAfterFence() {
+  ANativeWindow window{};
+  VulkanRenderer renderer(&window, 466, 466, 466, 466);
+  const std::vector<uint8_t> pixels(renderer.rasterBytes(), 64);
+  assert(draw(renderer, image, 801));
+  const auto textureFrame = submissions.back();
+  assert(renderer.submitRgba(pixels.data(), pixels.size(), 802));
+  const auto stagingFrame = submissions.back();
+  const auto loaded = renderer.memoryStats();
+  assert(loaded.liveTextures == 2);
+  assert(loaded.stagingAllocatedBytes >= pixels.size());
+  assert(draw(renderer, rect, 803));
+  assert(waits.back() == textureFrame.fence);
+  assert(fences.at(stagingFrame.fence).pending);
+  assert(renderer.memoryStats().liveTextures == 1);
+  assert(renderer.memoryStats().stagingAllocatedBytes >= pixels.size());
+  verifyPending();
+  assert(draw(renderer, rect, 804));
+  assert(waits.back() == stagingFrame.fence);
+  assert(renderer.memoryStats().stagingAllocatedBytes < pixels.size());
+  verifyPending();
+}
+
 int main() {
   emptyReplacedAndDetachedSnapshotsRecover();
   unchangedSnapshotAfterPauseIsPresented();
@@ -1125,8 +1156,11 @@ int main() {
   boundedThreadHandoffAndLifecycle();
   capMax = 2; // The surface is permitted to clamp minImageCount + 1.
   twoPendingFramesKeepBuffersAndTexturesAlive();
+  capMax = 0;
+  budgetedSwapchain = true;
   cpuFallbackReservesBeforeAllocationAndReleasesOnPause();
   budgetedRendererGrowsOnlyTheClipBufferOfTheAvailableSlot();
+  budgetedRendererReleasesUnusedTexturesAndLargeStagingAfterFence();
   std::puts("vulkan_frame_pipeline_test: all synchronization scenarios passed "
             "(host mock)");
 }

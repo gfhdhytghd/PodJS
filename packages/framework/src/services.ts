@@ -120,7 +120,7 @@ const methods: Record<string, PodCapabilityId> = {
   "crypto.verifyP256": "crypto.basic", "crypto.ecdhPublicKey": "crypto.basic", "crypto.ecdhUnwrap": "crypto.basic", "crypto.ecdhPossessionProof": "crypto.basic", "crypto.hkdfSha256": "crypto.basic",
   "crypto.gunzipSealedParts": "crypto.basic", "crypto.closeSealedGzip": "crypto.basic", "crypto.openSealedParts": "crypto.basic", "crypto.largeAesGcmEncrypt": "crypto.basic", "crypto.largeAesGcmDecrypt": "crypto.basic", "crypto.gzip": "crypto.basic", "crypto.gunzip": "crypto.basic",
   "crypto.rsaOaepSha256": "crypto.basic", "crypto.random": "crypto.basic", "crypto.hash": "crypto.basic", "crypto.hmacSha256": "crypto.basic", "crypto.aesGcmEncrypt": "crypto.basic", "crypto.aesGcmDecrypt": "crypto.basic", "crypto.encrypt": "crypto.basic", "crypto.decrypt": "crypto.basic",
-  "uri.parse": "data.uri", "file.htmlText": "data.files.chunks", "file.gzip": "data.files.chunks", "file.gzipBytes": "data.files.chunks", "file.gunzip": "data.files.chunks", "file.openText": "data.files.chunks", "file.readTextChunk": "data.files.chunks", "file.closeText": "data.files.chunks", "file.createTemp": "data.files.chunks", "file.hash": "data.files.chunks", "file.commit": "data.files.chunks", "file.compose": "data.files.chunks", "file.read": "data.files.chunks", "log.append": "data.files.chunks", "file.write": "data.files.chunks", "file.list": "data.files.chunks", "file.touch": "data.files.chunks", "file.stat": "data.files.chunks", "file.delete": "data.files.chunks",
+  "uri.parse": "data.uri", "file.htmlText": "data.files.chunks", "file.gzip": "data.files.chunks", "file.gzipBytes": "data.files.chunks", "file.gunzip": "data.files.chunks", "file.projectJson": "data.files.chunks", "file.openText": "data.files.chunks", "file.readTextChunk": "data.files.chunks", "file.closeText": "data.files.chunks", "file.createTemp": "data.files.chunks", "file.hash": "data.files.chunks", "file.commit": "data.files.chunks", "file.compose": "data.files.chunks", "file.read": "data.files.chunks", "log.append": "data.files.chunks", "file.write": "data.files.chunks", "file.list": "data.files.chunks", "file.touch": "data.files.chunks", "file.stat": "data.files.chunks", "file.delete": "data.files.chunks",
 };
 /** User-initiated Android settings navigation. Requires host.lifecycle. */
 export const systemSettings = Object.freeze({
@@ -186,12 +186,12 @@ __onHostEvent(event => {
   if(event.ok===true&&(request.method==='stream.read.bytes'||request.method==='file.read.bytes')&&!(event.value&&typeof event.value==='object'&&(event.value as Record<string,unknown>).bytes instanceof Uint8Array)){
     event.ok=false;event.code='invalid_bytes';event.message='Missing byte attachment';
   }
-  pending.delete(event.id);
-  serviceDiagnosticComplete(request.method,request.diagnosticSite,event.ok===true);
   if (event.ok === true) traceServiceCallback(request.method,'resolve',()=>request.resolve(event.value));
   else traceServiceCallback(request.method,'reject',()=>request.reject(new HostServiceError(String(event.code ?? "host_error"), String(event.message ?? "Host operation failed"),
     event.code==='resolution_limit'&&(event.mirrorIndex===0||event.mirrorIndex===1)?event.mirrorIndex:undefined,
     event.nativeTransportFailure===true?true:undefined)));
+  pending.delete(event.id);
+  serviceDiagnosticComplete(request.method,request.diagnosticSite,event.ok===true);
 });
 /** Cancellation stops delivery; a mutation already committed by the host is not undone. */
 export function hostOperation<T>(method: string, args: Record<string, unknown>, progress?:(value:unknown)=>void): HostOperation<T> {
@@ -710,7 +710,16 @@ export const sharing = {
   text(text:string,chooserTitle?:string):HostOperation<void>{return hostOperation<void>("share.text",{text,...(chooserTitle===undefined?{}:{chooserTitle})});},
 };
 
+/** The native file reader returns bounded projected JSON or a fixed outcome. */
+export type FileJsonProjection =
+  | {kind:'object';json:string;path?:string}
+  | {kind:'token';index:number}
+  | {kind:'empty'|'html'|'invalid'|'invalid_selection'|'limit'|'io'};
+
 export const fileChunks = {
+  projectJson(path:string,size:number,selection:Readonly<Record<string,import('./json.ts').JsonSelection>>,tokens:readonly string[]=[],rowField?:string):HostOperation<FileJsonProjection> {
+    return hostOperation<FileJsonProjection>('file.projectJson',{path,size,selection,tokens,rowField});
+  },
   readBytes:async(path:string,offset=0,maxBytes=65536):Promise<{bytes:Uint8Array;offset:number;size:number;eof:boolean}>=>{
    requireByteRead(maxBytes);
    if(hasByteBridge())return byteHostOperation<{bytes:Uint8Array;offset:number;size:number;eof:boolean}>('file.read',{path,offset,maxBytes}).result;

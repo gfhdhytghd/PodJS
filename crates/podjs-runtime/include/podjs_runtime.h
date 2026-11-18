@@ -298,6 +298,8 @@ int32_t pod_runtime_post_event(PodRuntime *runtime, const char *json_object);
  * and after a failed pre-mount revalidation. Mounted package authority is
  * immutable until runtime destruction. Never reads guest-supplied lists. */
 bool pod_runtime_has_capability(PodRuntime *runtime, const char *name);
+/* Retry the service pump after the process budget has had time to recover. */
+#define POD_RUNTIME_SERVICE_DEFERRED (-4)
 /* Host-only IO/lifecycle completion turn, including while visual frames are
  * suspended. Calls the optional framework service pump and drains Promise jobs;
  * exposes all queued host events, but does not tick layout/animation or commit

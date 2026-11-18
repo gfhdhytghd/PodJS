@@ -38,6 +38,22 @@ int main(){
  observed=priority.sampleStart();priority.sample(128000000,observed);
  assert(!priority.reserve(QuickJs,1)); // small control allocations still obey the cap
 
+ // The boot lane accounts every allocation, even when an existing
+ // process sample leaves no normal admission headroom.
+ process.configure(128000000);
+ observed=process.sampleStart();process.sample(127000000,observed);
+ assert(!allocation(QuickJs,2000000,0,0));
+ assert(!allocation(QuickJs,2000000,4,0));
+ assert(allocation(QuickJs,2000000,5,0));
+ assert(process.takePressure());
+ assert(process.pending()==2000000);
+ auto boot=allocation(QuickJs,2000000,1,0);
+ assert(process.resident(QuickJs)==2000000);
+ assert(!allocation(QuickJs,256,0,0));
+ allocation(QuickJs,2000000,3,boot);
+ assert(process.resident(QuickJs)==0);
+ assert(process.pending()==0);
+
  Budget guarded;guarded.configure(128000000);
  observed=guarded.sampleStart();guarded.sample(100000000,observed);
  assert(!guarded.reserve(Media,8000000,false,true,12*1024*1024));

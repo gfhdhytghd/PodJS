@@ -523,13 +523,18 @@ extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nati
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeResize(JNIEnv* env,jclass,jlong p,jobject s,jint w,jint ht){auto*h=reinterpret_cast<Host*>(p);if(!h)return;h->width=static_cast<uint32_t>(w);h->height=static_cast<uint32_t>(ht);auto*n=ANativeWindow_fromSurface(env,s);h->renderer->replaceWindow(n,w,ht);ANativeWindow_release(n);}
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeDetachSurface(JNIEnv*,jclass,jlong p){auto*h=reinterpret_cast<Host*>(p);if(h)h->renderer->replaceWindow(nullptr,0,0);}
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeInput(JNIEnv* env,jclass,jlong p,jintArray ids,jfloatArray xy,jint count,jint rotary){auto*h=reinterpret_cast<Host*>(p);if(!h)return;std::vector<jint> id(count);std::vector<jfloat> pos(count*2);if(count){env->GetIntArrayRegion(ids,0,count,id.data());env->GetFloatArrayRegion(xy,0,count*2,pos.data());}std::vector<PodTouch> next(count);for(int i=0;i<count;i++)next[i]={(uint32_t)id[i],pos[i*2]*h->logicalWidth/std::max(1u,h->width),pos[i*2+1]*h->logicalHeight/std::max(1u,h->height)};h->touches.submit(std::move(next));h->rotary+=rotary;}
-extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePumpServices(JNIEnv*,jclass,jlong p) {
-  auto* h = reinterpret_cast<Host*>(p); if (!h) return;
-  if (pod_runtime_pump_services(h->runtime) < 0) __android_log_print(ANDROID_LOG_ERROR,"PodJS","Service pump failed: %s",pod_runtime_last_error());
+static jboolean pumpHostServices(jlong p,bool resultsOnly) {
+  auto* h=reinterpret_cast<Host*>(p);if(!h)return JNI_FALSE;
+  const auto status=resultsOnly ? pod_runtime_pump_service_results(h->runtime) : pod_runtime_pump_services(h->runtime);
+  if(status==POD_RUNTIME_SERVICE_DEFERRED)return JNI_TRUE;
+  if(status<0)__android_log_print(ANDROID_LOG_ERROR,"PodJS","Service pump failed: %s",pod_runtime_last_error());
+  return JNI_FALSE;
 }
-extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePumpServiceResults(JNIEnv*,jclass,jlong p) {
-  auto* h = reinterpret_cast<Host*>(p); if (!h) return;
-  if (pod_runtime_pump_service_results(h->runtime) < 0) __android_log_print(ANDROID_LOG_ERROR,"PodJS","Service result pump failed: %s",pod_runtime_last_error());
+extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePumpServices(JNIEnv*,jclass,jlong p) {
+  return pumpHostServices(p,false);
+}
+extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePumpServiceResults(JNIEnv*,jclass,jlong p) {
+  return pumpHostServices(p,true);
 }
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePumpJobs(JNIEnv*,jclass,jlong p) {
   auto* h=reinterpret_cast<Host*>(p);if(!h)return;
@@ -891,6 +896,40 @@ extern "C" JNIEXPORT jint JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePu
 }
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeDropBytes(JNIEnv*,jclass,jlong p,jint id){
   auto* h=reinterpret_cast<Host*>(p);if(h)pod_runtime_bytes_drop(h->runtime,uint32_t(id));
+}
+
+extern "C" char* pod_file_project_json(int, const uint8_t*, size_t, const uint8_t*, size_t);
+extern "C" char* pod_file_project_json_rows(int, int, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t);
+extern "C" void pod_file_project_json_free(char*);
+extern "C" JNIEXPORT jbyteArray JNICALL Java_dev_podjs_runtime_PodDeviceServices_nativeProjectJson(
+    JNIEnv* env, jclass, jint fd, jbyteArray selection, jbyteArray tokens,
+    jint output, jbyteArray rowField) {
+  const jsize specSize = env->GetArrayLength(selection);
+  const jsize tokenSize = env->GetArrayLength(tokens);
+  if (specSize < 1 || specSize > 16384 || tokenSize < 1 || tokenSize > 1024) return nullptr;
+  const jsize fieldSize = env->GetArrayLength(rowField);
+  if (fieldSize > 1024 || (output >= 0 && fieldSize < 1)) return nullptr;
+  std::vector<uint8_t> spec(specSize), literals(tokenSize), field(fieldSize);
+  env->GetByteArrayRegion(selection, 0, specSize, reinterpret_cast<jbyte*>(spec.data()));
+  env->GetByteArrayRegion(tokens, 0, tokenSize, reinterpret_cast<jbyte*>(literals.data()));
+  if (fieldSize) env->GetByteArrayRegion(rowField, 0, fieldSize, reinterpret_cast<jbyte*>(field.data()));
+  if (env->ExceptionCheck()) return nullptr;
+  int owned = dup(fd);
+  if (owned < 0) return nullptr;
+  char* result;
+  if (output >= 0) {
+    const int ownedOutput = dup(output);
+    if (ownedOutput < 0) { close(owned); return nullptr; }
+    result = pod_file_project_json_rows(owned, ownedOutput, spec.data(), spec.size(), literals.data(), literals.size(), field.data(), field.size());
+  } else {
+    result = pod_file_project_json(owned, spec.data(), spec.size(), literals.data(), literals.size());
+  }
+  if (!result) return nullptr;
+  auto size = static_cast<jsize>(std::strlen(result));
+  auto bytes = env->NewByteArray(size);
+  if (bytes) env->SetByteArrayRegion(bytes, 0, size, reinterpret_cast<const jbyte*>(result));
+  pod_file_project_json_free(result);
+  return bytes;
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL Java_dev_podjs_runtime_PodSyncFileReceiver_nativeCommandBytes(JNIEnv* env,jclass,jlong handle,jbyteArray metadata,jbyteArray data){

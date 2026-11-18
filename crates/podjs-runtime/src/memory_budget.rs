@@ -5,6 +5,33 @@ type Callback=extern "C" fn(u32,usize,u32,u64)->u64;
 static CALLBACK:AtomicUsize=AtomicUsize::new(0);
 static LIMIT:AtomicUsize=AtomicUsize::new(0);
 thread_local!{static DENIALS:std::cell::Cell<usize>=const{std::cell::Cell::new(0)};}
+thread_local! {
+    static FOREGROUND_STARTUP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+// QuickJS can fail irrecoverably while loading the context or the app entry point.
+// Keep those allocations in the process ledger, and use regular admission again
+// before returning to the event loop. Headless jobs keep their normal quota.
+pub struct ForegroundStartup {
+    previous: bool,
+    thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+impl ForegroundStartup {
+    pub fn enter() -> Self {
+        Self {
+            previous: FOREGROUND_STARTUP.with(|active| active.replace(true)),
+            thread: std::marker::PhantomData,
+        }
+    }
+}
+
+impl Drop for ForegroundStartup {
+    fn drop(&mut self) {
+        FOREGROUND_STARTUP.with(|active| active.set(self.previous));
+    }
+}
+
 pub fn denial_count()->usize{DENIALS.with(|n|n.get())}
 pub fn limit()->usize { LIMIT.load(Ordering::Acquire) }
 #[unsafe(no_mangle)]
@@ -40,14 +67,26 @@ impl Lease {
 impl Drop for Lease {fn drop(&mut self){if self.bytes>0{account_owner(self.owner,self.bytes,if self.generation.is_some(){3}else{2},self.generation.unwrap_or(0));}}}
 #[derive(Default)]
 pub struct ProcessAllocator {background:bool}
-impl ProcessAllocator {pub fn background()->Self{Self{background:true}}}
+impl ProcessAllocator {
+    pub fn background() -> Self { Self { background: true } }
+
+    fn reserve_action(&self) -> u32 {
+        if self.background {
+            4
+        } else if FOREGROUND_STARTUP.with(|active| active.get()) {
+            5
+        } else {
+            0
+        }
+    }
+}
 // RustAllocator stores its own aligned header. Reserve rounded payload + header
 // before allocation; successful realloc reserves the full replacement peak.
 fn charged(size:usize)->Option<usize>{size.checked_add(31).map(|n|n&!15)?.checked_add(16)}
 unsafe impl Allocator for ProcessAllocator {
     fn alloc(&mut self,size:usize)->*mut u8 {
         let Some(bytes)=charged(size) else{return std::ptr::null_mut()};
-        if account(bytes,if self.background{4}else{0},0)==0{return std::ptr::null_mut()}
+        if account(bytes,self.reserve_action(),0)==0{return std::ptr::null_mut()}
         let p=RustAllocator.alloc(size+16);
         if p.is_null(){account(bytes,2,0);return p}
         let generation=account(bytes,1,0);unsafe{p.cast::<u64>().write(generation);p.add(8).cast::<usize>().write(bytes);p.add(16)}
@@ -69,6 +108,23 @@ unsafe impl Allocator for ProcessAllocator {
 
 #[cfg(test)] mod tests {
  use super::*;
+ #[test]
+ fn startup_admission_is_scoped_to_the_foreground_on_this_thread() {
+     let foreground = ProcessAllocator::default();
+     let background = ProcessAllocator::background();
+     assert_eq!(foreground.reserve_action(), 0);
+     {
+         let _startup = ForegroundStartup::enter();
+         assert_eq!(foreground.reserve_action(), 5);
+         assert_eq!(background.reserve_action(), 4);
+         drop(ForegroundStartup::enter());
+         assert_eq!(foreground.reserve_action(), 5);
+         std::thread::spawn(|| assert_eq!(ProcessAllocator::default().reserve_action(), 0))
+             .join().unwrap();
+     }
+     assert_eq!(foreground.reserve_action(), 0);
+ }
+
  #[test] fn allocator_preserves_realloc_and_zeroes_calloc(){unsafe{
   let mut a=ProcessAllocator::default();let p=a.calloc(32,8);assert!(!p.is_null());
   assert!(std::slice::from_raw_parts(p,256).iter().all(|v|*v==0));p.write_bytes(7,256);

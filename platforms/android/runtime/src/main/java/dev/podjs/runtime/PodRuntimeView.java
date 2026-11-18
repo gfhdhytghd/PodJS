@@ -387,27 +387,30 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
             nativePostEvent(owner.handle, bytes);
         },category,callbackMethod,callbackStatus);
     }
+    private void queueServiceRetry(HostLifetime owner, long delayMs) {
+        if (queuedServiceTurn == owner) return;
+        queuedServiceTurn = owner;
+        serviceHandler.postDelayed(() -> {
+            if (queuedServiceTurn != owner) return;
+            queuedServiceTurn = null;
+            pumpServiceResults(owner);
+        }, delayMs);
+    }
+
     private void pumpServiceResults(HostLifetime owner) {
         if (Looper.myLooper() != Looper.getMainLooper()) throw new IllegalStateException("Service turns require the main looper");
         if (!ownsHost(owner)) return;
         if (serviceTurnRunning) {
-            // A nested host callback may request one later turn, never recursively
-            // enter QuickJS or wait for another operation to finish.
-            if (queuedServiceTurn != owner) {
-                queuedServiceTurn = owner;
-                serviceHandler.post(() -> {
-                    if (queuedServiceTurn != owner) return;
-                    queuedServiceTurn = null;
-                    pumpServiceResults(owner);
-                });
-            }
+            queueServiceRetry(owner, 0);
             return;
         }
         serviceTurnRunning = true;
         try {
-            if (lifecycleState == 0) nativePumpServiceResults(owner.handle);
-            else nativePumpServices(owner.handle);
-            if (ownsHost(owner)) drainHostEffects(lifecycleState == 0);
+            boolean deferred = lifecycleState == 0 ? nativePumpServiceResults(owner.handle) : nativePumpServices(owner.handle);
+            if (ownsHost(owner)) {
+                if (deferred) queueServiceRetry(owner, 250);
+                drainHostEffects(lifecycleState == 0);
+            }
         } finally { serviceTurnRunning = false;requestFrame(); }
     }
 
@@ -931,8 +934,8 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private static native void nativeResize(long host, Surface surface, int width, int height);
     private static native void nativeDetachSurface(long host);
     private static native void nativeInput(long host, int[] ids, float[] xy, int count, int rotaryMilliDegrees);
-    private static native void nativePumpServices(long host);
-    private static native void nativePumpServiceResults(long host);
+    private static native boolean nativePumpServices(long host);
+    private static native boolean nativePumpServiceResults(long host);
     private static native void nativePumpJobs(long host);
     private static native boolean nativeHasPendingJobs(long host);
     private static native boolean nativeHasContent(long host);
