@@ -5,13 +5,19 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.EOFException;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.file.Files;
 import java.nio.file.LinkOption;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.List;
 
 /** Bounded sandbox file operations. Ranges refer to local files, never wire names. */
 final class PodFileRanges {
@@ -52,7 +58,19 @@ final class PodFileRanges {
         }
     }
 
+    private static final class Range {
+        final String path;
+        final long offset, count;
+        Range(String path, long offset, long count) { this.path = path; this.offset = offset; this.count = count; }
+    }
+
+    interface RangeOpen { FileInputStream open(File root, String relative) throws Exception; }
+
     static JSONObject execute(File root, JSONObject args, CancellationSignal cancel) throws Exception {
+        return execute(root, args, cancel, PodSyncGuestFiles::open);
+    }
+
+    static JSONObject execute(File root, JSONObject args, CancellationSignal cancel, RangeOpen source) throws Exception {
         JSONArray ranges = args.getJSONArray("ranges");
         if (ranges.length() < 1 || ranges.length() > 32) throw new IOException("INVALID_FRAME");
         int segmentBytes = args.optBoolean("index") ? (int)number(args, "segmentBytes", BLOCK, 16777216) : 0;
@@ -62,6 +80,25 @@ final class PodFileRanges {
         String sha = args.optString("sha256", "");
         String target = args.optString("target", "");
         File file = target.isEmpty() ? null : PodFileConverter.safe(root, target);
+        if (file != null && !Files.isRegularFile(file.toPath(), LinkOption.NOFOLLOW_LINKS))
+            throw new IOException("file_not_regular");
+        List<Range> checked = new ArrayList<>(ranges.length());
+        long remaining = expected;
+        for (int i = 0; i < ranges.length(); i++) {
+            JSONObject range = ranges.getJSONObject(i);
+            long offset = number(range, "offset", 0, MAX_BYTES), count = number(range, "size", 0, MAX_BYTES);
+            if (count > remaining || (segmentBytes > 0 && i != ranges.length() - 1 && count % BLOCK != 0))
+                throw new IOException("INVALID_FRAME");
+            String path = range.getString("path");
+            cancel.throwIfCanceled();
+            try (FileInputStream in = source.open(root, path)) {
+                if (offset + count > in.getChannel().size())
+                    throw new IOException("SOURCE_CHANGED");
+            }
+            checked.add(new Range(path, offset, count));
+            remaining -= count;
+        }
+        if (remaining != 0) throw new IOException("HASH_MISMATCH");
         MessageDigest whole = MessageDigest.getInstance("SHA-256");
         MessageDigest segment = MessageDigest.getInstance("SHA-256");
         MessageDigest block = MessageDigest.getInstance("SHA-256");
@@ -77,19 +114,16 @@ final class PodFileRanges {
         JSONArray segments = new JSONArray(), chunks = new JSONArray();
         byte[] buffer = new byte[BLOCK];
         long total = 0, segmentSize = 0;
-        // The target is an existing app-private temp file. Publication is a separate operation.
-        try (FileChannel out = file == null ? null : FileChannel.open(file.toPath(), StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)) {
-            if (out != null) out.truncate(0);
-            for (int i = 0; i < ranges.length(); i++) {
-                JSONObject range = ranges.getJSONObject(i);
-                long offset = number(range, "offset", 0, MAX_BYTES), count = number(range, "size", 0, MAX_BYTES);
-                if (count > expected - total || (segmentBytes > 0 && i != ranges.length() - 1 && count % BLOCK != 0))
-                    throw new IOException("INVALID_FRAME");
-                try (android.os.ParcelFileDescriptor.AutoCloseInputStream in = PodSyncGuestFiles.open(root, range.getString("path"))) {
+        Path temp = file == null ? null : Files.createTempFile(file.toPath().getParent(), ".pod-range-", ".tmp");
+        try {
+          JSONObject result;
+          try (FileChannel out = temp == null ? null : FileChannel.open(temp, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)) {
+            for (Range range : checked) {
+                try (FileInputStream in = source.open(root, range.path)) {
                     FileChannel channel = in.getChannel();
-                    if (offset + count > channel.size()) throw new IOException("SOURCE_CHANGED");
-                    channel.position(offset);
-                    for (long left = count; left > 0;) {
+                    if (range.offset + range.count > channel.size()) throw new IOException("SOURCE_CHANGED");
+                    channel.position(range.offset);
+                    for (long left = range.count; left > 0;) {
                         cancel.throwIfCanceled();
                         int length = (int)Math.min(BLOCK, left);
                         copy(in, out, buffer, length);
@@ -114,7 +148,16 @@ final class PodFileRanges {
             if (total != expected || (!sha.isEmpty() && !sha.equals(digest))) throw new IOException("HASH_MISMATCH");
             cancel.throwIfCanceled();
             if (out != null) out.force(true);
-            return new JSONObject().put("size", total).put("sha256", digest).put("segments", segments);
+            result = new JSONObject().put("size", total).put("sha256", digest).put("segments", segments);
+          }
+          cancel.throwIfCanceled();
+          if (temp != null) {
+              Files.move(temp, file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+              temp = null;
+          }
+          return result;
+        } finally {
+          if (temp != null) Files.deleteIfExists(temp);
         }
     }
 }
