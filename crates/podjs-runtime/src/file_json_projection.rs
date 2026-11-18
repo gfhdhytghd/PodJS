@@ -4,7 +4,8 @@ use serde::{Deserialize, Deserializer};
 use serde_json::{Value, value::RawValue};
 use std::cell::Cell;
 use std::fmt;
-use std::io::{self, BufRead, BufReader, Read};
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, Read, Seek, Write};
 
 const INPUT_LIMIT: usize = 8 * 1024 * 1024;
 const OUTPUT_LIMIT: usize = 256 * 1024;
@@ -16,6 +17,7 @@ struct Bounds {
     offset: Cell<usize>,
     capture_end: Cell<Option<usize>>,
     exceeded: Cell<bool>,
+    spool_io: Cell<bool>,
 }
 
 impl Bounds {
@@ -105,6 +107,43 @@ struct Select<'a> {
     spec: &'a Value,
     out: &'a mut String,
     bounds: &'a Bounds,
+    spool: Option<&'a mut RowSpool>,
+    row_array: bool,
+}
+
+struct RowSpool {
+    field: String,
+    file: File,
+    bytes: usize,
+}
+
+impl RowSpool {
+    fn reset(&mut self) -> io::Result<()> {
+        self.file.set_len(0)?;
+        self.file.rewind()?;
+        self.bytes = 0;
+        Ok(())
+    }
+
+    fn line<E: de::Error>(&mut self, row: &mut String, bounds: &Bounds) -> Result<(), E> {
+        // Actual CR/LF in a valid JSON value can only be whitespace.
+        // Escaped line breaks in strings are left intact.
+        row.retain(|c| c != '\r' && c != '\n');
+        let size = row.len() + 1;
+        if size > INPUT_LIMIT - self.bytes {
+            bounds.exceeded.set(true);
+            return Err(E::custom("projection limit"));
+        }
+        self.file
+            .write_all(row.as_bytes())
+            .and_then(|()| self.file.write_all(b"\n"))
+            .map_err(|error| {
+                bounds.spool_io.set(true);
+                E::custom(error)
+            })?;
+        self.bytes += size;
+        Ok(())
+    }
 }
 
 impl<'de> DeserializeSeed<'de> for Select<'_> {
@@ -158,11 +197,22 @@ impl<'de> Visitor<'de> for Select<'_> {
                 let escaped = serde_json::to_string(&key).map_err(de::Error::custom)?;
                 self.push(&escaped)?;
                 self.push(":")?;
-                map.next_value_seed(Select {
+                let row_target = self.spool.as_deref_mut().filter(|spool| spool.field == key);
+                let row_array = row_target.is_some();
+                let mut child = Select {
                     spec: child,
                     out: self.out,
                     bounds: self.bounds,
-                })?;
+                    spool: row_target,
+                    row_array,
+                };
+                if let Some(spool) = child.spool.as_mut() {
+                    spool.reset().map_err(|error| {
+                        self.bounds.spool_io.set(true);
+                        de::Error::custom(error)
+                    })?;
+                }
+                map.next_value_seed(child)?;
             } else {
                 map.next_value::<IgnoredAny>()?;
             }
@@ -176,6 +226,27 @@ impl<'de> Visitor<'de> for Select<'_> {
             while seq.next_element::<IgnoredAny>()?.is_some() {}
             return self.push("null");
         };
+        if self.row_array {
+            let spool = self
+                .spool
+                .as_deref_mut()
+                .ok_or_else(|| de::Error::custom("projection rows"))?;
+            let mut row = String::new();
+            while seq
+                .next_element_seed(Select {
+                    spec: child,
+                    out: &mut row,
+                    bounds: self.bounds,
+                    spool: None,
+                    row_array: false,
+                })?
+                .is_some()
+            {
+                spool.line(&mut row, self.bounds)?;
+                row.clear();
+            }
+            return self.push("[]");
+        }
         self.push("[")?;
         let mut first = true;
         loop {
@@ -188,6 +259,8 @@ impl<'de> Visitor<'de> for Select<'_> {
                     spec: child,
                     out: self.out,
                     bounds: self.bounds,
+                    spool: None,
+                    row_array: false,
                 })?
                 .is_none()
             {
@@ -256,6 +329,15 @@ fn skip_whitespace<R: BufRead>(reader: &mut R, bounds: &Bounds) -> io::Result<()
 /// The result is a projected JSON object or a closed classification. Small
 /// non-JSON literals are matched against caller-owned tokens, never echoed.
 pub fn project_file(input: impl Read, selection: &[u8], tokens: &[u8]) -> String {
+    project(input, selection, tokens, None)
+}
+
+fn project(
+    input: impl Read,
+    selection: &[u8],
+    tokens: &[u8],
+    spool: Option<&mut RowSpool>,
+) -> String {
     let Some(spec) = (selection.len() <= SPEC_LIMIT)
         .then(|| serde_json::from_slice::<Value>(selection).ok())
         .flatten()
@@ -263,6 +345,12 @@ pub fn project_file(input: impl Read, selection: &[u8], tokens: &[u8]) -> String
     else {
         return "invalid_selection".into();
     };
+    if spool
+        .as_ref()
+        .is_some_and(|spool| !spec.get(&spool.field).is_some_and(Value::is_array))
+    {
+        return "invalid_selection".into();
+    }
     let Some(tokens) = (tokens.len() <= KEY_LIMIT)
         .then(|| serde_json::from_slice::<Vec<String>>(tokens).ok())
         .flatten()
@@ -313,13 +401,18 @@ pub fn project_file(input: impl Read, selection: &[u8], tokens: &[u8]) -> String
         spec: &spec,
         out: &mut out,
         bounds: &bounds,
+        spool,
+        row_array: false,
     }
     .deserialize(&mut decoder)
     .and_then(|()| decoder.end());
     match result {
         Ok(()) => out,
         Err(_) if bounds.exceeded.get() => "limit".into(),
-        Err(err) if err.is_io() && err.io_error_kind() != Some(io::ErrorKind::InvalidData) => {
+        Err(err)
+            if bounds.spool_io.get()
+                || err.is_io() && err.io_error_kind() != Some(io::ErrorKind::InvalidData) =>
+        {
             "io".into()
         }
         Err(_) => "invalid".into(),
@@ -373,6 +466,53 @@ pub unsafe extern "C" fn pod_file_project_json(
                 unsafe { std::slice::from_raw_parts(tokens, tokens_len) },
             )
         };
+    std::ffi::CString::new(result)
+        .map(std::ffi::CString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// # Safety
+/// Both fds are transferred to Rust. All arguments point to readable slices.
+#[cfg(unix)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pod_file_project_json_rows(
+    fd: std::os::fd::RawFd,
+    out_fd: std::os::fd::RawFd,
+    spec: *const u8,
+    spec_len: usize,
+    tokens: *const u8,
+    tokens_len: usize,
+    field: *const u8,
+    field_len: usize,
+) -> *mut std::ffi::c_char {
+    use std::os::fd::FromRawFd;
+    let file = unsafe { File::from_raw_fd(fd) };
+    let out = unsafe { File::from_raw_fd(out_fd) };
+    let result = if spec.is_null()
+        || spec_len > SPEC_LIMIT
+        || tokens.is_null()
+        || tokens_len > KEY_LIMIT
+        || field.is_null()
+        || field_len > KEY_LIMIT
+    {
+        "invalid_selection".into()
+    } else if let Ok(field) =
+        std::str::from_utf8(unsafe { std::slice::from_raw_parts(field, field_len) })
+    {
+        let mut spool = RowSpool {
+            field: field.to_owned(),
+            file: out,
+            bytes: 0,
+        };
+        project(
+            file,
+            unsafe { std::slice::from_raw_parts(spec, spec_len) },
+            unsafe { std::slice::from_raw_parts(tokens, tokens_len) },
+            Some(&mut spool),
+        )
+    } else {
+        "invalid_selection".into()
+    };
     std::ffi::CString::new(result)
         .map(std::ffi::CString::into_raw)
         .unwrap_or(std::ptr::null_mut())

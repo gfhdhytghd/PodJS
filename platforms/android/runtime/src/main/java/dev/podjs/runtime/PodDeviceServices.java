@@ -1046,22 +1046,34 @@ public final class PodDeviceServices implements AutoCloseable {
             return new JSONObject().put("kind", "io");
         byte[] selection = args.getJSONObject("selection").toString().getBytes(StandardCharsets.UTF_8);
         byte[] tokens = args.getJSONArray("tokens").toString().getBytes(StandardCharsets.UTF_8);
-        if (selection.length > 16384 || tokens.length > 1024)
+        byte[] rowField = args.optString("rowField", "").getBytes(StandardCharsets.UTF_8);
+        if (selection.length > 16384 || tokens.length > 1024 || rowField.length > 1024)
             return new JSONObject().put("kind", "invalid_selection");
         System.loadLibrary("podjs_android");
-        byte[] result;
-        try (android.os.ParcelFileDescriptor input = android.os.ParcelFileDescriptor.open(file, android.os.ParcelFileDescriptor.MODE_READ_ONLY)) {
+        JSONObject temporary = rowField.length == 0 ? null
+                : fileCreateTemp(new JSONObject().put("directory", "projected-json"));
+        boolean published = false;
+        try (android.os.ParcelFileDescriptor input = android.os.ParcelFileDescriptor.open(file, android.os.ParcelFileDescriptor.MODE_READ_ONLY);
+             android.os.ParcelFileDescriptor output = temporary == null ? null
+                 : android.os.ParcelFileDescriptor.open(safeFile(temporary.getString("path")), android.os.ParcelFileDescriptor.MODE_WRITE_ONLY)) {
             if (input.getStatSize() != expected) return new JSONObject().put("kind", "io");
-            result = nativeProjectJson(input.getFd(), selection, tokens);
+            byte[] result = nativeProjectJson(input.getFd(), selection, tokens, output == null ? -1 : output.getFd(), rowField);
+            if (result == null) return new JSONObject().put("kind", "io");
+            String text = new String(result, StandardCharsets.UTF_8);
+            if (text.startsWith("{")) {
+                JSONObject reply = new JSONObject().put("kind", "object").put("json", text);
+                if (temporary != null) reply.put("path", temporary.getString("path"));
+                published = true;
+                return reply;
+            }
+            if (text.matches("token:[0-7]")) return new JSONObject().put("kind", "token").put("index", text.charAt(6) - '0');
+            return new JSONObject().put("kind", text);
+        } finally {
+            if (temporary != null && !published) discardTemporary(temporary);
         }
-        if (result == null) return new JSONObject().put("kind", "io");
-        String text = new String(result, StandardCharsets.UTF_8);
-        if (text.startsWith("{")) return new JSONObject().put("kind", "object").put("json", text);
-        if (text.matches("token:[0-7]")) return new JSONObject().put("kind", "token").put("index", text.charAt(6) - '0');
-        return new JSONObject().put("kind", text);
     }
 
-    private static native byte[] nativeProjectJson(int fd, byte[] selection, byte[] tokens);
+    private static native byte[] nativeProjectJson(int fd, byte[] selection, byte[] tokens, int output, byte[] rowField);
 
     private File safeFile(String path) throws IOException {
         if (path.isEmpty() || path.startsWith("/") || path.indexOf('\0') >= 0) throw new IllegalArgumentException("invalid_path");

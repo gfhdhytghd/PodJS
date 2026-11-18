@@ -698,13 +698,13 @@ export const sharing = {
 
 /** The native file reader returns bounded projected JSON or a fixed outcome. */
 export type FileJsonProjection =
-  | {kind:'object';json:string}
+  | {kind:'object';json:string;path?:string}
   | {kind:'token';index:number}
   | {kind:'empty'|'html'|'invalid'|'invalid_selection'|'limit'|'io'};
 
 export const fileChunks = {
-  projectJson(path:string,size:number,selection:Readonly<Record<string,import('./json.ts').JsonSelection>>,tokens:readonly string[]=[]):HostOperation<FileJsonProjection> {
-    return hostOperation<FileJsonProjection>('file.projectJson',{path,size,selection,tokens});
+  projectJson(path:string,size:number,selection:Readonly<Record<string,import('./json.ts').JsonSelection>>,tokens:readonly string[]=[],rowField?:string):HostOperation<FileJsonProjection> {
+    return hostOperation<FileJsonProjection>('file.projectJson',{path,size,selection,tokens,rowField});
   },
   readBytes:async(path:string,offset=0,maxBytes=65536):Promise<{bytes:Uint8Array;offset:number;size:number;eof:boolean}>=>{
    requireByteRead(maxBytes);

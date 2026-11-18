@@ -899,19 +899,31 @@ extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeDr
 }
 
 extern "C" char* pod_file_project_json(int, const uint8_t*, size_t, const uint8_t*, size_t);
+extern "C" char* pod_file_project_json_rows(int, int, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t);
 extern "C" void pod_file_project_json_free(char*);
 extern "C" JNIEXPORT jbyteArray JNICALL Java_dev_podjs_runtime_PodDeviceServices_nativeProjectJson(
-    JNIEnv* env, jclass, jint fd, jbyteArray selection, jbyteArray tokens) {
+    JNIEnv* env, jclass, jint fd, jbyteArray selection, jbyteArray tokens,
+    jint output, jbyteArray rowField) {
   const jsize specSize = env->GetArrayLength(selection);
   const jsize tokenSize = env->GetArrayLength(tokens);
   if (specSize < 1 || specSize > 16384 || tokenSize < 1 || tokenSize > 1024) return nullptr;
-  std::vector<uint8_t> spec(specSize), literals(tokenSize);
+  const jsize fieldSize = env->GetArrayLength(rowField);
+  if (fieldSize > 1024 || (output >= 0 && fieldSize < 1)) return nullptr;
+  std::vector<uint8_t> spec(specSize), literals(tokenSize), field(fieldSize);
   env->GetByteArrayRegion(selection, 0, specSize, reinterpret_cast<jbyte*>(spec.data()));
   env->GetByteArrayRegion(tokens, 0, tokenSize, reinterpret_cast<jbyte*>(literals.data()));
+  if (fieldSize) env->GetByteArrayRegion(rowField, 0, fieldSize, reinterpret_cast<jbyte*>(field.data()));
   if (env->ExceptionCheck()) return nullptr;
   int owned = dup(fd);
   if (owned < 0) return nullptr;
-  char* result = pod_file_project_json(owned, spec.data(), spec.size(), literals.data(), literals.size());
+  char* result;
+  if (output >= 0) {
+    const int ownedOutput = dup(output);
+    if (ownedOutput < 0) { close(owned); return nullptr; }
+    result = pod_file_project_json_rows(owned, ownedOutput, spec.data(), spec.size(), literals.data(), literals.size(), field.data(), field.size());
+  } else {
+    result = pod_file_project_json(owned, spec.data(), spec.size(), literals.data(), literals.size());
+  }
   if (!result) return nullptr;
   auto size = static_cast<jsize>(std::strlen(result));
   auto bytes = env->NewByteArray(size);
