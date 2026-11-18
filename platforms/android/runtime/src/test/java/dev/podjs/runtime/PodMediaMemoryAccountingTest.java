@@ -143,6 +143,55 @@ public class PodMediaMemoryAccountingTest {
         media.setInteger(MediaFormat.KEY_WIDTH,320);media.setInteger(MediaFormat.KEY_HEIGHT,480);assertEquals(2_000_000L+320*512*12,PodVideoCodecAdapters.estimatedVideoBytes(media));
         media.setInteger(MediaFormat.KEY_WIDTH,Integer.MAX_VALUE);media.setInteger(MediaFormat.KEY_HEIGHT,Integer.MAX_VALUE);assertEquals(Long.MAX_VALUE,PodVideoCodecAdapters.estimatedVideoBytes(media));
     }
+    @Test public void deniedWarmSurfaceClaimsNoLeaseAndReusedSlotUsesIncomingPriority()throws Exception{
+        android.content.Context context=androidx.test.core.app.ApplicationProvider.getApplicationContext();
+        PodVideoDecoderBudget leases=new PodVideoDecoderBudget(3);
+        PodVideoSessionServices service=new PodVideoSessionServices(context,leases);
+        android.widget.FrameLayout host=new android.widget.FrameLayout(context);
+        service.attachToParent(host);
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
+        Class<?> type=Class.forName("dev.podjs.runtime.PodVideoSessionServices$Session");
+        Constructor<?> ctor=type.getDeclaredConstructor(PodVideoSessionServices.class,String.class);
+        ctor.setAccessible(true);
+        Object reused=ctor.newInstance(service,"reused");
+        PodVideoPendingAdoptionTest.f(type,"generation").setLong(reused,2);
+        PodVideoPendingAdoptionTest.f(type,"prewarming").setBoolean(reused,true);
+        @SuppressWarnings("unchecked") Map<String,Object> slots=(Map<String,Object>)PodVideoPendingAdoptionTest.f(PodVideoSessionServices.class,"sessions").get(service);
+        slots.put("reused",reused);
+        List<PodMediaMemoryBudget.Owner> observed=new ArrayList<>();
+        Ledger ledger=new Ledger(8_000_000);
+        PodMediaMemoryAccounting memory=new PodMediaMemoryAccounting(PodVideoCodecGate.PROCESS,new PodMediaMemoryAccounting.Bytes(){
+            public PodMediaMemoryAccounting.Charge reserve(long n){fail("owner missing");return null;}
+            public PodMediaMemoryAccounting.Charge reserve(PodMediaMemoryBudget.Owner owner,long n){
+                observed.add(owner);
+                return owner.kind==PodMediaMemoryBudget.Kind.SURFACE&&owner.priority==PodMediaMemoryBudget.Priority.CURRENT?ledger.reserve(n):null;
+            }
+        });
+        Field process=PodMediaMemoryAccounting.class.getDeclaredField("process");process.setAccessible(true);
+        Object previous=process.get(null);process.set(null,memory);
+        try{
+            org.json.JSONObject source=new org.json.JSONObject().put("sessionId","new-warm").put("url","https://fixture.invalid/video.mp4")
+                .put("bounds",new org.json.JSONObject().put("x",0).put("y",0).put("width",233).put("height",233).put("visible",true));
+            PodVideoPendingAdoptionTest.Reply warm=new PodVideoPendingAdoptionTest.Reply();
+            service.dispatch("video.session.prepare",new org.json.JSONObject(source.toString()).put("prewarm",true),warm);
+            assertEquals("decoder_admission_deferred",warm.error);
+            assertFalse(slots.containsKey("new-warm"));
+            assertEquals(0,leases.inUse());
+            assertEquals(PodMediaMemoryBudget.Priority.PREWARM,observed.get(0).priority);
+            assertEquals(PodMediaMemoryBudget.Kind.SURFACE,observed.get(0).kind);
+
+            PodVideoPendingAdoptionTest.Reply current=new PodVideoPendingAdoptionTest.Reply();
+            service.dispatch("video.session.prepare",source.put("sessionId","reused"),current);
+            assertEquals("decoder_admission_deferred",current.error); // injected denial of the next buffer
+            assertEquals(PodMediaMemoryBudget.Priority.CURRENT,observed.get(1).priority);
+            assertEquals(PodMediaMemoryBudget.Kind.SURFACE,observed.get(1).kind);
+            assertEquals(PodMediaMemoryBudget.Kind.COMPRESSED_BUFFER,observed.get(2).kind);
+            assertEquals(0,leases.inUse());
+        }finally{
+            service.close();org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();process.set(null,previous);
+        }
+        assertEquals(0,ledger.held);
+    }
     @Test public void legacySurfaceIsReservedBeforeItsFirstVisibleBounds()throws Exception{
         android.content.Context context=androidx.test.core.app.ApplicationProvider.getApplicationContext();
         Ledger ledger=new Ledger(1);PodMediaMemoryAccounting memory=new PodMediaMemoryAccounting(PodVideoCodecGate.PROCESS,ledger);
