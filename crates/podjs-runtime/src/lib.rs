@@ -284,7 +284,6 @@ impl HttpTransport for HostTransport {
 pub struct PodRuntime {
     last_glyph:Option<std::sync::Arc<[u8]>>,
     guest: Guest,
-    collection_limit:pocket_mod::CollectionLimit,
     surface: UiSurface,
     fs: Rc<RefCell<FsModule>>,
     net: NetSurface<HostTransport>,
@@ -829,7 +828,6 @@ pub extern "C" fn pod_runtime_create(config: *const PodRuntimeConfig) -> *mut Po
     let net = NetSurface::new(transport.clone());
     Box::into_raw(Box::new(PodRuntime {
         guest,
-        collection_limit:pocket_mod::CollectionLimit::new(if memory_budget::limit()>0{24_000_000}else{0}),
         surface,
         last_glyph:None,
         fs,
@@ -1613,8 +1611,10 @@ pub extern "C" fn pod_runtime_frame(runtime: *mut PodRuntime, input: *const PodI
     } else {
         input.analog
     };
+    // Keep QuickJS's adaptive threshold for the foreground realm. Its live
+    // heap can exceed an advisory partition. The process ledger still enforces
+    // admission and memory.pressure requests an explicit collection.
     let guest_began = Instant::now();
-    runtime.guest.with(|ctx|runtime.collection_limit.run_turn(&ctx,||()));
     if let Err(error) =
         runtime
             .guest
@@ -1625,7 +1625,6 @@ pub extern "C" fn pod_runtime_frame(runtime: *mut PodRuntime, input: *const PodI
         set_error(format!("guest frame failed: {error}"));
         return ERR_GUEST;
     }
-    runtime.guest.with(|ctx|runtime.collection_limit.run_turn(&ctx,||()));
     runtime.guest_micros = guest_began.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
     let surface_began = Instant::now();
     runtime.surface.tick();
