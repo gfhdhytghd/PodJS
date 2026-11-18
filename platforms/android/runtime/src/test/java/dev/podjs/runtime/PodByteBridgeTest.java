@@ -39,6 +39,28 @@ public class PodByteBridgeTest {
             }
         }
     }
+    @Test public void nativeSpoolKeepsTheNextFrameAndRejectsTruncation()throws Exception {
+        Context context=ApplicationProvider.getApplicationContext();
+        int length=1_577_359;
+        byte[] wire=new byte[length+1];
+        for(int i=0;i<length;i++)wire[i]=(byte)i;
+        wire[length]=91;
+        try(PodByteStreamServices streams=new PodByteStreamServices(context)){
+            String id=streams.attach(new ByteArrayInputStream(wire),new ByteArrayOutputStream(),()->{});
+            JSONObject request=new JSONObject().put("id",id).put("size",length).put("timeoutMs",5000);
+            ByteArrayOutputStream file=new ByteArrayOutputStream();
+            JSONObject result=streams.execute("stream.spool",request,new CancellationSignal(),file);
+            assertEquals(length,result.getInt("size"));
+            assertArrayEquals(Arrays.copyOf(wire,length),file.toByteArray());
+            JSONObject next=streams.execute("stream.read",args(id,1),new CancellationSignal());
+            assertArrayEquals(new byte[]{91},android.util.Base64.decode(next.getString("dataBase64"),0));
+            try{
+                streams.execute("stream.spool",request,new CancellationSignal(),new ByteArrayOutputStream());
+                fail("Truncated frame was accepted");
+            }catch(EOFException expected){}
+        }
+    }
+
     @Test public void writeDifferentialAndCancellation()throws Exception {
         Context context=ApplicationProvider.getApplicationContext();
         try(PodByteStreamServices streams=new PodByteStreamServices(context)){
