@@ -4,12 +4,13 @@ import {lazyRegExpTest} from "./regexp.ts";
 export type TextMeasurer = (text:string)=>number;
 /** Truncate only after wrapping with the same font provider used to paint. */
 export function measuredLines(text:string,width:number,measure:TextMeasurer,maxLines=Infinity,firstIndent=0):string[] {
+  const limit = Math.max(1, Math.trunc(maxLines)) + 1;
   let all:string[];
   if(firstIndent>0){
-    const first=layoutText(text,{width:Math.max(1,width-firstIndent),measure})[0]??"";
+    const first=layoutText(text,{width:Math.max(1,width-firstIndent),measure,maxLines:1})[0]??"";
     const rest=text.replace(/\r\n?/g,"\n").slice(first.length);
-    all=[first,...(rest.length?layoutText(rest.startsWith("\n")?rest.slice(1):rest,{width:Math.max(1,width),measure}):[])];
-  } else all=layoutText(text,{width:Math.max(1,width),measure});
+    all=[first,...(rest.length?layoutText(rest.startsWith("\n")?rest.slice(1):rest,{width:Math.max(1,width),measure,maxLines:limit}):[])];
+  } else all=layoutText(text,{width:Math.max(1,width),measure,maxLines:limit});
   if(all.length<=maxLines)return all;
   const result=all.slice(0,Math.max(1,maxLines));
   const last=Array.from(result[result.length-1]);
