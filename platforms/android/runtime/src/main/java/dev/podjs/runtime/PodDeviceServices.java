@@ -1032,6 +1032,14 @@ public final class PodDeviceServices implements AutoCloseable {
     }
 
     private JSONObject fileProjectJson(JSONObject args) throws Exception {
+        JSONObject result = projectJsonFile(args);
+        String kind = result.getString("kind");
+        android.util.Log.i("PodFileJson", "kind=" + kind + " bytes=" + args.getLong("size")
+                + " output=" + result.optString("json").length());
+        return result;
+    }
+
+    private JSONObject projectJsonFile(JSONObject args) throws Exception {
         File file = safeFile(required(args, "path"));
         long expected = args.getLong("size");
         if (expected < 0 || !file.isFile() || file.length() != expected)
