@@ -78,6 +78,10 @@ const methods: Record<string, PodCapabilityId> = {
   "provision.start": "net.ble.provision", "provision.receive": "net.ble.provision", "provision.check": "net.ble.provision", "provision.sessionRequest": "net.ble.provision", "provision.respond": "net.ble.provision", "provision.close": "net.ble.provision", "provision.requestPermission": "net.ble.provision",
   "discovery.mdns": "net.discovery", "discovery.status": "net.discovery", "discovery.requestPermission": "net.discovery", "discovery.bleReadCharacteristic": "net.discovery",
   "websocket.connect": "net.websocket", "websocket.readText": "net.websocket", "websocket.writeText": "net.websocket", "websocket.close": "net.websocket",
+  "stream.framedRuntime":"net.stream","stream.framedOpen":"net.stream","stream.framedNext":"net.stream","stream.framedRegister":"net.stream",
+  "stream.framedEnable":"net.stream","stream.framedBind":"net.stream","stream.framedApplied":"net.stream",
+  "stream.framedControl":"net.stream","stream.framedAck":"net.stream","stream.framedData":"net.stream",
+  "stream.framedState":"net.stream","stream.framedRetire":"net.stream",
   "stream.claim": "net.stream", "stream.read": "net.stream", "stream.write": "net.stream", "stream.close": "net.stream", "stream.prepareFile":"net.stream", "stream.dropFile":"net.stream", "stream.readFile":"net.stream", "stream.writeFile":"net.stream",
   "runtime.delay": "runtime.timer", "runtime.afterPaint":"runtime.timer",
   "display.state": "display.power", "display.keepAwake": "display.power",
@@ -833,6 +837,29 @@ export const tcp = {
  close:(id:string)=>hostOperation<{closed:boolean}>("tcp.close",{id}).result,
  addresses:()=>hostOperation<{addresses:string[]}>("tcp.addresses",{}).result,
 };
+export interface FramedTransferDescriptor {
+  object: {id:string;size:number;sha256:string;chunkHashes:readonly string[]};
+  digests:readonly string[];
+  dependsOn:readonly number[];
+  applied:boolean;
+  compatibility:boolean;
+}
+export interface FramedTransferBinding {requestId:string;requestDigest:string}
+export const framedStreams = {
+  runtime:()=>hostOperation<{version:number;codec:string;chunkBytes:number;windows:number[];methods:string[]}>("stream.framedRuntime",{}).result,
+  open:(id:string)=>hostOperation<void>("stream.framedOpen",{id}).result,
+  next:(id:string)=>hostOperation<{kind:number;control?:string;bytes?:number[];error?:string}>("stream.framedNext",{id,timeoutMs:900000}).result,
+  register:(id:string,page:readonly FramedTransferDescriptor[])=>hostOperation<void>("stream.framedRegister",{id,page}).result,
+  enable:(id:string,lease:Record<string,unknown>,stream:number,window:number)=>hostOperation<void>("stream.framedEnable",{id,lease,stream,window}).result,
+  bind:(id:string,bindings:readonly FramedTransferBinding[])=>hostOperation<void>("stream.framedBind",{id,bindings}).result,
+  markApplied:(id:string,slot:number)=>hostOperation<void>("stream.framedApplied",{id,slot}).result,
+  control:(id:string,control:string,activate:boolean,rejected?:number)=>hostOperation<void>("stream.framedControl",{id,control,activate,rejected,timeoutMs:60000}).result,
+  ack:(id:string,bytes:Uint8Array)=>hostOperation<void>("stream.framedAck",{id,bytes:Array.from(bytes),timeoutMs:60000}).result,
+  data:(id:string,header:Uint8Array,bytes:Uint8Array)=>byteHostOperation<void>("stream.framedData",{id,header:Array.from(header),timeoutMs:60000},bytes).result,
+  state:(id:string)=>hostOperation<{progress:number}>("stream.framedState",{id}).result,
+  retire:(id:string)=>hostOperation<void>("stream.framedRetire",{id}).result,
+};
+
 export const byteStreams = {
   claim:(id:string)=>hostOperation<{id:string}>("stream.claim",{id}),
   prepareFile:(id:string,range:{path:string;offset:number;size:number;sha256:string})=>hostOperation<{reference:string}>("stream.prepareFile",{id,...range}),

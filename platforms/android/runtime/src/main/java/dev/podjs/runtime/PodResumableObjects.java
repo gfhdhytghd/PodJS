@@ -81,7 +81,14 @@ final class PodResumableObjects {
             throw error;
         }
     }
+    void stageGroup(JSONObject lease,JSONObject[] descriptors,java.util.List<PodReceiveWindow.Verified> chunks)throws Exception {
+        executeUnchecked("file.resumable.group",lease,null,descriptors,chunks);
+    }
     private JSONObject executeUnchecked(String method,JSONObject a,byte[] fileChunk)throws Exception {
+        return executeUnchecked(method,a,fileChunk,null,null);
+    }
+    private JSONObject executeUnchecked(String method,JSONObject a,byte[] fileChunk,
+            JSONObject[] descriptors,java.util.List<PodReceiveWindow.Verified> chunks)throws Exception {
         if("file.resumable.status".equals(method)&&"probe".equals(a.optString("operation")))return new JSONObject().put("version",1).put("elapsedMillis",SystemClock.elapsedRealtime()).put("chunkBytes",65536).put("maxObjectBytes",16777216).put("maxInFlightObjects",4).put("maxStagingBytes",64*1024*1024).put("maxJournalBytes",JOURNAL_BYTES).put("durable",true).put("fencing",true).put("chunkReceipt",true).put("requestBindings",true).put("fileRefs",true).put("methods",new JSONArray(new String[]{"file.resumable.stage","file.resumable.status","file.resumable.missing","file.resumable.finalize","file.resumable.release"}));
         String scope=id(a,"scope",64);
         try(RandomAccessFile lf=new RandomAccessFile(lock,"rw")){
@@ -96,7 +103,7 @@ final class PodResumableObjects {
                     if("file.resumable.status".equals(method)&&"acquire".equals(a.optString("operation"))){
                         String connection=id(a,"connectionId",32);long epoch=0;boolean same=false;
                         try(Cursor c=db.rawQuery("SELECT connection,epoch,owner,deadline FROM scopes WHERE scope=?",new String[]{scope})){if(c.moveToFirst()){epoch=c.getLong(1);same=connection.equals(c.getString(0))&&PROCESS.equals(c.getString(2))&&SystemClock.elapsedRealtime()<c.getLong(3);}}
-                        if(!same&&++epoch>9007199254740991L)throw new IOException("LOCAL_IO");
+                        if((!same||a.optBoolean("forceNewEpoch"))&&++epoch>9007199254740991L)throw new IOException("LOCAL_IO");
                         db.execSQL("INSERT OR REPLACE INTO scopes VALUES(?,?,?,?,?,?,?,?,?,?)",new Object[]{scope,connection,epoch,PROCESS,SystemClock.elapsedRealtime()+LEASE,System.currentTimeMillis()+RETENTION,a.optBoolean("readOnly",false)?1:0,SystemClock.elapsedRealtime()+RETENTION,Math.max(1,integer(a,"maxInFlightObjects",4)),Math.max(1,integer(a,"maxStagingBytes",134217728))});
                         db.setTransactionSuccessful();return new JSONObject().put("epoch",epoch);
                     }
@@ -105,6 +112,23 @@ final class PodResumableObjects {
                     if("file.resumable.status".equals(method)&&"readOnly".equals(a.optString("operation"))){db.execSQL("UPDATE scopes SET read_only=1 WHERE scope=?",new Object[]{scope});result=new JSONObject();}
                     else if("file.resumable.status".equals(method)&&"check".equals(a.optString("operation")))result=new JSONObject();
                     else if("file.resumable.status".equals(method)&&"requestBindings".equals(a.optString("operation")))result=requestBindings(db,a,scope);
+                    else if(chunks!=null){
+                        for(PodReceiveWindow.Verified chunk:chunks) {
+                            PodTransferFrames.Chunk header=chunk.header;
+                            if(chunk.applied){
+                                String prior=scalar(db,"SELECT digest FROM requests WHERE scope=? AND id=?",scope,header.operation);
+                                if(prior!=null&&!prior.equals(header.digest))throw new IOException("REQUEST_CONFLICT");
+                                db.execSQL("INSERT OR IGNORE INTO requests VALUES(?,?,?)",new Object[]{scope,header.operation,header.digest});
+                                continue;
+                            }
+                            JSONObject block=new JSONObject().put("object",descriptors[header.slot])
+                                    .put("index",header.index).put("bindingId",header.operation)
+                                    .put("requestDigest",header.digest).put("receiptOnly",true);
+                            byte[] bytes=header.size==chunk.bytes.length?chunk.bytes:java.util.Arrays.copyOf(chunk.bytes,header.size);
+                            object(db,"file.resumable.stage",block,scope,bytes);
+                        }
+                        result=new JSONObject();
+                    }
                     else result=object(db,method,a,scope,fileChunk);
                     db.execSQL("UPDATE scopes SET deadline=?,retain_until=max(retain_until,?),retain_elapsed=max(retain_elapsed,?) WHERE scope=?",new Object[]{SystemClock.elapsedRealtime()+LEASE,System.currentTimeMillis()+RETENTION,SystemClock.elapsedRealtime()+RETENTION,scope});
                     db.setTransactionSuccessful();return result;

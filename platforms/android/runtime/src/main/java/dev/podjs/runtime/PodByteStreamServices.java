@@ -42,6 +42,9 @@ final class PodByteStreamServices implements Closeable {
     private final Map<String,Endpoint> handedOff=new HashMap<>();
     private final Map<String,Listener> listeners=new HashMap<>();
     private final Map<String,TcpListener> tcpListeners=new HashMap<>();
+    private final java.util.concurrent.ExecutorService frameHashes=Executors.newSingleThreadExecutor();
+    private final ScheduledExecutorService frameJournal=Executors.newSingleThreadScheduledExecutor();
+    private final java.util.concurrent.ExecutorService frameWriter=Executors.newSingleThreadExecutor();
     private final ScheduledExecutorService deadlines=Executors.newSingleThreadScheduledExecutor();
     private boolean closed;
     private long sequence;
@@ -65,12 +68,23 @@ final class PodByteStreamServices implements Closeable {
         String streamId;
         final String originalId;
         int operations;
+        volatile PodTransferChannel channel;
         Endpoint(String id,InputStream input,OutputStream output,Closeable owner){
             this.streamId=id;this.originalId=id;this.input=input;this.output=output;this.owner=owner;
         }
-        public void close() throws IOException {if(closed.compareAndSet(false,true))owner.close();}
+        public void close() throws IOException {
+            if(closed.compareAndSet(false,true)){
+                PodTransferChannel transfer=channel;
+                if(transfer!=null)transfer.close();
+                owner.close();
+            }
+        }
     }
-    PodByteStreamServices(Context context){this.context=context;}
+    private final PodTransferChannel.Journal framedJournal;
+    PodByteStreamServices(Context context){this(context,(lease,objects,chunks)->{
+        new PodResumableObjects(context).stageGroup(lease,objects,chunks);
+    });}
+    PodByteStreamServices(Context context, PodTransferChannel.Journal journal){this.context=context;this.framedJournal=journal;}
     private BluetoothAdapter adapter(){BluetoothManager manager=context.getSystemService(BluetoothManager.class);return manager==null?null:manager.getAdapter();}
     private boolean permitted(){return Build.VERSION.SDK_INT<31||context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)==PackageManager.PERMISSION_GRANTED;}
     private void requireBluetooth(){if(!permitted())throw new SecurityException("Bluetooth connection permission required");BluetoothAdapter adapter=adapter();if(adapter==null||!adapter.isEnabled())throw new IllegalStateException("Bluetooth unavailable or disabled");}
@@ -151,6 +165,12 @@ final class PodByteStreamServices implements Closeable {
             try{socket=listener.socket.accept(timeout);cancellation.throwIfCanceled();String address=socket.getRemoteDevice().getAddress(),name=socket.getRemoteDevice().getName();String streamId=attach(socket.getInputStream(),socket.getOutputStream(),socket);socket=null;try{return new JSONObject().put("id",streamId).put("remoteAddress",address).put("remoteName",name==null?JSONObject.NULL:name);}catch(Exception error){removeStream(streamId);throw error;}}
             finally{if(socket!=null)closeQuietly(socket);cancellation.setOnCancelListener(null);listener.accepting.set(false);}
         }
+        if("stream.framedRuntime".equals(method)){
+            return new JSONObject().put("version",1).put("codec","length-prefixed-chunks-v1")
+                    .put("chunkBytes",65536).put("windows",new JSONArray().put(1).put(8))
+                    .put("methods",new JSONArray(new String[]{"open","next","register","enable","bind",
+                        "applied","control","ack","data","state","retire"}));
+        }
         String id=args.getString("id");
         if("stream.claim".equals(method))return claim(id);
         Endpoint endpoint=enterStream(id);
@@ -158,14 +178,43 @@ final class PodByteStreamServices implements Closeable {
         finally{leaveStream(endpoint);}
     }
     private JSONObject executeStream(String method,JSONObject args,CancellationSignal cancellation,String id,Endpoint endpoint)throws Exception {
+        if("stream.framedOpen".equals(method)){
+            synchronized(endpoint){
+                if(endpoint.originalId.equals(id)||endpoint.closed.get()||endpoint.channel!=null)
+                    throw new IOException("AUTH_REVOKED");
+                endpoint.channel=new PodTransferChannel(endpoint.input,endpoint.output,frameHashes,
+                        frameJournal,frameWriter,framedJournal,()->removeStream(id),deadlines);
+            }
+            return new JSONObject();
+        }
+        PodTransferChannel channel=endpoint.channel;
+        if(method.startsWith("stream.framed")&&channel==null)throw new IOException("AUTH_REVOKED");
+        if("stream.framedRegister".equals(method)){
+            channel.register(args.getJSONArray("page"));return new JSONObject();
+        }
+        if("stream.framedEnable".equals(method)){
+            channel.enable(args.getJSONObject("lease"),args.getInt("stream"),args.getInt("window"));return new JSONObject();
+        }
+        if("stream.framedBind".equals(method)){
+            channel.bind(args.getJSONArray("bindings"));return new JSONObject();
+        }
+        if("stream.framedRetire".equals(method)){
+            channel.retire();return new JSONObject();
+        }
+        if("stream.framedState".equals(method)){
+            return new JSONObject().put("progress",channel.progress());
+        }
+        if("stream.framedApplied".equals(method)){
+            channel.markApplied(args.getInt("slot"));return new JSONObject();
+        }
         if("stream.prepareFile".equals(method))return prepareFile(endpoint,args,cancellation);
         if("stream.dropFile".equals(method)){
             synchronized(endpoint.outgoing){endpoint.outgoing.remove(args.getString("reference"));}
             synchronized(endpoint.incoming){endpoint.incoming.remove(args.getString("reference"));}
             return new JSONObject();
         }
-        boolean read=method.equals("stream.read")||method.equals("stream.readFile");
-        if(!read&&!method.equals("stream.write")&&!method.equals("stream.writeFile"))throw new IllegalArgumentException("Unknown stream method");
+        boolean read=method.equals("stream.read")||method.equals("stream.readFile")||method.equals("stream.framedNext");
+        if(!read&&!method.equals("stream.write")&&!method.equals("stream.writeFile")&&!method.equals("stream.framedControl")&&!method.equals("stream.framedAck")&&!method.equals("stream.framedData"))throw new IllegalArgumentException("Unknown stream method");
         int timeout=number(args,"timeoutMs",1,900000);
         AtomicBoolean busy=read?endpoint.reading:endpoint.writing;
         if(!busy.compareAndSet(false,true))throw new IllegalStateException("Concurrent stream operation");
@@ -174,7 +223,19 @@ final class PodByteStreamServices implements Closeable {
         try{
             timer=deadlines.schedule(()->{if(finished.compareAndSet(false,true)){timedOut.set(true);removeStream(id);}},timeout,TimeUnit.MILLISECONDS);
             JSONObject result;
-            if(method.equals("stream.readFile"))result=readFileChunk(endpoint,args);
+            if(method.equals("stream.framedNext"))result=channel.next();
+            else if(method.equals("stream.framedControl")){
+                channel.writeControl(args.getString("control"),args.optBoolean("activate"),args.optLong("rejected"));result=new JSONObject();
+            }
+            else if(method.equals("stream.framedAck")){
+                channel.writeCompatibilityAck(numbers(args.getJSONArray("bytes"),560));result=new JSONObject();
+            }
+            else if(method.equals("stream.framedData")){
+                byte[] header=numbers(args.getJSONArray("header"),96), body=PodBytePayload.input(args);
+                new PodTransferFrames.Chunk(header,body.length);
+                channel.write(header,body,null);result=new JSONObject();
+            }
+            else if(method.equals("stream.readFile"))result=readFileChunk(endpoint,args);
             else if(method.equals("stream.writeFile"))result=writeFileChunk(endpoint,args);
             else if("stream.read".equals(method)){int max=number(args,"maxBytes",1,MAX_BYTES);byte[] data=new byte[max];int count=endpoint.input.read(data);if(count==0)throw new IOException("Stream read made no progress");if(count<0){removeStream(id);result=PodBytePayload.output(args,new JSONObject().put("eof",true),new byte[0]);}else result=args.optBoolean("_podByteMode")?PodBytePayload.output(args,new JSONObject().put("eof",false),count==data.length?data:java.util.Arrays.copyOf(data,count)):new JSONObject().put("eof",false).put("dataBase64",Base64.encodeToString(data,0,count,Base64.NO_WRAP));}
             else{if(!args.optBoolean("_podByteMode")&&args.getString("dataBase64").length()>4*((MAX_BYTES+2)/3))throw new IllegalArgumentException("Stream write too large");byte[] bytes=PodBytePayload.input(args);if(bytes.length<1||bytes.length>MAX_BYTES)throw new IllegalArgumentException("Invalid stream write size");endpoint.output.write(bytes);endpoint.output.flush();result=new JSONObject().put("written",bytes.length);}
@@ -239,13 +300,27 @@ final class PodByteStreamServices implements Closeable {
         }
         synchronized(endpoint.outgoing) { bytes=endpoint.outgoing.remove(args.getString("reference")); }
         if(bytes==null||java.nio.ByteBuffer.wrap(header).getInt(44)!=bytes.length)throw new IOException("Invalid file reference");
-        endpoint.output.write(header);
-        endpoint.output.write(bytes);
-        endpoint.output.flush();
+        PodTransferChannel channel=endpoint.channel;
+        if(channel==null){
+            endpoint.output.write(header);
+            endpoint.output.write(bytes);
+            endpoint.output.flush();
+        }else channel.write(header,bytes,null);
         return new JSONObject().put("written",header.length+bytes.length);
+    }
+
+    private static byte[] numbers(JSONArray values,int maximum)throws Exception {
+        if(values.length()>maximum)throw new IOException("LIMIT_EXCEEDED");
+        byte[] bytes=new byte[values.length()];
+        for(int i=0;i<bytes.length;i++){
+            int value=values.getInt(i);
+            if(value<0||value>255)throw new IOException("INVALID_FRAME");
+            bytes[i]=(byte)value;
+        }
+        return bytes;
     }
 
     /** Dispose a handle created after its cancelled request lost delivery. */
     void discard(JSONObject value){String id=value.optString("id","");if(id.startsWith("stream-"))removeStream(id);else if(id.startsWith("listener-"))removeListener(id);else if(id.startsWith("tcp-listener-"))removeTcpListener(id);}
-    public void close(){ArrayList<Closeable> handles=new ArrayList<>();synchronized(this){if(closed)return;closed=true;handles.addAll(streams.values());handles.addAll(listeners.values());handles.addAll(tcpListeners.values());streams.clear();handedOff.clear();listeners.clear();tcpListeners.clear();}for(Closeable handle:handles)closeQuietly(handle);deadlines.shutdownNow();}
+    public void close(){ArrayList<Closeable> handles=new ArrayList<>();synchronized(this){if(closed)return;closed=true;handles.addAll(streams.values());handles.addAll(listeners.values());handles.addAll(tcpListeners.values());streams.clear();handedOff.clear();listeners.clear();tcpListeners.clear();}for(Closeable handle:handles)closeQuietly(handle);deadlines.shutdownNow();frameHashes.shutdown();frameJournal.shutdown();frameWriter.shutdown();}
 }
