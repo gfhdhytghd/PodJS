@@ -19,6 +19,21 @@ const base = { entry: "main.tsx", appId: "com.example.demo", versionName: "1.2.3
 const defaults = { fontRegular: "font.ttf", fontBold: "font.ttf", outputRoot: "/tmp/pod-dist" };
 
 describe("external project config", () => {
+  test("process budget is decimal, bounded, and opt-in",()=>{
+    expect(resolvePodProject(fixture({...base,memoryBudgetMb:128}),POD_TARGETS,defaults).config.memoryBudgetMb).toBe(128);
+    expect(resolvePodProject(fixture(base),POD_TARGETS,defaults).config.memoryBudgetMb).toBeUndefined();
+    for(const memoryBudgetMb of [null,false,0,-1,1.5,31,2049,"128",{},[]])expect(()=>resolvePodProject(fixture({...base,memoryBudgetMb}),POD_TARGETS,defaults)).toThrow("memoryBudgetMb");
+  });
+  test("process budget preserves the release shell command allowlist", () => {
+    const shellCommands = ["douyin.state", "diag.dump"];
+    const project = resolvePodProject(fixture({...base, memoryBudgetMb:128, shellCommands}), POD_TARGETS, defaults);
+    expect(project.config.memoryBudgetMb).toBe(128);
+    expect(project.config.shellCommands).toEqual(shellCommands);
+    const exports = JSON.parse(readFileSync(new URL("../packages/framework/package.json", import.meta.url), "utf8")).exports;
+    expect(exports["./memory"]).toBe("./src/memory.ts");
+    expect(exports["./shell"]).toBe("./src/shell.ts");
+    expect(exports["./shell-error"]).toBe("./src/shell-error.ts");
+  });
   test('launcher icons reject invalid types, resource kinds and XML injection', () => {
     for (const field of ['icon','roundIcon']) {
       for (const value of [null, true, 1, {}, [], '', 'icon.png', '@string/icon', '@android:drawable/icon', '@mipmap/', '@mipmap/Bad', '@mipmap/icon\n', '@mipmap/icon\r\n', '@drawable/icon" android:debuggable="true', '@drawable/icon<item>']) {

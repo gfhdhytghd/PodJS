@@ -14,12 +14,17 @@ import java.util.Map;
 final class PodVideoKeyframes implements AutoCloseable {
     static final int MAX_EDGE = 466, MAX_ENTRIES = 10;
     static final long MAX_BYTES = (long) MAX_EDGE * MAX_EDGE * 4 * MAX_ENTRIES;
+    private int maximumEntries(){return PodProcessMemoryBudget.limit()>0?3:MAX_ENTRIES;}
+    private long maximumBytes(){return (long)MAX_EDGE*MAX_EDGE*4*maximumEntries();}
     static final class Frame {
         final Bitmap pixels;
+        final AutoCloseable memory;
         long entry;
         int pins;
         float pixelAspectRatio=1f;
-        Frame(Bitmap pixels) { this.pixels = pixels; }
+        Frame(Bitmap pixels) { this(pixels,()->{}); }
+        Frame(Bitmap pixels,AutoCloseable memory) { this.pixels=pixels;this.memory=memory; }
+        void recycle(){pixels.recycle();PodMediaMemoryAccounting.close(memory);}
     }
     private final LinkedHashMap<String, Frame> frames = new LinkedHashMap<>(16, .75f, true);
     volatile long bytes;
@@ -42,14 +47,14 @@ final class PodVideoKeyframes implements AutoCloseable {
         Iterator<Map.Entry<String,Frame>> it=frames.entrySet().iterator();
         while(it.hasNext()){
             Map.Entry<String,Frame> entry=it.next();Frame frame=entry.getValue();
-            if(frame.pins==0&&(closed||window!=null&&!window.contains(entry.getKey()))){bytes-=frame.pixels.getAllocationByteCount();it.remove();trace(frame,2);frame.pixels.recycle();}
+            if(frame.pins==0&&(closed||window!=null&&!window.contains(entry.getKey()))){bytes-=frame.pixels.getAllocationByteCount();it.remove();trace(frame,2);frame.recycle();}
         }
     }
     synchronized Frame get(String binding) { return frames.get(binding); }
     synchronized boolean contains(String binding) { return frames.containsKey(binding); }
     synchronized boolean canAccept(String binding) {
         if(closed||window!=null&&!window.contains(binding))return false;
-        if(frames.containsKey(binding)||frames.size()<MAX_ENTRIES&&bytes+MAX_EDGE*(long)MAX_EDGE*4<=MAX_BYTES)return true;
+        if(frames.containsKey(binding)||frames.size()<maximumEntries()&&bytes+MAX_EDGE*(long)MAX_EDGE*4<=maximumBytes())return true;
         for(Map.Entry<String,Frame> entry:frames.entrySet())if(entry.getValue().pins==0&&priority(entry.getKey())>=priority(binding))return true;
         return false;
     }
@@ -57,7 +62,7 @@ final class PodVideoKeyframes implements AutoCloseable {
     synchronized org.json.JSONObject memoryStats()throws Exception {
         long pinned=0;int pins=0;
         for(Frame frame:frames.values())if(frame.pins>0){pinned+=frame.pixels.getAllocationByteCount();pins++;}
-        return new org.json.JSONObject().put("entries",frames.size()).put("bytes",bytes).put("maxBytes",MAX_BYTES)
+        return new org.json.JSONObject().put("entries",frames.size()).put("bytes",bytes).put("maxBytes",maximumBytes())
             .put("pinnedEntries",pins).put("pinnedBytes",pinned).put("captureQueue",captures.size()).put("copying",copying);
     }
     private final java.util.ArrayDeque<Runnable> captures=new java.util.ArrayDeque<>();
@@ -83,14 +88,20 @@ final class PodVideoKeyframes implements AutoCloseable {
     static void readPixels(TextureView texture,int width,int height,android.os.Handler main,java.util.function.Consumer<Bitmap> complete){
         if(texture==null||!texture.isAvailable()||width<1||height<1){complete.accept(null);return;}
         double scale=MAX_EDGE/(double)Math.max(width,height);
-        Bitmap pixels=Bitmap.createBitmap(Math.max(1,(int)Math.round(width*scale)),Math.max(1,(int)Math.round(height*scale)),Bitmap.Config.ARGB_8888);
-        android.view.Surface surface=new android.view.Surface(texture.getSurfaceTexture());
+        int w=Math.max(1,(int)Math.round(width*scale)),h=Math.max(1,(int)Math.round(height*scale));
+        PodProcessMemoryBudget.Lease scratch=PodProcessMemoryBudget.reserve(PodProcessMemoryBudget.SCRATCH,(long)w*h*4);
+        if(scratch==null){complete.accept(null);return;}
+        Bitmap pixels;
+        try{pixels=Bitmap.createBitmap(w,h,Bitmap.Config.ARGB_8888);scratch.commit();}catch(RuntimeException|OutOfMemoryError failure){scratch.close();complete.accept(null);return;}
+        android.view.Surface surface;
+        try{surface=new android.view.Surface(texture.getSurfaceTexture());}
+        catch(RuntimeException unavailable){pixels.recycle();scratch.close();complete.accept(null);return;}
         try{
             android.view.PixelCopy.request(surface,new android.graphics.Rect(0,0,width,height),pixels,result->{
                 surface.release();
-                if(result==android.view.PixelCopy.SUCCESS)complete.accept(pixels);else{pixels.recycle();complete.accept(null);}
+                try{if(result==android.view.PixelCopy.SUCCESS)complete.accept(pixels);else{pixels.recycle();complete.accept(null);}}finally{scratch.close();}
             },main);
-        }catch(RuntimeException error){surface.release();pixels.recycle();complete.accept(null);}
+        }catch(RuntimeException error){surface.release();pixels.recycle();scratch.close();complete.accept(null);}
     }
     synchronized Frame put(String binding, Bitmap pixels) {return put(binding,pixels,true);}
     synchronized Frame put(String binding, Bitmap pixels,boolean persist) {
@@ -98,10 +109,10 @@ final class PodVideoKeyframes implements AutoCloseable {
     }
     synchronized Frame put(String binding, Bitmap pixels,boolean persist,long cacheOrdinal) {
         long size = pixels.getAllocationByteCount();
-        if (closed || window!=null&&!window.contains(binding) || pixels.getWidth() > MAX_EDGE || pixels.getHeight() > MAX_EDGE || size > MAX_BYTES) { pixels.recycle(); return null; }
+        if (closed || window!=null&&!window.contains(binding) || pixels.getWidth() > MAX_EDGE || pixels.getHeight() > MAX_EDGE || size > maximumBytes()) { pixels.recycle(); return null; }
         Frame old = frames.get(binding);
         if (old != null) { if(cacheOrdinal>0)old.entry=cacheOrdinal;pixels.recycle(); return old; }
-        while (frames.size() >= MAX_ENTRIES || bytes + size > MAX_BYTES) {
+        while (frames.size() >= maximumEntries() || bytes + size > maximumBytes()) {
             String victim=null;int worst=-1;
             for(Map.Entry<String,Frame> entry:frames.entrySet()){
                 if(entry.getValue().pins!=0)continue;
@@ -111,11 +122,14 @@ final class PodVideoKeyframes implements AutoCloseable {
             // The window orders the current and recently passed sources before
             // far speculation. A late far frame cannot evict those neighbours.
             if(victim==null||window!=null&&worst<priority(binding))break;
-            Frame removed=frames.remove(victim);bytes-=removed.pixels.getAllocationByteCount();trace(removed,3);removed.pixels.recycle();
+            Frame removed=frames.remove(victim);bytes-=removed.pixels.getAllocationByteCount();trace(removed,3);removed.recycle();
         }
-        if (frames.size() >= MAX_ENTRIES || bytes + size > MAX_BYTES) { pixels.recycle(); return null; }
-        pixels.prepareToDraw();
-        Frame frame = new Frame(pixels);frame.entry=cacheOrdinal;frames.put(binding, frame);bytes += size;trace(frame,1);
+        if (frames.size() >= maximumEntries() || bytes + size > maximumBytes()) { pixels.recycle(); return null; }
+        AutoCloseable memory=PodMediaMemoryAccounting.reserveResource(this,0,PodVideoCodecGate.OTHER,PodMediaMemoryBudget.Kind.KEYFRAME,size*2);
+        if(memory==null){pixels.recycle();return null;}
+        try{pixels.prepareToDraw();}catch(RuntimeException|OutOfMemoryError unavailable){pixels.recycle();PodMediaMemoryAccounting.close(memory);return null;}
+        PodMediaMemoryAccounting.commitResource(memory);
+        Frame frame = new Frame(pixels,memory);frame.entry=cacheOrdinal;frames.put(binding, frame);bytes += size;trace(frame,1);
         if(persist&&stored!=null)stored.accept(binding,frame);return frame;
     }
     private int priority(String binding){
@@ -125,7 +139,7 @@ final class PodVideoKeyframes implements AutoCloseable {
     }
     synchronized void trim() {
         Iterator<Frame> iterator = frames.values().iterator();
-        while (iterator.hasNext()) { Frame frame = iterator.next(); if (frame.pins == 0) { bytes -= frame.pixels.getAllocationByteCount(); iterator.remove();trace(frame,4);frame.pixels.recycle(); } }
+        while (iterator.hasNext()) { Frame frame = iterator.next(); if (frame.pins == 0) { bytes -= frame.pixels.getAllocationByteCount(); iterator.remove();trace(frame,4);frame.recycle(); } }
     }
     @Override public void close() { closed=true; trim(); }
 }

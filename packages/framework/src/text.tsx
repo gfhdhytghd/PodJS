@@ -1,3 +1,4 @@
+import {processMemoryBudgetBytes,onMemoryTrim,memoryPressureLevel} from './memory.ts';
 import {createTextureUploader} from './texture-upload.ts';
 export {prepareTextLayout,type TextLayoutSnapshot,type TextLayoutSliceOptions,type TextLayoutSliceStats} from "./text-layout.ts";
 import {createEffect,createRenderEffect,createMemo,createSignal,onCleanup,untrack,type JSX} from "solid-js";
@@ -25,14 +26,16 @@ interface Entry {
 }
 export interface SystemTextCache {close():void;stats():{retained:number;retainedBytes:number;entries:number}}
 interface PrefetchLease {bytes:number;release:()=>void}
-interface TextCacheState {id:number;closed:boolean;maxEntries:number;maxBytes:number;members:Set<Entry>;idle:Set<Entry>;prefetches:Set<PrefetchLease>}
+interface TextCacheState {nextParagraphId:number;paragraphs:Map<string,number>;id:number;closed:boolean;maxEntries:number;maxBytes:number;members:Set<Entry>;idle:Set<Entry>;prefetches:Set<PrefetchLease>}
 const textCaches=new WeakMap<SystemTextCache,TextCacheState>();let nextCacheId=1;
 /** A component-scoped bitmap history; active owners keep their ordinary leases. */
 export function createSystemTextCache(options:{maxEntries?:number;maxBytes?:number}={}):SystemTextCache {
- const maxEntries=options.maxEntries??24,maxBytes=options.maxBytes??8*1024*1024;
+ const limited=processMemoryBudgetBytes()>0;
+ const maxEntries=options.maxEntries??(limited?8:24),maxBytes=options.maxBytes??(limited?1_000_000:8*1024*1024);
  if(!Number.isSafeInteger(maxEntries)||maxEntries<0||!Number.isSafeInteger(maxBytes)||maxBytes<0)throw new RangeError("Invalid system text cache bounds");
- const state:TextCacheState={id:nextCacheId++,closed:false,maxEntries,maxBytes,members:new Set(),idle:new Set(),prefetches:new Set()};
- const cache:SystemTextCache={close(){if(state.closed)return;state.closed=true;for(const lease of [...state.prefetches])lease.release();for(const entry of [...state.idle])discard(entry);},stats(){return {retained:state.idle.size,retainedBytes:[...state.idle].reduce((sum,e)=>sum+e.width*e.height*4,0),entries:state.members.size};}};
+ const state:TextCacheState={nextParagraphId:1,paragraphs:new Map(),id:nextCacheId++,closed:false,maxEntries,maxBytes,members:new Set(),idle:new Set(),prefetches:new Set()};
+ const untrim=onMemoryTrim(2,level=>{if(level>0){state.paragraphs.clear();for(const lease of [...state.prefetches])lease.release();for(const entry of [...state.idle])discard(entry);}});
+ const cache:SystemTextCache={close(){if(state.closed)return;state.closed=true;untrim();state.paragraphs.clear();for(const lease of [...state.prefetches])lease.release();for(const entry of [...state.idle])discard(entry);},stats(){return {retained:state.idle.size,retainedBytes:[...state.idle].reduce((sum,e)=>sum+e.width*e.height*4,0),entries:state.members.size};}};
  textCaches.set(cache,state);return cache;
 }
 function discard(entry:Entry):void {
@@ -40,7 +43,7 @@ function discard(entry:Entry):void {
  if(entry.handle>=0){const handle=entry.handle;entry.handle=-1;try{textures.release(handle);}catch{console.warn("SystemTextLine","free failed");}}
 }
 function retain(entry:Entry):boolean {
- const cache=entry.cache;if(!cache||cache.closed||entry.handle<0||!entry.succeeded||cache.maxEntries===0)return false;
+ const cache=entry.cache;if(memoryPressureLevel()>0||!cache||cache.closed||entry.handle<0||!entry.succeeded||cache.maxEntries===0)return false;
  cache.idle.delete(entry);cache.idle.add(entry);
  trimIdle(cache);
  return !entry.cancelled;
@@ -137,6 +140,15 @@ function pump(){
   void load(entry).finally(()=>{active--;if(background)activeBackground--;pump();});
  }
 }
+function lineKey(options:SystemTextLineOptions,owner?:SystemTextCache):string {
+ const cache=owner?textCaches.get(owner):undefined;
+ if(!cache||!options.paragraph)return JSON.stringify(options);
+ const input=options.paragraph as TextParagraphLine&{toJSON?:()=>TextParagraphLine};
+ const paragraph=typeof input.toJSON==='function'?input.toJSON():input;
+ let id=cache.paragraphs.get(paragraph.text);
+ if(id===undefined){id=cache.nextParagraphId++;cache.paragraphs.set(paragraph.text,id);if(cache.paragraphs.size>32)cache.paragraphs.delete(cache.paragraphs.keys().next().value!);}
+ return JSON.stringify({...options,paragraph:{...paragraph,text:id}});
+}
 function newEntry(options:SystemTextLineOptions,key:string,cache:TextCacheState|undefined,background:boolean):Entry {
  const entry:Entry={id:nextEntryId++,key,options,refs:0,cancelled:false,started:false,handle:-1,width:0,height:0,carets:[],listeners:new Set(),stage:"queued",succeeded:false,cache,background};
  entries.set(key,entry);cache?.members.add(entry);queue.push(entry);return entry;
@@ -146,9 +158,10 @@ function newEntry(options:SystemTextLineOptions,key:string,cache:TextCacheState|
  * byte/entry limits. Cancel drains late files without publishing an image. */
 export function prefetchSystemTextLines(options:readonly SystemTextLineOptions[],owner:SystemTextCache):()=>void {
  const cache=textCaches.get(owner);if(!cache||cache.closed)throw new Error("System text cache is closed");
+ if(memoryPressureLevel()>0)return ()=>{};
  const leases:PrefetchLease[]=[];
  for(const input of options){
-  const key="cache:"+cache.id+":"+JSON.stringify(input),known=entries.get(key);
+  const key="cache:"+cache.id+":"+lineKey(input,owner),known=entries.get(key);
   if(known){if(cache.idle.delete(known))cache.idle.add(known);continue;}
   if(!Number.isInteger(input.widthPx)||!Number.isInteger(input.heightPx)||input.widthPx<1||input.heightPx<1||input.widthPx>512||input.heightPx>512)continue;
   const extent=(n:number)=>2**Math.ceil(Math.log2(n)),bytes=extent(input.widthPx)*extent(input.heightPx)*4;
@@ -164,7 +177,7 @@ export function prefetchSystemTextLines(options:readonly SystemTextLineOptions[]
  pump();return()=>{for(const lease of leases)lease.release();};
 }
 export function bindSystemTextLine(options:SystemTextLineOptions,node:NodeMirror,ready:(value:{width:number;height:number;carets:number[]})=>void,cache?:SystemTextCache):()=>void{
- return bindSystemTextLineKey(options,node,ready,JSON.stringify(options),cache);
+ return bindSystemTextLineKey(options,node,ready,lineKey(options,cache),cache);
 }
 function bindSystemTextLineKey(options:SystemTextLineOptions,node:NodeMirror,ready:(value:{width:number;height:number;carets:number[]})=>void,key:string,owner?:SystemTextCache):()=>void{
  const cache=owner?textCaches.get(owner):undefined;if(owner&&(!cache||cache.closed))throw new Error("System text cache is closed");
@@ -198,7 +211,7 @@ export function SystemTextLine(props:{options:SystemTextLineOptions;pixelScale:n
   insertNode(root,fallback);insert(fallback,()=>props.fallback);
  }
  const node=createElement("image");setProp(node,"accessibilityHidden",true);setProp(node,"class","absolute left-[0] top-[0]");insertNode(root,node);
- const requestKey=createMemo(()=>JSON.stringify(props.options));
+ const requestKey=createMemo(()=>lineKey(props.options,props.cache));
  createEffect(()=>{
   const key=requestKey(),scale=props.pixelScale,options=untrack(()=>({...props.options})),onCarets=props.onCarets,cache=props.cache;
   setTexture(undefined);onCarets?.(undefined);

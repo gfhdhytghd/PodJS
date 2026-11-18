@@ -104,6 +104,8 @@ public final class WindowedWorkQueueTest {
         check(!q.yielded("old",id),"old collision replaced successor");check(CloudWorkerOutcome.code("private arbitrary error").equals("unknown_outcome"),"raw code leaked");
         for(String code:CloudWorkerOutcome.CODES)check(!code.contains(" "),"invalid closed code");
         check(CloudWorkerOutcome.decide("deadline_exceeded","failure",0)==CloudWorkerOutcome.Decision.RETRY,"hard deadline lost retry");
+        check(CloudWorkerOutcome.code("memory_budget_deferred").equals("memory_budget_deferred"),"memory deferral diagnostic missing");
+        check(CloudWorkerOutcome.decide("memory_budget_deferred","retry",99)==CloudWorkerOutcome.Decision.RETRY,"memory pressure lost persistent continuation");
         System.out.println("CONCURRENT_PERIODIC_MANUAL_PASS active_writer/already_running/yielded success; queue counters retained; genuine failures retained");
     }
     static void deadlineWindows()throws Exception{

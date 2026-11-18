@@ -80,7 +80,8 @@ pub fn run(source: &str, options: Options<'_>, cancel: Cancellation) -> RunResul
 
 pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellation, services: Option<Services>) -> RunResult {
     let started = Instant::now();
-    let finish = |status, code| RunResult { status, code, progress: None, retry_class: None, elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64 };
+    let memory_denials=crate::memory_budget::denial_count();
+    let finish = |status, code| {let (status,code)=if status==Status::Failure&&crate::memory_budget::denial_count()>memory_denials{(Status::Retry,"memory_budget_deferred")}else{(status,code)};RunResult { status, code, progress: None, retry_class: None, elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64 }};
     let cloud=services.as_ref().is_some_and(|s| s.allowed_methods.contains("cloud.host") || s.allowed_methods.contains("debug.cloudHost"));
     if !valid_id(options.app_id) || !valid_id(options.task_id) || !(1..=if cloud {300_000} else {30_000}).contains(&options.budget_ms)
         || !(4*1024*1024..=if cloud {256*1024*1024} else {32*1024*1024}).contains(&options.memory_bytes) || source.len() > 1024*1024 || options.payload_json.len() > 64*1024 {
@@ -92,7 +93,7 @@ pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellatio
     drop(running); let _guard = ActiveRun(options.app_id.to_owned());
     let deadline = started + Duration::from_millis(options.budget_ms);
     if let Some(code) = stop_code(&cancel,deadline) { return finish(Status::Failure,code); }
-    let Ok(runtime) = Runtime::new() else { return finish(Status::Failure,"runtime_unavailable"); };
+    let Ok(runtime) = (if crate::memory_budget::limit()==0 {Runtime::new()} else {Runtime::new_with_alloc(crate::memory_budget::ProcessAllocator::background())}) else { return finish(Status::Failure,"runtime_unavailable"); };
     runtime.set_memory_limit(options.memory_bytes);
     runtime.set_max_stack_size(256*1024);
     let service_cancel = Cancellation::default();
@@ -101,7 +102,7 @@ pub fn run_with_services(source: &str, options: Options<'_>, cancel: Cancellatio
     let interrupt_cancel = cancel.clone();let interrupt_trace=trace.clone();
     runtime.set_interrupt_handler(Some(Box::new(move || {if let Some(trace)=&interrupt_trace{trace.sample();}stop_code(&interrupt_cancel,deadline).is_some()})));
     let Ok(context) = Context::full(&runtime) else { return finish(Status::Failure,"context_unavailable"); };
-    let collection_limit = pocket_mod::CollectionLimit::new(options.memory_bytes);
+    let collection_limit = pocket_mod::CollectionLimit::new(if crate::memory_budget::limit()>0{options.memory_bytes.min(12_000_000)}else{options.memory_bytes});
     let evaluated: Result<(Status,Option<bool>,Option<&'static str>), &'static str> = context.with(|ctx| collection_limit.run_turn(&ctx, || {
         let pending: Rc<RefCell<Vec<Pending<'_>>>> = Rc::new(RefCell::new(Vec::new()));
         let _clear_pending=ClearPending(pending.clone());

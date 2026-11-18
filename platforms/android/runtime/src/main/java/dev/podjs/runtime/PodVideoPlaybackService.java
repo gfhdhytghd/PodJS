@@ -38,6 +38,7 @@ public final class PodVideoPlaybackService extends MediaSessionService {
     void cancelAdmissionRecovery(){if(admissionRetry!=null){admissionRetry.close();admissionRetry=null;}}
     private PodMediaAudioPolicy audioPolicy;
     private PodVideoAudioStop audioStop;
+    private AutoCloseable bufferCharge;
     PodVideoAudioStop audioStop() { return audioStop; }
     PodMediaAudioPolicy audioPolicy() { return audioPolicy; }
     private final android.os.Binder localBinder = new LocalBinder();
@@ -49,12 +50,16 @@ public final class PodVideoPlaybackService extends MediaSessionService {
         NotificationManager manager=(NotificationManager)getSystemService(NOTIFICATION_SERVICE);
         manager.createNotificationChannel(new NotificationChannel("pod_video","Video playback",NotificationManager.IMPORTANCE_LOW));
         DefaultLoadControl loadControl=new DefaultLoadControl.Builder()
-            .setTargetBufferBytes(PodVideoSessionServices.TARGET_BUFFER_BYTES)
+            .setTargetBufferBytes(PodVideoSessionServices.targetBufferBytes())
+            .setPrioritizeTimeOverSizeThresholds(PodProcessMemoryBudget.limit()==0)
             .setBufferDurationsMs(1_000,4_000,100,250)
             .build();
+        bufferCharge=PodMediaMemoryAccounting.reserveResource(this,0,PodVideoCodecGate.CURRENT,PodMediaMemoryBudget.Kind.COMPRESSED_BUFFER,PodVideoSessionServices.targetBufferBytes()+256*1024L);
+        if(bufferCharge==null){stopSelf();return;}
         long createStarted=android.os.SystemClock.elapsedRealtime();
         audioStop=new PodVideoAudioStop();
         player=new ExoPlayer.Builder(this,audioStop.renderers(this)).setLoadControl(loadControl).build();
+        player.addListener(new androidx.media3.common.Player.Listener(){@Override public void onPlaybackStateChanged(int state){if(state==androidx.media3.common.Player.STATE_READY)PodMediaMemoryAccounting.commitResource(bufferCharge);}});
         android.util.Log.i("PodVideoTiming","playerCreated durationMs="+(android.os.SystemClock.elapsedRealtime()-createStarted));
         audioPolicy=new PodMediaAudioPolicy(this, player);
         audioPolicy.observeMuteChanges(player::isPlaying, player::getVolume, new PodVideoMuteTelemetry());
@@ -69,6 +74,6 @@ public final class PodVideoPlaybackService extends MediaSessionService {
         super.onStartCommand(intent,flags,id);
         return Service.START_NOT_STICKY; }
     @Override public void onTaskRemoved(Intent rootIntent) { if(player==null||!player.getPlayWhenReady()) stopSelf(); }
-    @Override public void onDestroy() { cancelAdmissionRecovery();stopForeground(true);if(audioPolicy!=null)audioPolicy.close();audioPolicy=null;if(session!=null)session.release(); if(player!=null)player.release();observeVideo(null); session=null;player=null;super.onDestroy(); }
+    @Override public void onDestroy() { cancelAdmissionRecovery();stopForeground(true);if(audioPolicy!=null)audioPolicy.close();audioPolicy=null;if(session!=null)session.release(); if(player!=null)player.release();PodMediaMemoryAccounting.close(bufferCharge);bufferCharge=null;observeVideo(null); session=null;player=null;super.onDestroy(); }
     @Override public IBinder onBind(Intent intent) { if (!PodTakeover.ready(this)) return null; if ("dev.podjs.runtime.BIND_VIDEO".equals(intent.getAction())) return localBinder; return super.onBind(intent); }
 }

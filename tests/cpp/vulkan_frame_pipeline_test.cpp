@@ -3,6 +3,7 @@
 // snapshots. This is synchronization regression coverage, not a GPU/WSI
 // performance benchmark.
 #include "render_thread.h"
+#include "process_memory_budget.h"
 #include <condition_variable>
 #include <mutex>
 #include <future>
@@ -1073,6 +1074,23 @@ static void emptyReplacedAndDetachedSnapshotsRecover() {
   assert(renderer.poll(507).completed.back().gpu);
 }
 
+static void cpuFallbackReservesBeforeAllocationAndReleasesOnPause() {
+  auto& budget=podjs_memory::process;
+  budget.configure(128000000);budget.sample(45000000,budget.sampleStart());
+  ANativeWindow window{};
+  RenderThread renderer(&window,32,32,32,32);
+  assert(budget.reserve(podjs_memory::Scratch,6000000));
+  auto before=fallbackCalls.load();
+  assert(renderer.handoff(pinned({999},601),601));awaitPins(0);
+  assert(fallbackCalls==before&&renderer.fallbackCapacityBytes()==0);
+  budget.cancel(podjs_memory::Scratch,6000000);
+  gatePresent();assert(renderer.handoff(pinned({999},602),602));awaitPresent();
+  assert(fallbackCalls==before+1&&renderer.fallbackCapacityBytes()==renderer.rasterBytes());
+  assert(budget.resident(podjs_memory::Scratch)==renderer.rasterBytes());
+  releasePresent();renderer.setPaused(true);
+  assert(renderer.fallbackCapacityBytes()==0&&budget.resident(podjs_memory::Scratch)==0);
+}
+
 int main() {
   emptyReplacedAndDetachedSnapshotsRecover();
   unchangedSnapshotAfterPauseIsPresented();
@@ -1084,6 +1102,7 @@ int main() {
   boundedThreadHandoffAndLifecycle();
   capMax = 2; // The surface is permitted to clamp minImageCount + 1.
   twoPendingFramesKeepBuffersAndTexturesAlive();
+  cpuFallbackReservesBeforeAllocationAndReleasesOnPause();
   std::puts("vulkan_frame_pipeline_test: all synchronization scenarios passed "
             "(host mock)");
 }

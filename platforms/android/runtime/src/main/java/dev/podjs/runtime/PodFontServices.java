@@ -12,7 +12,7 @@ import org.json.JSONObject;
 /** File and packaged asset fonts shared by measurement and line rasterization. */
 final class PodFontServices {
     private static final LinkedHashMap<Object,Typeface> cache=new LinkedHashMap<Object,Typeface>(32,.75f,true){
-        @Override protected boolean removeEldestEntry(Map.Entry<Object,Typeface> entry){return size()>32;}
+        @Override protected boolean removeEldestEntry(Map.Entry<Object,Typeface> entry){return size()>(PodProcessMemoryBudget.limit()>0?8:32);}
     };
     private static final class AssetKey {
         final AssetManager manager;final String options;

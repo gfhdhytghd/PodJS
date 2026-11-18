@@ -1,4 +1,6 @@
 #include "gpu_draw_list.h"
+#include "process_memory_budget.h"
+#include <new>
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -24,6 +26,15 @@ constexpr uint32_t RECT = 1, GRAD_RECT = 2, GLYPH_RUN = 3, TEX_QUAD = 4,
                    SCISSOR = 5, SCISSOR_POP = 6, TRI = 7, TEX_TRI = 8,
                    ROUNDED_CLIP = 11, GLYPH_RUN_XFORM = 12, GLYPH_RUN_F32 = 13, TEX_QUAD_F32 = 14;
 constexpr size_t kMaxFlattenedRoundedClips = 65536;
+// Shared immutable CPU copies stay charged until cache and in-flight frames die.
+std::shared_ptr<std::vector<uint8_t>> pixelsWithBudget(size_t bytes) {
+  using namespace podjs_memory;
+  if(!process.reserve(Scratch,bytes)) return {};
+  auto* data=new(std::nothrow) std::vector<uint8_t>(bytes);
+  if(!data){process.cancel(Scratch,bytes);return {};}
+  const auto generation=process.commit(Scratch,bytes);
+  return {data,[bytes,generation](std::vector<uint8_t>* p){delete p;process.release(Scratch,bytes,generation);}};
+}
 GpuClip intersect(GpuClip a, GpuClip b) {
   return {std::max(a.x0, b.x0), std::max(a.y0, b.y0), std::min(a.x1, b.x1),
           std::min(a.y1, b.y1)};
@@ -72,7 +83,8 @@ bool copyImage(GpuResourceSource runtime, uint32_t slot, GpuImage *out,
   if (v.pixel_format == 5 &&
       (v.byte_length < count || !v.palette || v.palette_length < 1024))
     return bad(nullptr, error, "truncated indexed texture");
-  auto pixels = std::make_shared<std::vector<uint8_t>>(count * 4);
+  auto pixels = pixelsWithBudget(count * 4);
+  if(!pixels)return bad(nullptr,error,"memory_budget_deferred");
   for (size_t n = 0; n < count; n++) {
     uint32_t r = 0, g = 0, b = 0, a = 255;
     if (v.pixel_format == 0) {
@@ -156,7 +168,7 @@ void GpuDecodeCache::pruneStale(GpuResourceSource runtime) {
     PodTextureView current{};
     const auto handle = static_cast<int32_t>(static_cast<uint32_t>(entry.stableKey));
     return runtime.texture( handle, &current) != 0 ||
-           current.revision != entry.revision;
+           current.revision != entry.revision || (podjs_memory::process.limit()>0&&entry.rgba.use_count()==1);
   }), entries_.end());
 }
 
@@ -232,7 +244,7 @@ bool GpuDecodeCache::getGlyph(GpuResourceSource runtime, uint32_t slot,
     for(auto &p:pages_)if(p.image.slot==slot&&p.epoch==epoch&&p.cellW==width&&p.cellH==height&&p.glyphs.size()<16)page=&p;
     if(!page) {
       const size_t bytes=size_t(width+2)*4*(height+2)*4*4;
-      constexpr size_t budget=16*1024*1024;
+      const size_t budget=podjs_memory::process.limit()>0?2000000:16*1024*1024;
       auto used=[&](){size_t n=0;for(const auto &p:pages_) n+=p.image.rgba->size();return n;};
       while(used()+bytes>budget) {
         auto victim = pages_.end();
@@ -246,14 +258,17 @@ bool GpuDecodeCache::getGlyph(GpuResourceSource runtime, uint32_t slot,
       Page fresh{};fresh.epoch=epoch;fresh.cellW=width;fresh.cellH=height;
       fresh.image.slot=slot;fresh.image.width=(width+2)*4;fresh.image.height=(height+2)*4;
       fresh.image.rasterDensity=density;fresh.image.coverage=true;fresh.image.stableKey=(1ull<<62)|nextPage_++;
-      fresh.image.rgba=std::make_shared<std::vector<uint8_t>>(bytes,0);
+      fresh.image.rgba=pixelsWithBudget(bytes);
+      if(!fresh.image.rgba)return bad(nullptr,error,"memory_budget_deferred");
       pages_.push_back(std::move(fresh));page=&pages_.back();
     }
     // Copy-on-write keeps the previous submitted frame immutable. Replicated
     // edge texels preserve single-cell clamp/bilinear sampling at UV 0 and 1.
     auto pixels=page->image.rgba.use_count()==1
         ? std::const_pointer_cast<std::vector<uint8_t>>(page->image.rgba)
-        : std::make_shared<std::vector<uint8_t>>(*page->image.rgba);
+        : pixelsWithBudget(page->image.rgba->size());
+    if(!pixels)return bad(nullptr,error,"memory_budget_deferred");
+    if(pixels.get()!=page->image.rgba.get())std::copy(page->image.rgba->begin(),page->image.rgba->end(),pixels->begin());
     const size_t index=page->glyphs.size();const uint32_t x=uint32_t(index%4)*(width+2),y=uint32_t(index/4)*(height+2);
     for(uint32_t row=0;row<height+2;++row) for(uint32_t col=0;col<width+2;++col) {
       const uint32_t sx=std::min(width-1,col?col-1:0),sy=std::min(height-1,row?row-1:0);
@@ -281,7 +296,8 @@ bool GpuDecodeCache::getGlyph(GpuResourceSource runtime, uint32_t slot,
   fresh.stableKey = key;
   fresh.revision = 0;
   auto pixels =
-      std::make_shared<std::vector<uint8_t>>(size_t(width) * height * 4);
+      pixelsWithBudget(size_t(width) * height * 4);
+  if(!pixels)return bad(nullptr,error,"memory_budget_deferred");
   for (size_t n = 0; n < size_t(width) * height; ++n) {
     (*pixels)[n * 4] = 255;
     (*pixels)[n * 4 + 1] = 255;

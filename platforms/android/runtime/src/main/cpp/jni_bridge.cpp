@@ -1,3 +1,5 @@
+#include <malloc.h>
+#include "process_memory_budget.h"
 #include <jni.h>
 #include <android/native_window_jni.h>
 #include <android/log.h>
@@ -902,3 +904,24 @@ extern "C" JNIEXPORT jbyteArray JNICALL Java_dev_podjs_runtime_PodSyncFileReceiv
  if(!reply){fail(env,"Missing binary file reply");return nullptr;}
  auto size=jsize(std::strlen(reply));auto result=env->NewByteArray(size);if(result)env->SetByteArrayRegion(result,0,size,reinterpret_cast<const jbyte*>(reply));return result;
 }
+extern "C" void pod_runtime_memory_budget(size_t,uint64_t(*)(uint32_t,size_t,uint32_t,uint64_t));
+extern "C" uint64_t processBudgetAllocation(uint32_t owner,size_t bytes,uint32_t action,uint64_t generation){return podjs_memory::allocation(owner,bytes,action,generation);}
+extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget_nativeConfigure(JNIEnv*,jclass,jlong bytes){podjs_memory::process.configure(bytes);pod_runtime_memory_budget(bytes,processBudgetAllocation);}
+extern "C" JNIEXPORT jlong JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget_nativeSampleStart(JNIEnv*,jclass){return podjs_memory::process.sampleStart();}
+extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget_nativeSample(JNIEnv*,jclass,jlong bytes,jlong generation){podjs_memory::process.sample(bytes,generation);}
+extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget_nativePressure(JNIEnv*,jclass){return podjs_memory::process.takePressure();}
+extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget_nativeReserve(JNIEnv*,jclass,jint owner,jlong bytes){return bytes>=0&&podjs_memory::process.reserve(owner,bytes);}
+extern "C" JNIEXPORT jlong JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget_nativeCommit(JNIEnv*,jclass,jint owner,jlong bytes){return podjs_memory::process.commit(owner,bytes);}
+extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget_nativeCancel(JNIEnv*,jclass,jint owner,jlong bytes){podjs_memory::process.cancel(owner,bytes);}
+extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget_nativeRelease(JNIEnv*,jclass,jint owner,jlong bytes,jlong generation){podjs_memory::process.release(owner,bytes,generation);}
+
+extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget_nativePurge(JNIEnv*,jclass){mallopt(M_PURGE,0);}
+extern "C" JNIEXPORT jlong JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget_nativeUpper(JNIEnv*,jclass){return podjs_memory::process.upper();}
+
+extern "C" JNIEXPORT jstring JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget_nativeResidents(JNIEnv* env,jclass){
+  std::string out;for(uint32_t owner=0;owner<podjs_memory::OwnerCount;++owner){out+="owner"+std::to_string(owner)+"="+std::to_string(podjs_memory::process.resident(owner))+" ";}
+  return env->NewStringUTF(out.c_str());
+}
+
+extern "C" JNIEXPORT jlong JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget_nativeJsAvailable(JNIEnv*,jclass){return podjs_memory::process.available(podjs_memory::QuickJs);}
+extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget_nativeReserveOptionalMedia(JNIEnv*,jclass,jlong bytes){return bytes>=0&&podjs_memory::process.reserve(podjs_memory::Media,bytes,false,true);}

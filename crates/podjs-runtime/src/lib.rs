@@ -17,6 +17,7 @@ pub mod sync_state_ffi;
 pub mod sync_message_ffi;
 pub mod sync_file_wire;
 pub mod background;
+mod memory_budget;
 pub mod background_ffi;
 pub mod kv;
 pub mod accessibility_ffi;
@@ -229,6 +230,7 @@ pub struct PodRuntimePerfStats {
 #[derive(Default)]
 struct PodBridge {
     bytes: byte_bridge::ByteBridge,
+    texture_memory: BTreeMap<i32,std::sync::Arc<memory_budget::Lease>>,
     events: VecDeque<String>,
     service_results_only: bool,
     effects: VecDeque<String>,
@@ -282,6 +284,7 @@ impl HttpTransport for HostTransport {
 pub struct PodRuntime {
     last_glyph:Option<std::sync::Arc<[u8]>>,
     guest: Guest,
+    collection_limit:pocket_mod::CollectionLimit,
     surface: UiSurface,
     fs: Rc<RefCell<FsModule>>,
     net: NetSurface<HostTransport>,
@@ -409,7 +412,11 @@ impl Drop for RemoveTextureFile {
 // guest directories. This synchronous bridge consumes exactly those outputs,
 // deletes them on every accepted-path outcome, and never exposes their bytes to
 // QuickJS or the JSON service lane.
+#[cfg(test)]
 fn upload_texture_file(surface: &UiSurface, root: &Path, relative: &str, width: i32, height: i32, psm: i32) -> i32 {
+    upload_texture_file_budgeted(surface,root,relative,width,height,psm,None)
+}
+fn upload_texture_file_budgeted(surface:&UiSurface,root:&Path,relative:&str,width:i32,height:i32,psm:i32,bridge:Option<&Rc<RefCell<PodBridge>>>)->i32 {
     let Some(path) = texture_file_path(root, relative) else { return -1; };
     let _cleanup = RemoveTextureFile(path.clone());
     let valid_dimension = |value: i32| value > 0 && value <= 512 && value & (value - 1) == 0;
@@ -434,9 +441,18 @@ fn upload_texture_file(surface: &UiSurface, root: &Path, relative: &str, width: 
     let Ok(mut file) = options.open(&path) else { return -1; };
     let Ok(metadata) = file.metadata() else { return -1; };
     if !metadata.is_file() || metadata.len() != expected as u64 { return -1; }
-    let mut bytes = vec![0; expected];
+    let Some(mut scratch)=memory_budget::Lease::reserve(4,expected) else{return -2};
+    let mut bytes = vec![0; expected];scratch.commit();
     if file.read_exact(&mut bytes).is_err() { return -1; }
-    surface.with_ui(|ui| ui.upload_texture(&bytes, width as u32, height as u32, psm as u32))
+    budget_upload_texture(surface,bridge,&bytes,width,height,psm,0)
+}
+fn budget_upload_texture(surface:&UiSurface,bridge:Option<&Rc<RefCell<PodBridge>>>,bytes:&[u8],width:i32,height:i32,psm:i32,sampling:i32)->i32 {
+    let Some(mut lease)=memory_budget::Lease::reserve(1,bytes.len()) else{return -2};
+    if sampling!=0&&sampling!=1{return -1}
+    let flags=if sampling==1{spec::img::FLAG_LINEAR}else{0};
+    let handle=surface.with_ui(|ui|ui.upload_texture_flags(bytes,width as u32,height as u32,psm as u32,flags));
+    if handle>=0 && memory_budget::limit()>0 {if let Some(bridge)=bridge {lease.commit();bridge.borrow_mut().texture_memory.insert(handle,std::sync::Arc::new(lease));}}
+    handle
 }
 
 fn mount_pod(
@@ -447,6 +463,23 @@ fn mount_pod(
     guest_files_root: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     guest.mount("pod", |ctx, ns| {
+        ns.set("memoryBudgetBytes", Function::new(ctx.clone(), || memory_budget::limit() as f64)?)?;
+        // Override only pixel-buffer ownership; the PocketJS scene API is unchanged.
+        if memory_budget::limit()>0 {if let Ok(ui)=ctx.globals().get::<_,rquickjs::Object>("ui") {
+            let target=surface.clone();let owner=bridge.clone();
+            ui.set("uploadTexture",Function::new(ctx.clone(),move |pixels:TypedArray<u8>,w:i32,h:i32,psm:i32|{
+                pixels.as_bytes().map(|bytes|budget_upload_texture(&target,Some(&owner),bytes,w,h,psm,0)).unwrap_or(-1)
+            })?)?;
+            let target=surface.clone();let owner=bridge.clone();
+            ui.set("uploadTextureSampled",Function::new(ctx.clone(),move |pixels:TypedArray<u8>,w:i32,h:i32,psm:i32,sampling:i32|{
+                pixels.as_bytes().map(|bytes|budget_upload_texture(&target,Some(&owner),bytes,w,h,psm,sampling)).unwrap_or(-1)
+            })?)?;
+            let target=surface.clone();let owner=bridge.clone();
+            ui.set("freeTexture",Function::new(ctx.clone(),move |handle:i32|{
+                target.with_ui(|ui|ui.free_texture(handle));owner.borrow_mut().texture_memory.remove(&handle);
+            })?)?;
+        }}
+
         byte_codecs::mount(ctx.clone(), &ns)?;
         html::mount(ctx.clone(), &ns)?;
         html_preview::mount(ctx.clone(), &ns)?;
@@ -465,9 +498,9 @@ fn mount_pod(
                     None => Ok(None),
                 }
             })?)?;
-            let upload_surface = surface.clone();
+            let upload_surface = surface.clone();let upload_bridge=bridge.clone();
             ns.set("uploadTextureFile", Function::new(ctx.clone(), move |relative: String, width: i32, height: i32, psm: i32| {
-                upload_texture_file(&upload_surface, &root, &relative, width, height, psm)
+                upload_texture_file_budgeted(&upload_surface, &root, &relative, width, height, psm,Some(&upload_bridge))
             })?)?;
         }
         ns.set("fontMetrics", Function::new(ctx.clone(), move |slot: f64| {
@@ -700,7 +733,7 @@ pub extern "C" fn pod_runtime_create(config: *const PodRuntimeConfig) -> *mut Po
         set_error("capabilities_json must be a JSON string array");
         return std::ptr::null_mut();
     };
-    let guest = match Guest::new() {
+    let guest = match if memory_budget::limit()==0 {Guest::new()} else {Guest::new_with_alloc(memory_budget::ProcessAllocator::default())} {
         Ok(value) => value,
         Err(error) => {
             set_error(format!("QuickJS create failed: {error}"));
@@ -743,6 +776,7 @@ pub extern "C" fn pod_runtime_create(config: *const PodRuntimeConfig) -> *mut Po
     }));
     let bridge = Rc::new(RefCell::new(PodBridge {
         bytes: byte_bridge::ByteBridge::default(),
+        texture_memory:BTreeMap::new(),
         events: VecDeque::new(),
         service_results_only: false,
         effects: VecDeque::new(),
@@ -766,6 +800,7 @@ pub extern "C" fn pod_runtime_create(config: *const PodRuntimeConfig) -> *mut Po
     let net = NetSurface::new(transport.clone());
     Box::into_raw(Box::new(PodRuntime {
         guest,
+        collection_limit:pocket_mod::CollectionLimit::new(if memory_budget::limit()>0{24_000_000}else{0}),
         surface,
         last_glyph:None,
         fs,
@@ -1347,6 +1382,19 @@ pub extern "C" fn pod_runtime_set_theme(runtime: *mut PodRuntime, theme: *const 
     OK
 }
 
+fn collect_memory_pressure(guest: &Guest, event: &Value, budget_enabled: bool) {
+    if budget_enabled && event.get("t").and_then(Value::as_str) == Some("memory.pressure")
+        && matches!(event.get("level").and_then(Value::as_u64), Some(1..=3))
+    {
+        // Serialized host boundary, never an allocator callback. Reclaim
+        // unreachable cycles before the next service result needs JS space.
+        // Java coalesces pressure notifications; roots and host FIFO stay live.
+        guest.with(|ctx| unsafe {
+            rquickjs::qjs::JS_RunGC(rquickjs::qjs::JS_GetRuntime(ctx.as_raw().as_ptr()));
+        });
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn pod_runtime_post_event(runtime: *mut PodRuntime, object: *const c_char) -> i32 {
     let Ok(runtime) = runtime_mut(runtime) else {
@@ -1355,9 +1403,11 @@ pub extern "C" fn pod_runtime_post_event(runtime: *mut PodRuntime, object: *cons
     let Some(raw) = cstr(object) else {
         return ERR_ARGUMENT;
     };
-    if raw.len() > 1024 * 1024 || !serde_json::from_str::<Value>(raw).is_ok_and(|v| v.is_object()) {
+    if raw.len() > 1024 * 1024 {
         return ERR_ARGUMENT;
     }
+    let Ok(event) = serde_json::from_str::<Value>(raw) else { return ERR_ARGUMENT; };
+    if !event.is_object() { return ERR_ARGUMENT; }
     let mut bridge = runtime.bridge.borrow_mut();
     if bridge.events.len() >= 256
         || bridge.events.iter().map(String::len).sum::<usize>() + raw.len() > 4 * 1024 * 1024
@@ -1366,6 +1416,8 @@ pub extern "C" fn pod_runtime_post_event(runtime: *mut PodRuntime, object: *cons
         return ERR_STATE;
     }
     bridge.events.push_back(raw.to_owned());
+    drop(bridge);
+    collect_memory_pressure(&runtime.guest, &event, memory_budget::limit() > 0);
     OK
 }
 
@@ -1516,6 +1568,7 @@ pub extern "C" fn pod_runtime_frame(runtime: *mut PodRuntime, input: *const PodI
         input.analog
     };
     let guest_began = Instant::now();
+    runtime.guest.with(|ctx|runtime.collection_limit.run_turn(&ctx,||()));
     if let Err(error) =
         runtime
             .guest
@@ -1526,6 +1579,7 @@ pub extern "C" fn pod_runtime_frame(runtime: *mut PodRuntime, input: *const PodI
         set_error(format!("guest frame failed: {error}"));
         return ERR_GUEST;
     }
+    runtime.guest.with(|ctx|runtime.collection_limit.run_turn(&ctx,||()));
     runtime.guest_micros = guest_began.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
     let surface_began = Instant::now();
     runtime.surface.tick();
@@ -1786,6 +1840,7 @@ pub extern "C" fn pod_runtime_update_rgba(runtime: *mut PodRuntime, handle: i32,
 pub extern "C" fn pod_runtime_free_texture(runtime: *mut PodRuntime, handle: i32) -> i32 {
     let Ok(runtime) = runtime_mut(runtime) else { return ERR_ARGUMENT; };
     runtime.surface.with_ui(|ui| ui.free_texture(handle));
+    runtime.bridge.borrow_mut().texture_memory.remove(&handle);
     OK
 }
 
@@ -3188,6 +3243,7 @@ mod tests {
             unsafe { CStr::from_ptr(pod_runtime_last_error()) }.to_string_lossy()
         );
         assert!(!texture.exists());
+        assert!(unsafe { &*runtime }.bridge.borrow().texture_memory.is_empty(),"legacy file uploads must not retain zero-byte budget tokens");
         let effect: Value =
             serde_json::from_str(cstr(pod_runtime_poll_effect(runtime)).unwrap()).unwrap();
         let handle = effect["handle"].as_i64().unwrap() as i32;
@@ -3197,12 +3253,41 @@ mod tests {
                 .with_ui(|ui| ui.texture(handle).map(|value| value.pixels.to_vec())),
             Some(pixels.to_vec())
         );
+        // Exercise host-side release of an ownership token as well as the
+        // guest freeTexture wrapper. Snapshots, when present, keep their Arc.
+        let owner=std::sync::Arc::new(memory_budget::Lease::reserve(1,pixels.len()).unwrap());
+        let released=std::sync::Arc::downgrade(&owner);
+        unsafe { &*runtime }.bridge.borrow_mut().texture_memory.insert(handle,owner);
         assert_eq!(pod_runtime_free_texture(runtime, handle), OK);
+        assert!(released.upgrade().is_none(),"host release must drop the final unpinned budget token");
         assert!(unsafe { &*runtime }
             .surface
             .with_ui(|ui| ui.texture(handle).is_none()));
         pod_runtime_destroy(runtime);
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn process_pressure_collects_cycles_without_discarding_guest_roots() {
+        let guest = Guest::new().unwrap();
+        guest.with(|ctx| unsafe {
+            rquickjs::qjs::JS_SetGCThreshold(rquickjs::qjs::JS_GetRuntime(ctx.as_raw().as_ptr()), usize::MAX as _);
+        });
+        guest.eval("cycles", "globalThis.keep={value:42};for(let i=0;i<2000;i++){let cycle={payload:'x'.repeat(1024)};cycle.self=cycle;}").unwrap();
+        let before = guest.memory_usage().memory_used_size;
+        for (enabled, event) in [
+            (false, json!({"t":"memory.pressure","level":2})),
+            (true, json!({"t":"memory.pressure","level":0})),
+            (true, json!({"t":"memory.pressure","level":4})),
+            (true, json!({"t":"memory.pressure","level":"2"})),
+            (true, json!({"t":"other","level":2})),
+        ] {
+            collect_memory_pressure(&guest, &event, enabled);
+            assert_eq!(guest.memory_usage().memory_used_size, before);
+        }
+        collect_memory_pressure(&guest, &json!({"t":"memory.pressure","level":2}), true);
+        assert!(guest.memory_usage().memory_used_size < before / 2);
+        guest.eval("root", "if(keep.value!==42)throw Error('lost root');").unwrap();
     }
 
     #[test]

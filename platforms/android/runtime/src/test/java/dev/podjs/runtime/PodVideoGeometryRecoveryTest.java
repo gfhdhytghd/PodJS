@@ -123,9 +123,9 @@ public class PodVideoGeometryRecoveryTest {
   try(Fixture f=new Fixture()){
    Object s=f.slot("current",false);String key="r2-frame-"+System.nanoTime();JSONObject source=new JSONObject().put("url","fixture.mp4");f.set(s,"frameSource",source);
    JSONObject args=new JSONObject().put("sessionId","current").put("key",key).put("source",source).put("sourceGeneration",f.get(s,"generation"));
-   assertNotNull(f.command("captureFrame",args).error);assertEquals(0,f.texture(s).readbacks);
+   Reply before=f.command("captureFrame",args);assertNull(before.error);assertFalse(before.value.getBoolean("available"));assertEquals(0,f.texture(s).readbacks);
    f.invoke(s,"confirmGeometry");idle(PodVideoSessionServices.GEOMETRY_WAIT_MAX_MS);
-   assertTrue(f.expired(s));assertFalse(f.ready(s));assertNotNull(f.command("captureFrame",args).error);assertEquals(0,f.texture(s).readbacks);
+   assertTrue(f.expired(s));assertFalse(f.ready(s));Reply expired=f.command("captureFrame",args);assertNull(expired.error);assertFalse(expired.value.getBoolean("available"));assertEquals(0,f.texture(s).readbacks);
    f.invoke(s,"confirmGeometry");assertEquals(1,f.texture(s).commit());assertTrue(f.ready(s));Reply captured=f.command("captureFrame",args);
    CountDownLatch drained=new CountDownLatch(1);PodVideoFrameCache.IO.execute(drained::countDown);assertTrue(drained.await(3,TimeUnit.SECONDS));idle(0);
    assertNull(captured.error);assertNotNull(captured.value);assertTrue(captured.value.getBoolean("available"));assertEquals(1,f.texture(s).readbacks);

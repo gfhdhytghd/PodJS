@@ -34,6 +34,10 @@ export function registerShellCommands(handlers:Record<string,ShellHandler>):()=>
 export const shellDiagnostics=()=>hostOperation<ShellDiagnostics>('shell.diagnostics',{}).result;
 export interface ShellDiagnostics {
  pssKb:number; decoderInstances:number; decoderLeases:number;
+ /** Current local PSS plus missing system-reported graphics. The protected
+  * component may be cached by Android; dumpsys remains the acceptance meter. */
+ pssLocalKb?:number;pssGraphicsKb?:number;pssCorrectionKb?:number;
+ pssProtectedQueryAgeMs?:number;pssProtectedMayBeCached?:boolean;
  sql:Record<string,{count:number;queueNs:number;workNs:number;cpuNs:number;failures:number}>;
- videoSessions:{active:number;created:number;released:number};
+ videoSessions:{active:number;created:number;released:number;mediaMemory?:Partial<Record<"VIDEO_CODEC"|"AUDIO_CODEC"|"RETRIEVER"|"COMPRESSED_BUFFER"|"SURFACE"|"KEYFRAME"|"FRAME_CAPTURE",{estimatedBytes:number;allocations:number}>>};
 }

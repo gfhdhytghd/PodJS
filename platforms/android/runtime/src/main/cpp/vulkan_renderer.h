@@ -31,6 +31,7 @@ class VulkanRenderer {
   }
   size_t rasterBytes() const { return size_t{rasterWidth_} * rasterHeight_ * 4; }
   bool drain();
+  void trimMemory();
   // Presentation can be discarded while paused even when guest words are unchanged.
   void invalidateContent() { lastHash_ = 0; }
   void replaceWindow(ANativeWindow* window, uint32_t width, uint32_t height);
@@ -91,6 +92,7 @@ class VulkanRenderer {
     uint64_t key{};
     uint64_t revision{};
     uint64_t lastUsedFrame{};
+    uint64_t budgetBytes{},budgetGeneration{};
     uint32_t slot{};
     uint32_t width{};
     uint32_t height{};
@@ -112,6 +114,7 @@ class VulkanRenderer {
     VkDeviceMemory stagingMemory{};
     VkDeviceSize stagingCapacity{};
     void *stagingMapped{};
+    uint64_t stagingBudget{},stagingGeneration{},rasterBudget{},rasterGeneration{},clipBudget{},clipGeneration{};
     VkBuffer clipBuffer{};
     VkDeviceMemory clipMemory{};
     void *clipMapped{};

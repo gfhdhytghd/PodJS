@@ -6,7 +6,7 @@ MediaPlayer container conservatively reserves one video slot because it may
 contain video. These values are not a count of all audio/video MediaCodec objects.
 
 Memory accounting must use `observe(LifecycleListener)` and the same immutable
-`Allocation` through its reserved and released events. Subscription replays live
+`Allocation` through its reserved, created and released events. Subscription replays live
 allocations before subsequent events. Unsubscription is idempotent.
 
 - `id` uniquely identifies a reservation, including failed construction.
@@ -18,6 +18,10 @@ allocations before subsequent events. Unsubscription is idempotent.
 - `priority` describes admission time, not the current player role. Consumers
   must request `requestReclaim(keep, priority)`, which uses the main looper and
   rechecks the owner's current role. `CURRENT` and `keep` are always protected.
+- `created` acknowledges successful codec construction/start. Reservations remain
+  pending until this event, including when the factory spans PSS observations.
+  The default no-op method preserves existing observers. Replay includes created
+  only for allocations which have completed construction.
 - `released` means the underlying codec/retriever release completed, or a failed
   construction rolled back its reservation. It is not emitted on logical
   session retirement or when a release is merely requested.

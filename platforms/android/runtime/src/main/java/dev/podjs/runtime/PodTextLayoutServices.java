@@ -10,9 +10,14 @@ final class PodTextLayoutServices {
     static JSONObject layout(JSONObject args,CancellationSignal cancellation)throws Exception{return layout(null,args,cancellation,null);}
     static JSONObject layout(Context context,JSONObject args,CancellationSignal cancellation)throws Exception{return layout(context,args,cancellation,null);}
     static JSONObject layout(Context context,JSONObject args,CancellationSignal cancellation,PodParagraphLayout.Cache cache)throws Exception{
+        Object text=args.opt("text");if(!(text instanceof String))throw new IllegalArgumentException("invalid text");
+        PodProcessMemoryBudget.Lease lease=PodProcessMemoryBudget.reserve(PodProcessMemoryBudget.TEXT,131072+256L*(((String)text).length()+1));
+        if(lease==null)throw new IllegalStateException("memory_budget_deferred");
+        try(PodProcessMemoryBudget.Lease memory=lease){lease.commit();
         PodParagraphLayout.Prepared prepared=PodParagraphLayout.obtain(context,args,cancellation,cache);StaticLayout layout=prepared.layout;JSONArray lines=new JSONArray();
         for(int i=0;i<layout.getLineCount();i++){cancellation.throwIfCanceled();lines.put(new JSONObject().put("start",layout.getLineStart(i)).put("end",layout.getLineEnd(i)).put("visibleEnd",layout.getLineVisibleEnd(i)).put("topPx",layout.getLineTop(i)).put("bottomPx",prepared.bottom(i)).put("baselinePx",prepared.baseline(i)));}
         return new JSONObject().put("lines",lines);
+        }
     }
     /** Bounded batch keeps one host round trip while preserving per-paragraph failures. */
     static JSONObject layoutBatch(Context context,JSONObject args,CancellationSignal cancellation,PodParagraphLayout.Cache cache)throws Exception{

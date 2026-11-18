@@ -66,6 +66,7 @@ public final class PodVideoServices implements AutoCloseable {
     private PodBenchmark.VideoAction benchmarkAction;
     private boolean benchmarkFramePending;
     private TextureView videoView;
+    private AutoCloseable surfaceCharge;
     private View videoBackground;
     private boolean opaqueBackdrop;
     private ViewGroup parent;
@@ -123,6 +124,7 @@ public final class PodVideoServices implements AutoCloseable {
             parent = host;
             if (videoView == null) {
                 videoView = new PodObservedTextureView(context, texture -> {
+                    PodMediaMemoryAccounting.commitResource(surfaceCharge);
                     if(benchmarkFramePending&&benchmarkAction!=null&&hasRenderedFirstFrame&&boundsVisible&&videoView.getAlpha()>0){
                         PodBenchmark.VideoAction action=benchmarkAction;final int own=prepareSequence;benchmarkFramePending=false;
                         PodBenchmark.watchVideo(videoView,action,()->prepareSequence==own&&boundsVisible&&hasRenderedFirstFrame&&videoView.getTranslationY()==0);
@@ -193,6 +195,7 @@ public final class PodVideoServices implements AutoCloseable {
         String url = videoUrl.isEmpty() || audioUrl.isEmpty() ? source(a, "url") : sourceValue(videoUrl);
         if (!audioUrl.isEmpty()) audioUrl = sourceValue(audioUrl);
         if (!videoUrl.isEmpty()) videoUrl = sourceValue(videoUrl);
+        if(!ensureSurfaceMemory()){cb.fail("decoder_admission_deferred","Video surface budget deferred");return;}
         if (prepareCallback != null) { prepareCallback.fail("cancelled", "Video preparation replaced"); prepareCallback=null; }
         releasePlayer();
         PodVideoCodecGate.PROCESS.reclaim(this,PodVideoCodecGate.PREWARM);
@@ -330,13 +333,27 @@ public final class PodVideoServices implements AutoCloseable {
     private void pause(JSONObject args,Callback c) throws Exception { if(admissionRetry!=null)admissionRetry.suspend();mediaGate(args.optBoolean("handoff",false)&&!lifecyclePaused); if(player==null){c.complete(state());return;} if(audioStop!=null)audioStop.arm(args,prepareSequence);player.pause();PodBenchmark.playerPaused(args,player.getPlayWhenReady(),prepareSequence); if(videoView!=null)videoView.setKeepScreenOn(false); state="paused"; c.complete(state()); }
     private void seek(JSONObject a, Callback c) throws Exception { require(); long p=a.optLong("positionMs", -1); if(p<0) throw new IllegalArgumentException("invalid_position"); player.seekTo(p); c.complete(state()); }
     private void stop(Callback c) throws Exception { releasePlayer(); clearBackdrop(); state="stopped"; if(videoView!=null){videoView.setVisibility(View.GONE);videoView.setKeepScreenOn(false);} c.complete(state()); }
-    private void bounds(JSONObject b, Callback c) throws Exception { applyBounds(b);progressObserver.run();PodBenchmark.VideoAction action=PodBenchmark.videoAction(b);if(action!=null&&hasRenderedFirstFrame&&videoView!=null&&videoView.getTranslationY()==0){final int own=prepareSequence;PodBenchmark.present(videoView,action.event("snap_back"),()->prepareSequence==own&&boundsVisible&&hasRenderedFirstFrame&&videoView.getTranslationY()==0);}c.complete(state()); }
+    boolean ensureSurfaceMemory(){
+        if(surfaceCharge!=null)return true;
+        android.util.DisplayMetrics screen=context.getResources().getDisplayMetrics();
+        surfaceCharge=PodMediaMemoryAccounting.reserveResource(this,0,PodVideoCodecGate.CURRENT,PodMediaMemoryBudget.Kind.SURFACE,Math.max(1L,(long)screen.widthPixels*screen.heightPixels)*12);
+        return surfaceCharge!=null;
+    }
+    private void bounds(JSONObject b, Callback c) throws Exception { if(b!=null&&b.optBoolean("visible",true)&&b.optDouble("width",0)>0&&b.optDouble("height",0)>0&&!ensureSurfaceMemory()){c.fail("decoder_admission_deferred","Video surface budget deferred");return;}applyBounds(b);progressObserver.run();PodBenchmark.VideoAction action=PodBenchmark.videoAction(b);if(action!=null&&hasRenderedFirstFrame&&videoView!=null&&videoView.getTranslationY()==0){final int own=prepareSequence;PodBenchmark.present(videoView,action.event("snap_back"),()->prepareSequence==own&&boundsVisible&&hasRenderedFirstFrame&&videoView.getTranslationY()==0);}c.complete(state()); }
     private void captureFrame(JSONObject args,Callback callback)throws Exception {
         String key=PodVideoFrameCache.key(args),binding=PodVideoFrameCache.binding(args.getJSONObject("source"),mediaPrefixCache);
-        if(!binding.equals(PodVideoFrameCache.binding(frameSource,mediaPrefixCache)))throw new IllegalStateException("frame_source_changed");
-        Bitmap frame=PodVideoFrameCache.capture(videoView,hasRenderedFirstFrame,prepareSequence,args);long own=prepareSequence,position=player==null?0:player.getCurrentPosition();
-        try{PodVideoFrameCache.IO.execute(()->{try{JSONObject result=new PodVideoFrameCache(mediaRoot).save(key,binding,own,position,frame);main.post(()->callback.complete(result));}catch(Exception error){main.post(()->callback.fail("frame_unavailable","Frame snapshot unavailable"));}finally{frame.recycle();}});}catch(java.util.concurrent.RejectedExecutionException busy){frame.recycle();throw new IllegalStateException("frame_queue_busy");}
+        if(player==null||!hasRenderedFirstFrame||prepareSequence!=args.optLong("sourceGeneration",-1)||!binding.equals(PodVideoFrameCache.binding(frameSource,mediaPrefixCache))){callback.complete(new JSONObject().put("available",false));return;}
+        AutoCloseable memory=PodMediaMemoryAccounting.reserveResource(this,prepareSequence,PodVideoCodecGate.OTHER,PodMediaMemoryBudget.Kind.FRAME_CAPTURE,PodVideoFrameCache.CAPTURE_PROMISE_BYTES);
+        if(memory==null){callback.complete(new JSONObject().put("available",false));return;}
+        Bitmap frame;
+        try{frame=PodVideoFrameCache.capture(videoView,true,prepareSequence,args);PodMediaMemoryAccounting.commitResource(memory);}
+        catch(Exception|OutOfMemoryError unavailable){PodMediaMemoryAccounting.close(memory);callback.complete(new JSONObject().put("available",false));return;}
+        JSONObject absent=new JSONObject().put("available",false);
+        long own=prepareSequence,position=player.getCurrentPosition();
+        try{PodVideoFrameCache.IO.execute(()->{try{JSONObject result=new PodVideoFrameCache(mediaRoot).save(key,binding,own,position,frame);main.post(()->callback.complete(result));}catch(Exception|OutOfMemoryError error){main.post(()->callback.complete(absent));}finally{frame.recycle();PodMediaMemoryAccounting.close(memory);}});}
+        catch(java.util.concurrent.RejectedExecutionException busy){frame.recycle();PodMediaMemoryAccounting.close(memory);callback.complete(new JSONObject().put("available",false));}
     }
+
     private void restoreFrame(JSONObject args,Callback callback)throws Exception {
         String key=PodVideoFrameCache.key(args),binding=PodVideoFrameCache.binding(args.getJSONObject("source"),mediaPrefixCache);
         PodVideoFrameCache.IO.execute(()->{try{JSONObject result=new PodVideoFrameCache(mediaRoot).restore(key,binding);main.post(()->callback.complete(result));}catch(Exception error){main.post(()->callback.fail("frame_unavailable","Frame snapshot unavailable"));}});
@@ -450,6 +467,6 @@ public final class PodVideoServices implements AutoCloseable {
         if(prepareCallback!=null){Callback pending=prepareCallback;prepareCallback=null;pending.fail("cancelled","Video preparation cancelled");}
     }
     private void releasePlayer(){if(player!=null&&analytics!=null)analytics.retired(prepareSequence,player.getCurrentPosition(),player.getDuration(),player.getPlaybackState()==Player.STATE_ENDED);mediaGate(false);detachPlayer(false);if(videoView!=null)videoView.setKeepScreenOn(false);}
-    @Override public void close(){closed=true;mediaGate(false);main.post(()->{detachPlayer(backgroundPlayback&&player!=null&&prepareCallback==null&&player.getPlayWhenReady());if(videoView!=null&&videoView.getParent() instanceof ViewGroup)((ViewGroup)videoView.getParent()).removeView(videoView);if(videoView!=null)videoView.setKeepScreenOn(false);videoView=null;if(videoBackground!=null&&videoBackground.getParent() instanceof ViewGroup)((ViewGroup)videoBackground.getParent()).removeView(videoBackground);videoBackground=null;clearBackdrop();if(backdrop!=null&&backdrop.getParent() instanceof ViewGroup)((ViewGroup)backdrop.getParent()).removeView(backdrop);backdrop=null;parent=null;state="idle";});}
+    @Override public void close(){closed=true;mediaGate(false);main.post(()->{detachPlayer(backgroundPlayback&&player!=null&&prepareCallback==null&&player.getPlayWhenReady());if(videoView!=null&&videoView.getParent() instanceof ViewGroup)((ViewGroup)videoView.getParent()).removeView(videoView);if(videoView!=null)videoView.setKeepScreenOn(false);videoView=null;PodMediaMemoryAccounting.close(surfaceCharge);surfaceCharge=null;if(videoBackground!=null&&videoBackground.getParent() instanceof ViewGroup)((ViewGroup)videoBackground.getParent()).removeView(videoBackground);videoBackground=null;clearBackdrop();if(backdrop!=null&&backdrop.getParent() instanceof ViewGroup)((ViewGroup)backdrop.getParent()).removeView(backdrop);backdrop=null;parent=null;state="idle";});}
     private static String errorCode(Exception e){return e instanceof PodVideoShortEdge.Rejected?PodVideoShortEdge.ERROR:e instanceof SecurityException?"permission_denied":e instanceof IllegalArgumentException?"invalid_argument":"video_decoder_limit".equals(e.getMessage())?"resource_exhausted":"video_error";}
 }

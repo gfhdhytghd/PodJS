@@ -152,6 +152,7 @@ async function build(target: Target, project?: ResolvedPodProject, diagnosticJsS
   const bundleHash = fnv1a64(readFileSync(js));
   const manifest = {
     schema: 1,
+    ...(project?.config.memoryBudgetMb === undefined ? {} : {memoryBudgetBytes: project.config.memoryBudgetMb * 1_000_000}),
     target: profile.id,
     hostAbi: systemFonts ? 4 : project?.config.resources?.glyphCache ? 3 : profile.hostAbi,
     logicalViewport: profile.logicalViewport,

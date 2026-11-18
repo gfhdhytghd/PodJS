@@ -27,7 +27,7 @@ final class PodParagraphLayout {
         final LinkedHashMap<Key,Prepared> entries=new LinkedHashMap<>(16,.75f,true);
         int units;long builds;
         void clear(){entries.clear();units=0;}
-        void put(Key key,Prepared value){while(!entries.isEmpty()&&(entries.size()>=32||units+value.text.length()>262144)){Map.Entry<Key,Prepared> oldest=entries.entrySet().iterator().next();units-=oldest.getValue().text.length();entries.remove(oldest.getKey());}entries.put(key,value);units+=value.text.length();builds++;}
+        void put(Key key,Prepared value){if(PodProcessMemoryBudget.limit()>0&&value.text.length()>65536)return;while(!entries.isEmpty()&&(entries.size()>=(PodProcessMemoryBudget.limit()>0?8:32)||units+value.text.length()>(PodProcessMemoryBudget.limit()>0?65536:262144))){Map.Entry<Key,Prepared> oldest=entries.entrySet().iterator().next();units-=oldest.getValue().text.length();entries.remove(oldest.getKey());}entries.put(key,value);units+=value.text.length();builds++;}
     }
     static TextPaint paint(Context context,JSONObject args)throws Exception{
         int weight=args.has("fontWeight")?(int)number(args,"fontWeight",1,1000,true):400;

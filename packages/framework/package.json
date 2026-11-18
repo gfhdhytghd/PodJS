@@ -119,7 +119,8 @@
     "./sql-authenticated-cache": "./src/sql-authenticated-cache.ts",
     "./chunked-aead": "./src/chunked-aead.ts",
     "./shell": "./src/shell.ts",
-    "./shell-error": "./src/shell-error.ts"
+    "./shell-error": "./src/shell-error.ts",
+    "./memory": "./src/memory.ts"
   },
   "dependencies": {
     "@pocketjs/framework": "file:../../vendor/pocketjs",

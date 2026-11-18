@@ -48,6 +48,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
 
     static final int MAX_SESSIONS = 3;
     static final int TARGET_BUFFER_BYTES = 4 * 1024 * 1024;
+    static int targetBufferBytes(){return PodProcessMemoryBudget.limit()>0?1024*1024:TARGET_BUFFER_BYTES;}
     static final long PREWARM_TIMEOUT_MS = 2_500L;
     static final long PREWARM_MAX_LIFETIME_MS = 10_000L;
     static final long GEOMETRY_WAIT_MAX_MS = 1_000L;
@@ -76,7 +77,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     private ViewGroup parent;
     private boolean closed;
     private long shellCreated,shellReleased;
-    JSONObject shellCounters() throws Exception {return new JSONObject().put("active",sessions.size()).put("created",shellCreated).put("released",shellReleased);}
+    JSONObject shellCounters() throws Exception {return new JSONObject().put("active",sessions.size()).put("created",shellCreated).put("released",shellReleased).put("mediaMemory",PodMediaMemoryAccounting.stats());}
     private boolean lifecyclePaused;
     private int lastMemoryLimit=MAX_SESSIONS;
     private long lastSystemHeadroom;
@@ -84,6 +85,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     private float density;
     private PodVideoDecoderCapabilities.Profile lastProfile;
     private PodVideoDecoderCapabilities.Result lastCapability;
+    private Runnable unsubscribeMemory=()->{};
 
     PodVideoSessionServices(Context context, PodVideoDecoderBudget decoderBudget) {
         this(context,decoderBudget,null);
@@ -100,6 +102,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         catch (Exception error) { throw new IllegalStateException("service_root_unavailable", error); }
         density = this.context.getResources().getDisplayMetrics().density;
         this.context.registerComponentCallbacks(this);
+        unsubscribeMemory=PodProcessMemoryBudget.observe(level->{if(level>0)main.post(()->{if(!closed)keyframes.trim();});});
     }
 
     @Override public void onConfigurationChanged(Configuration configuration) {}
@@ -140,7 +143,12 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             if (closed || host == null) return;
             parent = host;
             density = context.getResources().getDisplayMetrics().density;
-            for (Session session : sessions.values()) session.attachViews(host);
+            for (Session session : sessions.values())try{session.attachViews(host);}catch(RuntimeException unavailable){
+                if(!PodVideoCodecGate.isAdmissionDenied(unavailable))throw unavailable;
+                // Keep authorized playback and its source while the UI waits
+                // for another attach/resume after memory recovery.
+                android.util.Log.i("PodMediaMemory","surface_admission_deferred");
+            }
         });
     }
 
@@ -352,6 +360,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             if (session.videoView != null && session.videoView.getParent() instanceof ViewGroup)
                 ((ViewGroup) session.videoView.getParent()).removeView(session.videoView);
             session.videoView = null;
+            PodMediaMemoryAccounting.close(session.surfaceCharge);session.surfaceCharge=null;
             session.attachViews(parent);
         }
         if (!decoderBudget.acquire()) {
@@ -387,12 +396,15 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         if(!session.keyframeOnly && args.optLong("resumePositionMs",0)==0)session.revealKeyframe();
 
         DefaultLoadControl loadControl = new DefaultLoadControl.Builder()
-                .setTargetBufferBytes(session.keyframeOnly?256*1024:TARGET_BUFFER_BYTES)
+                .setTargetBufferBytes(session.keyframeOnly?256*1024:targetBufferBytes())
                 .setBufferDurationsMs(session.keyframeOnly?250:1_000, session.keyframeOnly?500:4_000, 100, 250)
+                .setPrioritizeTimeOverSizeThresholds(PodProcessMemoryBudget.limit()==0)
                 .build();
         ExoPlayer player;
         try {
             final Session audioSession=session;
+            session.bufferCharge=PodMediaMemoryAccounting.reserveResource(session,generation,sessionPriority(session),PodMediaMemoryBudget.Kind.COMPRESSED_BUFFER,(session.keyframeOnly?256*1024:targetBufferBytes())+256*1024L);
+            if(session.bufferCharge==null)throw new IllegalStateException("memory_budget_deferred",new PodVideoCodecGate.ByteAdmissionDenied(sessionPriority(session)));
             PodVideoCodecGate.PROCESS.register(session,()->sessionPriority(audioSession),audioSession::reclaimDecoder);
             session.audioStop=new PodVideoAudioStop();
             player = new ExoPlayer.Builder(context,session.audioStop.renderers(context,"session_"+audioSession.id,audioSession,()->generation,()->sessionPriority(audioSession))).setLoadControl(loadControl).build();
@@ -523,7 +535,13 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
 
             @Override public void onPlayerError(PlaybackException error) {
                 if (!own.matches(player, generation)) return;
-                if(PodVideoCodecGate.isAdmissionDenied(error)){deferAdmission(own,player,generation,callback);return;}
+                if(PodVideoCodecGate.isAdmissionDenied(error)){
+                    if(PodVideoCodecGate.isByteAdmissionDenied(error)&&own.prewarming){
+                        Callback pending=own.takePrepareCallback();own.resetPlayer();own.state="prewarmed";own.hideOffscreen();
+                        if(pending!=null)pending.fail("decoder_admission_deferred","Optional video prewarm exceeds memory budget");
+                    }else deferAdmission(own,player,generation,callback);
+                    return;
+                }
                 if(!own.prewarming)mediaGate(false);
                 boolean decoderFailure = error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED
                         || error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED
@@ -627,12 +645,21 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     }
 
     private void captureFrame(JSONObject args,Callback callback)throws Exception {
-        Session session=require(args);session.requirePlayer();
         String key=PodVideoFrameCache.key(args),binding=PodVideoFrameCache.binding(args.getJSONObject("source"),mediaPrefixCache);
-        if(session.prewarming||!binding.equals(PodVideoFrameCache.binding(session.frameSource,mediaPrefixCache)))throw new IllegalStateException("frame_source_changed");
-        android.graphics.Bitmap frame=PodVideoFrameCache.capture(session.videoView,session.hasRenderedFirstFrame&&session.geometryReady,session.generation,args);
+        Session session=sessions.get(sessionId(args,"sessionId"));
+        if(session==null||session.player==null||session.prewarming||!session.hasRenderedFirstFrame||!session.geometryReady||session.generation!=args.optLong("sourceGeneration",-1)){
+            callback.complete(new JSONObject().put("available",false));return;
+        }
+        if(!binding.equals(PodVideoFrameCache.binding(session.frameSource,mediaPrefixCache))){callback.complete(new JSONObject().put("available",false));return;}
+        AutoCloseable memory=PodMediaMemoryAccounting.reserveResource(session,session.generation,PodVideoCodecGate.OTHER,PodMediaMemoryBudget.Kind.FRAME_CAPTURE,PodVideoFrameCache.CAPTURE_PROMISE_BYTES);
+        if(memory==null){callback.complete(new JSONObject().put("available",false));return;}
+        android.graphics.Bitmap frame;
+        try{frame=PodVideoFrameCache.capture(session.videoView,true,session.generation,args);PodMediaMemoryAccounting.commitResource(memory);}
+        catch(Exception|OutOfMemoryError unavailable){PodMediaMemoryAccounting.close(memory);callback.complete(new JSONObject().put("available",false));return;}
+        JSONObject absent=new JSONObject().put("available",false);
         long generation=session.generation,position=session.player.getCurrentPosition();
-        try{PodVideoFrameCache.IO.execute(()->{try{JSONObject result=new PodVideoFrameCache(mediaRoot).save(key,binding,generation,position,frame);main.post(()->callback.complete(result));}catch(Exception error){main.post(()->callback.fail("frame_unavailable","Frame snapshot unavailable"));}finally{frame.recycle();}});}catch(java.util.concurrent.RejectedExecutionException busy){frame.recycle();throw new IllegalStateException("frame_queue_busy");}
+        try{PodVideoFrameCache.IO.execute(()->{try{JSONObject result=new PodVideoFrameCache(mediaRoot).save(key,binding,generation,position,frame);main.post(()->callback.complete(result));}catch(Exception|OutOfMemoryError error){main.post(()->callback.complete(absent));}finally{frame.recycle();PodMediaMemoryAccounting.close(memory);}});}
+        catch(java.util.concurrent.RejectedExecutionException busy){frame.recycle();PodMediaMemoryAccounting.close(memory);callback.complete(new JSONObject().put("available",false));}
     }
 
     private void play(JSONObject args, Callback callback) throws Exception {
@@ -1187,6 +1214,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         String frameBinding, decoderName;
         android.widget.ImageView keyframeView;
         PodVideoKeyframes.Frame cachedFrame;
+        AutoCloseable bufferCharge,surfaceCharge;
         Runnable frameCompletionCancel, frameCompletionRetry;
         long frameCompletionRevision;
         PodVideoAnalytics analytics;
@@ -1197,7 +1225,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         long geometryWaitRevision;
         Runnable geometryCommitCancel, geometryDeadline;
 
-        Session(String id) { shellCreated++; this.id = id; attachViews(parent); }
+        Session(String id) { this.id = id; attachViews(parent); shellCreated++; }
 
         void attachViews(ViewGroup host) {
             if (host == null || disposed) return;
@@ -1207,11 +1235,15 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                 background.setVisibility(View.GONE);
             }
             if (videoView == null) {
+                android.util.DisplayMetrics screen=context.getResources().getDisplayMetrics();
+                surfaceCharge=PodMediaMemoryAccounting.reserveResource(this,generation,sessionPriority(this),PodMediaMemoryBudget.Kind.SURFACE,Math.max(1L,(long)screen.widthPixels*screen.heightPixels)*12);
+                if(surfaceCharge==null)throw new IllegalStateException("memory_budget_deferred",new PodVideoCodecGate.ByteAdmissionDenied(sessionPriority(this)));
                 // A retained cached page can replace its TextureView without
                 // changing source generation. Never inherit the old paint fence.
                 cancelFrameCompletion();resetGeometryWait();hasUpdatedFrame=false;
                 videoView = new PodObservedTextureView(context, texture -> {
                     hasUpdatedFrame=true;
+                    PodMediaMemoryAccounting.commitResource(surfaceCharge);
                     // TextureView calls this from draw(). Releasing its layer or
                     // removing an overlay there invalidates the ongoing traversal.
                     long updatedGeneration=generation;
@@ -1258,6 +1290,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         }
 
         void renderedFrame(Callback callback) {
+            PodMediaMemoryAccounting.commitResource(bufferCharge);
             hasRenderedFirstFrame=true;
             confirmGeometry();
             if(!prewarming){PodMediaStartupPreview.mark("videoFirstFrame");android.util.Log.i("PodMediaCache","playback_tracks audio="+(player!=null&&player.getAudioFormat()!=null?1:0)+" video="+(player!=null&&player.getVideoFormat()!=null?1:0)+" local="+(frameSource!=null&&frameSource.optString("url").startsWith("file:")?1:0));}
@@ -1301,6 +1334,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             try{previous.clearVideoTextureView(videoView);}catch(RuntimeException ignored){}
             try{previous.stop();}catch(RuntimeException ignored){}
             previous.release();
+            PodMediaMemoryAccounting.close(bufferCharge);bufferCharge=null;
             if(decoderLease){decoderLease=false;decoderBudget.release();}
             hasRenderedFirstFrame=false;hasUpdatedFrame=false;state="prewarmed";completePrepare();
         }
@@ -1326,6 +1360,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                 previous.release();
                 if(analytics!=null)analytics.retireDecoder();
             }
+            PodMediaMemoryAccounting.close(bufferCharge);bufferCharge=null;
             if (decoderLease) { decoderLease = false; decoderBudget.release(); }
             hasRenderedFirstFrame = false;hasUpdatedFrame=false;resetGeometryWait();
             if (videoView != null) videoView.setKeepScreenOn(false);
@@ -1476,7 +1511,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         }
 
         void showPresented() {
-            if (bounds == null) return;
+            if (bounds == null || videoView == null || background == null) return;
             // A hidden foreground reservation still needs its decoded TextureView.
             if(!bounds.visible){hideOffscreen();return;}
             setTranslation(bounds.translateXPx, bounds.translateYPx);
@@ -1708,6 +1743,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             if (videoView != null && videoView.getParent() instanceof ViewGroup) ((ViewGroup) videoView.getParent()).removeView(videoView);
             if (background != null && background.getParent() instanceof ViewGroup) ((ViewGroup) background.getParent()).removeView(background);
             videoView = null; background = null; bounds = null; profile = null;
+            PodMediaMemoryAccounting.close(surfaceCharge);surfaceCharge=null;
         }
     }
 
@@ -1752,6 +1788,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
 
     @Override public void close() {
         closed = true;
+        unsubscribeMemory.run();
         context.unregisterComponentCallbacks(this);
             mediaGate(false);
         main.post(() -> {

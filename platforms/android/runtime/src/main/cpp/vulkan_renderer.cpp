@@ -1,3 +1,4 @@
+#include "process_memory_budget.h"
 #include "vulkan_renderer.h"
 
 #include <android/log.h>
@@ -14,6 +15,19 @@
 #include "gpu_shaders.h"
 #include "vulkan_gpu.h"
 
+
+static VkResult budgetAllocate(VkDevice device,const VkMemoryAllocateInfo& info,VkDeviceMemory* memory,uint64_t& bytes,uint64_t& generation){
+  if(!podjs_memory::process.reserve(podjs_memory::Graphics,info.allocationSize))return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+  VkResult result=vkAllocateMemory(device,&info,nullptr,memory);
+  if(result==VK_SUCCESS){bytes=info.allocationSize;generation=podjs_memory::process.commit(podjs_memory::Graphics,bytes);}
+  else podjs_memory::process.cancel(podjs_memory::Graphics,info.allocationSize);
+  return result;
+}
+static void budgetFree(VkDevice device,VkDeviceMemory memory,uint64_t& bytes,uint64_t& generation){
+  if(memory)vkFreeMemory(device,memory,nullptr);
+  if(bytes)podjs_memory::process.release(podjs_memory::Graphics,bytes,generation);
+  bytes=0;generation=0;
+}
 namespace {
 constexpr VkFormat kRasterFormat = VK_FORMAT_R8G8B8A8_UNORM;
 constexpr char kLogTag[] = "PodJS";
@@ -220,7 +234,7 @@ bool VulkanRenderer::ensureStagingCapacity(FrameSlot &slot,
   if (slot.stagingBuffer)
     vkDestroyBuffer(device_, slot.stagingBuffer, nullptr);
   if (slot.stagingMemory)
-    vkFreeMemory(device_, slot.stagingMemory, nullptr);
+    budgetFree(device_,slot.stagingMemory,slot.stagingBudget,slot.stagingGeneration);
   slot.stagingBuffer = VK_NULL_HANDLE;
   slot.stagingMemory = VK_NULL_HANDLE;
   slot.stagingCapacity = 0;
@@ -243,7 +257,7 @@ bool VulkanRenderer::ensureStagingCapacity(FrameSlot &slot,
   VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
   allocation.allocationSize = requirements.size;
   allocation.memoryTypeIndex = memoryType;
-  POD_VK(vkAllocateMemory(device_, &allocation, nullptr, &slot.stagingMemory));
+  POD_VK(budgetAllocate(device_, allocation, &slot.stagingMemory,slot.stagingBudget,slot.stagingGeneration));
   POD_VK(
       vkBindBufferMemory(device_, slot.stagingBuffer, slot.stagingMemory, 0));
   POD_VK(vkMapMemory(device_, slot.stagingMemory, 0, required, 0,
@@ -289,7 +303,7 @@ bool VulkanRenderer::createFrameUploadResources(FrameSlot &slot) {
   VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
   allocation.allocationSize = requirements.size;
   allocation.memoryTypeIndex = memoryType;
-  POD_VK(vkAllocateMemory(device_, &allocation, nullptr, &slot.rasterMemory));
+  POD_VK(budgetAllocate(device_, allocation, &slot.rasterMemory,slot.rasterBudget,slot.rasterGeneration));
   POD_VK(vkBindImageMemory(device_, slot.rasterImage, slot.rasterMemory, 0));
 
   VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -332,7 +346,7 @@ bool VulkanRenderer::createFrameClipResources(FrameSlot &slot) {
   VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
   allocation.allocationSize = requirements.size;
   allocation.memoryTypeIndex = memoryType;
-  POD_VK(vkAllocateMemory(device_, &allocation, nullptr, &slot.clipMemory));
+  POD_VK(budgetAllocate(device_, allocation, &slot.clipMemory,slot.clipBudget,slot.clipGeneration));
   POD_VK(vkBindBufferMemory(device_, slot.clipBuffer, slot.clipMemory, 0));
   POD_VK(vkMapMemory(device_, slot.clipMemory, 0, bytes, 0, &slot.clipMapped));
   return true;
@@ -726,7 +740,7 @@ bool VulkanRenderer::createTextureResource(const GpuImage& source, uint64_t key,
   VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
   allocation.allocationSize = requirements.size;
   allocation.memoryTypeIndex = memoryType;
-  result = vkAllocateMemory(device_, &allocation, nullptr, &texture.memory);
+  result = budgetAllocate(device_, allocation, &texture.memory,texture.budgetBytes,texture.budgetGeneration);
   if (result == VK_SUCCESS) {
     result = vkBindImageMemory(device_, texture.image, texture.memory, 0);
   }
@@ -868,6 +882,12 @@ bool VulkanRenderer::prepareImageUploads(
   lastSubmitPerf_.uploadCount = static_cast<uint32_t>(pending.size());
 
   collectRetiredTextures();
+  if(podjs_memory::process.limit()) {
+    for(auto it=textureCache_.begin();it!=textureCache_.end();) {
+      if(!requestedKeys.count(it->first)&&!textureInFlight(it->second)) {destroyTexture(&it->second);it=textureCache_.erase(it);}
+      else ++it;
+    }
+  }
   size_t cachedTextureBytes = 0;
   for (const auto &texture : retiredTextures_)
     cachedTextureBytes += size_t{texture.width} * texture.height * 4;
@@ -1403,7 +1423,7 @@ void VulkanRenderer::destroyTexture(TextureResource* texture) {
       vkFreeDescriptorSets(device_, descriptorPool_, 1, &descriptor);
   if (texture->view) vkDestroyImageView(device_, texture->view, nullptr);
   if (texture->image) vkDestroyImage(device_, texture->image, nullptr);
-  if (texture->memory) vkFreeMemory(device_, texture->memory, nullptr);
+  if (texture->memory) budgetFree(device_,texture->memory,texture->budgetBytes,texture->budgetGeneration);
   *texture = {};
 }
 
@@ -1466,11 +1486,11 @@ void VulkanRenderer::destroyUploadResources() {
     if (slot.rasterImage)
       vkDestroyImage(device_, slot.rasterImage, nullptr);
     if (slot.rasterMemory)
-      vkFreeMemory(device_, slot.rasterMemory, nullptr);
+      budgetFree(device_,slot.rasterMemory,slot.rasterBudget,slot.rasterGeneration);
     if (slot.stagingBuffer)
       vkDestroyBuffer(device_, slot.stagingBuffer, nullptr);
     if (slot.stagingMemory)
-      vkFreeMemory(device_, slot.stagingMemory, nullptr);
+      budgetFree(device_,slot.stagingMemory,slot.stagingBudget,slot.stagingGeneration);
     slot.rasterView = VK_NULL_HANDLE;
     slot.rasterImage = VK_NULL_HANDLE;
     slot.rasterMemory = VK_NULL_HANDLE;
@@ -1488,7 +1508,7 @@ void VulkanRenderer::destroyClipResources() {
     if (slot.clipBuffer)
       vkDestroyBuffer(device_, slot.clipBuffer, nullptr);
     if (slot.clipMemory)
-      vkFreeMemory(device_, slot.clipMemory, nullptr);
+      budgetFree(device_,slot.clipMemory,slot.clipBudget,slot.clipGeneration);
     slot.clipMapped = nullptr;
     slot.clipBuffer = VK_NULL_HANDLE;
     slot.clipMemory = VK_NULL_HANDLE;
@@ -1561,4 +1581,13 @@ VulkanRenderer::MemoryStats VulkanRenderer::memoryStats() const {
   stats.glyphPages = decodeCache_.glyphPageCount();
   stats.glyphPageBytes = decodeCache_.glyphPageBytes();
   return stats;
+}
+
+void VulkanRenderer::trimMemory(){
+  if(!drain())return;
+  for(auto& entry:textureCache_)destroyTexture(&entry.second);
+  textureCache_.clear();collectRetiredTextures();
+  decodeCache_=GpuDecodeCache{};
+  for(auto& slot:frames_){slot.images.clear();slot.images.shrink_to_fit();}
+  lastHash_=0;
 }

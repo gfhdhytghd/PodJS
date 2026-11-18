@@ -122,8 +122,8 @@ public final class PodCloudWorker extends Worker {
                     if(isStopped()){status="stopped";outcomeCode="stopped";if(queuedToken!=null){PodCloudWork.next(context,queuedToken,requestId,false,manualToken==null);return Result.success();}return getRunAttemptCount()<3?Result.retry():Result.failure();}
                     String code=outcome.optString("code"),guestStatus=outcome.optString("status");outcomeCode=CloudWorkerOutcome.code(code);
                     if(CloudWorkerOutcome.benign(code)){status="yielded";PodCloudWork.chargeCpuFor(context,queuedToken,android.os.Process.getElapsedCpuTime()-cpuBegan,false);if(manualToken!=null)PodCloudWork.yielded(context,manualToken,requestId);return Result.success();}
-                    status="deadline_exceeded".equals(code)?"deadline_exceeded":"completed".equals(code)&&"success".equals(guestStatus)?"success":"completed".equals(code)&&"retry".equals(guestStatus)?"retry":"guest_failed";
-                    if(("deadline_exceeded".equals(code)||"completed".equals(code)&&"retry".equals(guestStatus))&&queuedToken!=null){
+                    status="memory_budget_deferred".equals(code)?"retry":"deadline_exceeded".equals(code)?"deadline_exceeded":"completed".equals(code)&&"success".equals(guestStatus)?"success":"completed".equals(code)&&"retry".equals(guestStatus)?"retry":"guest_failed";
+                    if(("memory_budget_deferred".equals(code)||"deadline_exceeded".equals(code)||"completed".equals(code)&&"retry".equals(guestStatus))&&queuedToken!=null){
                         boolean progress="completed".equals(code)&&outcome.optBoolean("progress",false);
                         boolean bounded="completed".equals(code)&&"bounded".equals(outcome.optString("retryClass"));
                         PodCloudWork.chargeCpuFor(context,queuedToken,android.os.Process.getElapsedCpuTime()-cpuBegan,progress);

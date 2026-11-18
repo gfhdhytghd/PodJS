@@ -88,6 +88,18 @@ public class PodVideoAdmissionTest {
         void free(){for(PodVideoCodecGate.Permit permit:permits)permit.close();permits.clear();}
         public void close(){free();service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();assertEquals(0,gate.live());}
     }
+    @Test public void optionalByteRefusalFinishesPrewarmWithoutRetryingOrLearningCapacity()throws Exception {
+        try(Fixture f=new Fixture()){
+            f.deliver(new PodVideoCodecGate.ByteAdmissionDenied(PodVideoCodecGate.PREWARM));
+            assertEquals("decoder_admission_deferred",f.prepare.error);assertNull(f.get("player"));assertNull(f.get("admissionRetry"));f.unchangedCapacity();
+        }
+    }
+    @Test public void byteRefusalDeliveredAfterPromotionKeepsTheSelectedOwner()throws Exception {
+        try(Fixture f=new Fixture()){
+            Object generation=f.get("generation");f.promote();f.deliver(new PodVideoCodecGate.ByteAdmissionDenied(PodVideoCodecGate.PREWARM));
+            f.assertDeferred();assertSame(f.player,f.get("player"));assertEquals(generation,f.get("generation"));
+        }
+    }
     @Test public void deniedWarmPromotedBeforeErrorKeepsCurrentPlayerAndGeneration()throws Exception {
         try(Fixture f=new Fixture()) {
             Throwable denied=f.denial();Object generation=f.get("generation");f.promote();f.deliver(denied);f.assertDeferred();

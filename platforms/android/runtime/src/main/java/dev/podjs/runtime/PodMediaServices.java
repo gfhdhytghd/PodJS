@@ -189,6 +189,7 @@ public final class PodMediaServices implements AutoCloseable {
         });
         player.setOnPreparedListener(mp -> {
             if (closed || player != mp) return;
+            if(containerPermit!=null)containerPermit.created();
             audioState = AUDIO_PLAYING;
             if (!requestFocus()) { audioState = AUDIO_ERROR; pendingAudioCallback = null; callbackSent[0] = true; releasePlayer(); callback.fail("audio_focus_denied", "Audio focus was denied"); return; }
             mp.start();

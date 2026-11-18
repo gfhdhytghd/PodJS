@@ -28,6 +28,7 @@ public final class PodImageServices implements Closeable {
     private static final int MAX_SOURCE_DIMENSION = 65_535;
     private static final long MAX_SOURCE_PIXELS = 400_000_000L;
     private final File root;
+    private final int memoryImageMaximum;
     private final Object decoderLock = new Object();
     private final ArrayDeque<DecoderEntry> idleDecoders = new ArrayDeque<>();
     private long decoderEpoch;
@@ -67,7 +68,7 @@ public final class PodImageServices implements Closeable {
 
     private void returnDecoder(DecoderEntry entry) {
         synchronized(decoderLock) {
-            if(closed||entry.epoch!=decoderEpoch||idleDecoders.size()>=4)entry.decoder.recycle();
+            if(PodProcessMemoryBudget.limit()>0||closed||entry.epoch!=decoderEpoch||idleDecoders.size()>=4)entry.decoder.recycle();
             else idleDecoders.addLast(entry);
         }
     }
@@ -83,6 +84,8 @@ public final class PodImageServices implements Closeable {
 
     public PodImageServices(Context context) {
         if (context == null) throw new IllegalArgumentException("context_required");
+        int edge=Math.max(context.getResources().getDisplayMetrics().widthPixels,context.getResources().getDisplayMetrics().heightPixels);
+        memoryImageMaximum=Math.min(MAX_DIMENSION,Integer.highestOneBit(Math.max(1,edge*2)));
         File files = PodTakeover.filesRoot(context);
         if (!files.exists() && !files.mkdirs()) throw new IllegalStateException("service_root_unavailable");
         try { root = files.getCanonicalFile(); }
@@ -92,9 +95,32 @@ public final class PodImageServices implements Closeable {
     public JSONObject execute(String method, JSONObject args) throws Exception {
         if (closed) throw new IllegalStateException("service_closed");
         if ("image.release".equals(method)) { releaseDecoders(); return new JSONObject(); }
-        if ("image.decodeRegion".equals(method) && args != null) return decodeRegion(args);
+        if ("image.decodeRegion".equals(method) && args != null) return budgeted(args,true);
         if (!"image.decode".equals(method) || args == null) throw new IllegalArgumentException("unsupported_method");
-        return decode(args);
+        return budgeted(args,false);
+    }
+
+    private JSONObject budgeted(JSONObject args,boolean region)throws Exception {
+        if(PodProcessMemoryBudget.limit()==0)return region?decodeRegion(args):decode(args);
+        JSONObject bounded=new JSONObject(args.toString());
+        int requested=args.optInt("maxDimension",MAX_DIMENSION);
+        if(requested<1||requested>MAX_DIMENSION)throw new IllegalArgumentException("invalid_max_dimension");
+        int maximum=Math.min(memoryImageMaximum,requested);
+        if(maximum<1||maximum>MAX_DIMENSION)throw new IllegalArgumentException("invalid_max_dimension");
+        for(;;){
+            long estimate;
+            if(region)estimate=4L*(args.optInt("width",512)/Math.max(1,args.optInt("sampleSize",1))+2)*(args.optInt("height",512)/Math.max(1,args.optInt("sampleSize",1))+2)*3+MAX_DIMENSION*MAX_DIMENSION*4L+65536;
+            else {
+                File source=safeFile(required(args,"path"));BitmapFactory.Options bounds=new BitmapFactory.Options();bounds.inJustDecodeBounds=true;BitmapFactory.decodeFile(source.getPath(),bounds);
+                int sample=1,edge=Math.max(bounds.outWidth,bounds.outHeight);
+                while(sample<edge&&ceilDiv(edge,sample)>maximum)sample<<=1;
+                estimate=8L*ceilDiv(Math.max(1,bounds.outWidth),sample)*ceilDiv(Math.max(1,bounds.outHeight),sample)+4L*maximum*maximum+65536;
+            }
+            PodProcessMemoryBudget.Lease lease=PodProcessMemoryBudget.reserve(PodProcessMemoryBudget.IMAGE,estimate);
+            if(lease!=null){try(PodProcessMemoryBudget.Lease memory=lease){lease.commit();bounded.put("maxDimension",maximum);return (region?decodeRegion(bounded):decode(bounded)).put("memoryMaxDimension",maximum);}}
+            if(region||maximum<=32)throw new IOException("memory_budget_deferred");
+            maximum>>=1;
+        }
     }
 
     private JSONObject decode(JSONObject args) throws Exception {
@@ -118,7 +144,7 @@ public final class PodImageServices implements Closeable {
         // Keep the sampled bitmap below roughly 2x the requested edge, then do
         // one high-quality exact resize. The decoder only receives powers of two.
         while (sample < Math.max(sourceWidth, sourceHeight)
-                && ceilDiv(Math.max(sourceWidth, sourceHeight), sample << 1) >= maximum) sample <<= 1;
+                && (PodProcessMemoryBudget.limit()>0?ceilDiv(Math.max(sourceWidth,sourceHeight),sample)>maximum:ceilDiv(Math.max(sourceWidth, sourceHeight), sample << 1) >= maximum)) sample <<= 1;
         checkSourceBounds(sourceWidth,sourceHeight,sample>1);
         BitmapFactory.Options options = new BitmapFactory.Options();
         options.inSampleSize = sample;
@@ -127,9 +153,10 @@ public final class PodImageServices implements Closeable {
         Bitmap decoded = BitmapFactory.decodeFile(source.getPath(), options);
         if (decoded == null) throw new IOException("unsupported_image");
 
-        Bitmap bitmap = orient(decoded, orientation);
+        Bitmap bitmap = decoded;
         File output = null;
         try {
+            bitmap=orient(decoded,orientation);
             checkInterrupted();
             int width = bitmap.getWidth(), height = bitmap.getHeight();
             double scale = Math.min(1.0, Math.min((double) maximum / width, (double) maximum / height));
@@ -144,8 +171,7 @@ public final class PodImageServices implements Closeable {
             }
             checkInterrupted();
             int finalWidth = bitmap.getWidth(), finalHeight = bitmap.getHeight();
-            int[] pixels = new int[finalWidth * finalHeight];
-            bitmap.getPixels(pixels, 0, finalWidth, 0, 0, finalWidth, finalHeight);
+            int[] pixels = new int[finalWidth];
             File directory = new File(root, "images");
             if (!directory.exists() && !directory.mkdirs()) throw new IOException("parent_unavailable");
             output = new File(directory, "decoded-" + Long.toUnsignedString(System.nanoTime()) + ".rgba").getCanonicalFile();
@@ -153,8 +179,9 @@ public final class PodImageServices implements Closeable {
             try (BufferedOutputStream stream = new BufferedOutputStream(new FileOutputStream(output))) {
                 for (int y = 0; y < finalHeight; y++) {
                     checkInterrupted();
+                    bitmap.getPixels(pixels,0,finalWidth,0,y,finalWidth,1);
                     for (int x = 0; x < finalWidth; x++) {
-                        int pixel = pixels[y * finalWidth + x], offset = x * 4;
+                        int pixel = pixels[x], offset = x * 4;
                         row[offset] = (byte) ((pixel >>> 16) & 0xff);
                         row[offset + 1] = (byte) ((pixel >>> 8) & 0xff);
                         row[offset + 2] = (byte) (pixel & 0xff);
@@ -171,6 +198,7 @@ public final class PodImageServices implements Closeable {
             throw error;
         } finally {
             if (!bitmap.isRecycled()) bitmap.recycle();
+            if (!decoded.isRecycled()) decoded.recycle();
         }
     }
 

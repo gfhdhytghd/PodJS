@@ -79,7 +79,7 @@ final class PodMediaPrefixPreparation {
             if(permit==null)return null;
             MediaMetadataRetriever decoder;try{decoder=new MediaMetadataRetriever();}catch(RuntimeException|Error e){permit.close();throw e;}
             try{
-                decoder.setDataSource(bytes);Bitmap frame=decoder.getScaledFrameAtTime(0,MediaMetadataRetriever.OPTION_CLOSEST_SYNC,320,320);
+                decoder.setDataSource(bytes);Bitmap frame=decoder.getScaledFrameAtTime(0,MediaMetadataRetriever.OPTION_CLOSEST_SYNC,320,320);permit.created();
                 if(gap.get()&&frame!=null){frame.recycle();return null;}
                 return frame;
             }

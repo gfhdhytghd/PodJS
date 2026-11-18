@@ -19,6 +19,7 @@ import java.util.concurrent.Executors;
  * restored picture grants no playback capability or prefix registration. */
 final class PodVideoFrameCache {
     static final int MAX_EDGE=320,MAX_ENTRIES=6;
+    static final long CAPTURE_PROMISE_BYTES=(long)MAX_EDGE*MAX_EDGE*8+400*1024;
     static final ExecutorService IO=new java.util.concurrent.ThreadPoolExecutor(1,1,0L,java.util.concurrent.TimeUnit.MILLISECONDS,new java.util.concurrent.ArrayBlockingQueue<>(4),r->{Thread t=new Thread(r,"PodVideoFrames");t.setDaemon(true);return t;},new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
     private final File root;
     PodVideoFrameCache(File files){root=new File(files,"video-frames");}

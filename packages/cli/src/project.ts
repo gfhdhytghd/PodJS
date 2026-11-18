@@ -45,6 +45,8 @@ export interface AndroidSigning {
 }
 
 export interface PodProjectConfig {
+  /** Whole-process decimal MB; omitted preserves legacy hosts. */
+  memoryBudgetMb?: number;
   entry: string;
   appId: string;
   versionName: string;
@@ -103,6 +105,8 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) invalid("root must be an object");
   const value = raw as Record<string, unknown>;
   const entryValue = stringField(value.entry, "entry");
+  const memoryBudgetMb = value.memoryBudgetMb;
+  if (memoryBudgetMb !== undefined && (!Number.isSafeInteger(memoryBudgetMb) || (memoryBudgetMb as number) < 32 || (memoryBudgetMb as number) > 2048)) invalid("memoryBudgetMb must be an integer from 32 to 2048 decimal MB");
   const appId = stringField(value.appId, "appId");
   if (!APP_ID.test(appId)) invalid("appId must be a valid Android application id");
   const versionName = stringField(value.versionName, "versionName");
@@ -293,5 +297,5 @@ export function resolvePodProject(spec: string, targets: Record<string, PodTarge
       }
     }
   }
-  return { config: { entry: entryValue, appId, versionName, versionCode: value.versionCode as number, name, capabilities, resources, android, background: backgroundConfig, backgroundServices, shellCommands, shellReadOnlyCommands, bytecode }, root, configPath, entry, output: join(defaults.outputRoot, appId), fontRegular, fontBold, fontSlots, extraChars, background, assets, androidResources, androidTheme, androidCleartextTraffic, androidSigning };
+  return { config: { ...(memoryBudgetMb === undefined ? {} : {memoryBudgetMb: memoryBudgetMb as number}), entry: entryValue, appId, versionName, versionCode: value.versionCode as number, name, capabilities, resources, android, background: backgroundConfig, backgroundServices, shellCommands, shellReadOnlyCommands, bytecode }, root, configPath, entry, output: join(defaults.outputRoot, appId), fontRegular, fontBold, fontSlots, extraChars, background, assets, androidResources, androidTheme, androidCleartextTraffic, androidSigning };
 }

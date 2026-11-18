@@ -201,7 +201,7 @@ final class PodMediaLocalStore {
         PodVideoCodecGate.Permit permit=PodVideoCodecGate.PROCESS.acquire(job,job.sourceGeneration,"local_cover",PodVideoCodecGate.OTHER);
         if(permit==null)throw new IOException("video_decoder_limit");
         Bitmap pixels=null;MediaMetadataRetriever decoder;try{decoder=new MediaMetadataRetriever();}catch(RuntimeException|Error e){permit.close();throw e;}
-        try{decoder.setDataSource(part.getAbsolutePath());pixels=decoder.getScaledFrameAtTime(0,MediaMetadataRetriever.OPTION_CLOSEST_SYNC,320,320);}finally{decoder.release();permit.close();}
+        try{decoder.setDataSource(part.getAbsolutePath());pixels=decoder.getScaledFrameAtTime(0,MediaMetadataRetriever.OPTION_CLOSEST_SYNC,320,320);permit.created();}finally{decoder.release();permit.close();}
         if(pixels==null)throw new IOException("complete_frame_missing");
         try{
             PodMediaPrefixCache.backgroundTurn(job);

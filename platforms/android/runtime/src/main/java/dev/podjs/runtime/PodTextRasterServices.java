@@ -56,7 +56,10 @@ final class PodTextRasterServices {
         }
         cancellation.throwIfCanceled();
         int textureWidth=powerOfTwo(width),textureHeight=powerOfTwo(height);
-        Bitmap bitmap=Bitmap.createBitmap(textureWidth,textureHeight,Bitmap.Config.ARGB_8888);File output=null;
+        PodProcessMemoryBudget.Lease memory=PodProcessMemoryBudget.reserve(PodProcessMemoryBudget.TEXT,(long)textureWidth*textureHeight*4+textureWidth*8L);
+        if(memory==null)throw new java.io.IOException("memory_budget_deferred");
+        Bitmap bitmap;
+        try{bitmap=Bitmap.createBitmap(textureWidth,textureHeight,Bitmap.Config.ARGB_8888);memory.commit();}catch(RuntimeException|Error error){memory.close();throw error;}File output=null;
         long trackedBytes=stats==null?0:bitmap.getAllocationByteCount();if(stats!=null)stats.allocate(trackedBytes);
         try {
             Canvas canvas=new Canvas(bitmap);canvas.clipRect(0,0,width,height);canvas.translate(0,baseline-layout.getLineBaseline(sourceLine));layout.draw(canvas);
@@ -80,7 +83,7 @@ final class PodTextRasterServices {
                 carets.put(x);
             }
             return new JSONObject().put("carets",carets).put("path","text/"+output.getName()).put("width",textureWidth).put("height",textureHeight).put("contentWidth",width).put("contentHeight",height);
-        }catch(Exception error){if(output!=null)output.delete();throw error;}finally{bitmap.recycle();if(stats!=null)stats.recycle(trackedBytes);}
+        }catch(Exception error){if(output!=null)output.delete();throw error;}finally{bitmap.recycle();memory.close();if(stats!=null)stats.recycle(trackedBytes);}
     }
     static void discard(Context context,Object value){
         if(!(value instanceof JSONObject))return;

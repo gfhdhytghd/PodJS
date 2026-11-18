@@ -1,3 +1,5 @@
+#include "process_memory_budget.h"
+#include <new>
 #include "render_thread.h"
 #include <android/log.h>
 #include <chrono>
@@ -16,8 +18,23 @@ RenderThread::RenderThread(ANativeWindow* window, uint32_t w, uint32_t h, uint32
     attached_ = window != nullptr;
   });
 }
+bool RenderThread::ensureFallback() {
+  if(fallback_)return true;
+  auto& budget=podjs_memory::process;
+  const bool limited=budget.limit()!=0;
+  if(limited&&!budget.reserve(podjs_memory::Scratch,rasterBytes_))return false;
+  std::unique_ptr<uint8_t[]> pixels(new(std::nothrow) uint8_t[rasterBytes_]);
+  if(!pixels){if(limited)budget.cancel(podjs_memory::Scratch,rasterBytes_);return false;}
+  fallbackGeneration_=limited?budget.commit(podjs_memory::Scratch,rasterBytes_):0;
+  fallback_=std::move(pixels);fallbackCapacity_=rasterBytes_;return true;
+}
+void RenderThread::releaseFallback() {
+  fallback_.reset();fallbackCapacity_=0;
+  if(fallbackGeneration_)podjs_memory::process.release(podjs_memory::Scratch,rasterBytes_,fallbackGeneration_);
+  fallbackGeneration_=0;
+}
 RenderThread::~RenderThread() {
-  control([this] { renderer_.reset(); fallback_.clear(); valid_=false; });
+  control([this] { renderer_.reset(); releaseFallback(); valid_=false; });
   {
     std::lock_guard lock(mutex_);
     stopping_=true;
@@ -76,7 +93,7 @@ void RenderThread::replaceWindow(ANativeWindow* window,uint32_t w,uint32_t h) {
 void RenderThread::setPaused(bool paused) {
   control([this,paused] {
     paused_=paused;
-    if(paused) renderer_->drain();
+    if(paused) {renderer_->drain();if(podjs_memory::process.limit()){releaseFallback();renderer_->trimMemory();}}
     renderer_->invalidateContent();
     valid_=renderer_->valid();
   });
@@ -143,11 +160,9 @@ void RenderThread::run() {
       result.gpu=renderer_->submitDrawList(GpuResourceSource(frame->snapshot.get()),list);
       const auto attempt=renderer_->lastSubmitPerf();
       result.perf=attempt;
-      if(!result.gpu && renderer_->valid()) {
-        fallback_.resize(rasterBytes_);
-        fallbackCapacity_=fallback_.capacity();
-        result.cpu=pod_render_snapshot_rgba(frame->snapshot.get(),VulkanRenderer::kRasterScale,fallback_.data(),fallback_.size())==0 &&
-            renderer_->submitRgba(fallback_.data(),fallback_.size(),list.content_hash);
+      if(!result.gpu && renderer_->valid() && ensureFallback()) {
+        result.cpu=pod_render_snapshot_rgba(frame->snapshot.get(),VulkanRenderer::kRasterScale,fallback_.get(),rasterBytes_)==0 &&
+            renderer_->submitRgba(fallback_.get(),rasterBytes_,list.content_hash);
         if(result.cpu) {
           result.perf=renderer_->lastSubmitPerf();
 #define ADD(field) result.perf.field+=attempt.field

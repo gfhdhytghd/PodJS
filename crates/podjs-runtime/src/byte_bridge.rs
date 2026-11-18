@@ -5,29 +5,44 @@ use std::collections::BTreeMap;
 use std::{cell::RefCell, rc::Rc};
 const MAX_BYTES: usize = 65536;
 const MAX_SLOTS: usize = 64;
+struct OwnedBytes {
+    bytes: Vec<u8>,
+    // This payload bypasses QuickJS's allocator but belongs to its realm.
+    // Move the same token from the attachment table to the external buffer.
+    _memory: crate::memory_budget::Lease,
+}
+impl std::ops::Deref for OwnedBytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] { &self.bytes }
+}
 #[derive(Default)]
 pub(crate) struct ByteBridge {
     enabled: bool,
     next: u32,
-    slots: BTreeMap<u32, Vec<u8>>,
+    slots: BTreeMap<u32, OwnedBytes>,
 }
 impl ByteBridge {
     #[cfg(test)]
     pub(crate) fn is_empty_for_test(&self) -> bool {
         self.slots.is_empty()
     }
-    fn put(&mut self, bytes: Vec<u8>) -> u32 {
+    fn put(&mut self, bytes: &[u8]) -> u32 {
         if bytes.len() > MAX_BYTES || self.slots.len() >= MAX_SLOTS {
             return 0;
         }
         let Some(id) = self.next.checked_add(1).filter(|id| *id <= i32::MAX as u32) else {
             return 0;
         };
+        let Some(mut memory) = crate::memory_budget::Lease::reserve_bulk_js(bytes.len()) else { return 0; };
+        let mut snapshot = Vec::new();
+        if snapshot.try_reserve_exact(bytes.len()).is_err() { return 0; }
+        snapshot.extend_from_slice(bytes);
+        memory.commit();
         self.next = id;
-        self.slots.insert(id, bytes);
+        self.slots.insert(id, OwnedBytes { bytes: snapshot, _memory: memory });
         id
     }
-    fn take(&mut self, id: u32) -> Option<Vec<u8>> {
+    fn take(&mut self, id: u32) -> Option<OwnedBytes> {
         self.slots.remove(&id)
     }
 }
@@ -35,40 +50,37 @@ impl ByteBridge {
 // again on collection, with a null pointer the second time. rquickjs 0.12.2's
 // Vec constructor assumes a non-null pointer. Keep the ownership callback here
 // so detaching a byte reply cannot reconstruct a Vec from null.
-fn owned_array<'js>(ctx: Ctx<'js>, bytes: Vec<u8>) -> rquickjs::Result<TypedArray<'js, u8>> {
+fn owned_array<'js>(ctx: Ctx<'js>, bytes: OwnedBytes) -> rquickjs::Result<TypedArray<'js, u8>> {
     use rquickjs::{ArrayBuffer, Value, qjs};
-    use std::{ffi::c_void, mem::ManuallyDrop};
-    extern "C" fn release(_: *mut qjs::JSRuntime, capacity: *mut c_void, ptr: *mut c_void) {
+    use std::ffi::c_void;
+    extern "C" fn release(_: *mut qjs::JSRuntime, owner: *mut c_void, ptr: *mut c_void) {
         if !ptr.is_null() {
             // SAFETY: the original Vec is relinquished below, and QuickJS calls
             // with its original non-null pointer once; detach clears that pointer.
             unsafe {
-                drop(Vec::from_raw_parts(
-                    ptr.cast::<u8>(),
-                    capacity as usize,
-                    capacity as usize,
-                ));
+                drop(Box::from_raw(owner.cast::<OwnedBytes>()));
             }
         }
     }
-    let mut bytes = ManuallyDrop::new(bytes);
-    let ptr = bytes.as_mut_ptr();
-    let capacity = bytes.capacity();
+    let mut bytes = Box::new(bytes);
+    let ptr = bytes.bytes.as_mut_ptr();
+    let length = bytes.len();
+    let owner = Box::into_raw(bytes);
     // SAFETY: the moved Vec exclusively owns the buffer until release. The
     // failure path in this pinned engine does not invoke the buffer callback.
     let raw = unsafe {
         qjs::JS_NewArrayBuffer(
             ctx.as_raw().as_ptr(),
             ptr,
-            bytes.len() as _,
+            length as _,
             Some(release),
-            capacity as *mut c_void,
+            owner.cast::<c_void>(),
             false,
         )
     };
     if unsafe { qjs::JS_IsException(raw) } {
         unsafe {
-            drop(Vec::from_raw_parts(ptr, capacity, capacity));
+            drop(Box::from_raw(owner));
         }
         return Err(rquickjs::Error::Exception);
     }
@@ -96,7 +108,7 @@ pub(crate) fn install<'js>(
             input
                 .as_bytes()
                 .filter(|v| v.len() <= MAX_BYTES)
-                .map_or(0, |v| b.borrow_mut().bytes.put(v.to_vec()))
+                .map_or(0, |v| b.borrow_mut().bytes.put(v))
         })?,
     )?;
     let b = bridge.clone();
@@ -167,7 +179,7 @@ pub unsafe extern "C" fn pod_runtime_bytes_put(
     r.bridge
         .borrow_mut()
         .bytes
-        .put(unsafe { std::slice::from_raw_parts(input, length) }.to_vec())
+        .put(unsafe { std::slice::from_raw_parts(input, length) })
 }
 #[cfg(test)]
 mod tests {
@@ -177,24 +189,24 @@ mod tests {
         let mut b = ByteBridge::default();
         for size in [0, 1, 65535, 65536] {
             let bytes = vec![255; size];
-            let h = b.put(bytes.clone());
+            let h = b.put(&bytes);
             assert_ne!(h, 0);
-            assert_eq!(b.take(h).unwrap(), bytes);
+            assert_eq!(b.take(h).unwrap().bytes, bytes);
             assert!(b.take(h).is_none());
         }
-        assert_eq!(b.put(vec![0; 65537]), 0);
+        assert_eq!(b.put(&vec![0; 65537]), 0);
         for _ in 0..64 {
-            assert_ne!(b.put(vec![0; 65536]), 0);
+            assert_ne!(b.put(&vec![0; 65536]), 0);
         }
-        assert_eq!(b.put(vec![]), 0);
+        assert_eq!(b.put(&[]), 0);
         b.slots.clear();
         for _ in 0..100000 {
-            let h = b.put(vec![1; 65536]);
+            let h = b.put(&vec![1; 65536]);
             assert_eq!(b.take(h).unwrap().len(), 65536);
             assert!(b.slots.is_empty());
         }
         b.next = u32::MAX;
-        assert_eq!(b.put(vec![]), 0);
+        assert_eq!(b.put(&[]), 0);
     }
     #[test]
     fn quickjs_views_detached_and_ownership() {
@@ -218,6 +230,47 @@ mod tests {
 
   });
         assert!(b.borrow().bytes.slots.is_empty());
+    }
+    #[test]
+    #[ignore = "process-global budget injector; run this exact test alone with --ignored --test-threads=1"]
+    fn retained_native_buffers_share_budget_until_detach_or_collection() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static HELD: AtomicUsize = AtomicUsize::new(0);
+        extern "C" fn budget(_:u32,n:usize,action:u32,_:u64)->u64 {
+            match action {
+                0|4 => HELD.fetch_update(Ordering::SeqCst,Ordering::SeqCst,|held|held.checked_add(n).filter(|sum|*sum<=131072)).is_ok() as u64,
+                2|3 => {HELD.fetch_sub(n,Ordering::SeqCst);1},
+                _ => 1,
+            }
+        }
+        extern "C" fn unlimited(_:u32,_:usize,_:u32,_:u64)->u64 {1}
+        struct Restore;
+        impl Drop for Restore {fn drop(&mut self){crate::memory_budget::pod_runtime_memory_budget(0,Some(unlimited));}}
+        let _restore=Restore;
+        HELD.store(0,Ordering::SeqCst);
+        crate::memory_budget::pod_runtime_memory_budget(131072,Some(budget));
+        let mut realms=vec![];
+        for _ in 0..2 {
+            let rt=rquickjs::Runtime::new().unwrap();let context=rquickjs::Context::full(&rt).unwrap();
+            let bridge=Rc::new(RefCell::new(crate::PodBridge::default()));
+            context.with(|ctx|{
+                let pod=Object::new(ctx.clone()).unwrap();install(&ctx,&pod,bridge.clone()).unwrap();ctx.globals().set("pod",pod).unwrap();
+                ctx.eval::<(),_>("globalThis.kept=pod.takeBytes(pod.putBytes(new Uint8Array(65536)));if(kept.length!==65536)throw Error('missing retained reply');").unwrap();
+            });
+            assert!(bridge.borrow().bytes.slots.is_empty());
+            realms.push((rt,context,bridge));
+        }
+        assert_eq!(HELD.load(Ordering::SeqCst),131072);
+        realms[0].1.with(|ctx|{
+            assert_eq!(ctx.eval::<u32,_>("pod.putBytes(new Uint8Array(1))").unwrap(),0);
+            ctx.eval::<(),_>("if(pod.takeBytes(pod.putBytes(new Uint8Array())).length!==0)throw Error('empty reply under pressure');").unwrap();
+            let mut buffer:rquickjs::ArrayBuffer=ctx.eval("kept.buffer").unwrap();buffer.detach();buffer.detach();
+        });
+        assert_eq!(HELD.load(Ordering::SeqCst),65536);
+        realms[0].0.run_gc();assert_eq!(HELD.load(Ordering::SeqCst),65536);
+        realms[1].1.with(|ctx|ctx.eval::<(),_>("delete globalThis.kept;").unwrap());realms[1].0.run_gc();
+        assert_eq!(HELD.load(Ordering::SeqCst),0);
+        drop(realms);assert_eq!(HELD.load(Ordering::SeqCst),0);
     }
 }
 

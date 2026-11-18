@@ -89,8 +89,8 @@ impl Job {
                         break;
                     }
                     let parent = *self.stack.last().unwrap_or(&0);
-                    let text = self.nodes[id].text.clone();
-                    self.nodes[parent].text.push_str(&text);
+                    let (parents, child) = self.nodes.split_at_mut(id);
+                    parents[parent].text.push_str(&child[0].text);
                 } else {
                     if self.nodes.len() >= 65536 {
                         self.failed = true;
@@ -145,12 +145,15 @@ impl Job {
             self.error = Some("Malformed XML: expected one root element".into());
         }
         self.scanned = true;
+        // No token refers to the input after scanning. Do not overlap the
+        // complete source with every aggregate string adopted by the guest.
+        self.source = String::new();
     }
     fn rows(&mut self) -> Vec<Row> {
         let mut rows = vec![];
         let mut bytes = 0;
         while self.output < self.nodes.len() && rows.len() < 16 && bytes < 4096 {
-            let n = &self.nodes[self.output];
+            let n = &mut self.nodes[self.output];
             let start = self.text_offset;
             let mut end = (start + 4096).min(n.text.len());
             while !n.text.is_char_boundary(end) {
@@ -163,12 +166,15 @@ impl Job {
             rows.push(Row {
                 id: self.output,
                 parent: n.parent,
-                name: if first { n.name.clone() } else { String::new() },
-                attrs: if first { n.attrs.clone() } else { vec![] },
+                name: if first { std::mem::take(&mut n.name) } else { String::new() },
+                attrs: if first { std::mem::take(&mut n.attrs) } else { vec![] },
                 text,
                 last,
             });
             if last {
+                // Descendant aggregation finished before row delivery. The
+                // host must not retain a second copy after guest adoption.
+                n.text = String::new();
                 self.output += 1;
                 self.text_offset = 0;
             } else {
@@ -321,19 +327,29 @@ mod tests {
     #[test]
     fn large_text_rows_bound() {
         let mut j = Job::new();
-        j.source = format!("<root><![CDATA[{}]]></root>", "中🙂".repeat(10000));
+        let expected = "中🙂".repeat(10000);
+        j.source = format!("<root key='&amp;'><![CDATA[{}]]></root>", expected);
         j.ready = true;
         while !j.scanned {
             j.scan();
         }
         assert!(j.error.is_none());
         let mut count = 0;
+        let mut adopted = [String::new(), String::new()];
+        let mut names = vec![];
         while j.output < j.nodes.len() {
             for r in j.rows() {
                 assert!(r.text.len() <= 4096);
+                adopted[r.id].push_str(&r.text);
+                if !r.name.is_empty() {
+                    names.push((r.id, r.parent, r.name, r.attrs));
+                }
                 count += 1;
             }
         }
         assert!(count > 30);
+        assert_eq!(adopted, [expected.clone(), expected]);
+        assert_eq!(names, vec![(0, 0, "#root".into(), vec![]),
+            (1, 0, "root".into(), vec!["key".into(), "&".into()])]);
     }
 }

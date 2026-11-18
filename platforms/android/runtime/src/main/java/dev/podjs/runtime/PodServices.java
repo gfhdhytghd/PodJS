@@ -90,6 +90,13 @@ final class PodServices implements Closeable {
             }catch(Exception error){main.post(()->done.accept(null));}
         });
     }
+    private Runnable unsubscribeMemory=()->{};
+    private void trimMemory(int level){
+        if(closed)return;
+        if(level>0){imageWorkers.execute(()->{try{images.execute("image.release",new JSONObject());}catch(Exception ignored){}});textWorker.execute(paragraphLayouts::clear);sqlWorker.execute(()->{if(database!=null&&!database.inTransaction())database.execSQL("PRAGMA shrink_memory");});}
+        PodMediaMemoryAccounting.trim(level);
+        try{sink.complete(new JSONObject().put("t","memory.pressure").put("level",level).toString());}catch(Exception ignored){}
+    }
     private final Handler main = new Handler(Looper.getMainLooper());
     interface PaintAwaiter {Runnable await(java.util.function.Consumer<Boolean> complete);}
     private PaintAwaiter paintAwaiter;
@@ -142,7 +149,7 @@ final class PodServices implements Closeable {
     private final PodBluetoothPermission provisionPermission;
     private final PodNetworkServices networks;
     private final ExecutorService streamWorkers=Executors.newFixedThreadPool(9);
-    private final ExecutorService imageWorkers=Executors.newFixedThreadPool(4);
+    private final ExecutorService imageWorkers=Executors.newFixedThreadPool(PodProcessMemoryBudget.limit()>0?1:4);
     private final PodBrowserServices browser;
     private PodBackgroundServices background;
     private volatile PodSyncServices sync;
@@ -275,7 +282,7 @@ final class PodServices implements Closeable {
         volatile PodSiteChallengeServices.Callback challengeCallback;
         String videoSessionId;
     }
-    PodServices(Context context, Sink sink) { long step=PodStartupTrace.now(); PodTakeover.requireReady(context); this.context = context; this.sink = sink; unsubscribeData=ProcessDataSignals.subscribe(context.getPackageName(),topic->main.post(()->{if(!closed&&!headlessWork)try{sink.complete(new JSONObject().put("t","sql.changed").put("topic",topic).toString());}catch(Exception ignored){}})); textBitmapStats=memoryEnabled(context)?new PodTextRasterServices.Stats():null; device = new PodDeviceServices(context); PodStartupTrace.stage("servicesDevice",step);step=PodStartupTrace.now(); media = new PodMediaServices(context, event -> { if (!closed) sink.complete(event); }); PodStartupTrace.stage("servicesAudio",step);step=PodStartupTrace.now(); videoDecoderBudget=new PodVideoDecoderBudget(PodVideoSessionServices.MAX_SESSIONS); mediaPrefixCache=new PodMediaPrefixCache(new java.io.File(context.getCacheDir(),"podjs-media-prefix"));mediaPrefixCache.frameRoot=PodTakeover.filesRoot(context);mediaPrefixCache.batteryPercent=()->{android.os.BatteryManager b=(android.os.BatteryManager)context.getSystemService(Context.BATTERY_SERVICE);return b==null?-1:b.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY);};mediaPrefixCache.setResultSink(event->main.post(()->{if(!closed)sink.complete(event.toString());})); PodStartupTrace.stage("servicesCache",step);step=PodStartupTrace.now();video = new PodVideoServices(context,videoDecoderBudget,mediaPrefixCache); videoSessions=new PodVideoSessionServices(context,videoDecoderBudget,mediaPrefixCache); PodStartupTrace.stage("servicesVideo",step);step=PodStartupTrace.now(); mediaSurfaces = new PodMediaSurfaceServices(context); inlineText = new PodInlineTextInput(context,event->{if(!closed)sink.complete(event);}); images = new PodImageServices(context); http = new PodHttpServices(context); byteStreams = new PodByteStreamServices(context); webSockets = new PodWebSocketServices(context,byteStreams); discovery = new PodDiscoveryServices(context); bleDiscovery = new PodBleDiscoveryServices(context); provisioning=new PodBleProvisionServices(context); provisionPermission=new PodBluetoothPermission(context,0x5056,PodBlePermissions.required(android.os.Build.VERSION.SDK_INT,false,true)); PodStartupTrace.stage("servicesIo",step);step=PodStartupTrace.now(); networks = new PodNetworkServices(context,event->{if(!closed)sink.complete(event);}); browser = new PodBrowserServices(context); browserAuth = new PodBrowserAuthServices(context); siteChallenge = new PodSiteChallengeServices(context);  PodStartupTrace.stage("servicesNetwork",step);step=PodStartupTrace.now();acoustic=new PodAcousticServices(context);guidedWifi=new PodGuidedWifiServices(context,acoustic); PodStartupTrace.stage("servicesAcoustic",step);step=PodStartupTrace.now();
+    PodServices(Context context, Sink sink) { unsubscribeMemory=PodProcessMemoryBudget.observe(this::trimMemory); long step=PodStartupTrace.now(); PodTakeover.requireReady(context); this.context = context; this.sink = sink; unsubscribeData=ProcessDataSignals.subscribe(context.getPackageName(),topic->main.post(()->{if(!closed&&!headlessWork)try{sink.complete(new JSONObject().put("t","sql.changed").put("topic",topic).toString());}catch(Exception ignored){}})); textBitmapStats=memoryEnabled(context)?new PodTextRasterServices.Stats():null; device = new PodDeviceServices(context); PodStartupTrace.stage("servicesDevice",step);step=PodStartupTrace.now(); media = new PodMediaServices(context, event -> { if (!closed) sink.complete(event); }); PodStartupTrace.stage("servicesAudio",step);step=PodStartupTrace.now(); videoDecoderBudget=new PodVideoDecoderBudget(PodVideoSessionServices.MAX_SESSIONS); mediaPrefixCache=new PodMediaPrefixCache(new java.io.File(context.getCacheDir(),"podjs-media-prefix"));mediaPrefixCache.frameRoot=PodTakeover.filesRoot(context);mediaPrefixCache.batteryPercent=()->{android.os.BatteryManager b=(android.os.BatteryManager)context.getSystemService(Context.BATTERY_SERVICE);return b==null?-1:b.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY);};mediaPrefixCache.setResultSink(event->main.post(()->{if(!closed)sink.complete(event.toString());})); PodStartupTrace.stage("servicesCache",step);step=PodStartupTrace.now();video = new PodVideoServices(context,videoDecoderBudget,mediaPrefixCache); videoSessions=new PodVideoSessionServices(context,videoDecoderBudget,mediaPrefixCache); PodStartupTrace.stage("servicesVideo",step);step=PodStartupTrace.now(); mediaSurfaces = new PodMediaSurfaceServices(context); inlineText = new PodInlineTextInput(context,event->{if(!closed)sink.complete(event);}); images = new PodImageServices(context); http = new PodHttpServices(context); byteStreams = new PodByteStreamServices(context); webSockets = new PodWebSocketServices(context,byteStreams); discovery = new PodDiscoveryServices(context); bleDiscovery = new PodBleDiscoveryServices(context); provisioning=new PodBleProvisionServices(context); provisionPermission=new PodBluetoothPermission(context,0x5056,PodBlePermissions.required(android.os.Build.VERSION.SDK_INT,false,true)); PodStartupTrace.stage("servicesIo",step);step=PodStartupTrace.now(); networks = new PodNetworkServices(context,event->{if(!closed)sink.complete(event);}); browser = new PodBrowserServices(context); browserAuth = new PodBrowserAuthServices(context); siteChallenge = new PodSiteChallengeServices(context);  PodStartupTrace.stage("servicesNetwork",step);step=PodStartupTrace.now();acoustic=new PodAcousticServices(context);guidedWifi=new PodGuidedWifiServices(context,acoustic); PodStartupTrace.stage("servicesAcoustic",step);step=PodStartupTrace.now();
         acousticPermission=new PodBluetoothPermission(context,0x5045,new String[]{android.Manifest.permission.RECORD_AUDIO});
         guidedPermission=new PodBluetoothPermission(context,0x5046,android.os.Build.VERSION.SDK_INT>=33?new String[]{android.Manifest.permission.RECORD_AUDIO,android.Manifest.permission.ACCESS_FINE_LOCATION,android.Manifest.permission.NEARBY_WIFI_DEVICES}:new String[]{android.Manifest.permission.RECORD_AUDIO,android.Manifest.permission.ACCESS_FINE_LOCATION});
         notificationPermission=new PodNotificationPermission(context); bluetoothPermission=new PodBluetoothPermission(context); discoveryPermission=new PodBluetoothPermission(context,0x5044,PodBleDiscoveryServices.permissions()); location=new PodLocationServices(context); }
@@ -520,8 +527,8 @@ final class PodServices implements Closeable {
                     for(java.util.Map.Entry<String,long[]> e:workStats.shellSql().entrySet()){
                         long[] row=e.getValue();sql.put(e.getKey(),new JSONObject().put("count",row[0]).put("queueNs",row[1]).put("workNs",row[2]).put("cpuNs",row[3]).put("failures",row[4]));
                     }
-                    android.os.Debug.MemoryInfo memory=new android.os.Debug.MemoryInfo();android.os.Debug.getMemoryInfo(memory);
-                    reply(id,true,new JSONObject().put("pssKb",memory.getTotalPss()).put("decoderInstances",PodVideoAnalytics.liveDecoderInstances()).put("decoderLeases",videoDecoderBudget.inUse()).put("sql",sql).put("videoSessions",videoSessions.shellCounters()),null,null);
+                    PodProcessMemoryReader.Snapshot memory=PodProcessMemoryReader.get(context).snapshot();
+                    reply(id,true,new JSONObject().put("pssKb",memory.totalKiB).put("pssLocalKb",memory.localKiB).put("pssGraphicsKb",memory.graphicsKiB).put("pssCorrectionKb",memory.correctionKiB).put("pssProtectedQueryAgeMs",memory.protectedQueryAgeMs).put("pssProtectedMayBeCached",true).put("decoderInstances",PodVideoAnalytics.liveDecoderInstances()).put("decoderLeases",videoDecoderBudget.inUse()).put("sql",sql).put("videoSessions",videoSessions.shellCounters()),null,null);
                 }catch(Exception ignored){failure(id,"unavailable","Diagnostics unavailable");}
             });return;
         }
@@ -926,7 +933,8 @@ final class PodServices implements Closeable {
             opened.setForeignKeyConstraintsEnabled(true);
             // Sync transactions touch more than the default 25 distinct SQL
             // shapes. Keep SQLite's bounded per-connection prepared cache warm.
-            opened.setMaxSqlCacheSize(100);
+            opened.setMaxSqlCacheSize(PodProcessMemoryBudget.limit()>0?24:100);
+            if(PodProcessMemoryBudget.limit()>0)opened.execSQL("PRAGMA cache_size=-512");
             database=opened; // Publish only the fully initialized connection.
             }catch(RuntimeException|Error failure){PodTakeoverCoordinator.closeAfterFailure(opened,failure);throw failure;}
         }
@@ -1093,6 +1101,7 @@ final class PodServices implements Closeable {
         if(request.dialog != null) request.dialog.dismiss();
     }
     @Override public void close() {
+        unsubscribeMemory.run();
         closed=true;unsubscribeData.run();
         if(debugExternalSink!=null)try {Class.forName("dev.podjs.debug.PodDebugExternal").getMethod("close",java.util.function.Consumer.class).invoke(null,debugExternalSink);}catch(Exception ignored){} finally{debugExternalSink=null;}
         acoustic.close();guidedWifi.close();acousticWorkers.shutdownNow();

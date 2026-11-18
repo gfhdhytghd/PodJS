@@ -3,6 +3,7 @@ use super::*;
 use pocketjs_core::{RasterResources, RenderResources};
 
 pub struct PodRenderSnapshot {
+    _texture_memory:Vec<std::sync::Arc<memory_budget::Lease>>,
     resources: RenderResources,
     words: Vec<u32>,
     hash: u64,
@@ -25,6 +26,7 @@ pub extern "C" fn pod_runtime_pin_snapshot(runtime: *mut PodRuntime) -> *mut Pod
     assert_send_sync::<RenderResources>();
     let resources = runtime.surface.with_ui(|ui| ui.render_resources());
     Box::into_raw(Box::new(PodRenderSnapshot {
+        _texture_memory:runtime.bridge.borrow().texture_memory.values().cloned().collect(),
         resources,
         words: runtime.draw_words.clone(),
         hash: runtime.draw_hash,

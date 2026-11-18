@@ -1,3 +1,4 @@
+import {dispatchMemoryPressure} from './memory.ts';
 import {traceServiceWork,__setServiceTraceEnabled,__setServiceCallbackTraceEnabled} from './service-trace.ts';
 import { cancelActiveTouches } from "@pocketjs/framework/gesture";
 import { dispatchAccessibilityAction } from "@pocketjs/framework/input";
@@ -281,6 +282,7 @@ export function __pumpPodEvents(): void {
     }
     if(event.t === "lifecycle" && event.state !== "active")checkpoint(event.state);
     else if(event.t === "checkpoint" && event.reason === "screen-off")checkpoint("screen-off");
+    dispatchMemoryPressure(event as unknown as Record<string,unknown>);
     for (const handler of hostEventHandlers) handler(event as unknown as Record<string, unknown>);
     if (event.t === "accessibility.action") {
       dispatchAccessibilityAction(event.nodeId, event.action);

@@ -31,9 +31,11 @@ const ops = {
 const realHost = await import("@pocketjs/framework/host");
 mock.module("@pocketjs/framework/host", () => ({ ...realHost, getOps: () => ops }));
 
+const timers:{milliseconds:number;resolve():void;cancelled:boolean}[]=[];
 const realServices = await import("../src/services.ts");
 mock.module("../src/services.ts", () => ({
   ...realServices,
+  delay:(milliseconds:number)=>{let resolve!:()=>void,reject!:(e:Error)=>void;const result=new Promise<void>((yes,no)=>{resolve=yes;reject=no;});const timer={milliseconds,resolve,cancelled:false};timers.push(timer);return {result,cancel(){timer.cancelled=true;reject(Error('cancelled'));}};},
   base64ToBytes: (value: string) => new Uint8Array(Buffer.from(value, "base64")),
   hostOperation: (method: string, args: Record<string, unknown>) => {
     hostMethods.push(method);
@@ -232,4 +234,22 @@ test("file-only component displays a local decoded frame without a download",asy
  try{createRoot(stop=>{dispose=stop;RemoteImage({source:{url:'',filePath:'local-media-frames/first.jpg'},loader,width:2,height:1});});
   await tick();await tick();expect(imageFiles).toContain('local-media-frames/first.jpg');expect(pendingDownloads.size).toBe(0);expect(calls.some(c=>c[0]==='setImage'&&c[2]===41)).toBe(true);
  }finally{dispose?.();}
+});
+
+test("budget denial keeps a placeholder, retries lower quality, and replaces only after recovery",async()=>{
+ const previous=pod.memoryBudgetBytes;pod.memoryBudgetBytes=()=>128000000;
+ const {dispatchMemoryPressure}=await import('../src/memory');
+ let uploads=0;pod.uploadTextureFile=()=>++uploads===1?-2:50+uploads;
+ const errors:unknown[]=[],local=createImageLoader({sourceProvider:provider});
+ try{
+  const stop=local.bind({loader:local,source:{url:'local',filePath:'owned.png'},width:128,height:64,onError:error=>errors.push(error)},{id:nextNode++} as never);
+  await tick();expect(errors).toEqual([]);expect(timers.at(-1)?.milliseconds).toBe(750);
+  expect(calls.filter(c=>c[0]==='setImage')).toEqual([]);
+  timers.at(-1)!.resolve();await tick();expect(calls.filter(c=>c[0]==='setImage').at(-1)?.[2]).toBe(52);
+  dispatchMemoryPressure({t:'memory.pressure',level:3});dispatchMemoryPressure({t:'memory.pressure',level:0});
+  expect(timers.at(-1)?.milliseconds).toBe(1500);expect(calls.filter(c=>c[0]==='freeTexture')).toHaveLength(0);
+  timers.at(-1)!.resolve();await tick();expect(calls.filter(c=>c[0]==='setImage').at(-1)?.[2]).toBe(53);
+  expect(calls.filter(c=>c[0]==='freeTexture')).toEqual([['freeTexture',52]]);
+  stop();local.dispose();expect(calls.filter(c=>c[0]==='freeTexture')).toEqual([['freeTexture',52],['freeTexture',53]]);
+ }finally{local.dispose();pod.memoryBudgetBytes=previous;delete pod.uploadTextureFile;}
 });

@@ -10,6 +10,8 @@ import org.json.JSONObject;
 public final class PodBackgroundRun implements AutoCloseable {
     static { System.loadLibrary("podjs_android"); }
     private long handle;
+    private volatile boolean memoryDeferred;
+    private Runnable unsubscribeMemory=()->{};
     private boolean running, started, closed;
     private int waiters;
     public PodBackgroundRun(String appId, String taskId, String verifiedSource, long budgetMs, int memoryBytes) throws org.json.JSONException {
@@ -33,6 +35,7 @@ public final class PodBackgroundRun implements AutoCloseable {
         if (bytes.length > 2*1024*1024) throw new IllegalArgumentException("Background config too large");
         handle = nativeOpen(bytes);
         if (handle == 0) throw new IllegalStateException("Cannot create background task");
+        unsubscribeMemory=PodProcessMemoryBudget.observe(level->{if(level>=2&&PodProcessMemoryBudget.deferBackground())deferMemory();});
     }
     public JSONObject run() throws org.json.JSONException {
         final long current;
@@ -40,11 +43,16 @@ public final class PodBackgroundRun implements AutoCloseable {
             if (closed || started) throw new IllegalStateException("Background task is one-shot");
             started = true; running = true; current = handle;
         }
-        try { return new JSONObject(nativeExecute(current)); }
+        try {
+            if(memoryDeferred||!PodProcessMemoryBudget.admitBackground())return deferred();
+            JSONObject result=new JSONObject(nativeExecute(current));return memoryDeferred?deferred():result;
+        }
         finally {
             synchronized (this) { running = false; if (closed && waiters==0) destroy(); }
         }
     }
+    private static JSONObject deferred()throws org.json.JSONException{return new JSONObject().put("status","retry").put("code","memory_budget_deferred").put("elapsedMs",0);}
+    private synchronized void deferMemory(){if(closed||handle==0)return;memoryDeferred=true;nativeCancel(handle);}
     public synchronized void cancel() { if (handle != 0) nativeCancel(handle); }
     public synchronized boolean isRunning() { return running; }
     /** Nonblocking; call from a host IO consumer, not the executing thread. */
@@ -73,7 +81,7 @@ public final class PodBackgroundRun implements AutoCloseable {
         return result==0;
     }
     @Override public synchronized void close() {
-        if (closed) return; closed = true;
+        if (closed) return; closed = true;unsubscribeMemory.run();
         if (handle != 0) nativeCancel(handle);
         if (!running && waiters==0) destroy();
     }

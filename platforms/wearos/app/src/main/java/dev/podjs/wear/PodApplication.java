@@ -11,6 +11,7 @@ public final class PodApplication extends Application implements Configuration.P
     @Override public void onCreate() {
         long began = PodStartupTrace.now();
         super.onCreate();
+        dev.podjs.runtime.PodProcessMemoryBudget.install(this);
         android.util.Log.i("PodJSPerf", "startup stage=application processToOnCreateMs="
             + (android.os.SystemClock.elapsedRealtime() - android.os.Process.getStartElapsedRealtime()));
         PodStartupTrace.stage("applicationOnCreate", began);

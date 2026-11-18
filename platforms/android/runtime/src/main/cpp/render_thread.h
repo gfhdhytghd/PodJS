@@ -64,6 +64,8 @@ class RenderThread {
   // Callers are serialized by Android's main host lane; controls stop handoff,
   // discard pending pins, drain Vulkan via replaceWindow/destruction, then ack.
   void control(std::function<void()>, bool cancelPending=true);
+  bool ensureFallback();
+  void releaseFallback();
   void run();
   void observeStalls();
   podjs_health::StallWatchdog health_;
@@ -85,7 +87,8 @@ class RenderThread {
   std::atomic<size_t> glyphBytes_{}, glyphPages_{}, fallbackCapacity_{};
   const size_t rasterBytes_;
   std::unique_ptr<VulkanRenderer> renderer_; // worker only
-  std::vector<uint8_t> fallback_; // worker only, allocated on demand
+  std::unique_ptr<uint8_t[]> fallback_; // worker only, allocated on demand
+  uint64_t fallbackGeneration_{};
   std::thread worker_;
   std::thread observer_;
 };

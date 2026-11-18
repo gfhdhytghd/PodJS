@@ -15,7 +15,7 @@ mock.module('../src/services.ts',()=>({
  fileChunks:{remove:async(path:string)=>{files.push(path);}},base64ToBytes:()=>{throw Error('file upload must avoid pixel bytes');},
  hasTextureFileUpload:()=>true,uploadTextureFile:()=>texture++
 }));
-const {SystemTextLine,createSystemTextCache,prefetchSystemTextLines,systemTextResourceCounts}=await import('../src/text.tsx');
+const {SystemTextLine,createSystemTextCache,prefetchSystemTextLines,systemTextResourceCounts,systemTextMemoryStats}=await import('../src/text.tsx');
 const settle=async()=>{for(let i=0;i<16;i++)await Promise.resolve();};
 test('fixed text scene preserves clipping, fallback, carets, raster identity and final ownership',async()=>{
  let dispose!:()=>void,root!:Node;const caretEvents:any[]=[];
@@ -96,4 +96,38 @@ test('prefetch reservations obey the shared byte limit and closing cancels late 
  cache.close();cache.close();requests[before]!.resolve({path:'text/closed-prefetch',width:64,height:32,carets:[0,18]});await settle();
  expect(texture).toBe(uploads);expect(files).toContain('text/closed-prefetch');expect(cache.stats().entries).toBe(0);
  expect(systemTextResourceCounts()).toEqual({active:0,queued:0,cached:0});
+});
+
+test('declared budget bounds text history and does not duplicate whole-paragraph cache keys',async()=>{
+ const previous=(globalThis as any).pod;(globalThis as any).pod={memoryBudgetBytes:()=>128000000};
+ const {dispatchMemoryPressure}=await import('../src/memory');
+ const cache=createSystemTextCache();
+ try{
+  const paragraph='内存窗口'.repeat(8000);
+  for(let i=0;i<16;i++){
+   let dispose!:()=>void;
+   const text='行'+i,options={text,widthPx:400,heightPx:40,baselinePx:32,fontSizePx:30,paragraph:{text:paragraph,widthPx:400,fontSizePx:30,lineIndex:i}};
+   createRoot(stop=>{dispose=stop;SystemTextLine({options,pixelScale:2,cache});});
+   const request=requests.at(-1)!;request.resolve({path:'text/memory-'+i,width:512,height:64,carets:Array(text.length+1).fill(0)});
+   await settle();dispose();await settle();
+  }
+  expect(cache.stats().retained).toBeLessThanOrEqual(8);expect(cache.stats().retainedBytes).toBeLessThanOrEqual(1000000);
+  expect(systemTextMemoryStats().keyUtf16Units).toBeLessThan(20000);
+  dispatchMemoryPressure({t:'memory.pressure',level:3});expect(cache.stats().retained).toBe(0);
+ }finally{cache.close();(globalThis as any).pod=previous;}
+});
+
+test('shared paragraph descriptors keep complete raster JSON and distinct style cache identities',async()=>{
+ const before=requests.length,cache=createSystemTextCache(),stops:(()=>void)[]=[];
+ for(const fontWeight of [400,700]){
+  const shared=Object.defineProperty({text:'same paragraph',widthPx:120,fontSizePx:18,fontWeight},'toJSON',{value:function(){return {...Object.getPrototypeOf(this),...this};}});
+  const paragraph=Object.assign(Object.create(shared),{lineIndex:0});
+  createRoot(stop=>{stops.push(stop);SystemTextLine({cache,options:{text:'same',widthPx:120,heightPx:32,baselinePx:24,fontSizePx:18,paragraph},pixelScale:1});});
+ }
+ expect(requests).toHaveLength(before+2);
+ for(let i=0;i<2;i++){
+  expect(JSON.parse(JSON.stringify(requests[before+i]!.options.paragraph))).toMatchObject({text:'same paragraph',lineIndex:0,fontWeight:i?700:400});
+  requests[before+i]!.resolve({path:'text/shared-'+i,width:128,height:32,carets:[0,20]});
+ }
+ await settle();for(const stop of stops)stop();cache.close();await settle();expect(systemTextResourceCounts()).toEqual({active:0,queued:0,cached:0});
 });

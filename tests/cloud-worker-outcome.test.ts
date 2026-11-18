@@ -17,3 +17,9 @@ test('bounded local retry crosses the actual Rust-to-worker queue wiring without
  expect(worker).toContain('PodCloudWork.next(context,queuedToken,requestId,progress,manualToken==null,bounded)');
  expect(read(root+'PodCloudWork.java')).toContain('queue(c).next(token,id,progress,periodic,bounded)');
 });
+
+test('process memory deferral retains the durable queue through the existing backoff gate',()=>{
+ const worker=read(root+'PodCloudWorker.java');
+ expect(worker).toContain('"memory_budget_deferred".equals(code)||"deadline_exceeded".equals(code)');
+ expect(worker).toContain('PodCloudWork.next(context,queuedToken,requestId,progress,manualToken==null,bounded)');
+});
