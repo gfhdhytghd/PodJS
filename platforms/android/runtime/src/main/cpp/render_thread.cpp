@@ -160,6 +160,8 @@ void RenderThread::run() {
       result.gpu=renderer_->submitDrawList(GpuResourceSource(frame->snapshot.get()),list);
       const auto attempt=renderer_->lastSubmitPerf();
       result.perf=attempt;
+      if (result.gpu && fallback_ && podjs_memory::process.limit())
+        releaseFallback();
       if(!result.gpu && renderer_->valid() && ensureFallback()) {
         result.cpu=pod_render_snapshot_rgba(frame->snapshot.get(),VulkanRenderer::kRasterScale,fallback_.get(),rasterBytes_)==0 &&
             renderer_->submitRgba(fallback_.get(),rasterBytes_,list.content_hash);

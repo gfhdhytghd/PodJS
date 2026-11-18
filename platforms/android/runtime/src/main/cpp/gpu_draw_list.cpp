@@ -326,7 +326,8 @@ bool decodeGpuDrawList(GpuResourceSource runtime, const PodDrawList &list,
 bool decodeGpuDrawList(GpuResourceSource runtime, const PodDrawList &list,
                        uint32_t scale, GpuFrame *out, GpuDecodeCache *cache,
                        std::string *error) {
-  if (!runtime || !out || !list.words || scale == 0 || scale > 4)
+  if (!runtime || !out || (!list.words && list.word_count != 0) ||
+      scale == 0 || scale > 4)
     return bad(out, error, "invalid decoder arguments");
   out->primitives.clear();
   out->images.clear();

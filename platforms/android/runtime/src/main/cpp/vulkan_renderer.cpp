@@ -228,17 +228,7 @@ bool VulkanRenderer::ensureStagingCapacity(FrameSlot &slot,
   if (slot.stagingBuffer && slot.stagingCapacity >= required)
     return true;
 
-  if (slot.stagingMapped) {
-    vkUnmapMemory(device_, slot.stagingMemory);
-    slot.stagingMapped = nullptr;
-  }
-  if (slot.stagingBuffer)
-    vkDestroyBuffer(device_, slot.stagingBuffer, nullptr);
-  if (slot.stagingMemory)
-    budgetFree(device_,slot.stagingMemory,slot.stagingBudget,slot.stagingGeneration);
-  slot.stagingBuffer = VK_NULL_HANDLE;
-  slot.stagingMemory = VK_NULL_HANDLE;
-  slot.stagingCapacity = 0;
+  destroyStaging(slot);
 
   VkBufferCreateInfo buffer{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
   buffer.size = required;
@@ -265,6 +255,19 @@ bool VulkanRenderer::ensureStagingCapacity(FrameSlot &slot,
                      &slot.stagingMapped));
   slot.stagingCapacity = required;
   return true;
+}
+
+void VulkanRenderer::destroyStaging(FrameSlot& slot) {
+  if (slot.stagingMapped)
+    vkUnmapMemory(device_, slot.stagingMemory);
+  if (slot.stagingBuffer)
+    vkDestroyBuffer(device_, slot.stagingBuffer, nullptr);
+  if (slot.stagingMemory)
+    budgetFree(device_, slot.stagingMemory, slot.stagingBudget, slot.stagingGeneration);
+  slot.stagingMapped = nullptr;
+  slot.stagingBuffer = VK_NULL_HANDLE;
+  slot.stagingMemory = VK_NULL_HANDLE;
+  slot.stagingCapacity = 0;
 }
 
 bool VulkanRenderer::createUploadResources() {
@@ -660,7 +663,10 @@ bool VulkanRenderer::createSurfaceAndSwapchain() {
                                        capabilities.minImageExtent.height,
                                        capabilities.maxImageExtent.height)}
                 : capabilities.currentExtent;
-  uint32_t imageCount = capabilities.minImageCount + 1;
+  // Keep the FIFO surface's required images. Budgeted hosts skip the
+  // optional image while retaining the independent command slots.
+  uint32_t imageCount = capabilities.minImageCount;
+  if (!podjs_memory::process.limit()) ++imageCount;
   if (capabilities.maxImageCount) {
     imageCount = std::min(imageCount, capabilities.maxImageCount);
   }
@@ -900,20 +906,28 @@ bool VulkanRenderer::prepareImageUploads(
     stagingBytes += expected;
     pendingTextureBytes += expected;
   }
+  collectRetiredTextures();
+  if (podjs_memory::process.limit()) {
+    for (auto it = textureCache_.begin(); it != textureCache_.end();) {
+      if (!requestedKeys.count(it->first) && !textureInFlight(it->second)) {
+        destroyTexture(&it->second);
+        it = textureCache_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    // The slot's fence has completed. Reuse small uploads but return the
+    // high-water allocation from a large image or CPU fallback frame.
+    if (frame().stagingCapacity > kRetainedStagingBytes &&
+        stagingBytes <= kRetainedStagingBytes)
+      destroyStaging(frame());
+  }
   if (pending.empty()) {
     lastSubmitPerf_.uploadMs = 0;
     return true;
   }
   lastSubmitPerf_.uploadBytes = pendingTextureBytes;
   lastSubmitPerf_.uploadCount = static_cast<uint32_t>(pending.size());
-
-  collectRetiredTextures();
-  if(podjs_memory::process.limit()) {
-    for(auto it=textureCache_.begin();it!=textureCache_.end();) {
-      if(!requestedKeys.count(it->first)&&!textureInFlight(it->second)) {destroyTexture(&it->second);it=textureCache_.erase(it);}
-      else ++it;
-    }
-  }
   size_t cachedTextureBytes = 0;
   for (const auto &texture : retiredTextures_)
     cachedTextureBytes += size_t{texture.width} * texture.height * 4;
@@ -1505,26 +1519,16 @@ void VulkanRenderer::destroyGraphicsResources() {
 void VulkanRenderer::destroyUploadResources() {
   if (!device_) return;
   for (auto &slot : frames_) {
-    if (slot.stagingMapped) {
-      vkUnmapMemory(device_, slot.stagingMemory);
-      slot.stagingMapped = nullptr;
-    }
+    destroyStaging(slot);
     if (slot.rasterView)
       vkDestroyImageView(device_, slot.rasterView, nullptr);
     if (slot.rasterImage)
       vkDestroyImage(device_, slot.rasterImage, nullptr);
     if (slot.rasterMemory)
       budgetFree(device_,slot.rasterMemory,slot.rasterBudget,slot.rasterGeneration);
-    if (slot.stagingBuffer)
-      vkDestroyBuffer(device_, slot.stagingBuffer, nullptr);
-    if (slot.stagingMemory)
-      budgetFree(device_,slot.stagingMemory,slot.stagingBudget,slot.stagingGeneration);
     slot.rasterView = VK_NULL_HANDLE;
     slot.rasterImage = VK_NULL_HANDLE;
     slot.rasterMemory = VK_NULL_HANDLE;
-    slot.stagingBuffer = VK_NULL_HANDLE;
-    slot.stagingMemory = VK_NULL_HANDLE;
-    slot.stagingCapacity = 0;
   }
 }
 
@@ -1613,6 +1617,10 @@ void VulkanRenderer::trimMemory(){
   for(auto& entry:textureCache_)destroyTexture(&entry.second);
   textureCache_.clear();collectRetiredTextures();
   decodeCache_=GpuDecodeCache{};
-  for(auto& slot:frames_){slot.images.clear();slot.images.shrink_to_fit();}
+  for (auto& slot : frames_) {
+    destroyStaging(slot);
+    slot.images.clear();
+    slot.images.shrink_to_fit();
+  }
   lastHash_=0;
 }
