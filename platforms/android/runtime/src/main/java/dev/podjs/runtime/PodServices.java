@@ -813,6 +813,7 @@ final class PodServices implements Closeable {
                 if (requests.remove(id, request)) reply(id, true, value, null, null);
                 else if ("provision.start".equals(method) && value instanceof JSONObject) provisioning.cancel(((JSONObject)value).optString("sessionId"),request.cancelReason);
                 else if ("discovery.networkSubscribe".equals(method)) networks.discard(args.getString("subscriptionId"));
+                else if ("stream.claim".equals(method) && value instanceof JSONObject) byteStreams.discard((JSONObject)value);
                 else if (("stream.prepareFile".equals(method)||"stream.readFile".equals(method)) && value instanceof JSONObject) byteStreams.discard(new JSONObject().put("id",args.getString("id")));
                 else if ("websocket.connect".equals(method) && value instanceof JSONObject) webSockets.discard((JSONObject)value);
                 else if (("rfcomm.listen".equals(method) || "rfcomm.accept".equals(method) || "tcp.listen".equals(method) || "tcp.accept".equals(method)) && value instanceof JSONObject) byteStreams.discard((JSONObject)value);

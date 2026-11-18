@@ -268,6 +268,16 @@ describe("host services", () => {
     const write=byteStreams.write("stream-1",new Uint8Array([1,2]),900),sent=emitted.at(-1)!;expect(sent).toMatchObject({method:"stream.write",args:{id:"stream-1",dataBase64:"AQI=",timeoutMs:900}});
     events.push({t:"service.result",id:sent.id,ok:true,value:{written:2}});api.__pumpPodEvents();await expect(write.result).resolves.toEqual({written:2});
   });
+  test("native stream handoff needs stream capability and returns the new owner",async()=>{
+    await expect(byteStreams.claim("original").result).rejects.toMatchObject({code:"unsupported"});
+    expect(emitted).toHaveLength(0);
+    host.capabilities=()=>JSON.stringify(["net.stream"]);
+    const claim=byteStreams.claim("original"),request=emitted.at(-1)!;
+    expect(request).toMatchObject({method:"stream.claim",args:{id:"original"}});
+    events.push({t:"service.result",id:request.id,ok:true,value:{id:"owner"}});
+    api.__pumpPodEvents();
+    await expect(claim.result).resolves.toEqual({id:"owner"});
+  });
   test("TCP listeners require their own capability and cancellable accept is dispatched separately",async()=>{
     await expect(tcp.listen().result).rejects.toMatchObject({code:"unsupported"});expect(emitted).toHaveLength(0);
     host.capabilities=()=>JSON.stringify(["net.tcp","net.stream"]);

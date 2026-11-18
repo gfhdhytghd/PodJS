@@ -39,6 +39,28 @@ public class PodByteBridgeTest {
             }
         }
     }
+    @Test public void exclusiveHandoffPreservesUnreadTailAndOriginalClose() throws Exception {
+        Context context=ApplicationProvider.getApplicationContext();
+        try(PodByteStreamServices streams=new PodByteStreamServices(context)){
+            java.util.concurrent.atomic.AtomicInteger closed=new java.util.concurrent.atomic.AtomicInteger();
+            byte[] bytes={1,2,3,4,5};
+            String original=streams.attach(new ByteArrayInputStream(bytes),new ByteArrayOutputStream(),closed::incrementAndGet);
+            CancellationSignal signal=new CancellationSignal();
+            JSONObject before=streams.execute("stream.read",args(original,2).put("_podByteMode",true),signal);
+            assertArrayEquals(new byte[]{1,2},(byte[])before.get("_podBytes"));
+            String owner=streams.execute("stream.claim",new JSONObject().put("id",original),signal).getString("id");
+            assertNotEquals(original,owner);
+            try{streams.execute("stream.read",args(original,3).put("_podByteMode",true),signal);fail();}
+            catch(IllegalArgumentException expected){assertEquals("Unknown stream",expected.getMessage());}
+            try{streams.execute("stream.claim",new JSONObject().put("id",owner),signal);fail();}
+            catch(IllegalStateException expected){assertEquals("Stream is not at a handoff boundary",expected.getMessage());}
+            JSONObject after=streams.execute("stream.read",args(owner,3).put("_podByteMode",true),signal);
+            assertArrayEquals(new byte[]{3,4,5},(byte[])after.get("_podBytes"));
+            streams.execute("stream.close",new JSONObject().put("id",original),signal);
+            streams.execute("stream.close",new JSONObject().put("id",owner),signal);
+            assertEquals(1,closed.get());
+        }
+    }
     @Test public void writeDifferentialAndCancellation()throws Exception {
         Context context=ApplicationProvider.getApplicationContext();
         try(PodByteStreamServices streams=new PodByteStreamServices(context)){

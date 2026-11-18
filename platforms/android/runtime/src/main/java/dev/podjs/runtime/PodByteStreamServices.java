@@ -39,6 +39,7 @@ final class PodByteStreamServices implements Closeable {
     private static final int MAX_HANDLES=4, MAX_BYTES=65536;
     private final Context context;
     private final Map<String,Endpoint> streams=new HashMap<>();
+    private final Map<String,Endpoint> handedOff=new HashMap<>();
     private final Map<String,Listener> listeners=new HashMap<>();
     private final Map<String,TcpListener> tcpListeners=new HashMap<>();
     private final ScheduledExecutorService deadlines=Executors.newSingleThreadScheduledExecutor();
@@ -61,7 +62,12 @@ final class PodByteStreamServices implements Closeable {
         final Map<String,byte[]> incoming = new HashMap<>();
         final Map<String,byte[]> outgoing = new HashMap<>();
         final AtomicBoolean reading=new AtomicBoolean(),writing=new AtomicBoolean(),closed=new AtomicBoolean();
-        Endpoint(InputStream input,OutputStream output,Closeable owner){this.input=input;this.output=output;this.owner=owner;}
+        String streamId;
+        final String originalId;
+        int operations;
+        Endpoint(String id,InputStream input,OutputStream output,Closeable owner){
+            this.streamId=id;this.originalId=id;this.input=input;this.output=output;this.owner=owner;
+        }
         public void close() throws IOException {if(closed.compareAndSet(false,true))owner.close();}
     }
     PodByteStreamServices(Context context){this.context=context;}
@@ -73,12 +79,41 @@ final class PodByteStreamServices implements Closeable {
     private static int number(JSONObject args,String name,int minimum,int maximum)throws Exception{Object raw=args.get(name);if(!(raw instanceof Number))throw new IllegalArgumentException("Invalid "+name);double value=((Number)raw).doubleValue();if(!Double.isFinite(value)||value!=Math.rint(value)||value<minimum||value>maximum)throw new IllegalArgumentException("Invalid "+name);return (int)value;}
     private synchronized Endpoint stream(String id){openCheck();Endpoint s=streams.get(id);if(s==null||s.closed.get())throw new IllegalArgumentException("Unknown stream");return s;}
     private static void closeQuietly(Closeable closeable){try{closeable.close();}catch(Exception ignored){}}
-    private void removeStream(String id){Endpoint endpoint;synchronized(this){endpoint=streams.remove(id);}if(endpoint!=null)closeQuietly(endpoint);}
+    private synchronized Endpoint enterStream(String id) {
+        Endpoint endpoint=stream(id);
+        endpoint.operations++;
+        return endpoint;
+    }
+    private synchronized void leaveStream(Endpoint endpoint) { endpoint.operations--; }
+    private synchronized JSONObject claim(String id) throws Exception {
+        Endpoint endpoint=stream(id);
+        if(!id.equals(endpoint.originalId)||endpoint.operations!=0)
+            throw new IllegalStateException("Stream is not at a handoff boundary");
+        String channel="stream-"+UUID.randomUUID();
+        JSONObject result=new JSONObject().put("id",channel);
+        streams.remove(id);
+        endpoint.streamId=channel;
+        streams.put(channel,endpoint);
+        handedOff.put(id,endpoint);
+        return result;
+    }
+    private void removeStream(String id) {
+        Endpoint endpoint;
+        synchronized(this) {
+            endpoint=streams.get(id);
+            if(endpoint==null)endpoint=handedOff.get(id);
+            if(endpoint!=null){
+                streams.remove(endpoint.streamId);
+                handedOff.remove(endpoint.originalId);
+            }
+        }
+        if(endpoint!=null)closeQuietly(endpoint);
+    }
     private void removeListener(String id){Listener listener;synchronized(this){listener=listeners.remove(id);}if(listener!=null)closeQuietly(listener);}
     private void removeTcpListener(String id){TcpListener listener;synchronized(this){listener=tcpListeners.remove(id);}if(listener!=null)closeQuietly(listener);}
     /** Package-private injection exercises actual stream/deadline ownership with
      * loopback sockets; it is not a guest API or a Bluetooth acceptance claim. */
-    synchronized String attach(InputStream input,OutputStream output,Closeable owner){capacity();String id="stream-"+(++sequence);streams.put(id,new Endpoint(input,output,owner));return id;}
+    synchronized String attach(InputStream input,OutputStream output,Closeable owner){capacity();String id="stream-"+(++sequence);streams.put(id,new Endpoint(id,input,output,owner));return id;}
     JSONObject execute(String method,JSONObject args,CancellationSignal cancellation)throws Exception {
         openCheck();cancellation.throwIfCanceled();
         if("tcp.addresses".equals(method)){
@@ -116,7 +151,13 @@ final class PodByteStreamServices implements Closeable {
             try{socket=listener.socket.accept(timeout);cancellation.throwIfCanceled();String address=socket.getRemoteDevice().getAddress(),name=socket.getRemoteDevice().getName();String streamId=attach(socket.getInputStream(),socket.getOutputStream(),socket);socket=null;try{return new JSONObject().put("id",streamId).put("remoteAddress",address).put("remoteName",name==null?JSONObject.NULL:name);}catch(Exception error){removeStream(streamId);throw error;}}
             finally{if(socket!=null)closeQuietly(socket);cancellation.setOnCancelListener(null);listener.accepting.set(false);}
         }
-        String id=args.getString("id");Endpoint endpoint=stream(id);
+        String id=args.getString("id");
+        if("stream.claim".equals(method))return claim(id);
+        Endpoint endpoint=enterStream(id);
+        try{return executeStream(method,args,cancellation,id,endpoint);}
+        finally{leaveStream(endpoint);}
+    }
+    private JSONObject executeStream(String method,JSONObject args,CancellationSignal cancellation,String id,Endpoint endpoint)throws Exception {
         if("stream.prepareFile".equals(method))return prepareFile(endpoint,args,cancellation);
         if("stream.dropFile".equals(method)){
             synchronized(endpoint.outgoing){endpoint.outgoing.remove(args.getString("reference"));}
@@ -206,5 +247,5 @@ final class PodByteStreamServices implements Closeable {
 
     /** Dispose a handle created after its cancelled request lost delivery. */
     void discard(JSONObject value){String id=value.optString("id","");if(id.startsWith("stream-"))removeStream(id);else if(id.startsWith("listener-"))removeListener(id);else if(id.startsWith("tcp-listener-"))removeTcpListener(id);}
-    public void close(){ArrayList<Closeable> handles=new ArrayList<>();synchronized(this){if(closed)return;closed=true;handles.addAll(streams.values());handles.addAll(listeners.values());handles.addAll(tcpListeners.values());streams.clear();listeners.clear();tcpListeners.clear();}for(Closeable handle:handles)closeQuietly(handle);deadlines.shutdownNow();}
+    public void close(){ArrayList<Closeable> handles=new ArrayList<>();synchronized(this){if(closed)return;closed=true;handles.addAll(streams.values());handles.addAll(listeners.values());handles.addAll(tcpListeners.values());streams.clear();handedOff.clear();listeners.clear();tcpListeners.clear();}for(Closeable handle:handles)closeQuietly(handle);deadlines.shutdownNow();}
 }
