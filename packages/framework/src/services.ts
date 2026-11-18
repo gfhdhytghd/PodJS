@@ -180,12 +180,12 @@ __onHostEvent(event => {
   if(event.ok===true&&(request.method==='stream.read.bytes'||request.method==='file.read.bytes')&&!(event.value&&typeof event.value==='object'&&(event.value as Record<string,unknown>).bytes instanceof Uint8Array)){
     event.ok=false;event.code='invalid_bytes';event.message='Missing byte attachment';
   }
-  pending.delete(event.id);
-  serviceDiagnosticComplete(request.method,request.diagnosticSite,event.ok===true);
   if (event.ok === true) traceServiceCallback(request.method,'resolve',()=>request.resolve(event.value));
   else traceServiceCallback(request.method,'reject',()=>request.reject(new HostServiceError(String(event.code ?? "host_error"), String(event.message ?? "Host operation failed"),
     event.code==='resolution_limit'&&(event.mirrorIndex===0||event.mirrorIndex===1)?event.mirrorIndex:undefined,
     event.nativeTransportFailure===true?true:undefined)));
+  pending.delete(event.id);
+  serviceDiagnosticComplete(request.method,request.diagnosticSite,event.ok===true);
 });
 /** Cancellation stops delivery; a mutation already committed by the host is not undone. */
 export function hostOperation<T>(method: string, args: Record<string, unknown>): HostOperation<T> {
