@@ -81,7 +81,7 @@ final class PodResumableObjects {
         }
     }
     private JSONObject executeUnchecked(String method,JSONObject a)throws Exception {
-        if("file.resumable.status".equals(method)&&"probe".equals(a.optString("operation")))return new JSONObject().put("version",1).put("elapsedMillis",SystemClock.elapsedRealtime()).put("chunkBytes",65536).put("maxObjectBytes",16777216).put("maxInFlightObjects",4).put("maxStagingBytes",64*1024*1024).put("maxJournalBytes",JOURNAL_BYTES).put("durable",true).put("fencing",true).put("chunkReceipt",true).put("methods",new JSONArray(new String[]{"file.resumable.stage","file.resumable.status","file.resumable.missing","file.resumable.finalize","file.resumable.release"}));
+        if("file.resumable.status".equals(method)&&"probe".equals(a.optString("operation")))return new JSONObject().put("version",1).put("elapsedMillis",SystemClock.elapsedRealtime()).put("chunkBytes",65536).put("maxObjectBytes",16777216).put("maxInFlightObjects",4).put("maxStagingBytes",64*1024*1024).put("maxJournalBytes",JOURNAL_BYTES).put("durable",true).put("fencing",true).put("chunkReceipt",true).put("requestBindings",true).put("methods",new JSONArray(new String[]{"file.resumable.stage","file.resumable.status","file.resumable.missing","file.resumable.finalize","file.resumable.release"}));
         String scope=id(a,"scope",64);
         try(RandomAccessFile lf=new RandomAccessFile(lock,"rw")){
             FileLock held;try{held=lf.getChannel().tryLock();}catch(OverlappingFileLockException e){throw new IOException("BUSY");}if(held==null)throw new IOException("BUSY");
@@ -103,12 +103,24 @@ final class PodResumableObjects {
                     JSONObject result;
                     if("file.resumable.status".equals(method)&&"readOnly".equals(a.optString("operation"))){db.execSQL("UPDATE scopes SET read_only=1 WHERE scope=?",new Object[]{scope});result=new JSONObject();}
                     else if("file.resumable.status".equals(method)&&"check".equals(a.optString("operation")))result=new JSONObject();
+                    else if("file.resumable.status".equals(method)&&"requestBindings".equals(a.optString("operation")))result=requestBindings(db,a,scope);
                     else result=object(db,method,a,scope);
                     db.execSQL("UPDATE scopes SET deadline=?,retain_until=max(retain_until,?),retain_elapsed=max(retain_elapsed,?) WHERE scope=?",new Object[]{SystemClock.elapsedRealtime()+LEASE,System.currentTimeMillis()+RETENTION,SystemClock.elapsedRealtime()+RETENTION,scope});
                     db.setTransactionSuccessful();return result;
                 }finally{db.endTransaction();try(FileChannel fd=FileChannel.open(journal.getParentFile().toPath(),StandardOpenOption.READ)){fd.force(true);}}
             }
         }
+    }
+    private static JSONObject requestBindings(SQLiteDatabase db,JSONObject args,String scope)throws Exception {
+        String after=args.has("after")?id(args,"after",32):"";
+        long limit=integer(args,"limit",128);
+        if(limit==0)throw new IOException("INVALID_FRAME");
+        JSONArray entries=new JSONArray();
+        try(Cursor c=db.rawQuery("SELECT id,digest FROM requests WHERE scope=? AND id>? ORDER BY id LIMIT ?",
+                new String[]{scope,after,Long.toString(limit)})){
+            while(c.moveToNext())entries.put(new JSONObject().put("id",c.getString(0)).put("digest",c.getString(1)));
+        }
+        return new JSONObject().put("entries",entries);
     }
     private JSONObject object(SQLiteDatabase db,String method,JSONObject a,String scope)throws Exception {
         JSONObject m=manifest(a.getJSONObject("object"));String oid=m.getString("transfer_id"),saved=scalar(db,"SELECT manifest FROM objects WHERE scope=? AND id=?",scope,oid);

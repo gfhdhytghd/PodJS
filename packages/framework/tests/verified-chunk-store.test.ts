@@ -68,3 +68,23 @@ test('receipt-only staging validates the durable result for the current raw bloc
  expect(await store.stage(lease,object,0,payload,request)).toEqual(result);
  expect(rawCalls.at(-1)).not.toHaveProperty('receiptOnly');
 });
+
+test('request binding pages validate scope, cursor progress and native results',async()=>{
+ const lease={scope:'a'.repeat(64),connectionId:'b'.repeat(32),epoch:1};
+ const entries=Array.from({length:128},(_,i)=>({id:i.toString(16).padStart(32,'0'),digest:'c'.repeat(64)}));
+ const calls:Record<string,unknown>[]=[];
+ let result:unknown={entries};
+ const store=new VerifiedChunkStore(async<T>(method:string,args:Record<string,unknown>)=>{
+  expect(method).toBe('file.resumable.status');calls.push(args);return result as T;
+ });
+ const first=await store.requestBindings(lease);
+ expect(first).toEqual({entries,next:entries.at(-1)!.id});
+ expect(calls[0]).toEqual({operation:'requestBindings',...lease,limit:128});
+ result={entries:[]};
+ expect(await store.requestBindings(lease,first.next)).toEqual({entries:[]});
+ expect(calls[1]).toEqual({...calls[0],after:first.next});
+ for(const invalid of [{entries:[entries[0]]},{entries:[{id:'f'.repeat(32),digest:'wrong'}]},{entries:[...entries,entries[0]]},{}]){
+  result=invalid;
+  await expect(store.requestBindings(lease,first.next)).rejects.toThrow('JOURNAL_CORRUPT');
+ }
+});

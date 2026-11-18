@@ -7,9 +7,12 @@ export const VERIFIED_CHUNK_BYTES=65536;
 export interface VerifiedObject {id:string;size:number;sha256:string;chunkHashes:readonly string[]}
 export interface ObjectLease {scope:string;connectionId:string;epoch:number}
 export interface VerifiedObjectStatus {state:'PENDING'|'PARTIAL'|'STAGED';missing:number[]}
+export interface VerifiedRequestBinding {id:string;digest:string}
 export interface VerifiedChunkReceipt {index:number;bytes:number;sha256:string;bindingId:string;requestDigest:string;durable:true}
 export interface VerifiedPublication {path:string;size:number;sha256:string}
-export interface VerifiedChunkRuntime {version:1;methods:readonly string[];chunkBytes:65536;maxObjectBytes:number;maxInFlightObjects:number;maxStagingBytes:number;maxJournalBytes:number;durable:true;fencing:true;chunkReceipt?:true;elapsedMillis:number}
+export interface VerifiedChunkRuntime {version:1;methods:readonly string[];chunkBytes:65536;maxObjectBytes:number;maxInFlightObjects:number;maxStagingBytes:number;maxJournalBytes:number;durable:true;fencing:true;chunkReceipt?:true;requestBindings?:true;elapsedMillis:number}
+const REQUEST_BINDING_PAGE_SIZE=128;
+const requestId=(value:string)=>/^[0-9a-f]{32}$/.test(value);
 export type ChunkHost=<T>(method:string,args:Record<string,unknown>)=>Promise<T>;
 const hex=(value:string)=>/^[0-9a-f]{64}$/.test(value);
 export function validateVerifiedObject(value:VerifiedObject):void {
@@ -38,6 +41,22 @@ export class VerifiedChunkStore {
   return Object.freeze({scope,connectionId,epoch:r.epoch});
  }
  async check(lease:ObjectLease):Promise<void>{await this.invoke('file.resumable.status',{operation:'check',...lease});}
+ /** List only durable binding metadata under the current lease. The cursor
+  * is the last returned ID, and a short page ends the listing. */
+ async requestBindings(lease:ObjectLease,after?:string):Promise<{entries:VerifiedRequestBinding[];next?:string}>{
+  if(after!==undefined&&!requestId(after))throw Error('invalid_verified_request_cursor');
+  const result=await this.invoke<{entries:VerifiedRequestBinding[]}>('file.resumable.status',{
+   operation:'requestBindings',...lease,...(after===undefined?{}:{after}),limit:REQUEST_BINDING_PAGE_SIZE,
+  });
+  if(!Array.isArray(result?.entries)||result.entries.length>REQUEST_BINDING_PAGE_SIZE)throw new VerifiedChunkError('JOURNAL_CORRUPT');
+  let last=after??'';
+  for(const entry of result.entries){
+   if(typeof entry?.id!=='string'||!requestId(entry.id)||entry.id<=last||typeof entry.digest!=='string'||!hex(entry.digest))
+    throw new VerifiedChunkError('JOURNAL_CORRUPT');
+   last=entry.id;
+  }
+  return {entries:result.entries,...(result.entries.length===REQUEST_BINDING_PAGE_SIZE?{next:last}:{})};
+ }
  async revokeWrites(lease:ObjectLease):Promise<void>{await this.invoke('file.resumable.status',{operation:'readOnly',...lease});}
  async collect(scope:string,discardPublication=false):Promise<void>{await this.invoke('file.resumable.status',{operation:'collect',scope,discardPublication});}
  async status(lease:ObjectLease,object:VerifiedObject):Promise<VerifiedObjectStatus>{validateVerifiedObject(object);return this.invoke('file.resumable.status',{operation:'object',...lease,object});}
@@ -55,7 +74,7 @@ export class VerifiedChunkStore {
  }
  private async writeChunk<T>(lease:ObjectLease,object:VerifiedObject,index:number,bytes:Uint8Array,request:{id:string;digest:string},receiptOnly:boolean):Promise<T>{
   validateVerifiedObject(object);
-  if(!Number.isSafeInteger(index)||index<0||index>=object.chunkHashes.length||bytes.length!==Math.min(VERIFIED_CHUNK_BYTES,object.size-index*VERIFIED_CHUNK_BYTES)||!/^[0-9a-f]{32}$/.test(request.id)||!hex(request.digest))throw Error('invalid_verified_chunk');
+  if(!Number.isSafeInteger(index)||index<0||index>=object.chunkHashes.length||bytes.length!==Math.min(VERIFIED_CHUNK_BYTES,object.size-index*VERIFIED_CHUNK_BYTES)||!requestId(request.id)||!hex(request.digest))throw Error('invalid_verified_chunk');
   const method='file.resumable.stage';
   const args={...lease,object,index,bindingId:request.id,requestDigest:request.digest,...(receiptOnly?{receiptOnly:true}:{})};
   if(this.byteHost){const value=await this.byteHost<T>(method,args,bytes);if(value&&typeof value==='object'&&'error' in value&&typeof value.error==='string')throw new VerifiedChunkError(value.error,'detail' in value?String(value.detail):undefined);return value;}
