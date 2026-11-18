@@ -66,9 +66,14 @@ final class PodTransferFrames {
     }
 
     static Header read(InputStream input) throws IOException {
+        return read(input,()->{});
+    }
+
+    static Header read(InputStream input,Runnable firstByte) throws IOException {
         byte[] prefix = new byte[PREFIX];
         int first = input.read();
         if (first == -1) throw new EOFException("EOF");
+        firstByte.run();
         prefix[0] = (byte)first;
         readExact(input, prefix, 1, prefix.length - 1);
         ByteBuffer bytes = ByteBuffer.wrap(prefix);

@@ -133,6 +133,7 @@ final class PodByteStreamServices implements Closeable {
             if(channel!=null)frameDrain.execute(()->{
                 try{channel.awaitClosed();}
                 catch(InterruptedException interrupted){Thread.currentThread().interrupt();}
+                catch(Exception cleanup){android.util.Log.w("PodTransfer","Could not retire framed index",cleanup);}
                 finally{synchronized(this){retiring.remove(retiredId,channel);}}
             });
         }
@@ -148,7 +149,7 @@ final class PodByteStreamServices implements Closeable {
         return channel.guard(epoch);
     }
 
-    private void revoke(String id)throws InterruptedException {
+    private void revoke(String id)throws Exception {
         PodTransferChannel channel;
         synchronized(this){
             Endpoint endpoint=streams.get(id);
@@ -217,8 +218,15 @@ final class PodByteStreamServices implements Closeable {
             synchronized(endpoint){
                 if(endpoint.originalId.equals(id)||endpoint.closed.get()||endpoint.channel!=null)
                     throw new IOException("AUTH_REVOKED");
-                endpoint.channel=new PodTransferChannel(endpoint.input,endpoint.output,frameHashes,
+                PodTransferChannel prepared=new PodTransferChannel(endpoint.input,endpoint.output,frameHashes,
                         frameJournal,frameWriter,framedJournal,()->removeStream(id),deadlines,frameSource,frameSender);
+                prepared.attachIndex(new PodTransferIndex(context.getCacheDir()));
+                endpoint.channel=prepared;
+                if(endpoint.closed.get()){
+                    prepared.close();
+                    prepared.awaitClosed();
+                    throw new IOException("AUTH_REVOKED");
+                }
             }
             return new JSONObject();
         }
@@ -245,7 +253,7 @@ final class PodByteStreamServices implements Closeable {
             channel.retire();return new JSONObject();
         }
         if("stream.framedState".equals(method)){
-            return new JSONObject().put("progress",channel.progress());
+            return channel.state();
         }
         if("stream.framedApplied".equals(method)){
             channel.markApplied(args.getInt("slot"));return new JSONObject();
