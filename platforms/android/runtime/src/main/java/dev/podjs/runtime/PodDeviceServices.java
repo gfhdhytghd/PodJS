@@ -143,6 +143,7 @@ public final class PodDeviceServices implements AutoCloseable {
             case "file.gzipBytes": return fileGzipBytes(args);
             case "file.gunzip": return fileTranscode(args, true);
             case "file.openText": return fileOpenText(args);
+            case "file.projectJson": return fileProjectJson(args);
             case "file.readTextChunk": return fileReadTextChunk(args);
             case "file.closeText": return fileCloseText(args);
             case "file.createTemp": return fileCreateTemp(args);
@@ -1029,6 +1030,30 @@ public final class PodDeviceServices implements AutoCloseable {
             return new JSONObject().put("deleted",deleted);
         });
     }
+
+    private JSONObject fileProjectJson(JSONObject args) throws Exception {
+        File file = safeFile(required(args, "path"));
+        long expected = args.getLong("size");
+        if (expected < 0 || !file.isFile() || file.length() != expected)
+            return new JSONObject().put("kind", "io");
+        byte[] selection = args.getJSONObject("selection").toString().getBytes(StandardCharsets.UTF_8);
+        byte[] tokens = args.getJSONArray("tokens").toString().getBytes(StandardCharsets.UTF_8);
+        if (selection.length > 16384 || tokens.length > 1024)
+            return new JSONObject().put("kind", "invalid_selection");
+        System.loadLibrary("podjs_android");
+        byte[] result;
+        try (android.os.ParcelFileDescriptor input = android.os.ParcelFileDescriptor.open(file, android.os.ParcelFileDescriptor.MODE_READ_ONLY)) {
+            if (input.getStatSize() != expected) return new JSONObject().put("kind", "io");
+            result = nativeProjectJson(input.getFd(), selection, tokens);
+        }
+        if (result == null) return new JSONObject().put("kind", "io");
+        String text = new String(result, StandardCharsets.UTF_8);
+        if (text.startsWith("{")) return new JSONObject().put("kind", "object").put("json", text);
+        if (text.matches("token:[0-7]")) return new JSONObject().put("kind", "token").put("index", text.charAt(6) - '0');
+        return new JSONObject().put("kind", text);
+    }
+
+    private static native byte[] nativeProjectJson(int fd, byte[] selection, byte[] tokens);
 
     private File safeFile(String path) throws IOException {
         if (path.isEmpty() || path.startsWith("/") || path.indexOf('\0') >= 0) throw new IllegalArgumentException("invalid_path");

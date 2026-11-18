@@ -33,6 +33,7 @@ pub mod html;
 pub mod html_preview;
 pub mod xml;
 pub mod json_projection;
+pub mod file_json_projection;
 pub mod text_wrap;
 mod pak_reader;
 mod pak_integrity;
