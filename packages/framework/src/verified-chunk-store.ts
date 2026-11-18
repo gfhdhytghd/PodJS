@@ -7,8 +7,9 @@ export const VERIFIED_CHUNK_BYTES=65536;
 export interface VerifiedObject {id:string;size:number;sha256:string;chunkHashes:readonly string[]}
 export interface ObjectLease {scope:string;connectionId:string;epoch:number}
 export interface VerifiedObjectStatus {state:'PENDING'|'PARTIAL'|'STAGED';missing:number[]}
+export interface VerifiedChunkReceipt {index:number;bytes:number;sha256:string;bindingId:string;requestDigest:string;durable:true}
 export interface VerifiedPublication {path:string;size:number;sha256:string}
-export interface VerifiedChunkRuntime {version:1;methods:readonly string[];chunkBytes:65536;maxObjectBytes:number;maxInFlightObjects:number;maxStagingBytes:number;maxJournalBytes:number;durable:true;fencing:true;elapsedMillis:number}
+export interface VerifiedChunkRuntime {version:1;methods:readonly string[];chunkBytes:65536;maxObjectBytes:number;maxInFlightObjects:number;maxStagingBytes:number;maxJournalBytes:number;durable:true;fencing:true;chunkReceipt?:true;elapsedMillis:number}
 export type ChunkHost=<T>(method:string,args:Record<string,unknown>)=>Promise<T>;
 const hex=(value:string)=>/^[0-9a-f]{64}$/.test(value);
 export function validateVerifiedObject(value:VerifiedObject):void {
@@ -41,12 +42,24 @@ export class VerifiedChunkStore {
  async collect(scope:string,discardPublication=false):Promise<void>{await this.invoke('file.resumable.status',{operation:'collect',scope,discardPublication});}
  async status(lease:ObjectLease,object:VerifiedObject):Promise<VerifiedObjectStatus>{validateVerifiedObject(object);return this.invoke('file.resumable.status',{operation:'object',...lease,object});}
  async missing(lease:ObjectLease,object:VerifiedObject):Promise<number[]>{validateVerifiedObject(object);return (await this.invoke<{missing:number[]}>('file.resumable.missing',{...lease,object})).missing;}
- async stage(lease:ObjectLease,object:VerifiedObject,index:number,bytes:Uint8Array,request:{id:string;digest:string}):Promise<VerifiedObjectStatus>{
+ stage(lease:ObjectLease,object:VerifiedObject,index:number,bytes:Uint8Array,request:{id:string;digest:string}):Promise<VerifiedObjectStatus>{
+  return this.writeChunk(lease,object,index,bytes,request,false);
+ }
+ /** Acknowledge the current block and its durable request binding. Object
+  * status and missing ranges are obtained separately with explicit verification. */
+ async stageReceipt(lease:ObjectLease,object:VerifiedObject,index:number,bytes:Uint8Array,request:{id:string;digest:string}):Promise<VerifiedChunkReceipt>{
+  const result=await this.writeChunk<VerifiedChunkReceipt>(lease,object,index,bytes,request,true);
+  if(result?.durable!==true||result.index!==index||result.bytes!==bytes.length||result.sha256!==object.chunkHashes[index]||
+    result.bindingId!==request.id||result.requestDigest!==request.digest)throw Error('invalid_verified_chunk_receipt');
+  return result;
+ }
+ private async writeChunk<T>(lease:ObjectLease,object:VerifiedObject,index:number,bytes:Uint8Array,request:{id:string;digest:string},receiptOnly:boolean):Promise<T>{
   validateVerifiedObject(object);
   if(!Number.isSafeInteger(index)||index<0||index>=object.chunkHashes.length||bytes.length!==Math.min(VERIFIED_CHUNK_BYTES,object.size-index*VERIFIED_CHUNK_BYTES)||!/^[0-9a-f]{32}$/.test(request.id)||!hex(request.digest))throw Error('invalid_verified_chunk');
-  const args={...lease,object,index,bindingId:request.id,requestDigest:request.digest};
-  if(this.byteHost){const value=await this.byteHost<VerifiedObjectStatus>('file.resumable.stage',args,bytes);if(value&&typeof value==='object'&&'error' in value&&typeof value.error==='string')throw new VerifiedChunkError(value.error,'detail' in value?String(value.detail):undefined);return value;}
-  return this.invoke('file.resumable.stage',{...args,dataBase64:encodeBase64(bytes)});
+  const method='file.resumable.stage';
+  const args={...lease,object,index,bindingId:request.id,requestDigest:request.digest,...(receiptOnly?{receiptOnly:true}:{})};
+  if(this.byteHost){const value=await this.byteHost<T>(method,args,bytes);if(value&&typeof value==='object'&&'error' in value&&typeof value.error==='string')throw new VerifiedChunkError(value.error,'detail' in value?String(value.detail):undefined);return value;}
+  return this.invoke(method,{...args,dataBase64:encodeBase64(bytes)});
  }
  async finalize(lease:ObjectLease,object:VerifiedObject,path?:string):Promise<VerifiedPublication>{
   validateVerifiedObject(object);const r=await this.invoke<VerifiedPublication>('file.resumable.finalize',{...lease,object,...(path===undefined?{}:{path})});

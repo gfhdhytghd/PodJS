@@ -48,3 +48,23 @@ test('RVRESUMEC-IMPL-06 facade reserves four copies within unchanged 32 MiB core
  // AVD regression exercises these actual interleaved offers and WINDOW_FULL.
  expect(2*16777216*4).toBeGreaterThan(Number(calls[0]!.maxStagingBytes));
 });
+
+test('receipt-only staging validates the durable result for the current raw block',async()=>{
+ const lease={scope:'a'.repeat(64),connectionId:'b'.repeat(32),epoch:1};
+ const object={id:'c'.repeat(64),size:1,sha256:'d'.repeat(64),chunkHashes:['d'.repeat(64)]};
+ const request={id:'e'.repeat(32),digest:'f'.repeat(64)};
+ const receipt={durable:true,index:0,bytes:1,sha256:object.sha256,bindingId:request.id,requestDigest:request.digest};
+ const payload=Uint8Array.of(42);
+ const rawCalls:Record<string,unknown>[]=[];
+ let result:unknown=receipt;
+ const store=new VerifiedChunkStore(async()=>{throw Error('Expected the raw byte service');},async<T>(method:string,args:Record<string,unknown>,bytes:Uint8Array)=>{
+  expect(method).toBe('file.resumable.stage');expect(bytes).toBe(payload);rawCalls.push(args);return result as T;
+ });
+ expect(await store.stageReceipt(lease,object,0,payload,request)).toEqual(receipt);
+ expect(rawCalls[0]).toMatchObject({receiptOnly:true,bindingId:request.id,requestDigest:request.digest});
+ result={...receipt,index:1};
+ await expect(store.stageReceipt(lease,object,0,payload,request)).rejects.toThrow('invalid_verified_chunk_receipt');
+ result={state:'STAGED',missing:[]};
+ expect(await store.stage(lease,object,0,payload,request)).toEqual(result);
+ expect(rawCalls.at(-1)).not.toHaveProperty('receiptOnly');
+});

@@ -81,7 +81,7 @@ final class PodResumableObjects {
         }
     }
     private JSONObject executeUnchecked(String method,JSONObject a)throws Exception {
-        if("file.resumable.status".equals(method)&&"probe".equals(a.optString("operation")))return new JSONObject().put("version",1).put("elapsedMillis",SystemClock.elapsedRealtime()).put("chunkBytes",65536).put("maxObjectBytes",16777216).put("maxInFlightObjects",4).put("maxStagingBytes",64*1024*1024).put("maxJournalBytes",JOURNAL_BYTES).put("durable",true).put("fencing",true).put("methods",new JSONArray(new String[]{"file.resumable.stage","file.resumable.status","file.resumable.missing","file.resumable.finalize","file.resumable.release"}));
+        if("file.resumable.status".equals(method)&&"probe".equals(a.optString("operation")))return new JSONObject().put("version",1).put("elapsedMillis",SystemClock.elapsedRealtime()).put("chunkBytes",65536).put("maxObjectBytes",16777216).put("maxInFlightObjects",4).put("maxStagingBytes",64*1024*1024).put("maxJournalBytes",JOURNAL_BYTES).put("durable",true).put("fencing",true).put("chunkReceipt",true).put("methods",new JSONArray(new String[]{"file.resumable.stage","file.resumable.status","file.resumable.missing","file.resumable.finalize","file.resumable.release"}));
         String scope=id(a,"scope",64);
         try(RandomAccessFile lf=new RandomAccessFile(lock,"rw")){
             FileLock held;try{held=lf.getChannel().tryLock();}catch(OverlappingFileLockException e){throw new IOException("BUSY");}if(held==null)throw new IOException("BUSY");
@@ -115,9 +115,9 @@ final class PodResumableObjects {
         if(saved!=null&&!saved.equals(m.toString()))throw new IOException("OBJECT_CONFLICT");
         boolean stage="file.resumable.stage".equals(method),finish="file.resumable.finalize".equals(method),release="file.resumable.release".equals(method);
         if((stage||finish)&&"1".equals(scalar(db,"SELECT read_only FROM scopes WHERE scope=?",scope)))throw new IOException("JOB_CANCELLED");
-        byte[] bytes=null;String rid=null,rd=null;
+        byte[] bytes=null;String rid=null,rd=null;int index=-1;
         if(stage){
-            int index=(int)integer(a,"index",255);if(index>=m.getJSONArray("chunk_hashes").length())throw new IOException("INVALID_FRAME");
+            index=(int)integer(a,"index",255);if(index>=m.getJSONArray("chunk_hashes").length())throw new IOException("INVALID_FRAME");
             String encoded=a.optBoolean("_podByteMode")?null:a.getString("dataBase64");if(encoded!=null&&encoded.length()>87384)throw new IOException("INVALID_FRAME");
             bytes=encoded==null?PodBytePayload.input(a):Base64.decode(encoded,Base64.NO_WRAP);
             if((encoded!=null&&!encoded.equals(Base64.encodeToString(bytes,Base64.NO_WRAP)))||bytes.length!=Math.min(65536,m.getLong("size")-(long)index*65536)||!hash(bytes).equals(m.getJSONArray("chunk_hashes").getString(index)))throw new IOException("HASH_MISMATCH");
@@ -147,7 +147,19 @@ final class PodResumableObjects {
         try(PodSyncFileReceiver receiver=new PodSyncFileReceiver(context,application,scope)){
             if(release){core(receiver,command("cancel",oid));discardPublication(a,scope,oid);db.execSQL("UPDATE objects SET phase='released' WHERE scope=? AND id=?",new Object[]{scope,oid});return new JSONObject().put("released",true);}
             core(receiver,new JSONObject().put("method","offer").put("manifest",m));
-            if(stage){if(a.optBoolean("_podByteMode"))core(receiver,command("chunk",oid).put("index",a.getInt("index")),bytes);else core(receiver,command("chunk",oid).put("index",a.getInt("index")).put("data_base64",a.getString("dataBase64")));db.execSQL("INSERT OR IGNORE INTO requests VALUES(?,?,?)",new Object[]{scope,rid,rd});}
+            if(stage){
+                JSONObject chunk=command("chunk",oid).put("index",index);
+                if(a.optBoolean("_podByteMode"))core(receiver,chunk,bytes);
+                else core(receiver,chunk.put("data_base64",a.getString("dataBase64")));
+                db.execSQL("INSERT OR IGNORE INTO requests VALUES(?,?,?)",new Object[]{scope,rid,rd});
+                // The outer FULL transaction commits the request binding
+                // before the service delivers this current-block receipt.
+                if(a.optBoolean("receiptOnly",false)){
+                    return new JSONObject().put("durable",true).put("index",index).put("bytes",bytes.length)
+                        .put("sha256",m.getJSONArray("chunk_hashes").getString(index))
+                        .put("bindingId",rid).put("requestDigest",rd);
+                }
+            }
             if(finish){
                 File source=new File(core(receiver,command("finish",oid)).getString("path"));
                 String path=a.has("path")?a.getString("path"):"resumable-published/"+scope+"/"+oid+".bin";
