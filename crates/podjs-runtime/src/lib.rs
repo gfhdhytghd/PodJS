@@ -455,6 +455,26 @@ fn budget_upload_texture(surface:&UiSurface,bridge:Option<&Rc<RefCell<PodBridge>
     handle
 }
 
+fn is_service_event(raw: &str) -> bool {
+    serde_json::from_str::<Value>(raw).is_ok_and(|event| {
+        matches!(event.get("t").and_then(Value::as_str), Some("service.result" | "browser.auth.status"))
+    })
+}
+
+fn take_pod_event<'js>(ctx: Ctx<'js>, bridge: &mut PodBridge) -> rquickjs::Result<Option<rquickjs::Value<'js>>> {
+    let index = if bridge.service_results_only {
+        bridge.events.iter().position(|raw| is_service_event(raw))
+    } else {
+        (!bridge.events.is_empty()).then_some(0)
+    };
+    let Some(index) = index else { return Ok(None) };
+    // Parse before removing the event. The next turn retains the reply if
+    // QuickJS cannot allocate its value.
+    let event = ctx.json_parse(bridge.events[index].as_bytes())?;
+    bridge.events.remove(index);
+    Ok(Some(event))
+}
+
 fn mount_pod(
     guest: &Guest,
     bridge: Rc<RefCell<PodBridge>>,
@@ -514,6 +534,11 @@ fn mount_pod(
         })?)?;
         let b = bridge.clone();
         ns.set(
+            "takeEvent",
+            Function::new(ctx.clone(), move |ctx| take_pod_event(ctx, &mut b.borrow_mut()))?,
+        )?;
+        let b = bridge.clone();
+        ns.set(
             "takeEvents",
             Function::new(ctx.clone(), move || {
                 let mut b = b.borrow_mut();
@@ -524,10 +549,7 @@ fn mount_pod(
                     let mut results = Vec::new();
                     let mut retained = VecDeque::new();
                     for event in b.events.drain(..) {
-                        if serde_json::from_str::<Value>(&event)
-                            .is_ok_and(|value| matches!(value.get("t").and_then(Value::as_str),
-                                Some("service.result" | "browser.auth.status")))
-                        {
+                        if is_service_event(&event) {
                             results.push(event);
                         } else {
                             retained.push_back(event);
@@ -1442,14 +1464,27 @@ pub extern "C" fn pod_runtime_pump_services(runtime: *mut PodRuntime) -> i32 {
     // Unlike frame(), this does not tick the UI surface or advance its committed
     // draw snapshot. Hosts call it for lifecycle/IO completion, never as a timer.
     runtime.net.begin_tick();
-    if let Err(error) = runtime.guest.eval(
-        "pod-service-completion",
-        "if (typeof globalThis.__pocketPumpServices === 'function') globalThis.__pocketPumpServices();",
-    ) {
+    if let Err(error) = call_service_pump(&runtime.guest) {
         set_error(format!("guest service pump failed: {error}"));
         return ERR_GUEST;
     }
     OK
+}
+
+fn call_service_pump(guest: &Guest) -> anyhow::Result<()> {
+    let result = guest.with(|ctx| {
+        let pump: rquickjs::Value = ctx.globals().get("__pocketPumpServices").catch(&ctx)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        if let Some(pump) = pump.as_function() {
+            pump.call::<_, ()>(()).catch(&ctx).map_err(|error| anyhow::anyhow!("{error}"))?;
+        }
+        Ok(())
+    });
+    if result.is_ok() {
+        guest.drain_jobs();
+    }
+    guest.keep_collection_below_limit();
+    result
 }
 
 /// Opt-in interactive host budget. No ABI struct is enlarged; existing hosts
@@ -1497,15 +1532,17 @@ pub extern "C" fn pod_runtime_pump_service_results(runtime: *mut PodRuntime) -> 
         let mut bridge = runtime.bridge.borrow_mut();
         std::mem::replace(&mut bridge.service_results_only, true)
     };
-    // Keep the mode active through eval's Promise-job drain, without retaining
+    // Keep the mode active through the Promise-job drain, without retaining
     // a RefCell borrow while guest code can call pod.takeEvents().
-    let result = runtime.guest.eval(
-        "pod-service-results",
-        "if (typeof globalThis.__pocketPumpServices === 'function') globalThis.__pocketPumpServices();",
-    );
+    let denials = memory_budget::denial_count();
+    let result = call_service_pump(&runtime.guest);
     runtime.bridge.borrow_mut().service_results_only = previous_mode;
     if let Err(error) = result {
-        set_error(format!("guest service result pump failed: {error}"));
+        if memory_budget::denial_count() != denials {
+            set_error("memory budget deferred service result delivery");
+        } else {
+            set_error(format!("guest service result pump failed: {error}"));
+        }
         return ERR_GUEST;
     }
     OK
@@ -3862,6 +3899,38 @@ mod tests {
         assert_eq!(pod_runtime_set_lifecycle(runtime, 0), OK);
         assert_eq!(pod_runtime_frame(runtime, std::ptr::null()), OK);
         assert_eq!(runtime_mut(runtime).unwrap().frame_number, 2);
+        pod_runtime_destroy(runtime);
+    }
+
+    #[test]
+    fn service_result_survives_guest_allocation_denial_before_delivery() {
+        let target = CString::new("android-watch").unwrap();
+        let caps = CString::new("[]").unwrap();
+        let runtime = pod_runtime_create(&valid_config(&target, &caps));
+        let source = br#"
+            globalThis.frame = () => {};
+            globalThis.readResult = () => pod.takeEvent
+                ? pod.takeEvent()
+                : JSON.parse(pod.takeEvents() || '[]')[0];
+        "#;
+        validate(runtime, "android-watch", b"pak", source, &[]);
+        assert_eq!(pod_runtime_eval_bundle(runtime, source.as_ptr(), source.len(), std::ptr::null()), OK);
+        let payload = CString::new(json!({"t":"service.result","id":41,"ok":true,"value":"x".repeat(96*1024)}).to_string()).unwrap();
+        assert_eq!(pod_runtime_post_event(runtime, payload.as_ptr()), OK);
+        let owner = runtime_mut(runtime).unwrap();
+        let ceiling = owner.guest.memory_usage().malloc_size as usize + 4096;
+        owner.guest.with(|ctx| {
+            let read: Function = ctx.globals().get("readResult").unwrap();
+            unsafe { rquickjs::qjs::JS_SetMemoryLimit(rquickjs::qjs::JS_GetRuntime(ctx.as_raw().as_ptr()), ceiling as _) };
+            let denied = read.call::<_, rquickjs::Value>(()).is_err();
+            let _ = ctx.catch();
+            unsafe { rquickjs::qjs::JS_SetMemoryLimit(rquickjs::qjs::JS_GetRuntime(ctx.as_raw().as_ptr()), usize::MAX as _) };
+            assert!(denied);
+            assert_eq!(owner.bridge.borrow().events.len(), 1, "denied delivery consumes the host reply");
+            let event: rquickjs::Object = read.call(()).unwrap();
+            assert_eq!(event.get::<_, u32>("id").unwrap(), 41);
+            assert!(read.call::<_, rquickjs::Value>(()).unwrap().is_undefined());
+        });
         pod_runtime_destroy(runtime);
     }
 
