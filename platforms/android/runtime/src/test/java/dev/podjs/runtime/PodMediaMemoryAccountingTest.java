@@ -127,13 +127,24 @@ public class PodMediaMemoryAccountingTest {
         context.getResources().getDisplayMetrics().widthPixels=466;context.getResources().getDisplayMetrics().heightPixels=466;
         Ledger ledger=new Ledger(22_000_000);PodMediaMemoryAccounting memory=new PodMediaMemoryAccounting(PodVideoCodecGate.PROCESS,ledger);
         Field process=PodMediaMemoryAccounting.class.getDeclaredField("process");process.setAccessible(true);Object previous=process.get(null);process.set(null,memory);
-        PodMediaMemoryBudget.Reservation busy=memory.tryReserve(new PodMediaMemoryBudget.Owner(-1,0,PodMediaMemoryBudget.Priority.CURRENT,PodMediaMemoryBudget.Kind.COMPRESSED_BUFFER),22_000_000);
+        PodMediaMemoryBudget.Reservation busy=memory.tryReserve(new PodMediaMemoryBudget.Owner(-1,0,PodMediaMemoryBudget.Priority.CURRENT,PodMediaMemoryBudget.Kind.COMPRESSED_BUFFER),21_950_000);
         PodVideoSessionServices service=new PodVideoSessionServices(context,new PodVideoDecoderBudget(3));
         try{
             Class<?> type=Class.forName("dev.podjs.runtime.PodVideoSessionServices$Session");Constructor<?> ctor=type.getDeclaredConstructor(PodVideoSessionServices.class,String.class);ctor.setAccessible(true);
             Object session=ctor.newInstance(service,"selected");Field slots=PodVideoSessionServices.class.getDeclaredField("sessions");slots.setAccessible(true);Map<String,Object> map=(Map<String,Object>)slots.get(service);map.put("selected",session);
             android.widget.FrameLayout host=new android.widget.FrameLayout(context);service.attachToParent(host);org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
-            assertSame(session,map.get("selected"));assertEquals(0,host.getChildCount());memory.release(busy);
+            assertSame(session,map.get("selected"));assertEquals(0,host.getChildCount());
+            PodVideoPendingAdoptionTest.f(type,"frameBinding").set(session,"late");
+            PodVideoPendingAdoptionTest.f(type,"prewarming").setBoolean(session,true);
+            PodVideoKeyframes cache=(PodVideoKeyframes)PodVideoPendingAdoptionTest.f(PodVideoSessionServices.class,"keyframes").get(service);
+            android.graphics.Bitmap pixels=android.graphics.Bitmap.createBitmap(32,32,android.graphics.Bitmap.Config.ARGB_8888);
+            PodVideoKeyframes.Frame frame=cache.put("late",pixels,false);
+            assertNotNull(frame);
+            Method prefix=PodVideoSessionServices.class.getDeclaredMethod("prefixFrameReady",String.class);
+            prefix.setAccessible(true);prefix.invoke(service,"late");
+            assertEquals(0,frame.pins);
+            assertNotEquals("prewarmed",PodVideoPendingAdoptionTest.f(type,"state").get(session));
+            cache.trim();memory.release(busy);
             service.attachToParent(host);org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();assertEquals(2,host.getChildCount());assertEquals(466L*466*12,ledger.held);
         }finally{memory.release(busy);service.close();org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();process.set(null,previous);}
         assertEquals(0,ledger.held);
@@ -187,6 +198,13 @@ public class PodMediaMemoryAccountingTest {
             assertEquals(PodMediaMemoryBudget.Kind.SURFACE,observed.get(1).kind);
             assertEquals(PodMediaMemoryBudget.Kind.COMPRESSED_BUFFER,observed.get(2).kind);
             assertEquals(0,leases.inUse());
+
+            PodVideoPendingAdoptionTest.Reply reusedWarm=new PodVideoPendingAdoptionTest.Reply();
+            service.dispatch("video.session.prepare",source.put("prewarm",true),reusedWarm);
+            assertEquals("decoder_admission_deferred",reusedWarm.error);
+            assertFalse(slots.containsKey("reused"));
+            assertEquals(0,host.getChildCount());
+            assertEquals(0,ledger.held);
         }finally{
             service.close();org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();process.set(null,previous);
         }

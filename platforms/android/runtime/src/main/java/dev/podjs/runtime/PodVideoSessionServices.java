@@ -255,7 +255,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     private void prefixFrameReady(String binding) {
         for(Session slot:new java.util.ArrayList<>(sessions.values()))if(binding.equals(slot.frameBinding)&&!slot.hasCachedFrame()&&!slot.hasRenderedFirstFrame){
             slot.revealKeyframe();
-            if(slot.prewarming){slot.state="prewarmed";slot.completePrepare();}
+            if(slot.prewarming&&slot.hasCachedFrame()){slot.state="prewarmed";slot.completePrepare();}
         }
     }
     /** A pixel standby has no player and occupies no live codec slot. */
@@ -366,7 +366,9 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                 ((ViewGroup) session.videoView.getParent()).removeView(session.videoView);
             session.videoView = null;
             PodMediaMemoryAccounting.close(session.surfaceCharge);session.surfaceCharge=null;
-            session.attachViews(parent);
+            try{session.attachViews(parent);}catch(RuntimeException unavailable){
+                sessions.remove(id);session.close();throw unavailable;
+            }
         }
         if (!decoderBudget.acquire()) {
             if (created) { sessions.remove(id); session.close(); }
@@ -1645,7 +1647,12 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             });
         }
         void revealKeyframe() {
-            if(hasCachedFrame())return;
+            ViewGroup host=parent;
+            // Prefix decoding may finish after a budget denial leaves the
+            // slot without views. Wait for an attached view before pinning.
+            if(hasCachedFrame()||host==null||videoView==null||videoView.getParent()!=host)return;
+            ViewGroup.LayoutParams layout=videoView.getLayoutParams();
+            if(!(layout instanceof FrameLayout.LayoutParams))return;
             PodVideoKeyframes.Frame frame=keyframes.acquire(frameBinding);
             if(frame==null)return;
             cachedFrame=frame;
@@ -1653,7 +1660,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             keyframeView.setScaleType(android.widget.ImageView.ScaleType.MATRIX);
             keyframeView.setImageBitmap(frame.pixels);
             keyframeView.setClickable(false);keyframeView.setFocusable(false);
-            parent.addView(keyframeView,new FrameLayout.LayoutParams((FrameLayout.LayoutParams)videoView.getLayoutParams()));
+            host.addView(keyframeView,new FrameLayout.LayoutParams((FrameLayout.LayoutParams)layout));
             // A prefix frame can arrive after native pointer tracking began.
             // Keep the existing page offset instead of snapping both layers to
             // the untransformed bounds while the finger is still down.
