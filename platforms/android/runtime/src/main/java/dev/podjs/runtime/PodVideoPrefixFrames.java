@@ -38,6 +38,8 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
     private final Map<PodMediaPrefixCache.Entry, Long> attempted=new HashMap<>();
     private final Map<PodMediaPrefixCache.Entry, String> bindings=new HashMap<>();
     private volatile boolean closed;
+    private final java.util.concurrent.atomic.AtomicBoolean waitingForDecoder=new java.util.concurrent.atomic.AtomicBoolean();
+    private final AutoCloseable codecLifecycle;
     private boolean scheduled,dirty,hasWindow;
     static final long MAX_PENDING_BYTES=(long)PodVideoKeyframes.MAX_EDGE*PodVideoKeyframes.MAX_EDGE*4;
     private long pendingBytes;
@@ -47,6 +49,12 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
     PodVideoPrefixFrames(PodMediaPrefixCache cache,Handler main,PodVideoKeyframes frames,java.util.function.Consumer<String> ready,PodVideoDecoderBudget budget){
         this.cache=cache;this.main=main;this.frames=frames;this.ready=ready;this.decoderBudget=budget;
         disk=new PodVideoKeyframeDisk(new java.io.File(cache.root,"decoded-keyframes"));
+        codecLifecycle=PodVideoCodecGate.PROCESS.observe(new PodVideoCodecGate.LifecycleListener(){
+            public void reserved(PodVideoCodecGate.Allocation allocation){}
+            public void released(PodVideoCodecGate.Allocation allocation){
+                if(waitingForDecoder.getAndSet(false))main.post(PodVideoPrefixFrames.this::signal);
+            }
+        });
         frames.onStored(this::persist);cache.setFrameListener(this);
     }
     private void persist(String binding,PodVideoKeyframes.Frame frame){
@@ -194,7 +202,13 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
                 if(hardware)reader=android.media.ImageReader.newInstance(width,height,ImageFormat.PRIVATE,2,android.hardware.HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE);
                 else format.setInteger(MediaFormat.KEY_COLOR_FORMAT,MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible);
                 android.util.Log.i("PodMediaCache","frame_backend entry="+entry.ordinal+" hardware="+(hardware?1:0)+" live="+(decoderBudget==null?0:decoderBudget.inUse()));
-                physical=PodVideoCodecGate.PROCESS.acquire(entry,0,"prefix",PodVideoCodecGate.OTHER);if(physical==null)return null;
+                PodVideoCodecGate gate=PodVideoCodecGate.PROCESS;
+                synchronized(gate){
+                    physical=hardware?gate.acquireCancellablePrefix(entry,PodProcessMemoryBudget.limit())
+                        :gate.acquire(entry,0,"prefix",PodVideoCodecGate.OTHER);
+                    if(physical==null)waitingForDecoder.set(true);
+                }
+                if(physical==null){decodeCancelled=true;return null;}
                 backend=true;codec=MediaCodec.createByCodecName(name);codec.configure(format,reader==null?null:reader.getSurface(),null,0);codec.start();physical.created();
                 long deadline=SystemClock.uptimeMillis()+800;boolean sample=false,eos=false;
                 MediaCodec.BufferInfo info=new MediaCodec.BufferInfo();
@@ -240,7 +254,7 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
                 try{if(codec!=null){try{codec.stop();}finally{codec.release();codecReleased=true;}}}
                 finally{
                     try{if(reader!=null)reader.close();}finally{
-                        boolean cancelled=hardware&&decoderBudget.spareCancelled();decodeCancelled=cancelled;
+                        boolean cancelled=hardware&&decoderBudget.spareCancelled();decodeCancelled|=cancelled;
                         try{if(codecReleased&&physical!=null)physical.close();if(hardware)decoderBudget.releaseSpare();}finally{extractor.release();}
                         if(backend)android.util.Log.i("PodMediaCache","frame_decode entry="+entry.ordinal+" hardware="+(hardware?1:0)+" success="+(decoded?1:0)+" cancelled="+(cancelled?1:0)+" duration_ms="+(SystemClock.uptimeMillis()-decodeStarted));
                     }
@@ -284,5 +298,5 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
             .put("pendingBytes",pendingBytes).put("pendingMaxBytes",MAX_PENDING_BYTES)
             .put("hardwareDisabled",hardwareFailed).put("diskMaxBytes",PodVideoKeyframeDisk.MAX_BYTES);
     }
-    @Override public void close(){closed=true;frames.onStored(null);cache.setFrameListener(null);synchronized(this){wanted.clear();}worker.shutdownNow();diskWorker.shutdown();}
+    @Override public void close(){closed=true;try{codecLifecycle.close();}catch(Exception ignored){}frames.onStored(null);cache.setFrameListener(null);synchronized(this){wanted.clear();}worker.shutdownNow();diskWorker.shutdown();}
 }

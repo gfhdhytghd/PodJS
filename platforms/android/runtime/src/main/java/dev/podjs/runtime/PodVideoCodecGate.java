@@ -96,9 +96,15 @@ final class PodVideoCodecGate {
     synchronized Permit acquire(String purpose,int priority){return acquire(purpose,0,purpose,priority);}
     synchronized Permit acquire(Object owner,long generation,String purpose,int priority) {return acquire(owner,generation,purpose,priority,6_000_000L);}
     synchronized Permit acquire(Object owner,long generation,String purpose,int priority,long estimatedBytes) {
+        return acquire(owner,generation,purpose,priority,estimatedBytes,priority==OTHER?2:MAXIMUM);
+    }
+    // The caller holds a spare lease that yields to a foreground prepare.
+    synchronized Permit acquireCancellablePrefix(Object owner,long processBudgetBytes){
+        return acquire(owner,0,"prefix",OTHER,6_000_000L,processBudgetBytes>=256_000_000L?MAXIMUM:2);
+    }
+    private Permit acquire(Object owner,long generation,String purpose,int priority,long estimatedBytes,int cap){
         byteRefusal=false;
-        // Speculation never turns a steady two-codec state into three codecs.
-        if(live>=(priority==OTHER?2:MAXIMUM))return null;
+        if(live>=cap)return null;
         long id=++sequence;
         Allocation allocation=new Allocation(id,owner,generation,purpose,priority,estimatedBytes);
         if(byteAdmission!=null&&!byteAdmission.admit(allocation)){byteRefusal=true;return null;}
