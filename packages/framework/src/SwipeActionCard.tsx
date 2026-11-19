@@ -1,4 +1,4 @@
-import { createEffect, createSignal, type JSX } from "solid-js";
+import { createEffect, createSignal, untrack, type JSX } from "solid-js";
 import { Image, Text, View, type NodeMirror } from "@pocketjs/framework/components";
 import { createGesture } from "@pocketjs/framework/gesture";
 import { onFrame } from "@pocketjs/framework/lifecycle";
@@ -14,8 +14,16 @@ export function SwipeActionCard(props:SwipeActionCardProps) {
   let node:NodeMirror|undefined;
   const [offset,setOffset]=createSignal(props.open?-props.revealWidth:0);
   let dragging=false,edge=false,dragStart=0,animation:{from:number;to:number;start:number}|null=null;
-  const animate=(to:number)=>{animation={from:offset(),to,start:Date.now()};};
-  onFrame(()=>{if(!animation)return;const part=Math.min(1,(Date.now()-animation.start)/180),eased=1-(1-part)*(1-part);setOffset(animation.from+(animation.to-animation.from)*eased);if(part>=1)animation=null;});
+  const animate=(to:number)=>{
+    const from=untrack(offset);
+    animation=from===to ? null : {from,to,start:Date.now()};
+  };
+  onFrame(()=>{
+    if(!animation)return;
+    const part=Math.min(1,(Date.now()-animation.start)/180),eased=1-(1-part)*(1-part);
+    setOffset(animation.from+(animation.to-animation.from)*eased);
+    if(part>=1)animation=null;
+  },()=>animation!==null);
   createEffect(()=>{const open=props.open,enabled=props.swipeEnabled;if(!dragging)animate(open&&enabled?-props.revealWidth:0);});
   createGesture({region:{node:()=>props.swipeEnabled?node:null},axis:"x",panSlop:8,onLongPress:props.onActions,
     onPanStart:c=>{edge=!props.open&&!!props.edgeSwipe?.startX(c.x-c.dx);if(edge)return;dragging=true;animation=null;dragStart=offset();props.onStartSwipe();},

@@ -1,18 +1,87 @@
 //! Immutable handoff from the guest lane to an independent renderer.
 use super::*;
-use pocketjs_core::{RasterResources, RenderResources};
+use pocketjs_core::{RasterResources, RenderResources, Ui};
+use std::sync::Arc;
+
+pub(super) struct CommittedDraw {
+    pub(super) words: Arc<Vec<u32>>,
+    pub(super) hash: u64,
+    words_hash: u64,
+    referenced_textures: Option<Vec<i32>>,
+}
+
+impl CommittedDraw {
+    pub(super) fn new() -> Self {
+        Self {
+            words: Arc::default(),
+            hash: 0,
+            words_hash: FNV_OFFSET,
+            // Empty lists use the whole texture registry.
+            referenced_textures: None,
+        }
+    }
+
+    pub(super) fn commit(&mut self, ui: &mut Ui) -> bool {
+        // draw() walks the tree and commits accessibility and inspector state.
+        // Hash and hand off that exact output, including on a paint-only change.
+        let words = &ui.draw().words;
+        if words != self.words.as_ref() {
+            self.words_hash = hash_words(words);
+            self.referenced_textures = draw_texture_refs::referenced(words);
+            if let Some(storage) = Arc::get_mut(&mut self.words) {
+                storage.clone_from(words);
+            } else {
+                // A rendering thread still owns the previous commands.
+                self.words = Arc::new(words.clone());
+            }
+        }
+
+        let mut hash = self.words_hash;
+        let mut add = |value: u64| { hash = (hash ^ value).wrapping_mul(0x100000001b3) };
+        // Font replacement and in-place video updates can change visible pixels
+        // without changing any command. Read their current versions every time.
+        for (slot, version) in ui.font_resource_versions().into_iter().enumerate() {
+            if version != 0 {
+                add(slot as u64);
+                add(version);
+            }
+        }
+        if let Some(handles) = &self.referenced_textures {
+            for &handle in handles {
+                add(handle as u32 as u64);
+                if let Some(revision) = ui.texture_revision(handle) {
+                    add(1);
+                    add(revision);
+                } else {
+                    add(0);
+                }
+            }
+        } else {
+            // Auxiliary surfaces and unknown opcodes can have hidden dependencies.
+            for slot in 0..ui.texture_slot_count() as u32 {
+                if let Some((handle, revision, _)) = ui.texture_at_versioned(slot) {
+                    add(handle as u32 as u64);
+                    add(revision);
+                }
+            }
+        }
+        let changed = hash != self.hash;
+        self.hash = hash;
+        changed
+    }
+}
 
 pub struct PodRenderSnapshot {
     _texture_memory:Vec<std::sync::Arc<memory_budget::Lease>>,
     resources: RenderResources,
-    words: Vec<u32>,
+    words: Arc<Vec<u32>>,
     hash: u64,
     frame: u64,
     last_glyph: Option<std::sync::Arc<[u8]>>,
 }
 
 /// Capture after pod_runtime_snapshot, on the guest lane. No guest/runtime
-/// pointer escapes. Draw words are copied; pixels/fonts are revision-pinned.
+/// pointer escapes. Draw words and resource revisions remain pinned together.
 /// Caller-owned mapped PAK storage must remain valid until every snapshot dies.
 #[unsafe(no_mangle)]
 pub extern "C" fn pod_runtime_pin_snapshot(runtime: *mut PodRuntime) -> *mut PodRenderSnapshot {
@@ -28,8 +97,8 @@ pub extern "C" fn pod_runtime_pin_snapshot(runtime: *mut PodRuntime) -> *mut Pod
     Box::into_raw(Box::new(PodRenderSnapshot {
         _texture_memory:runtime.bridge.borrow().texture_memory.values().cloned().collect(),
         resources,
-        words: runtime.draw_words.clone(),
-        hash: runtime.draw_hash,
+        words: Arc::clone(&runtime.draw.words),
+        hash: runtime.draw.hash,
         frame: runtime.frame_number,
         last_glyph: None,
     }))

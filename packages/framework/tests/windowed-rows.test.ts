@@ -49,3 +49,15 @@ test("zero, negative and nonfinite retention preserve the original slice",()=>{
   expect(window(rows,200,300)).toEqual(visible(rows,200,300));
  }
 });
+
+test("sub-row movement reuses the indexed bounds without reading the document again", () => {
+ let reads = 0;
+ const rows = { length: 8192, at(index: number) { reads++; return {top: index * 40, height: 40}; } };
+ const select = createWindowRows<{top:number;height:number}>(0, 3);
+ const initial = select(rows, 4001, 4201);
+ reads = 0;
+ for (let offset = 2; offset < 40; offset++) expect(select(rows, 4000 + offset, 4200 + offset)).toBe(initial);
+ expect(reads).toBe(0);
+ expect(select(rows, 4040, 4240).at(-1)?.top).toBe(4240);
+ expect(select(rows, 4000, 4200)[0]?.top).toBe(3960);
+});

@@ -7,12 +7,27 @@ const at=<T>(rows:readonly T[]|WindowRowList<T>,index:number):T=>rows.at(index)!
 export function createWindowRows<T extends WindowRow>(extraRows=0,minRows=0) {
  const limit=Number.isFinite(extraRows)?Math.max(0,Math.floor(extraRows)):0;
  let source:readonly T[]|WindowRowList<T>|undefined,first=-1,end=-1,result:T[]=[];
+ // The source is immutable for a layout revision. Cache the coordinate intervals
+ // that selected these rows, so sub-row motion does not touch the document index.
+ let lowerExclusive=Infinity,lowerInclusive=-Infinity,upperInclusive=Infinity,upperExclusive=-Infinity;
  const recent=new Map<unknown,{row:T;index:number}>();
  return (rows:readonly T[]|WindowRowList<T>,lower:number,upper:number):T[]=>{
+  if (source===rows && lower>lowerExclusive && lower<=lowerInclusive &&
+      upper>=upperInclusive && upper<upperExclusive) return result;
+  lowerExclusive=-Infinity; lowerInclusive=Infinity;
+  upperInclusive=-Infinity; upperExclusive=Infinity;
   let lo=0,hi=rows.length;
-  while(lo<hi){const mid=(lo+hi)>>>1,row=at(rows,mid);if(row.top+row.height<lower)lo=mid+1;else hi=mid;}
+  while(lo<hi){
+   const mid=(lo+hi)>>>1,row=at(rows,mid),bottom=row.top+row.height;
+   if(bottom<lower){lowerExclusive=bottom;lo=mid+1;}
+   else{lowerInclusive=bottom;hi=mid;}
+  }
   let nextFirst=lo;hi=rows.length;
-  while(lo<hi){const mid=(lo+hi)>>>1;if(at(rows,mid).top<=upper)lo=mid+1;else hi=mid;}
+  while(lo<hi){
+   const mid=(lo+hi)>>>1,top=at(rows,mid).top;
+   if(top<=upper){upperInclusive=top;lo=mid+1;}
+   else{upperExclusive=top;hi=mid;}
+  }
   let nextEnd=lo;
   const minimum=Number.isSafeInteger(minRows)?Math.max(0,minRows):0;
   if(nextEnd-nextFirst<minimum){const after=Math.min(rows.length-nextEnd,minimum-(nextEnd-nextFirst));nextEnd+=after;nextFirst=Math.max(0,nextFirst-(minimum-(nextEnd-nextFirst)));}

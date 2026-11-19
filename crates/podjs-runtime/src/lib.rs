@@ -315,9 +315,7 @@ pub struct PodRuntime {
     pak_eager_hash_micros: u64,
     pak_integrity_mode: u32,
     bundle_hash: u64,
-    draw_words: Vec<u32>,
-    draw_hash: u64,
-    previous_draw_hash: u64,
+    draw: render_snapshot::CommittedDraw,
     accessibility_json: Vec<u8>,
     accessibility_hash: Option<u64>,
     damage_tracker: DamageTracker<DEFAULT_DAMAGE_REGIONS>,
@@ -893,9 +891,7 @@ pub extern "C" fn pod_runtime_create(config: *const PodRuntimeConfig) -> *mut Po
         pak_eager_hash_micros: 0,
         pak_integrity_mode: 0,
         bundle_hash: 0,
-        draw_words: Vec::new(),
-        draw_hash: 0,
-        previous_draw_hash: u64::MAX,
+        draw: render_snapshot::CommittedDraw::new(),
         accessibility_json: Vec::new(),
         accessibility_hash: None,
         damage_tracker: DamageTracker::new(),
@@ -1714,52 +1710,14 @@ pub extern "C" fn pod_runtime_snapshot(runtime: *mut PodRuntime, out: *mut PodDr
         return ERR_STATE;
     }
     let began = Instant::now();
-    let mut hash = runtime.surface.with_ui(|ui| hash_words(&ui.draw().words));
-    runtime.surface.with_ui(|ui| {
-        // Font-slot replacement is a resource revision even when geometry and
-        // virtual glyph ids do not change. Immutable snapshots must invalidate
-        // the output hash and renderer page identity together.
-        for (slot, version) in ui.font_resource_versions().iter().enumerate() {
-            if *version != 0 {
-                hash = (hash ^ slot as u64).wrapping_mul(0x100000001b3);
-                hash = (hash ^ version).wrapping_mul(0x100000001b3);
-            }
-        }
-        if let Some(handles)=draw_texture_refs::referenced(&ui.draw().words) {
-            // Preparing an unattached line is not a change to the visible scene.
-            // Live/missing tags also invalidate a stale referenced handle at rev 0.
-            for handle in handles {
-                hash=(hash^handle as u32 as u64).wrapping_mul(0x100000001b3);
-                if let Some(revision)=ui.texture_revision(handle) {
-                    hash=(hash^1).wrapping_mul(0x100000001b3);
-                    hash=(hash^revision).wrapping_mul(0x100000001b3);
-                }else{hash=hash.wrapping_mul(0x100000001b3);}
-            }
-        }else {
-            // Empty/unknown lists and auxiliary surfaces retain the complete
-            // registry contract. Never omit dependencies of an unknown format.
-            for slot in 0..ui.texture_slot_count() as u32 {
-                if let Some((handle,revision,_))=ui.texture_at_versioned(slot) {
-                    hash=(hash^handle as u32 as u64).wrapping_mul(0x100000001b3);
-                    hash=(hash^revision).wrapping_mul(0x100000001b3);
-                }
-            }
-        }
-    });
-    if hash != runtime.draw_hash {
-        runtime
-            .surface
-            .with_ui(|ui| runtime.draw_words.clone_from(&ui.draw().words));
-    }
-    runtime.previous_draw_hash = runtime.draw_hash;
-    runtime.draw_hash = hash;
+    let changed = runtime.surface.with_ui(|ui| runtime.draw.commit(ui));
     unsafe {
         *out = PodDrawList {
-            words: runtime.draw_words.as_ptr(),
-            word_count: runtime.draw_words.len(),
-            content_hash: hash,
+            words: runtime.draw.words.as_ptr(),
+            word_count: runtime.draw.words.len(),
+            content_hash: runtime.draw.hash,
             frame_number: runtime.frame_number,
-            changed: i32::from(hash != runtime.previous_draw_hash),
+            changed: i32::from(changed),
         };
     }
     runtime.snapshot_micros = began.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
@@ -1802,7 +1760,7 @@ pub extern "C" fn pod_runtime_render_rgba(
     }
     let framebuffer = unsafe { slice::from_raw_parts_mut(pixels, length) };
     runtime.surface.with_ui(|ui| {
-        pocketjs_core::raster::render_scaled(ui, &runtime.draw_words, framebuffer, scale)
+        pocketjs_core::raster::render_scaled(ui, &runtime.draw.words, framebuffer, scale)
     });
     runtime.damage_tracker.invalidate();
     OK
@@ -1846,7 +1804,7 @@ pub extern "C" fn pod_runtime_render_rgba_incremental(
     let result = runtime.surface.with_ui(|ui| {
         pocketjs_core::raster::render_scaled_incremental(
             ui,
-            &runtime.draw_words,
+            &runtime.draw.words,
             framebuffer,
             scale,
             &mut runtime.damage_tracker,
@@ -1855,7 +1813,7 @@ pub extern "C" fn pod_runtime_render_rgba_incremental(
     });
     if result.is_err() {
         runtime.surface.with_ui(|ui| {
-            pocketjs_core::raster::render_scaled(ui, &runtime.draw_words, framebuffer, scale)
+            pocketjs_core::raster::render_scaled(ui, &runtime.draw.words, framebuffer, scale)
         });
         runtime.damage_tracker.invalidate();
     }
@@ -1896,7 +1854,7 @@ pub extern "C" fn pod_runtime_render_rgba_transparent_incremental(
     let result = runtime.surface.with_ui(|ui| {
         pocketjs_core::raster::render_scaled_transparent_incremental(
             ui,
-            &runtime.draw_words,
+            &runtime.draw.words,
             framebuffer,
             scale,
             &mut runtime.damage_tracker,
@@ -1907,7 +1865,7 @@ pub extern "C" fn pod_runtime_render_rgba_transparent_incremental(
         runtime.surface.with_ui(|ui| {
             pocketjs_core::raster::render_scaled_transparent(
                 ui,
-                &runtime.draw_words,
+                &runtime.draw.words,
                 framebuffer,
                 scale,
             )
@@ -2135,7 +2093,7 @@ impl PodRuntime {
                 "seedBytes":seeds, "lastPinnedCellBytes":self.last_glyph.as_ref().map_or(0,|v|v.len()),
                 "hits":glyph.hits, "misses":glyph.misses},
             "runtime": {"pakMappedBytes":self.mapped_pak.map_or(0,|v|v.len()),
-                "drawCapacityBytes":self.draw_words.capacity()*4,
+                "drawCapacityBytes":self.draw.words.capacity()*4,
                 "accessibilityCapacityBytes":self.accessibility_json.capacity(),
                 "events":bridge.events.len(), "effects":bridge.effects.len(),
                 "eventBytes":bridge.events.iter().map(|v|v.len()).sum::<usize>(),
@@ -3494,6 +3452,67 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_hash_matches_the_committed_inspector_overlay() {
+        let target = CString::new("android-watch").unwrap();
+        let caps = CString::new("[]").unwrap();
+        let runtime = pod_runtime_create(&valid_config(&target, &caps));
+        let source = b"globalThis.frame = () => {}";
+        validate(runtime, "android-watch", b"pak", source, &[]);
+        assert_eq!(pod_runtime_eval_bundle(runtime, source.as_ptr(), source.len(), std::ptr::null()), OK);
+        let node = runtime_mut(runtime).unwrap().surface.with_ui(|ui| {
+            let node = ui.create_node(spec::NodeType::View as u8);
+            ui.set_prop(node, spec::prop::WIDTH, 30.0);
+            ui.set_prop(node, spec::prop::HEIGHT, 30.0);
+            ui.insert_before(spec::ROOT_ID, node, 0);
+            ui.debug_inspect(node);
+            node
+        });
+        let mut draw = std::mem::MaybeUninit::<PodDrawList>::uninit();
+        assert_eq!(pod_runtime_snapshot(runtime, draw.as_mut_ptr()), OK);
+        runtime_mut(runtime).unwrap().surface.with_ui(|ui| {
+            ui.set_prop(node, spec::prop::TRANSLATE_Y, 60.0);
+        });
+        assert_eq!(pod_runtime_snapshot(runtime, draw.as_mut_ptr()), OK);
+        let draw = unsafe { draw.assume_init() };
+        let words = unsafe { slice::from_raw_parts(draw.words, draw.word_count) };
+        assert!(!words.is_empty());
+        assert_eq!(draw.content_hash, hash_words(words));
+        pod_runtime_destroy(runtime);
+    }
+
+    #[test]
+    fn renderer_pins_share_committed_draw_words_across_subsequent_frames() {
+        use crate::render_snapshot::*;
+        let target = CString::new("android-watch").unwrap();
+        let caps = CString::new("[]").unwrap();
+        let runtime = pod_runtime_create(&valid_config(&target, &caps));
+        let source = b"globalThis.frame = () => {}";
+        validate(runtime, "android-watch", b"pak", source, &[]);
+        assert_eq!(pod_runtime_eval_bundle(runtime, source.as_ptr(), source.len(), std::ptr::null()), OK);
+        let paint = |color| runtime_mut(runtime).unwrap().surface.with_ui(|ui| {
+            ui.set_prop(spec::ROOT_ID, spec::prop::BG_COLOR, color);
+        });
+        paint(0xff112233u32 as f64);
+        let mut out = std::mem::MaybeUninit::<PodDrawList>::uninit();
+        assert_eq!(pod_runtime_snapshot(runtime, out.as_mut_ptr()), OK);
+        let committed = unsafe { out.assume_init_read() };
+        let original = unsafe { slice::from_raw_parts(committed.words, committed.word_count) }.to_vec();
+        assert!(!original.is_empty());
+        let pinned = pod_runtime_pin_snapshot(runtime);
+        assert_eq!(unsafe { pod_render_snapshot_draw_list(pinned, out.as_mut_ptr()) }, OK);
+        let first = unsafe { out.assume_init_read() };
+        assert_eq!(first.words, committed.words);
+        paint(0xffccbbaau32 as f64);
+        assert_eq!(pod_runtime_snapshot(runtime, out.as_mut_ptr()), OK);
+        let newer = unsafe { out.assume_init() };
+        assert_ne!(newer.content_hash, first.content_hash);
+        assert_eq!(unsafe { slice::from_raw_parts(first.words, first.word_count) }, original);
+        pod_runtime_destroy(runtime);
+        assert_eq!(unsafe { slice::from_raw_parts(first.words, first.word_count) }, original);
+        unsafe { pod_render_snapshot_destroy(pinned) };
+    }
+
+    #[test]
     fn unused_prepared_textures_do_not_invalidate_a_visible_scene() {
         let target=CString::new("android-watch").unwrap();let caps=CString::new("[]").unwrap();
         let runtime=pod_runtime_create(&valid_config(&target,&caps));
@@ -4149,7 +4168,7 @@ mod tests {
         assert_eq!(pod_runtime_snapshot(runtime, &mut draw), OK);
         let (frame_number, draw_words, draw_hash, semantics) = {
             let state = runtime_mut(runtime).unwrap();
-            (state.frame_number, state.draw_words.clone(), state.draw_hash,
+            (state.frame_number, state.draw.words.clone(), state.draw.hash,
                 state.surface.with_ui(|ui| ui.current_accessibility().clone()))
         };
         assert_eq!(semantics.nodes[0].label, "Before");
@@ -4161,8 +4180,8 @@ mod tests {
             assert_eq!(pod_runtime_pump_service_results(runtime), OK);
             let state = runtime_mut(runtime).unwrap();
             assert_eq!(state.frame_number, frame_number);
-            assert_eq!(state.draw_words, draw_words);
-            assert_eq!(state.draw_hash, draw_hash);
+            assert_eq!(state.draw.words, draw_words);
+            assert_eq!(state.draw.hash, draw_hash);
             state.surface.with_ui(|ui| assert_eq!(ui.current_accessibility(), &semantics));
         }
         assert_eq!(effect(), json!({"t":"chain.done"}));
@@ -4308,8 +4327,8 @@ mod tests {
         let handle=pod_runtime_upload_rgba(runtime,original.as_ptr(),4,1,1);
         assert!(handle>=0);
         // Texture quad with native sampling; matches the reference CPU renderer.
-        runtime_mut(runtime).unwrap().draw_words=vec![4,handle as u32,0,1|(1<<16),0,0,1f32.to_bits(),1f32.to_bits(),0xffffffff];
-        runtime_mut(runtime).unwrap().draw_hash=123;
+        runtime_mut(runtime).unwrap().draw.words=std::sync::Arc::new(vec![4,handle as u32,0,1|(1<<16),0,0,1f32.to_bits(),1f32.to_bits(),0xffffffff]);
+        runtime_mut(runtime).unwrap().draw.hash=123;
         let bytes=(pod_runtime_logical_width(runtime)*pod_runtime_logical_height(runtime)*4) as usize;
         let mut reference=vec![0;bytes];
         assert_eq!(pod_runtime_render_rgba_transparent_incremental(runtime,1,reference.as_mut_ptr(),bytes),OK);
