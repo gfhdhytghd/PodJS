@@ -100,6 +100,8 @@ test('indexed headers/footers and object keys keep placement and exact viewport 
  const key={},body={entries:[{key,top:0,height:20,retain:true}],indices:new Map([[key,0]]),scope:{}};
  const source=createIndexedWindowSource(body,[{height:10,key:'header',retain:false}],[{height:30,key:'footer',retain:false}],{padding:2,gap:3});
  expect(source.length).toBe(3);expect(source.at(0)?.top).toBe(2);expect(source.at(1)?.top).toBe(15);expect(source.at(-1)?.top).toBe(35);expect(source.at(-4)).toBeUndefined();expect(source.at(3)).toBeUndefined();expect(source.indexOfKey?.(key)).toBe(1);
+ const separated=createIndexedWindowSource({...body,trailingGap:3},[{height:10,key:'header',retain:false}],[{height:30,key:'footer',retain:false}],{padding:2,gap:3});
+ expect(separated.at(-1)?.top).toBe(38);
  expect(visibleWindowRange(source,12,3)).toBeNull();expect(visibleWindowRange(source,12,4)).toEqual({first:1,last:1});
 });
 

@@ -61,6 +61,7 @@
     "./frame-stream": "./src/frame-stream.ts",
     "./variable-list": "./src/variable-list.tsx",
     "./text-environment": "./src/text-environment.ts",
+    "./font-geometry": "./src/font-geometry.ts",
     "./text-carets": "./src/text-carets.ts",
     "./text-lines": "./src/text-lines.ts",
     "./text-anchor": "./src/text-anchor.ts",

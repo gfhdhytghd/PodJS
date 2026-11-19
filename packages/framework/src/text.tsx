@@ -174,8 +174,23 @@ export function prefetchSystemTextLines(options:readonly SystemTextLineOptions[]
   }};
   entry.prefetch=lease;cache.prefetches.add(lease);leases.push(lease);
  }
- pump();return()=>{for(const lease of leases)lease.release();};
+ pump();return()=>{for(const lease of leases)lease.release();pump();};
 }
+/** Give the visible effect first claim on the queue. Keep old leases through
+ * the same update so that a visible line can adopt an in-flight texture. */
+export function createSystemTextPrefetch(read: () => readonly SystemTextLineOptions[] | undefined, owner: SystemTextCache): void {
+ createEffect(() => {
+  const lines = read();
+  if (!lines?.length) return;
+  let current = true, release: (() => void) | undefined;
+  void Promise.resolve().then(() => { if (current) release = prefetchSystemTextLines(lines, owner); });
+  onCleanup(() => {
+   current = false;
+   if (release) void Promise.resolve().then(release);
+  });
+ });
+}
+
 export function bindSystemTextLine(options:SystemTextLineOptions,node:NodeMirror,ready:(value:{width:number;height:number;carets:number[]})=>void,cache?:SystemTextCache):()=>void{
  return bindSystemTextLineKey(options,node,ready,lineKey(options,cache),cache);
 }

@@ -10,6 +10,8 @@ export interface IndexedWindowInput<T extends WindowRow,Key=unknown> {
  indices:Pick<ReadonlyMap<Key,number>,'get'>;
  /** Same immutable scope across layout revisions, different for a new document. */
  scope:unknown;
+ /** Optional separation between the final body row and the footer. */
+ trailingGap?:number;
 }
 /** Materialized snapshots also expose array traversal and the full key map. */
 export interface IndexedWindowEntries<T extends WindowRow,Key=unknown> extends IndexedWindowInput<T,Key> {
@@ -46,7 +48,7 @@ export function createWindowedList<T extends WindowRow>(options:{source:Accessor
 export function createIndexedWindowSource<T extends WindowRow,Key>(body:IndexedWindowInput<T,Key>,header:readonly Omit<T,'top'>[]=[],footer:readonly Omit<T,'top'>[]=[],options:{padding?:number;gap?:number}={}):WindowRowList<T> {
  let top=options.padding??0;const gap=options.gap??0;
  const before=header.map(entry=>{const row={...entry,key:entry.key??entry,top} as T;top+=entry.height+gap;return row;});
- const bodyTop=top,last=body.entries.at(-1);top+=last?last.top+last.height:0;
+ const bodyTop=top,last=body.entries.at(-1);top+=last?last.top+last.height+(body.trailingGap??0):0;
  const after=footer.map(entry=>{const row={...entry,key:entry.key??entry,top} as T;top+=entry.height+gap;return row;});
  const length=before.length+body.entries.length+after.length;
  return {length,scope:body.scope,

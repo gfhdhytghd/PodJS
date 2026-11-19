@@ -9,6 +9,7 @@ export function createKeyedMemo<Key>() {
    const value=compute();entries.set(key,{dependencies:[...dependencies],value});return value;
   },
   peek<Value>(key:Key,dependencies:readonly unknown[]):Value|undefined {const current=entries.get(key);return current&&current.dependencies.length===dependencies.length&&current.dependencies.every((value,i)=>Object.is(value,dependencies[i]))?current.value as Value:undefined;},
+  retain(keys:Pick<ReadonlySet<Key>, "has">){for(const key of entries.keys())if(!keys.has(key))entries.delete(key);},
   clear(){entries.clear();},
   get size(){return entries.size;},
  };
