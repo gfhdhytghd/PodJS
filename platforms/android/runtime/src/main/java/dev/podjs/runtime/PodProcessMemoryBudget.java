@@ -110,6 +110,10 @@ public final class PodProcessMemoryBudget implements ComponentCallbacks2 {
         if(limit()!=0&&!nativeReserve(owner,bytes))return null;
         return new Lease(owner,bytes);
     }
+    static Lease reserveCurrentCodec(long bytes) {
+        if(bytes<0||limit()!=0&&!nativeReserveCurrentCodec(bytes))return null;
+        return new Lease(MEDIA,bytes);
+    }
     public static final class Lease implements AutoCloseable {
         private final int owner;private final long bytes;private long generation;private boolean closed;
         private Lease(int owner,long bytes){this.owner=owner;this.bytes=bytes;}
@@ -129,6 +133,7 @@ public final class PodProcessMemoryBudget implements ComponentCallbacks2 {
     private static native boolean nativeReserveOptionalMedia(long bytes,long extraHeadroom);
     private static native String nativeResidents();
     private static native boolean nativeReserve(int owner,long bytes);
+    private static native boolean nativeReserveCurrentCodec(long bytes);
     private static native long nativeCommit(int owner,long bytes);
     private static native void nativeCancel(int owner,long bytes);
     private static native void nativeRelease(int owner,long bytes,long generation);

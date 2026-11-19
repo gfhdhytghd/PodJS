@@ -47,6 +47,15 @@ class Budget {
     }
     pending_[owner]+=bytes;return true;
   }
+  // The Java codec gate already holds the physical admission lock. Keep
+  // tracking this decoder after the ordinary media lane has refused it.
+  bool reserveCurrentCodec(uint64_t bytes) {
+    std::lock_guard lock(mutex_);
+    if(bytes>UINT64_MAX-pending_[Media])return false;
+    pending_[Media]+=bytes;
+    if(limit_)pressure_=true;
+    return true;
+  }
   uint64_t commit(uint32_t owner,uint64_t bytes) {
     std::lock_guard lock(mutex_);if(owner>=OwnerCount)return 0;
     bytes=std::min(bytes,pending_[owner]);pending_[owner]-=bytes;

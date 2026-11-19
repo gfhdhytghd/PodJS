@@ -31,6 +31,7 @@ const defaultSessionPort:VideoSessionPort={
 
 let nextPoolId=1;
 const state=(value:VideoSessionState):VideoState=>({
+  decoderAdmissionDeferred:value.decoderAdmissionDeferred,
   isBuffering:value.isBuffering,playWhenReady:value.playWhenReady,nativePlaybackState:value.nativePlaybackState,playbackSuppressionReason:value.playbackSuppressionReason,loading:value.loading,frameHandoffPending:value.frameHandoffPending,appliedVolume:value.appliedVolume,audioTrackSelected:value.audioTrackSelected,bufferedMs:value.bufferedMs,networkStalled:value.networkStalled,presented:value.presented,metrics:value.metrics,ok:value.ok,state:value.state,positionMs:value.positionMs,durationMs:value.durationMs,completedLoops:value.completedLoops,loop:value.loop,
   width:value.width,height:value.height,volume:value.volume,volumeMax:value.volumeMax??15,volumeIndex:value.volumeIndex,muted:value.muted,
   hasCachedFirstFrame:value.hasCachedFirstFrame,sourceGeneration:value.sourceGeneration,errorCode:value.errorCode,hasRenderedFirstFrame:value.hasRenderedFirstFrame,speed:value.speed,

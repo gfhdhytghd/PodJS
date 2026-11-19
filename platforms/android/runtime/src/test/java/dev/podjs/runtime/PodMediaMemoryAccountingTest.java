@@ -50,6 +50,40 @@ public class PodMediaMemoryAccountingTest {
         assertSame(owner,events.get(0).owner);assertEquals(7,events.get(0).generation);assertEquals(6_000_000,ledger.held);
         current.close();current.close();assertEquals(0,ledger.held);assertEquals(1,ledger.returns);binding.close();
     }
+    @Test public void foregroundDecoderUsesAdvisoryBytesWithAFreePhysicalSlot()throws Exception{
+        PodVideoCodecGate gate=new PodVideoCodecGate();
+        Ledger normal=new Ledger(5_200_000),advisory=new Ledger(Long.MAX_VALUE);
+        PodMediaMemoryAccounting memory=new PodMediaMemoryAccounting(gate,new PodMediaMemoryAccounting.Bytes(){
+            public PodMediaMemoryAccounting.Charge reserve(long n){return normal.reserve(n);}
+            public PodMediaMemoryAccounting.Charge reserveCurrentCodec(long n){return advisory.reserve(n);}
+        });
+        int[] warmReclaims={0};
+        gate.register(new Object(),()->PodVideoCodecGate.PREWARM,()->warmReclaims[0]++);
+        gate.register(new Object(),()->PodVideoCodecGate.CURRENT,()->fail("CURRENT selected for reclamation"));
+        try(AutoCloseable binding=gate.bindMemory(memory,memory);
+            PodVideoCodecGate.Permit existing=gate.acquire(new Object(),1,"current",PodVideoCodecGate.CURRENT,2_000_000)){
+            assertNotNull(existing);
+            assertEquals(1,gate.live());
+            try{
+                gate.await(new Object(),2,"warm",PodVideoCodecGate.PREWARM,6_000_000);
+                fail("optional decoder exceeded the byte budget");
+            }catch(PodVideoCodecGate.ByteAdmissionDenied expected){}
+            try(PodVideoCodecGate.Permit foreground=gate.acquire(new Object(),3,"current",PodVideoCodecGate.CURRENT,6_000_000)){
+                assertNotNull("CURRENT has a physical slot even when estimated bytes exceed headroom",foreground);
+                org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
+                assertEquals(1,warmReclaims[0]);
+                foreground.created();
+                assertEquals(6_000_000,advisory.held);
+                try(PodVideoCodecGate.Permit third=gate.acquire(new Object(),4,"current",PodVideoCodecGate.CURRENT,6_000_000)){
+                    assertNotNull(third);
+                    assertNull(gate.acquire(new Object(),5,"current",PodVideoCodecGate.CURRENT,6_000_000));
+                    assertEquals(3,gate.peak());
+                }
+            }
+            assertEquals(0,advisory.held);
+        }
+        assertEquals(0,normal.held);
+    }
     @Test public void releaseRequestCannotReturnBytesAndForgedIdentityCannotRelease()throws Exception{
         PodVideoCodecGate gate=new PodVideoCodecGate();Ledger ledger=new Ledger(22_000_000);PodMediaMemoryAccounting memory=new PodMediaMemoryAccounting(gate,ledger);
         AutoCloseable binding=gate.bindMemory(memory,memory);PodVideoCodecGate.Permit permit=gate.acquire(new Object(),13,"session",2);
