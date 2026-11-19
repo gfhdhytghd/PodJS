@@ -33,6 +33,11 @@ final class PodBenchmark {
     static void attach(View view,java.util.function.LongConsumer stats){firstCardStats=stats;surface=new WeakReference<>(view);if(view!=null&&startupSequence==0)try{startupSequence=begin("startup_stage",new JSONObject().put("startup_stage","process_start"),android.os.Process.getStartUptimeMillis());}catch(Exception ignored){}}
     static void startup(long seq,String stage){if(seq>0)try{mark("startup_stage",seq,new JSONObject().put("startup_stage",stage));}catch(Exception ignored){}}
 
+    static long videoPreparationSequence(JSONObject args){
+        long seq=args.optLong("startupSeq",0);
+        JSONObject action=args.optJSONObject("benchmark");
+        return seq>0?seq:action==null?0:action.optLong("seq",0);
+    }
     static long begin(String code,JSONObject fields){return begin(code,fields,SystemClock.uptimeMillis());}
     /** Native observers can preserve an uptime captured before applying policy. Guest cannot set it. */
     static synchronized long begin(String code,JSONObject fields,long now){
@@ -98,15 +103,15 @@ final class PodBenchmark {
                 else if(key.equals("selected")){if(!code.equals("media_variant")||!(value instanceof Boolean))return false;}
                 else if(key.equals("pool_stage")){if(!code.equals("pool_stage")||!Arrays.asList("select","neighbour","refill_start","refill_end").contains(value))return false;}
                 else if(Arrays.asList("source_ordinal","slot_ordinal","pool_generation","queue_index","anchor_index").contains(key)){if(!Arrays.asList("pool_stage","prewarm_requested","prewarm_evicted","prepare_stage","release_frame").contains(code)||integer(args,key)>9_007_199_254_740_991L)return false;}
-                else if(key.equals("swap_stage")){if(!code.equals("swap_stage")||!Arrays.asList("promote_enter","surface_promoted","play_command","texture_updated","rendered_first_frame","ui_confirm","observer_armed","window_commit_1","window_commit_2").contains(value))return false;}
-                else if(key.equals("prepare_stage")){if(!code.equals("prepare_stage")||!Arrays.asList("start","dispatched","network_open","network_start","network_first_byte","network_end","decoder_configured","format_ready","first_frame","timeout","cancel","adopt","retire","release").contains(value))return false;}
+                else if(key.equals("swap_stage")){if(!code.equals("swap_stage")||!Arrays.asList("promote_enter","surface_promoted","play_command","texture_updated","rendered_first_frame","ui_confirm","observer_armed","window_commit_1","window_commit_2","live_frame_latched").contains(value))return false;}
+                else if(key.equals("prepare_stage")){if(!code.equals("prepare_stage")||!Arrays.asList("start","dispatched","network_open","network_start","network_first_byte","network_end","decoder_configured","format_ready","first_frame","timeout","cancel","adopt","retire","release","cache_first_byte","codec_admission_wait","codec_admission_denied","codec_factory","codec_factory_failed","admission_deferred","admission_retry","admission_exhausted").contains(value))return false;}
                 else if((key.equals("network_bytes")||key.equals("position_bytes")||key.equals("cache_network_bytes")||key.equals("cache_read_bytes")||key.equals("decoder_index")||key.equals("decoder_instances")||key.equals("admission_ms")||key.equals("deadline_ms")||key.equals("cache_range_requests")||key.equals("cache_bytes")||key.equals("cache_entry")||key.equals("range_requests")||key.equals("ttfb_ms")||key.equals("steady_ms"))){if(!code.equals("prepare_stage")||integer(args,key)>MAX)return false;}
                 else if(key.equals("decoded_visible")||key.equals("playback_ready")){if(!code.equals("release_frame")||!(value instanceof Boolean))return false;}
                 else if(key.equals("frame_kind")){if(!code.equals("release_frame")||!Arrays.asList("live","cached","none").contains(value))return false;}
                 else if(key.equals("target_generation")){if(!code.equals("release_frame")||integer(args,key)>MAX)return false;}
                 else if(key.equals("surface_ready")){if(!code.equals("prepare_stage")||!(value instanceof Boolean))return false;}
                 else if(key.equals("playback_state")){if(!code.equals("prepare_stage")||integer(args,key)>4)return false;}
-                else if(key.equals("startup_stage")){if(!code.equals("startup_stage")||!Arrays.asList("stock_saved","process_start","home_mounted","home_tap","entry_mounted","play_tap","headers_ready","preview_start","preview_ready","source_ready","persist_start","persist_done","backdrop_start","backdrop_done","player_mounted","prepare_start","prepare_admitted","player_constructed","prepare_dispatched","video_format_ready","decoder_configured","decoded_first_frame","initial_frame_adopted").contains(value))return false;}
+                else if(key.equals("startup_stage")){if(!code.equals("startup_stage")||!Arrays.asList("stock_saved","process_start","home_mounted","home_tap","entry_mounted","play_tap","headers_ready","preview_start","preview_ready","source_ready","persist_start","persist_done","backdrop_start","backdrop_done","player_mounted","prepare_start","prepare_admitted","player_constructed","prepare_dispatched","video_format_ready","decoder_configured","decoded_first_frame","initial_frame_adopted","candidate_start","candidate_ready","playback_frame_adopted").contains(value))return false;}
                 else if(key.equals("duration_ms")){if(!(code.equals("startup_stage")||code.equals("prepare_stage"))||integer(args,key)>600000)return false;}
                 else if(key.equals("visibility_reason")){if(!code.equals("player_visible")||!Arrays.asList("ready","inactive","route_offset","lifecycle","player_error","network_prompt","native_hidden","native_unfocused").contains(value))return false;}
                 else if(key.equals("player_state")){if(!code.equals("player_visible")||!Arrays.asList("idle","preparing","buffering","ready","playing","paused","ended","stopped","error","unknown").contains(value))return false;}

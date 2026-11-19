@@ -13,10 +13,12 @@ import androidx.media3.exoplayer.mediacodec.MediaCodecAdapter;
 final class PodVideoCodecAdapters implements MediaCodecAdapter.Factory {
     private final MediaCodecAdapter.Factory delegate;
     private final String owner;
+    private final PodVideoAnalytics analytics;
     private final IntSupplier priority;
     private final Object identity;private final java.util.function.LongSupplier generation;
     PodVideoCodecAdapters(MediaCodecAdapter.Factory delegate,String owner,IntSupplier priority){this(delegate,owner,owner,()->0,priority);}
-    PodVideoCodecAdapters(MediaCodecAdapter.Factory delegate,String purpose,Object identity,java.util.function.LongSupplier generation,IntSupplier priority){this.delegate=delegate;this.owner=purpose;this.identity=identity;this.generation=generation;this.priority=priority;}
+    PodVideoCodecAdapters(MediaCodecAdapter.Factory delegate,String purpose,Object identity,java.util.function.LongSupplier generation,IntSupplier priority){this(delegate,purpose,identity,generation,priority,null);}
+    PodVideoCodecAdapters(MediaCodecAdapter.Factory delegate,String purpose,Object identity,java.util.function.LongSupplier generation,IntSupplier priority,PodVideoAnalytics analytics){this.analytics=analytics;this.delegate=delegate;this.owner=purpose;this.identity=identity;this.generation=generation;this.priority=priority;}
     public MediaCodecAdapter createAdapter(MediaCodecAdapter.Configuration config)throws java.io.IOException {
         String mime=config.mediaFormat.getString(MediaFormat.KEY_MIME);
         if(mime==null||!mime.startsWith("video/")){
@@ -25,10 +27,20 @@ final class PodVideoCodecAdapters implements MediaCodecAdapter.Factory {
             try{MediaCodecAdapter codec=delegate.createAdapter(config);PodMediaMemoryAccounting.commitResource(charge);return new Counted(codec,null,charge);}
             catch(java.io.IOException|RuntimeException|Error error){PodMediaMemoryAccounting.close(charge);throw error;}
         }
-        PodVideoCodecGate.Permit permit=PodVideoCodecGate.PROCESS.await(identity,generation.getAsLong(),owner,priority.getAsInt(),estimatedVideoBytes(config.mediaFormat));
-        try{MediaCodecAdapter codec=delegate.createAdapter(config);permit.created();return new Counted(codec,permit,null);}
+        long started=SystemClock.uptimeMillis();
+        PodVideoCodecGate.Permit permit;
+        try{permit=PodVideoCodecGate.PROCESS.await(identity,generation.getAsLong(),owner,priority.getAsInt(),estimatedVideoBytes(config.mediaFormat));}
+        catch(java.io.IOException e){trace("codec_admission_denied",started);throw e;}
+        trace("codec_admission_wait",started);
+        long factoryStarted=SystemClock.uptimeMillis();
+        boolean created=false;
+        try{MediaCodecAdapter codec=delegate.createAdapter(config);created=true;permit.created();return new Counted(codec,permit,null);}
         catch(java.io.IOException|RuntimeException e){permit.close();e.addSuppressed(new PodVideoCodecGate.FactoryFailure());throw e;}
         catch(Error e){permit.close();throw e;}
+        finally{trace(created?"codec_factory":"codec_factory_failed",factoryStarted);}
+    }
+    private void trace(String stage,long started){
+        if(analytics!=null)analytics.timedStage(stage,SystemClock.uptimeMillis()-started);
     }
     static long estimatedVideoBytes(MediaFormat format){
         int width=format.containsKey(MediaFormat.KEY_WIDTH)?format.getInteger(MediaFormat.KEY_WIDTH):0;

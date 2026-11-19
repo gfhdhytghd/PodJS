@@ -47,8 +47,11 @@ final class PodVideoAudioStop {
     DefaultRenderersFactory renderers(Context context) { return renderers(context,"video",()->PodVideoCodecGate.CURRENT); }
     DefaultRenderersFactory renderers(Context context,String owner,java.util.function.IntSupplier priority) {return renderers(context,owner,this,()->0,priority);}
     DefaultRenderersFactory renderers(Context context,String owner,Object identity,java.util.function.LongSupplier generation,java.util.function.IntSupplier priority) {
+        return renderers(context,owner,identity,generation,priority,null);
+    }
+    DefaultRenderersFactory renderers(Context context,String owner,Object identity,java.util.function.LongSupplier generation,java.util.function.IntSupplier priority,PodVideoAnalytics analytics) {
         return new DefaultRenderersFactory(context){
-            @Override protected androidx.media3.exoplayer.mediacodec.MediaCodecAdapter.Factory getCodecAdapterFactory(){return new PodVideoCodecAdapters(super.getCodecAdapterFactory(),owner,identity,generation,priority);}
+            @Override protected androidx.media3.exoplayer.mediacodec.MediaCodecAdapter.Factory getCodecAdapterFactory(){return new PodVideoCodecAdapters(super.getCodecAdapterFactory(),owner,identity,generation,priority,analytics);}
             @Override protected AudioSink buildAudioSink(Context c,boolean floating,boolean playbackParams) {
                 AudioSink delegate=new DefaultAudioSink.Builder(c).setEnableFloatOutput(floating)
                     .setEnableAudioTrackPlaybackParams(playbackParams)

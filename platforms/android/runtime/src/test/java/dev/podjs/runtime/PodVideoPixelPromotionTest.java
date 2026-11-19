@@ -22,9 +22,10 @@ import static org.junit.Assert.*;
 public class PodVideoPixelPromotionTest {
     static Field field(Class<?> type,String name)throws Exception {Field f=type.getDeclaredField(name);f.setAccessible(true);return f;}
     static class Reply implements PodVideoSessionServices.Callback {
-        JSONObject value;String error;
+        JSONObject value,frame;String error;
         public void complete(JSONObject value){this.value=value;}
         public void fail(String code,String message){error=code;}
+        public void firstFrame(JSONObject value){frame=value;}
     }
     @Test public void revealDoesNotConstructPlayerUntilPaintAndKeepsPixelsDuringAdmission()throws Exception {exercise(false);}
     @Test public void cancelledPromotionCannotResurrectAReleasedSession()throws Exception {exercise(true);}
@@ -38,7 +39,7 @@ public class PodVideoPixelPromotionTest {
         PodVideoSessionServices service=new PodVideoSessionServices(context,budget,cache);
         service.attachToParent(new FrameLayout(context));Shadows.shadowOf(Looper.getMainLooper()).idle();
         Consumer<Boolean>[] painted=new Consumer[1];
-        field(PodVideoSessionServices.class,"promotionPaint").set(service,(PodVideoSessionServices.PaintAwaiter)(view,done)->{painted[0]=done;return ()->{};});
+        field(PodVideoSessionServices.class,"handoffPaint").set(service,(PodVideoSessionServices.PaintAwaiter)(view,done)->{painted[0]=done;return ()->{};});
         try{
             String uri=cache.register("fixture","https://fixture.invalid/video.mp4",Collections.emptyMap());
             JSONObject bounds=new JSONObject().put("width",233).put("height",233);
@@ -65,7 +66,24 @@ public class PodVideoPixelPromotionTest {
             if(cancel){service.dispatch("video.session.release",new JSONObject().put("sessionId","cached"),new Reply());Shadows.shadowOf(Looper.getMainLooper()).idle();}
             if(hardware){budget.release();budget.release();budget.releaseSpare();}else painted[0].accept(true);Shadows.shadowOf(Looper.getMainLooper()).idle();
             if(cancel){assertTrue(sessions.isEmpty());assertEquals(0,budget.inUse());assertEquals("cancelled",promoted.error);}
-            else {assertNull(promoted.error);assertNotNull(promoted.value);assertEquals(generation,promoted.value.getLong("sourceGeneration"));assertSame(pixels,field(slot.getClass(),"cachedFrame").get(slot));assertEquals(1,budget.inUse());}
+            else {
+                assertNull(promoted.error);assertNotNull(promoted.value);
+                assertEquals(generation,promoted.value.getLong("sourceGeneration"));
+                assertTrue(promoted.value.getBoolean("hasCachedFirstFrame"));
+                assertFalse(promoted.value.getBoolean("hasRenderedFirstFrame"));
+                assertSame(pixels,field(slot.getClass(),"cachedFrame").get(slot));assertEquals(1,budget.inUse());
+                assertNull(promoted.frame);
+                field(slot.getClass(),"hasRenderedFirstFrame").setBoolean(slot,true);
+                field(slot.getClass(),"hasUpdatedFrame").setBoolean(slot,true);
+                java.lang.reflect.Method finish=slot.getClass().getDeclaredMethod("finishDecodedFrame");finish.setAccessible(true);finish.invoke(slot);
+                assertNull(promoted.frame);
+                painted[0].accept(true);Shadows.shadowOf(Looper.getMainLooper()).idle();
+                assertNotNull(promoted.frame);
+                assertEquals(generation,promoted.frame.getLong("sourceGeneration"));
+                assertTrue(promoted.frame.getBoolean("hasRenderedFirstFrame"));
+                assertFalse(promoted.frame.getBoolean("hasCachedFirstFrame"));
+                assertNull(field(slot.getClass(),"cachedFrame").get(slot));
+            }
         }finally{service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();cache.close();while(budget.inUse()>0)budget.release();}
     }
 }

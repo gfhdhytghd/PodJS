@@ -2,6 +2,7 @@ package dev.podjs.runtime;
 
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
@@ -10,11 +11,30 @@ import androidx.media3.exoplayer.ExoPlayer;
 /** Service-owned admission recovery for one legacy source. No foreground host,
  * view, callback or credential is retained across background handoff. Main only. */
 final class PodVideoAdmissionRetry implements AutoCloseable {
+    static final long POLL_MS=100;
+    /** A budget follows the source through repeated Media3 denials. */
+    static final class Budget {
+        private static final long WINDOW_MS=4_000;
+        private static final int MAX_RESTARTS=1;
+        private long deniedAt=-1;
+        private int restarts;
+        void denied(){if(deniedAt<0)deniedAt=SystemClock.uptimeMillis();}
+        boolean exhausted(){return deniedAt>=0&&(restarts>=MAX_RESTARTS||elapsed()>=WINDOW_MS);}
+        void restarted(){restarts++;}
+        long elapsed(){return deniedAt<0?0:SystemClock.uptimeMillis()-deniedAt;}
+        void reset(){deniedAt=-1;restarts=0;}
+    }
+    private final Budget budget=new Budget();
     private final ExoPlayer player;
     private final PodVideoHttpDataSources.PrepareGate prepareGate;
     private final boolean cacheOnlyOnDenial;
     private final Handler main=new Handler(Looper.getMainLooper());
-    private boolean closed,deferred,suspended,playWhenReady,initializing=true;
+    private boolean closed,deferred,suspended,playWhenReady,initializing=true,exhausted;
+    private Runnable onExhausted;
+    private PodVideoAnalytics analytics;
+    void observe(PodVideoAnalytics analytics,Runnable onExhausted){this.analytics=analytics;this.onExhausted=onExhausted;}
+    void detachObserver(){onExhausted=null;}
+    private void trace(String stage){if(analytics!=null)analytics.timedStage(stage,budget.elapsed());}
     private MediaItem source;
     private Runnable pending;
     private long revision;
@@ -30,6 +50,7 @@ final class PodVideoAdmissionRetry implements AutoCloseable {
         @Override public void onMediaItemTransition(MediaItem item,int reason){
             if(deferred&&!java.util.Objects.equals(source,item))close();
         }
+        @Override public void onRenderedFirstFrame(){if(!closed)budget.reset();}
         @Override public void onPlaybackStateChanged(int state){
             if(!closed&&state==Player.STATE_READY)prepareGate.ready();
             // External MediaSession stop must not resurrect an ended source.
@@ -45,7 +66,8 @@ final class PodVideoAdmissionRetry implements AutoCloseable {
     boolean deferred(){return deferred;}
     boolean suspended(){return suspended;}
     void defer(){
-        if(closed||deferred)return;
+        if(closed||deferred||exhausted)return;
+        budget.denied();trace("admission_deferred");
         if(cacheOnlyOnDenial)prepareGate.restrict();
         deferred=true;source=player.getCurrentMediaItem();playWhenReady=player.getPlayWhenReady();
         PodVideoCodecGate.PROCESS.requestReclaim(player,PodVideoCodecGate.PREWARM);
@@ -61,16 +83,22 @@ final class PodVideoAdmissionRetry implements AutoCloseable {
             pending=null;
             if(closed||!deferred||suspended)return;
             if(!java.util.Objects.equals(source,player.getCurrentMediaItem())){close();return;}
+            if(budget.exhausted()){
+                deferred=false;exhausted=true;trace("admission_exhausted");
+                if(onExhausted!=null)onExhausted.run();
+                else player.stop();
+                return;
+            }
             if(PodVideoCodecGate.PROCESS.live()>=PodVideoCodecGate.MAXIMUM){schedule();return;}
             // The gate still guards the real factory if another purpose wins
             // the free permit between this check and Media3's codec thread.
-            deferred=false;
+            deferred=false;budget.restarted();trace("admission_retry");
             player.prepare();
             player.setPlayWhenReady(playWhenReady);
         };
-        main.postDelayed(pending,100);
+        main.postDelayed(pending,POLL_MS);
     }
     private void removePending(){revision++;if(pending!=null){main.removeCallbacks(pending);pending=null;}}
     private void cancel(){removePending();deferred=false;}
-    @Override public void close(){if(closed)return;closed=true;cancel();player.removeListener(listener);}
+    @Override public void close(){if(closed)return;closed=true;detachObserver();cancel();player.removeListener(listener);}
 }

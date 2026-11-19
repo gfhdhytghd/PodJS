@@ -195,7 +195,7 @@ public final class PodVideoServices implements AutoCloseable {
     public void pauseForLifecycle() { mediaGate(false); main.post(() -> { if (!backgroundPlayback) { lifecyclePaused=true; if(admissionRetry!=null)admissionRetry.suspend(); if(player!=null){player.pause(); state="paused";} } }); }
 
     private void prepare(JSONObject a, Callback cb) throws Exception {
-        PodBenchmark.startup(a.optLong("startupSeq",0),"prepare_start");
+        PodBenchmark.startup(PodBenchmark.videoPreparationSequence(a),"prepare_start");
         benchmarkAction=PodBenchmark.videoAction(a);benchmarkFramePending=benchmarkAction!=null;
         firstRevealLogged=false;prepareSequence++;android.util.Log.i("PodVideoTiming","prepareBegin seq="+prepareSequence);hasRenderedFirstFrame=false;observedTextureFrames=0; prepareStartedMs=android.os.SystemClock.elapsedRealtime(); playbackErrorCode=null;playbackErrorMirrorIndex=0;
         if(videoView==null || parent==null) throw new IllegalStateException("video_surface_unavailable");
@@ -214,7 +214,10 @@ public final class PodVideoServices implements AutoCloseable {
         if (transform != null) readTransform(transform);
         applyBounds(a.optJSONObject("bounds")); autoplay=a.optBoolean("autoplay", true); mediaGate(true); backgroundPlayback=a.optBoolean("backgroundPlayback",false); lifecyclePaused=false; density=context.getResources().getDisplayMetrics().density;
         Map<String,String> headers = headers(a.optJSONObject("headers"));
-        analytics=new PodVideoAnalytics();analytics.startupSeq=a.optLong("startupSeq",0);
+        analytics=new PodVideoAnalytics();analytics.startupSeq=PodBenchmark.videoPreparationSequence(a);
+        analytics.clientGeneration=a.optLong("clientGeneration",0);
+        analytics.preparation(analytics.startupSeq,prepareSequence,false);
+        analytics.startup("prepare_admitted",android.os.SystemClock.elapsedRealtime()-prepareStartedMs);
         PodVideoHttpDataSources.PrepareGate prepareGate=new PodVideoHttpDataSources.PrepareGate(a.optBoolean("cacheOnlyPrepare",false));
         androidx.media3.datasource.DataSource.Factory sources=PodVideoHttpDataSources.playback(context,mediaPrefixCache,headers,a.optBoolean("bypassCache",false)&&!prepareGate.cacheOnly(),prepareGate);
         PodVideoAnalytics observer=analytics;
@@ -253,6 +256,15 @@ public final class PodVideoServices implements AutoCloseable {
         final PodVideoAdmissionRetry recovery=playbackService.beginAdmissionRecovery(session,prepareGate,a.optBoolean("cacheOnlyAdmissionRetry",false));
         admissionRetry=recovery;
         final Callback frameCallback=prepareCallback;
+        recovery.observe(analytics,()->{
+            if(!matches(session,generation,recovery))return;
+            final String code="resource_exhausted";
+            state="error";playbackErrorCode=code;
+            Callback pending=prepareCallback;prepareCallback=null;releasePlayer();
+            if(videoView!=null)videoView.setVisibility(View.GONE);
+            if(pending!=null)pending.fail(code,"Video decoder admission exhausted");
+            if(frameCallback!=null)try{frameCallback.stateChanged(state());}catch(Exception ignored){}
+        });
         final String cacheUri=a.optString("url");
         final PodMediaPrefixCache.Entry cached=mediaPrefixCache==null?null:mediaPrefixCache.registration(cacheUri);
         completedLoops = 0;
@@ -322,6 +334,7 @@ public final class PodVideoServices implements AutoCloseable {
         state=lifecyclePaused?"paused":"preparing"; if(videoView!=null)videoView.setKeepScreenOn(true); if(prepareGate.cacheOnly())player.setMediaSource(source,Math.max(0,a.optLong("resumePositionMs",0)));else player.setMediaSource(source);
         playbackService.observeVideo(analytics);
         player.setVideoTextureView(videoView); android.util.Log.i("PodVideoTiming","prepareCall seq="+prepareSequence+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-prepareStartedMs));player.prepare();
+        if(analytics!=null){analytics.stage("dispatched");analytics.startup("prepare_dispatched",-1);}
         if (autoplay && !lifecyclePaused) player.play(); else player.pause();
         recovery.initialized();
     }
@@ -455,6 +468,7 @@ public final class PodVideoServices implements AutoCloseable {
             +" decoderRendered="+(counters==null?-1:counters.renderedOutputBufferCount)+" decoderDropped="+(counters==null?-1:counters.droppedBufferCount)+" decoderSkipped="+(counters==null?-1:counters.skippedOutputBufferCount));
     }
     private void detachPlayer(boolean keepPlaying){
+        if(admissionRetry!=null)admissionRetry.detachObserver();
         if(!keepPlaying){
             if(playbackService!=null)playbackService.cancelAdmissionRecovery();
             if(admissionRetry!=null)admissionRetry.close();

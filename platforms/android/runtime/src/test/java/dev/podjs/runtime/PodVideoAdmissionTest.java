@@ -88,6 +88,18 @@ public class PodVideoAdmissionTest {
         void free(){for(PodVideoCodecGate.Permit permit:permits)permit.close();permits.clear();}
         public void close(){free();service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();assertEquals(0,gate.live());}
     }
+    @Test public void permanentPhysicalContentionEndsTheSelectedGeneration() throws Exception {
+        try(Fixture f=new Fixture()){
+            Throwable denied=f.denial();f.promote();f.deliver(denied);
+            f.assertDeferred();
+            org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(4100));
+            ((Runnable)f.get("admissionRetry")).run();
+            System.out.println("PERFVIDEO session after 4100 ms of contention: "+f.get("state"));
+            assertEquals("error",f.get("state"));
+            assertEquals("resource_exhausted",f.get("errorCode"));
+            assertEquals(3,f.gate.live());
+        }
+    }
     @Test public void optionalByteRefusalFinishesPrewarmWithoutRetryingOrLearningCapacity()throws Exception {
         try(Fixture f=new Fixture()){
             f.deliver(new PodVideoCodecGate.ByteAdmissionDenied(PodVideoCodecGate.PREWARM));
