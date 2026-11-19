@@ -4,11 +4,17 @@ import {createLiveWindowRows} from './live-window-rows.ts';
 export {createWindowRows,createLiveWindowRows};
 export type {WindowRow,WindowRowList};
 
-export interface IndexedWindowEntries<T extends WindowRow,Key=unknown> {
- entries:readonly T[];
- indices:ReadonlyMap<Key,number>;
+export interface IndexedWindowInput<T extends WindowRow,Key=unknown> {
+ /** Immutable random access, including negative indices as in Array.at(). */
+ entries:Pick<readonly T[],'length'|'at'>;
+ indices:Pick<ReadonlyMap<Key,number>,'get'>;
  /** Same immutable scope across layout revisions, different for a new document. */
  scope:unknown;
+}
+/** Materialized snapshots also expose array traversal and the full key map. */
+export interface IndexedWindowEntries<T extends WindowRow,Key=unknown> extends IndexedWindowInput<T,Key> {
+ entries:readonly T[];
+ indices:ReadonlyMap<Key,number>;
 }
 export interface WindowItem<T> {key:unknown;value:Accessor<T>}
 /** Reactive object view for the data owned by a mounted window item. */
@@ -35,16 +41,16 @@ export function createWindowedList<T extends WindowRow>(options:{source:Accessor
  });
 }
 /** Compose small headers/footers with pre-positioned body rows without copying
- * or remapping the full body. Body keys must match its prebuilt indices.
+ * or remapping the full body. Body keys must agree with its index.
  */
-export function createIndexedWindowSource<T extends WindowRow,Key>(body:IndexedWindowEntries<T,Key>,header:readonly Omit<T,'top'>[]=[],footer:readonly Omit<T,'top'>[]=[],options:{padding?:number;gap?:number}={}):WindowRowList<T> {
+export function createIndexedWindowSource<T extends WindowRow,Key>(body:IndexedWindowInput<T,Key>,header:readonly Omit<T,'top'>[]=[],footer:readonly Omit<T,'top'>[]=[],options:{padding?:number;gap?:number}={}):WindowRowList<T> {
  let top=options.padding??0;const gap=options.gap??0;
  const before=header.map(entry=>{const row={...entry,key:entry.key??entry,top} as T;top+=entry.height+gap;return row;});
  const bodyTop=top,last=body.entries.at(-1);top+=last?last.top+last.height:0;
  const after=footer.map(entry=>{const row={...entry,key:entry.key??entry,top} as T;top+=entry.height+gap;return row;});
  const length=before.length+body.entries.length+after.length;
  return {length,scope:body.scope,
-  at(index){if(index<0)index+=length;if(index<0||index>=length)return undefined;if(index<before.length)return before[index];index-=before.length;if(index<body.entries.length){const row=body.entries[index]!;return {...row,top:bodyTop+row.top};}return after[index-body.entries.length];},
+  at(index){if(index<0)index+=length;if(index<0||index>=length)return undefined;if(index<before.length)return before[index];index-=before.length;if(index<body.entries.length){const row=body.entries.at(index)!;return {...row,top:bodyTop+row.top};}return after[index-body.entries.length];},
   indexOfKey(key){const index=body.indices.get(key as Key);if(index!==undefined)return before.length+index;const h=before.findIndex(row=>row.key===key);if(h>=0)return h;const f=after.findIndex(row=>row.key===key);return f<0?undefined:before.length+body.entries.length+f;}
  };
 }

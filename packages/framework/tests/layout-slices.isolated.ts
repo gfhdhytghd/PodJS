@@ -104,6 +104,22 @@ test('indexed headers/footers and object keys keep placement and exact viewport 
 });
 
 
+test('indexed headers and footers also compose with a lazy immutable body',()=>{
+ const eager:import('../src/variable-list.tsx').IndexedScrollEntries={scope:{},entries:[{key:'a',top:0,height:6,render:()=>null}],indices:new Map([['a',0]])};
+ const typed:import('../src/windowed-list.ts').IndexedWindowEntries<typeof eager.entries[number]>=eager;
+ expect(typed.entries[0]?.key).toBe('a');expect([...typed.entries]).toHaveLength(1);expect(typed.indices.size).toBe(1);expect([...typed.indices.keys()]).toEqual(['a']);
+ let reads=0;const length=8192,body={scope:{},entries:{length,at(index:number){
+  reads++;if(index<0)index+=length;
+  if(index<0||index>=length)return;
+  return {key:index,top:index*6,height:6};
+ }},indices:{get(key:unknown){return typeof key==='number'&&key>=0&&key<length?key:undefined;}}};
+ const source=createIndexedWindowSource<{key:unknown;top:number;height:number},unknown>(body,[{key:'header',height:4}],[{key:'footer',height:8}]);
+ expect(reads).toBe(1);expect(source.at(-1)?.top).toBe(4+6*length);
+ expect(source.at(4097)).toEqual({key:4096,top:4+4096*6,height:6});
+ expect(source.indexOfKey?.(4096)).toBe(4097);expect(source.indexOfKey?.('footer')).toBe(length+1);
+ expect(visibleWindowRange(source,4+6000*6,12)).toEqual({first:6001,last:6002});expect(reads).toBeLessThan(40);
+});
+
 test('reactive window data supports frozen snapshots and added/removed native fields',()=>{
  const [current,setCurrent]=createSignal<Readonly<{text:string;baseline?:number}>>(Object.freeze({text:'same line'}));
  const row=createWindowValue(current);expect(row.text).toBe('same line');expect(Object.keys(row)).toEqual(['text']);
