@@ -300,6 +300,9 @@ int32_t pod_runtime_post_event(PodRuntime *runtime, const char *json_object);
 bool pod_runtime_has_capability(PodRuntime *runtime, const char *name);
 /* Retry the service pump after the process budget has had time to recover. */
 #define POD_RUNTIME_SERVICE_DEFERRED (-4)
+/* A guest allocation failed at the allocator. Reclaim optional resources and
+ * resume the existing realm on a later turn. Service replies can be retried. */
+#define POD_RUNTIME_GUEST_OOM (-5)
 /* Host-only IO/lifecycle completion turn, including while visual frames are
  * suspended. Calls the optional framework service pump and drains Promise jobs;
  * exposes all queued host events, but does not tick layout/animation or commit

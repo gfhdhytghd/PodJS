@@ -41,12 +41,12 @@ bytes from PSS, because the allocator or driver may retain its pages.
 
 The current category targets, scaled for other declared budgets, are QuickJS
 32 MB, image 6 MB, Vulkan 16 MB, media 32 MB, CPU scratch 6 MB, and text raster
-3 MB. Foreground QuickJS may borrow unused global capacity beyond its advisory
-32 MB target; the other targets remain admission ceilings. Background realms
-share a 28 MB QuickJS ceiling, leaving 4 MB for foreground allocations. They
-share one process admission check and are never summed as observed PSS.
-Small critical QuickJS/render allocations use 4 MB reserve headroom;
-optional allocations use 12 MB. The PSS floor before the first sample is 45 MB.
+3 MB. Both boot and live foreground QuickJS allocations use advisory process
+admission. They are accounted even above the process limit, and high usage
+signals pressure. Background realms share a 28 MB QuickJS ceiling and still
+require global headroom. They share one process admission check. The graphics
+lane uses 4 MB of headroom, and optional allocations use 12 MB. The PSS floor
+before the first sample is 45 MB.
 These are initial policies, not a kernel-enforced process limit. System/driver
 memory outside these allocation paths still requires scene acceptance tests.
 
@@ -60,8 +60,11 @@ collection thresholds are 24 MB for the foreground and at most 12 MB for a
 background realm. Valid host pressure notifications collect unreachable cycles
 at a serialized boundary before later service results enter the guest, never
 inside an allocator callback. Reachable roots and queued events stay intact.
-Background work declines admission or
-unwinds for a durable retry when the process cannot preserve foreground space.
+Background work declines admission or unwinds for a durable retry under
+pressure. If the foreground allocator actually fails, the host keeps the
+mounted guest and last committed draw list, collects unreachable cycles,
+and requests cache reclamation. Android resumes frame processing and retries
+queued service results without repeating their IO.
 
 Binary service attachments reserve their copied Rust payload before allocation.
 The same QuickJS owner charge moves from the handle table to an external
