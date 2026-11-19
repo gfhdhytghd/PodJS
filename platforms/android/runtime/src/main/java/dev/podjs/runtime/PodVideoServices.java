@@ -438,8 +438,10 @@ public final class PodVideoServices implements AutoCloseable {
         else if (direct.hasLayer()) { direct.syncPose(); if (tx != 0 || ty != 0) direct.interactive(); }
         if(videoBackground!=null){if(relayout)videoBackground.setLayoutParams(new FrameLayout.LayoutParams(p));videoBackground.setTranslationY(ty);videoBackground.setVisibility(videoView.getVisibility());videoBackground.setAlpha(videoView.getAlpha());videoBackground.setOutlineProvider(videoView.getOutlineProvider());videoBackground.setClipToOutline(videoView.getClipToOutline());} if(relayout)fitVideo(); }
     private void updateOutput(){
+        PodMediaStartupPreview preview = mediaPrefixCache == null ? null : mediaPrefixCache.startupPreview;
         direct.update(player, videoView, appliedVideoMatrix, !closed && !lifecyclePaused && boundsVisible
-                && hasRenderedFirstFrame && observedTextureFrames > 0, prepareSequence);
+                && hasRenderedFirstFrame && observedTextureFrames > 0 && !benchmarkFramePending
+                && (preview == null || !preview.needsTexture(frameSource)), prepareSequence);
     }
     private void fitVideo(){
         if(player==null||videoView==null||videoView.getLayoutParams()==null)return;

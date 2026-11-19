@@ -51,6 +51,7 @@ public class PodVideoDirectOutputTest {
                 new Class<?>[]{ExoPlayer.class}, (proxy, method, args) -> {
                     switch (method.getName()) {
                         case "isPlaying": return playing;
+                        case "getVideoSize": return new androidx.media3.common.VideoSize(1920,1080);
                         case "addAnalyticsListener": frames=(AnalyticsListener)args[0]; return null;
                         case "removeAnalyticsListener": frames=null; return null;
                         case "setVideoSurface": playingSurface=(Surface)args[0]; return null;

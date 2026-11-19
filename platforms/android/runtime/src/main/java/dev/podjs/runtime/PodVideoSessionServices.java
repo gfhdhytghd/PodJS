@@ -1878,8 +1878,10 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             keyframeView.setImageMatrix(transform);
         }
         void updateOutput() {
+            PodMediaStartupPreview preview = mediaPrefixCache == null ? null : mediaPrefixCache.startupPreview;
             boolean steady = !disposed && !lifecyclePaused && visibleDecodedTexture() && geometryReady
-                    && !hasCachedFrame() && dragFrom == null && dragTo == null && !bounds.pagerMoving;
+                    && !hasCachedFrame() && dragFrom == null && dragTo == null && !bounds.pagerMoving
+                    && !benchmarkFramePending && (preview == null || !preview.needsTexture(frameSource));
             direct.update(player, videoView, appliedVideoMatrix, steady, generation);
         }
 

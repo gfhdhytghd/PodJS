@@ -82,8 +82,13 @@ final class PodVideoDirectOutput {
         if (now - candidateSince < SETTLE_MS) return;
         candidateSince = -1;
         // Account for the extra OS layer independently of the retained texture.
+        VideoSize video = owner.getVideoSize();
+        // The codec can retain its last full-resolution texture while the display
+        // allocates its queue, even when the destination rectangle is small.
+        long displayBytes = (long) nextContent.width() * nextContent.height() * 12;
+        long retainedBytes = (long) video.width * video.height * 4;
         charge = PodMediaMemoryAccounting.reserveResource(this, generation, PodVideoCodecGate.OTHER,
-                PodMediaMemoryBudget.Kind.SURFACE, (long) nextContent.width() * nextContent.height() * 12);
+                PodMediaMemoryBudget.Kind.SURFACE, Math.max(displayBytes, retainedBytes));
         if (charge == null) { suppressUntil = now + 5000; return; }
         player = owner;
         texture = view;
@@ -211,16 +216,17 @@ final class PodVideoDirectOutput {
     /** Captures the producer, excluding UI controls, using the same displayed
      * rectangle and size limit as the texture path. Caller owns the capture lease. */
     boolean capture(int maxEdge, Consumer<Bitmap> complete) {
-        if (!revealed || target == null || !target.isValid()) return false;
+        if (!revealed) return false;
+        if (target == null || !target.isValid()) { complete.accept(null); return true; }
         final int w = texture.getWidth(), h = texture.getHeight();
-        if (w <= 0 || h <= 0) return false;
+        if (w <= 0 || h <= 0) { complete.accept(null); return true; }
         final float scale = Math.min(1f, maxEdge / (float) Math.max(w, h));
         final int width = Math.max(1, (int) (w * scale)), height = Math.max(1, (int) (h * scale));
         final Rect dst = new Rect(Math.round(content.left * scale), Math.round(content.top * scale),
                 Math.round(content.right * scale), Math.round(content.bottom * scale));
-        if (dst.isEmpty()) return false;
+        if (dst.isEmpty()) { complete.accept(null); return true; }
         final VideoSize video = player.getVideoSize();
-        if (video.width < 1 || video.height < 1) return false;
+        if (video.width < 1 || video.height < 1) { complete.accept(null); return true; }
         Bitmap pixels = null;
         try {
             pixels = Bitmap.createBitmap(dst.width(), dst.height(), Bitmap.Config.ARGB_8888);
