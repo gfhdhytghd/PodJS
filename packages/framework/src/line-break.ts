@@ -57,6 +57,18 @@ export function breakUnits(paragraph: string): string[] {
   return result;
 }
 
+function fitsUnit(line: string, unit: string, width: number, measure: LayoutOptions["measure"], clusters?: string[]): boolean {
+  if (clusters) {
+    // Measuring a run can synchronously load every missing glyph. Grow the
+    // probe only while it fits, so a long word does not load its entire tail
+    // before the line iterator can yield.
+    for (let end = 16; end < clusters.length; end *= 2) {
+      if (measure(line + clusters.slice(0, end).join("")) > width) return false;
+    }
+  }
+  return measure(line + unit) <= width;
+}
+
 /** Yield complete lines so a frame-driven caller can pause before measuring more. */
 export function* layoutUiTextLines(text: string, { width, measure }: Omit<LayoutOptions, "maxLines">): Generator<string> {
   let emitted = false;
@@ -70,15 +82,16 @@ export function* layoutUiTextLines(text: string, { width, measure }: Omit<Layout
     for (const unit of breakUnits(paragraph)) {
       const space = /^\s+$/u.test(unit);
       if (!line && space) continue;
-      if (measure(line + unit) <= width) { line += unit; continue; }
+      const clusters = unit.length > 16 ? graphemes(unit) : undefined;
+      if (fitsUnit(line, unit, width, measure, clusters)) { line += unit; continue; }
       if (line || space) {
         emitted = true;
         yield line.trimEnd();
         line = "";
+        if (!space && fitsUnit(line, unit, width, measure, clusters)) { line = unit; continue; }
       }
       if (space) continue;
-      if (measure(unit) <= width) { line = unit; continue; }
-      for (const g of graphemes(unit)) {
+      for (const g of clusters ?? graphemes(unit)) {
         if (line && measure(line + g) > width) {
           emitted = true;
           yield line.trimEnd();

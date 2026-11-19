@@ -19,3 +19,12 @@ test("bounded UI text stops measuring after the requested lines", () => {
   expect(layoutUiText(body, { width: 4, measure, maxLines: 2 })).toEqual(["甲乙丙丁", "甲乙丙丁"]);
   expect(measurements).toBeLessThan(16);
 });
+
+test("an oversized word only measures its visible prefix before the first line", () => {
+  const word = Array.from({ length: 1100 }, (_, index) => String.fromCodePoint(0xa000 + index)).join("");
+  let longest = 0;
+  const measure = (text: string) => { longest = Math.max(longest, text.length); return text.length; };
+  expect(layoutUiText(`abc ${word}`, { width: 12, measure, maxLines: 2 })).toEqual(["abc", word.slice(0, 12)]);
+  expect(longest).toBeLessThan(64);
+  expect(layoutUiText(word, { width: 12, measure }).join("")).toBe(word);
+});
