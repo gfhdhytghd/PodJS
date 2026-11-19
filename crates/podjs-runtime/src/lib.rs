@@ -441,14 +441,31 @@ fn upload_texture_file_budgeted(surface:&UiSurface,root:&Path,relative:&str,widt
     let Ok(mut file) = options.open(&path) else { return -1; };
     let Ok(metadata) = file.metadata() else { return -1; };
     if !metadata.is_file() || metadata.len() != expected as u64 { return -1; }
-    let Some(mut scratch)=memory_budget::Lease::reserve(4,expected) else{return -2};
+    let Some(mut scratch)=memory_budget::Lease::reserve(memory_budget::SCRATCH,expected) else{return -2};
     let mut bytes = vec![0; expected];scratch.commit();
     if file.read_exact(&mut bytes).is_err() { return -1; }
     budget_upload_texture(surface,bridge,&bytes,width,height,psm,0)
 }
+// PocketJS stores tightly packed rows in a Vec<u128> and keeps the T8
+// palette in a separate aligned allocation. Vulkan allocations are tracked
+// independently by the renderer, including device-specific padding.
+fn texture_backing_bytes(width: u32, height: u32, psm: u32) -> Option<(usize, usize)> {
+    let valid = |edge: u32| edge.is_power_of_two() && edge <= spec::TEX_MAX_DIM;
+    if !valid(width) || !valid(height) { return None; }
+    let (bpp, palette) = match psm {
+        spec::psm::PSM_8888 => (4, 0),
+        spec::psm::PSM_5650 | spec::psm::PSM_4444 => (2, 0),
+        spec::psm::PSM_T8 => (1, 1024),
+        _ => return None,
+    };
+    let packed = width as usize * bpp * height as usize;
+    Some((packed + palette, packed.next_multiple_of(16) + palette))
+}
+
 fn budget_upload_texture(surface:&UiSurface,bridge:Option<&Rc<RefCell<PodBridge>>>,bytes:&[u8],width:i32,height:i32,psm:i32,sampling:i32)->i32 {
-    let Some(mut lease)=memory_budget::Lease::reserve(1,bytes.len()) else{return -2};
-    if sampling!=0&&sampling!=1{return -1}
+    let Some((packed, allocated)) = texture_backing_bytes(width as u32, height as u32, psm as u32) else { return -1; };
+    if bytes.len() < packed || (sampling != 0 && sampling != 1) { return -1; }
+    let Some(mut lease) = memory_budget::Lease::reserve(memory_budget::TEXTURE_PIXELS, allocated) else { return -2; };
     let flags=if sampling==1{spec::img::FLAG_LINEAR}else{0};
     let handle=surface.with_ui(|ui|ui.upload_texture_flags(bytes,width as u32,height as u32,psm as u32,flags));
     if handle>=0 && memory_budget::limit()>0 {if let Some(bridge)=bridge {lease.commit();bridge.borrow_mut().texture_memory.insert(handle,std::sync::Arc::new(lease));}}
@@ -515,6 +532,15 @@ fn mount_pod(
 ) -> anyhow::Result<()> {
     guest.mount("pod", |ctx, ns| {
         ns.set("memoryBudgetBytes", Function::new(ctx.clone(), || memory_budget::limit() as f64)?)?;
+        let texture_surface = surface.clone();
+        ns.set("textureAllocationBytes", Function::new(ctx.clone(), move |handle: i32| {
+            texture_surface.with_ui(|ui| {
+                let texture = ui.texture(handle)?;
+                let pixels = texture.pixels.len().next_multiple_of(16);
+                let palette = texture.palette.map_or(0, |bytes| bytes.len().next_multiple_of(16));
+                Some((pixels + palette) as u32)
+            })
+        })?)?;
         // Override only pixel-buffer ownership; the PocketJS scene API is unchanged.
         if memory_budget::limit()>0 {if let Ok(ui)=ctx.globals().get::<_,rquickjs::Object>("ui") {
             let target=surface.clone();let owner=bridge.clone();
@@ -3297,6 +3323,12 @@ mod tests {
             globalThis.frame = () => {};
             const handle = pod.uploadTextureFile('text/line-mounted_1.rgba', 2, 2, 3);
             if (!Number.isInteger(handle) || handle < 0) throw new Error('native file upload failed');
+            if (pod.textureAllocationBytes(handle) !== 16) throw new Error('incorrect texture backing size');
+            if (pod.textureAllocationBytes(-1) != null) throw new Error('allocation for a missing texture');
+            const wide = ui.uploadTexture(new Uint8Array(512 * 128 * 4), 512, 128, 3);
+            if (pod.textureAllocationBytes(wide) !== 262144) throw new Error('incorrect rectangular texture backing size');
+            ui.freeTexture(wide);
+            if (pod.textureAllocationBytes(wide) != null) throw new Error('allocation for a freed texture');
             pod.emit(JSON.stringify({handle}));
         "#;
         validate(runtime, "android-watch", b"pak", source, &[]);

@@ -193,7 +193,7 @@ test("configurable concurrency, zero retention, dispose and host recreation",asy
   await tick();release();next.dispose();expect(next.stats().cached).toBe(0);
 });
 test("retained LRU evicts the oldest and revive refreshes recency",async()=>{
-  const local=createImageLoader({sourceProvider:provider,retainedBytes:2*512*512*4});
+  const local=createImageLoader({sourceProvider:provider,retainedBytes:2*rgba.byteLength});
   const bind=(url:string)=>local.bind({loader:local,source:{url,filePath:url},width:512,height:512},{id:nextNode++} as never);
   const a=bind("a"),b=bind("b");await tick();a();b();
   const revived=bind("a");revived();const c=bind("c");await tick();c();
@@ -252,4 +252,51 @@ test("budget denial keeps a placeholder, retries lower quality, and replaces onl
   expect(calls.filter(c=>c[0]==='freeTexture')).toEqual([['freeTexture',52]]);
   stop();local.dispose();expect(calls.filter(c=>c[0]==='freeTexture')).toEqual([['freeTexture',52],['freeTexture',53]]);
  }finally{local.dispose();pod.memoryBudgetBytes=previous;delete pod.uploadTextureFile;}
+});
+
+test.each([
+  {width:512,height:128,allocation:262144,expected:1},
+  {width:256,height:64,allocation:65536,expected:1},
+  {width:256,height:64,allocation:1048576,expected:3},
+])("idle cache charges host allocation for %j and trims under pressure",async ({width,height,allocation,expected})=>{
+  const previous=pod.memoryBudgetBytes;
+  pod.memoryBudgetBytes=()=>256000000;
+  pod.uploadTextureFile=()=>61;
+  pod.textureAllocationBytes=()=>allocation;
+  const {dispatchMemoryPressure}=await import("../src/memory.ts");
+  const local=createImageLoader({sourceProvider:provider});
+  const errors:unknown[]=[],cached:number[]=[];
+  const bind=()=>local.bind({loader:local,source:{url:"local",filePath:"fixture.png"},width,height,onError:e=>errors.push(e)},{id:nextNode++} as never);
+  try {
+    for(let pass=0;pass<3;pass++){
+      deferredDecode={result:Promise.resolve({path:"images/wide.rgba",width,height}),cancel(){}};
+      const off=bind();
+      await tick();
+      off();
+      cached.push(local.stats().cached);
+    }
+    const decodes=hostMethods.filter(method=>method==="image.decode").length;
+    console.log(JSON.stringify({width,height,allocation,binds:3,decodes,cached,errors:errors.length}));
+    expect(errors).toEqual([]);
+    expect(decodes).toBe(expected);
+    const active=bind();
+    await tick();
+    const freed=calls.filter(call=>call[0]==="freeTexture").length;
+    dispatchMemoryPressure({t:"memory.pressure",level:3});
+    expect(calls.filter(call=>call[0]==="freeTexture")).toHaveLength(freed);
+    active();
+    expect(local.stats().cached).toBe(0);
+    dispatchMemoryPressure({t:"memory.pressure",level:0});
+    if(expected===1){
+      const off=bind();await tick();off();
+      expect(local.stats().cached).toBe(1);
+      dispatchMemoryPressure({t:"memory.pressure",level:3});
+      expect(local.stats().cached).toBe(0);
+    }
+  } finally {
+    dispatchMemoryPressure({t:"memory.pressure",level:0});
+    local.dispose();
+    pod.memoryBudgetBytes=previous;
+    delete pod.textureAllocationBytes;
+  }
 });

@@ -10,7 +10,7 @@
 // PSS already includes observed residents: only growth since the start of the
 // last sample and promises not yet allocated are added to that observation.
 namespace podjs_memory {
-enum Owner : uint32_t { QuickJs, Image, Graphics, Media, Scratch, Text, OwnerCount };
+enum Owner : uint32_t { QuickJs, Image, Graphics, Media, Scratch, Text, TexturePixels, GraphicsStaging, OwnerCount };
 class Budget {
  public:
   void configure(uint64_t bytes) {
@@ -34,12 +34,12 @@ class Budget {
       return true;
     }
     if(!limit_) { pending_[owner]+=bytes;return true; }
-    const uint64_t quotaBytes=quota(owner);
+    const uint64_t quotaBytes=quota(quotaOwner(owner));
     const uint64_t cap=owner==QuickJs?quotaBytes-std::min<uint64_t>(quotaBytes,4000000):quotaBytes;
-    if(owner==QuickJs&&resident_[owner]+pending_[owner]+bytes>quotaBytes*3/4)pressure_=true;
-    if(bytes>cap || resident_[owner]+pending_[owner]>cap-bytes) {if(!quietQuota)pressure_=true;return false;}
+    if(owner==QuickJs&&used(owner)+bytes>quotaBytes*3/4)pressure_=true;
+    if(bytes>cap || used(owner)>cap-bytes) {if(!quietQuota)pressure_=true;return false;}
     if(bytes>limit_ || extraHeadroom>limit_-bytes) {pressure_=true;return false;}
-    const uint64_t margin=owner==Graphics?4000000:12000000;
+    const uint64_t margin=quotaOwner(owner)==Graphics?4000000:12000000;
     const uint64_t remaining=limit_-bytes-extraHeadroom;
     if(upperLocked(margin)>remaining) {
       pressure_=true;
@@ -72,11 +72,25 @@ class Budget {
     // retention beyond this logical peak is covered by headroom and feedback.
   }
   uint64_t resident(uint32_t owner) const {std::lock_guard lock(mutex_);return owner<OwnerCount?resident_[owner]:0;}
-  uint64_t available(uint32_t owner) const {std::lock_guard lock(mutex_);if(owner>=OwnerCount)return 0;if(!limit_)return UINT64_MAX;const auto cap=quota(owner);return cap-std::min(cap,resident_[owner]+pending_[owner]);}
+  uint64_t available(uint32_t owner) const {std::lock_guard lock(mutex_);if(owner>=OwnerCount)return 0;if(!limit_)return UINT64_MAX;const auto cap=quota(quotaOwner(owner));return cap-std::min(cap,used(owner));}
   uint64_t pending() const {std::lock_guard lock(mutex_);uint64_t n=0;for(auto b:pending_)n+=b;return n;}
   uint64_t upper() const {std::lock_guard lock(mutex_);return upperLocked();}
   bool takePressure() {std::lock_guard lock(mutex_);bool p=pressure_;pressure_=false;return p;}
  private:
+  // CPU texture pixels and upload staging retain their existing shared quotas,
+  // while resident reporting names their distinct lifetimes and allocations.
+  static uint32_t quotaOwner(uint32_t owner) {
+    if(owner==TexturePixels)return Image;
+    if(owner==GraphicsStaging)return Graphics;
+    return owner;
+  }
+  uint64_t used(uint32_t owner) const {
+    uint32_t group=quotaOwner(owner);
+    uint64_t bytes=resident_[group]+pending_[group];
+    if(group==Image)bytes+=resident_[TexturePixels]+pending_[TexturePixels];
+    if(group==Graphics)bytes+=resident_[GraphicsStaging]+pending_[GraphicsStaging];
+    return bytes;
+  }
   uint64_t quota(uint32_t owner) const {
     // Decimal MB; these are ceilings, never independent process budgets.
     static constexpr uint64_t mb[]={32,6,16,32,6,3};

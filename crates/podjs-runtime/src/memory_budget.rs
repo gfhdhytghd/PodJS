@@ -2,6 +2,9 @@
 use std::sync::atomic::{AtomicUsize,Ordering};
 use rquickjs::allocator::{Allocator,RustAllocator};
 type Callback=extern "C" fn(u32,usize,u32,u64)->u64;
+// Match the process ledger's Owner values.
+pub const SCRATCH: u32 = 4;
+pub const TEXTURE_PIXELS: u32 = 6;
 static CALLBACK:AtomicUsize=AtomicUsize::new(0);
 static LIMIT:AtomicUsize=AtomicUsize::new(0);
 thread_local! {

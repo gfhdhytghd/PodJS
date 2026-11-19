@@ -18,6 +18,23 @@ int main(){
  assert(b.reserve(Image,6000000));assert(!b.reserve(Image,1));
  assert(b.available(Image)==0);b.cancel(Image,6000000);assert(b.pending()==0);assert(b.available(Image)==6000000);
  b.configure(2048000000);assert(b.limit()==128000000);
+ Budget image;image.configure(256000000);
+ assert(image.reserve(Image,262144));auto bitmap=image.commit(Image,262144);
+ assert(image.reserve(TexturePixels,262144));auto pixels=image.commit(TexturePixels,262144);
+ assert(image.reserve(Scratch,262144));auto scratch=image.commit(Scratch,262144);
+ assert(image.reserve(Graphics,12'000'000));auto texture=image.commit(Graphics,12'000'000);
+ assert(image.reserve(GraphicsStaging,20'000'000));auto staging=image.commit(GraphicsStaging,20'000'000);
+ assert(!image.reserve(Graphics,1)&&!image.reserve(GraphicsStaging,1));
+ assert(image.resident(Image)==262144&&image.resident(TexturePixels)==262144);
+ assert(image.resident(Scratch)==262144&&image.resident(GraphicsStaging)==20'000'000);
+ assert(image.available(Image)==image.available(TexturePixels));
+ assert(!image.reserve(TexturePixels,image.available(Image)+1));
+ image.release(Image,262144,bitmap);image.release(Scratch,262144,scratch);
+ assert(image.resident(Image)==0&&image.resident(Scratch)==0&&image.resident(TexturePixels)==262144);
+ image.release(TexturePixels,262144,pixels);
+ image.release(GraphicsStaging,20'000'000,staging);image.release(Graphics,12'000'000,texture);
+ assert(image.resident(TexturePixels)==0&&image.resident(GraphicsStaging)==0&&image.resident(Graphics)==0);
+
  Budget media;media.configure(128000000);assert(media.available(Media)==32000000);assert(media.reserve(Media,32000000));assert(!media.reserve(Media,1));media.cancel(Media,32000000);
  Budget optional;optional.configure(128000000);assert(optional.reserve(Media,32000000));assert(!optional.takePressure());
  assert(!optional.reserve(Media,1,false,true));assert(!optional.takePressure());

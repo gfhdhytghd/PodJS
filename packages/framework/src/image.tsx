@@ -5,7 +5,7 @@ import { createEffect, createSignal, onCleanup } from "solid-js";
 import { Image, View, type NodeMirror } from "@pocketjs/framework/components";
 import { getOps } from "@pocketjs/framework/host";
 import { getDisplayMetrics } from "./watch.ts";
-import { delay, base64ToBytes, hostOperation, hasTextureFileUpload, uploadTextureFile } from "./services.ts";
+import { delay, base64ToBytes, hostOperation, hasTextureFileUpload, textureAllocationBytes, uploadTextureFile } from "./services.ts";
 
 const textures=createTextureUploader({uploadFile:uploadTextureFile});
 export interface ImageSource {
@@ -61,6 +61,7 @@ export function createImageLoader<S extends ImageSource>(options:ImageLoaderOpti
     cancelled: boolean;
     started: boolean;
     handle: number;
+    textureBytes: number;
     inputPath?: string;
     outputPath?: string;
     current?: { cancel(): void };
@@ -150,7 +151,10 @@ export function createImageLoader<S extends ImageSource>(options:ImageLoaderOpti
       if(handle===-2)throw new Error('memory_budget_deferred');
       if (handle < 0) throw new Error(options.messages?.texture??"Image texture upload failed");
       if (entry.cancelled) { textures.release(handle); return; }
-      const previous=entry.handle;entry.handle = handle;
+      const previous=entry.handle;
+      entry.handle = handle;
+      // Legacy hosts accept the same tightly packed RGBA layout as the decoder.
+      entry.textureBytes = textureAllocationBytes(handle) ?? size;
       entry.sourceWidth=decoded.sourceWidth??decoded.width;entry.sourceHeight=decoded.sourceHeight??decoded.height;
       // Size callbacks may synchronously replace virtualized rows. A replacement
       // is delivered by bind(), not revisited by this completion's Map iterator.
@@ -159,6 +163,7 @@ export function createImageLoader<S extends ImageSource>(options:ImageLoaderOpti
         getOps().setImage(node.id, handle);callbacks.onSize?.(entry.sourceWidth,entry.sourceHeight);
       }
       if(previous>=0&&previous!==handle)textures.release(previous);
+      if(retained.includes(entry))evictOverBudget();
     } catch (error) {
       if(!entry.cancelled&&processMemoryBudgetBytes()&&String(error).includes('memory_budget')) {
         entry.started=false;entry.maxDimension=Math.max(32,entry.maxDimension>>1);
@@ -183,10 +188,9 @@ export function createImageLoader<S extends ImageSource>(options:ImageLoaderOpti
     }
   }
 
-  /** Released-but-finished textures, oldest first, bounded by decoded bytes. */
+  /** Released-but-finished textures, oldest first, bounded by host texture backing bytes. */
   const RETAINED_BYTES = retention;
   const retained: Entry[] = [];
-  function textureBytes(entry: Entry) { return entry.maxDimension * entry.maxDimension * 4; }
   function dispose(entry: Entry): void {
     if(entry.cancelled)return;
     if(entries.get(entry.key)===entry)entries.delete(entry.key);
@@ -197,11 +201,18 @@ export function createImageLoader<S extends ImageSource>(options:ImageLoaderOpti
     if (entry.handle >= 0) textures.release(entry.handle);
     cleanupFiles(entry);
   }
+  function evictOverBudget(): void {
+    let total = retained.reduce((sum, item) => sum + item.textureBytes, 0);
+    while (total > RETAINED_BYTES && retained.length > 0) {
+      const oldest = retained.shift()!;
+      total -= oldest.textureBytes;
+      dispose(oldest);
+    }
+  }
   function retain(entry: Entry): void {
     if(memoryPressureLevel()>0){dispose(entry);return;}
     retained.push(entry);
-    let total = retained.reduce((sum, item) => sum + textureBytes(item), 0);
-    while (total > RETAINED_BYTES && retained.length > 0) { const oldest = retained.shift()!; total -= textureBytes(oldest); dispose(oldest); }
+    evictOverBudget();
   }
   /** Free every retained texture (memory pressure, tests). */
   function releaseRetainedRemoteImages(): void { while (retained.length) dispose(retained.shift()!); }
@@ -218,7 +229,7 @@ export function createImageLoader<S extends ImageSource>(options:ImageLoaderOpti
     const key = `${props.source.namespace??""}\u0000${props.source.filePath??""}\u0000${props.source.url}\u0000${maximum}\u0000${normalizedHeaders(props.source.headers)}`;
     let entry = entries.get(key);
     if (!entry) {
-      entry = { key, refs: 0, nodes: new Map(), cancelled: false, started: false, handle: -1,
+      entry = { key, refs: 0, nodes: new Map(), cancelled: false, started: false, handle: -1, textureBytes: 0,
         source:props.source, maxDimension: maximum,requestedDimension:maximum };
       entries.set(key, entry);
       queue.push(entry);

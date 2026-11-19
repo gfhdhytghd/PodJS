@@ -115,9 +115,20 @@ public final class PodProcessMemoryBudget implements ComponentCallbacks2 {
         return new Lease(MEDIA,bytes);
     }
     public static final class Lease implements AutoCloseable {
-        private final int owner;private final long bytes;private long generation;private boolean closed;
+        private final int owner;private long bytes;private long generation;private boolean closed;
         private Lease(int owner,long bytes){this.owner=owner;this.bytes=bytes;}
         public synchronized void commit(){if(!closed&&generation==0)generation=limit()==0?-1:nativeCommit(owner,bytes);}
+        /** Replace a preflight reservation with the actual allocation. */
+        synchronized boolean commitActual(long actual) {
+            if(closed||generation!=0||actual<0)return false;
+            if(limit()!=0){
+                if(actual>bytes&&!nativeReserve(owner,actual-bytes))return false;
+                if(actual<bytes)nativeCancel(owner,bytes-actual);
+            }
+            bytes=actual;
+            commit();
+            return true;
+        }
         @Override public synchronized void close(){if(closed)return;closed=true;if(limit()==0)return;if(generation==0)nativeCancel(owner,bytes);else nativeRelease(owner,bytes,generation);}
     }
     @Override public void onTrimMemory(int level){if(level==TRIM_MEMORY_UI_HIDDEN)pressure(3);else if(level>=TRIM_MEMORY_RUNNING_LOW)pressure(3);}

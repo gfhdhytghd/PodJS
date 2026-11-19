@@ -17,16 +17,16 @@
 #include "vulkan_gpu.h"
 
 
-static VkResult budgetAllocate(VkDevice device,const VkMemoryAllocateInfo& info,VkDeviceMemory* memory,uint64_t& bytes,uint64_t& generation){
-  if(!podjs_memory::process.reserve(podjs_memory::Graphics,info.allocationSize))return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+static VkResult budgetAllocate(VkDevice device,const VkMemoryAllocateInfo& info,VkDeviceMemory* memory,uint64_t& bytes,uint64_t& generation,podjs_memory::Owner owner=podjs_memory::Graphics){
+  if(!podjs_memory::process.reserve(owner,info.allocationSize))return VK_ERROR_OUT_OF_DEVICE_MEMORY;
   VkResult result=vkAllocateMemory(device,&info,nullptr,memory);
-  if(result==VK_SUCCESS){bytes=info.allocationSize;generation=podjs_memory::process.commit(podjs_memory::Graphics,bytes);}
-  else podjs_memory::process.cancel(podjs_memory::Graphics,info.allocationSize);
+  if(result==VK_SUCCESS){bytes=info.allocationSize;generation=podjs_memory::process.commit(owner,bytes);}
+  else podjs_memory::process.cancel(owner,info.allocationSize);
   return result;
 }
-static void budgetFree(VkDevice device,VkDeviceMemory memory,uint64_t& bytes,uint64_t& generation){
+static void budgetFree(VkDevice device,VkDeviceMemory memory,uint64_t& bytes,uint64_t& generation,podjs_memory::Owner owner=podjs_memory::Graphics){
   if(memory)vkFreeMemory(device,memory,nullptr);
-  if(bytes)podjs_memory::process.release(podjs_memory::Graphics,bytes,generation);
+  if(bytes)podjs_memory::process.release(owner,bytes,generation);
   bytes=0;generation=0;
 }
 namespace {
@@ -248,7 +248,7 @@ bool VulkanRenderer::ensureStagingCapacity(FrameSlot &slot,
   VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
   allocation.allocationSize = requirements.size;
   allocation.memoryTypeIndex = memoryType;
-  POD_VK(budgetAllocate(device_, allocation, &slot.stagingMemory,slot.stagingBudget,slot.stagingGeneration));
+  POD_VK(budgetAllocate(device_, allocation, &slot.stagingMemory,slot.stagingBudget,slot.stagingGeneration,podjs_memory::GraphicsStaging));
   POD_VK(
       vkBindBufferMemory(device_, slot.stagingBuffer, slot.stagingMemory, 0));
   POD_VK(vkMapMemory(device_, slot.stagingMemory, 0, required, 0,
@@ -263,7 +263,7 @@ void VulkanRenderer::destroyStaging(FrameSlot& slot) {
   if (slot.stagingBuffer)
     vkDestroyBuffer(device_, slot.stagingBuffer, nullptr);
   if (slot.stagingMemory)
-    budgetFree(device_, slot.stagingMemory, slot.stagingBudget, slot.stagingGeneration);
+    budgetFree(device_, slot.stagingMemory, slot.stagingBudget, slot.stagingGeneration, podjs_memory::GraphicsStaging);
   slot.stagingMapped = nullptr;
   slot.stagingBuffer = VK_NULL_HANDLE;
   slot.stagingMemory = VK_NULL_HANDLE;
