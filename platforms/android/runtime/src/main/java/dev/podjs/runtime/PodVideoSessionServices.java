@@ -286,14 +286,15 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
     }
     /** A pixel standby has no player and occupies no live codec slot. */
     private void preparePixels(JSONObject args,Bounds bounds,Callback callback)throws Exception {
+        boolean transientFrame=args.optBoolean("keyframeOnly",false)&&!args.optBoolean("retainKeyframe",false);
         String id=sessionId(args,"sessionId");Session slot=sessions.get(id);
-        if(slot==null){if(sessions.size()>=MAX_SESSIONS)throw new IllegalStateException("video_session_limit");slot=new Session(id,true,args.optBoolean("keyframeOnly",false));sessions.put(id,slot);}
+        if(slot==null){if(sessions.size()>=MAX_SESSIONS)throw new IllegalStateException("video_session_limit");slot=new Session(id,true,transientFrame);sessions.put(id,slot);}
         if(slot.prepareCallback!=null)slot.takePrepareCallback().fail("cancelled","Video session preparation replaced");
         slot.resetPlayer();slot.generation++;slot.bounds=bounds;slot.prewarming=true;slot.presented=false;
         slot.frameSource=new JSONObject(args.toString());slot.readTransform(args.optJSONObject("transform"));slot.frameBinding=keyframeBinding(args,bounds);
         slot.analytics=new PodVideoAnalytics();slot.analytics.sourceOrdinal=args.optLong("sourceOrdinal",0);
         slot.analytics.slotOrdinal=args.optLong("slotOrdinal",0);slot.analytics.preparation(args.optLong("prepareSeq",0),slot.generation,true);
-        slot.state="preparing";slot.prepareCallback=callback;slot.keyframeOnly=args.optBoolean("keyframeOnly",false);
+        slot.state="preparing";slot.prepareCallback=callback;slot.keyframeOnly=transientFrame;
         slot.applyBounds(bounds);slot.revealKeyframe();
         if(slot.hasCachedFrame()){slot.state="prewarmed";slot.completePrepare();}
         else {Session own=slot;long generation=slot.generation;slot.prewarmTimeout=()->{
@@ -319,7 +320,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         PodVideoCodecGate.PROCESS.reclaim(sessions.get(id),prewarming&&args.optBoolean("keyframeOnly",false)?PodVideoCodecGate.OTHER:PodVideoCodecGate.PREWARM);
         for(Session other:new java.util.ArrayList<>(sessions.values()))if(!other.id.equals(id)&&other.prewarming&&other.player!=null&&(!args.optBoolean("keyframeOnly",false)||other.keyframeOnly)){other.reclaimDecoder();}
         String requestedBinding=keyframeBinding(args,bounds);
-        if(prewarming&&args.optBoolean("keyframeOnly",false)&&keyframes.get(requestedBinding)!=null){
+        if(keyframeOnly&&!args.optBoolean("retainKeyframe",false)&&keyframes.get(requestedBinding)!=null){
             callback.complete(new JSONObject().put("ok",true).put("sessionId",id).put("state","cached").put("keyframeAvailable",true));return;
         }
         // Only explicit frame-only work can settle on cached pixels. The next

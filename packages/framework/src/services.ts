@@ -461,6 +461,8 @@ export interface VideoSessionPrepare extends VideoPrepare {
   prepareSeq?:number;prewarm?:boolean;
   /** Decode frame zero into the bounded native cache and release this codec. */
   keyframeOnly?:boolean;
+  /** Bind cached pixels to a hidden paging session without reserving a player. */
+  retainKeyframe?:boolean;
 }
 export interface VideoSessionState { isBuffering?:boolean;playWhenReady?:boolean;nativePlaybackState?:number;playbackSuppressionReason?:number;loading?:boolean;frameHandoffPending?:boolean;
   /** Transient process admission; not a device limit or a terminal playback error. */

@@ -3,11 +3,14 @@ package dev.podjs.runtime;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.os.Looper;
+import android.view.View;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import androidx.test.core.app.ApplicationProvider;
 import java.io.File;
 import java.lang.reflect.Field;
 import java.util.Collections;
+import java.util.Map;
 import org.json.JSONObject;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -24,9 +27,10 @@ public class PodVideoPixelStandbyTest {
         public void complete(JSONObject value){this.value=value;}
         public void fail(String code,String message){error=code;}
     }
-    @Test public void cachedStandbyUsesNoFourthLiveLeaseAndNeedsNoPlayerForLoop()throws Exception {exercise(3);}
-    @Test public void explicitFrameOnlyCacheHitDoesNotAcquireALiveDecoder()throws Exception {exercise(0);}
-    private void exercise(int live)throws Exception {
+    @Test public void cachedStandbyUsesNoFourthLiveLeaseAndNeedsNoPlayerForLoop()throws Exception {exercise(3,false);}
+    @Test public void explicitFrameOnlyCacheHitDoesNotAcquireALiveDecoder()throws Exception {exercise(0,false);}
+    @Test public void retainedFrameOnlyCacheHitBindsAStandbyWithoutAnotherDecoder()throws Exception {exercise(2,true);}
+    private void exercise(int live,boolean retainKeyframe)throws Exception {
         Context context=ApplicationProvider.getApplicationContext();
         PodMediaPrefixCache cache=new PodMediaPrefixCache(new File(context.getCacheDir(),"pixel-standby"));
         PodVideoDecoderBudget budget=new PodVideoDecoderBudget(3);
@@ -35,7 +39,8 @@ public class PodVideoPixelStandbyTest {
         service.attachToParent(new FrameLayout(context));Shadows.shadowOf(Looper.getMainLooper()).idle();
         try{
             String uri=cache.register("fixture","https://fixture.invalid/video.mp4",Collections.emptyMap());
-            JSONObject args=new JSONObject().put("sessionId","cached").put("url",uri).put("prewarm",true).put("keyframeOnly",live==0)
+            JSONObject args=new JSONObject().put("sessionId","cached").put("url",uri).put("prewarm",true)
+                .put("keyframeOnly",live==0||retainKeyframe).put("retainKeyframe",retainKeyframe)
                 .put("bounds",new JSONObject().put("width",233).put("height",233));
             Field field=PodVideoSessionServices.class.getDeclaredField("keyframes");field.setAccessible(true);
             PodVideoKeyframes frames=(PodVideoKeyframes)field.get(service);
@@ -45,7 +50,25 @@ public class PodVideoPixelStandbyTest {
             if(live==0){assertTrue(prepared.value.getBoolean("keyframeAvailable"));assertEquals("cached",prepared.value.getString("state"));assertEquals(0,budget.inUse());return;}
             assertTrue(prepared.value.getBoolean("hasCachedFirstFrame"));
             assertFalse(prepared.value.getBoolean("hasRenderedFirstFrame"));assertEquals(live,budget.inUse());assertEquals(live,budget.peakInUse());
+            Reply state=new Reply();service.dispatch("video.session.state",new JSONObject().put("sessionId","cached"),state);Shadows.shadowOf(Looper.getMainLooper()).idle();
+            assertNull(state.error);assertTrue(state.value.getBoolean("hasCachedFirstFrame"));
             Reply loop=new Reply();service.dispatch("video.session.setLoop",new JSONObject().put("sessionId","cached").put("loop",true),loop);Shadows.shadowOf(Looper.getMainLooper()).idle();assertNull(loop.error);
+            if(retainKeyframe){
+                Reply outgoing=new Reply();
+                service.dispatch("video.session.prepare",new JSONObject(args.toString()).put("sessionId","current"),outgoing);
+                Shadows.shadowOf(Looper.getMainLooper()).idle();assertNull(outgoing.error);assertNotNull(outgoing.value);
+                Reply transition=new Reply();
+                service.dispatch("video.session.transition",new JSONObject().put("fromSessionId","current").put("toSessionId","cached")
+                    .put("direction","down").put("progress",.1).put("bounds",args.getJSONObject("bounds")),transition);
+                Shadows.shadowOf(Looper.getMainLooper()).idle();
+                assertNull(transition.error);assertTrue(transition.value.getBoolean("composited"));
+                Field sessions=PodVideoSessionServices.class.getDeclaredField("sessions");sessions.setAccessible(true);
+                Object target=((Map<?,?>)sessions.get(service)).get("cached");
+                Field image=target.getClass().getDeclaredField("keyframeView");image.setAccessible(true);
+                ImageView pixels=(ImageView)image.get(target);
+                assertEquals(View.VISIBLE,pixels.getVisibility());assertNotNull(pixels.getDrawable());
+                assertEquals(live,budget.peakInUse());
+            }
         }finally{service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();cache.close();for(int i=0;i<live;i++)budget.release();}
     }
 }
