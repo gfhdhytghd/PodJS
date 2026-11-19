@@ -43,7 +43,11 @@ const state=(value:VideoSessionState):VideoState=>({
 interface WarmSlot<S> {direction?:'next'|'prev';id:string;source?:S;identity?:string;ready:boolean;revision:number;recentlyActive?:boolean;prepareSeq?:number;operation?:HostOperation<VideoSessionState>;pending?:Promise<VideoState>}
 export class VideoSessionPool<Source extends {key:string}> {
   private initialPreparation?:{key:string;identity:string;generation:number;operation:HostOperation<VideoState>};
-  private prepareIdentity(options:VideoPrepare){return JSON.stringify([options.bypassCache,options.url,options.videoUrl,options.audioUrl,options.type,options.videoMime,options.videoWidth,options.videoHeight,options.maxVideoShortEdge,Object.entries(options.headers??{}).sort()]);}
+  private prepareIdentity(options:VideoPrepare){return JSON.stringify([options.bypassCache,options.cacheOnlyPrepare,options.url,options.videoUrl,options.audioUrl,options.type,options.videoMime,options.videoWidth,options.videoHeight,options.maxVideoShortEdge,Object.entries(options.headers??{}).sort()]);}
+  protected readonly cacheOnlyAdmissionRetry:boolean=false;
+  private prepareNative(options:Parameters<VideoSessionPort['prepare']>[0]){
+    return this.port.prepare(this.cacheOnlyAdmissionRetry?{...options,cacheOnlyAdmissionRetry:true}:options);
+  }
   /** Begin a user-requested foreground prepare while navigation is being saved.
    * Hidden bounds retain the surface. The first visible prepare adopts it once. */
   prime(source:Source,options:VideoPrepare):HostOperation<VideoState>{
@@ -147,7 +151,7 @@ export class VideoSessionPool<Source extends {key:string}> {
     const retired=this.slots.filter(slot=>slot.source||slot.operation).map(slot=>({slot,revision:slot.revision}));
     for(const {slot} of retired)void this.evict(slot,'stale');
     const foreground={...options,sessionId:this.activeId,sourceOrdinal:this.ordinal(source.key),slotOrdinal:this.slotOrdinal(this.activeId),prewarm:false,autoplay:options.autoplay===true};
-    let operation=this.port.prepare(foreground),wait:HostOperation<void>|undefined,cancelled=false;
+    let operation=this.prepareNative(foreground),wait:HostOperation<void>|undefined,cancelled=false;
     const current=()=>!cancelled&&own===this.generation;
     const result=(async()=>{
       let value:VideoSessionState;
@@ -160,7 +164,7 @@ export class VideoSessionPool<Source extends {key:string}> {
         await wait.result;
         if(!current())throw new Error('stale video session preparation');
         wait=undefined;
-        operation=this.port.prepare(this.transform===foreground.transform?foreground:{...foreground,transform:this.transform});
+        operation=this.prepareNative(this.transform===foreground.transform?foreground:{...foreground,transform:this.transform});
         value=await operation.result;
       }
       if(!current())throw new Error('stale video session preparation');
@@ -206,7 +210,7 @@ export class VideoSessionPool<Source extends {key:string}> {
         const foreground=options;
         await this.port.retire(replacedId,true).catch(()=>undefined);
         if(cancelled||own!==this.generation)throw Error('stale video session adoption');
-        recovery=this.port.prepare({...foreground,sessionId:id,sourceOrdinal:this.ordinal(source.key),slotOrdinal:this.slotOrdinal(id),prewarm:false,autoplay:options.autoplay===true});
+        recovery=this.prepareNative({...foreground,sessionId:id,sourceOrdinal:this.ordinal(source.key),slotOrdinal:this.slotOrdinal(id),prewarm:false,autoplay:options.autoplay===true});
         promoted=await recovery.result;
       }
       if(cancelled||own!==this.generation)throw Error('stale video session adoption');
@@ -243,7 +247,7 @@ export class VideoSessionPool<Source extends {key:string}> {
       if(released)await released;
       if(!valid())throw new Error('stale video session prewarm reservation');
       let preparedLoop=this.loop;
-      operation=this.port.prepare({...foreground,transform:this.transform,loop:preparedLoop,sessionId:target.id,sourceOrdinal:this.ordinal(source.key),slotOrdinal:this.slotOrdinal(target.id),prepareSeq:seq,prewarm:true,autoplay:false,muted:false,
+      operation=this.prepareNative({...foreground,transform:this.transform,loop:preparedLoop,sessionId:target.id,sourceOrdinal:this.ordinal(source.key),slotOrdinal:this.slotOrdinal(target.id),prepareSeq:seq,prewarm:true,autoplay:false,muted:false,
         ...(retainKeyframe&&this.independentKeyframes?{keyframeOnly:true,retainKeyframe:true}:{})});
       target.operation=operation;
       const value=await operation.result;
@@ -328,7 +332,7 @@ export class VideoSessionPool<Source extends {key:string}> {
     if(!current())return;
     this.neighbourhoodSlot=slot;
     const {backgroundPlayback,...foreground}=options;
-    const operation=this.port.prepare({...foreground,sessionId:slot.id,sourceOrdinal:this.ordinal(source.key),slotOrdinal:this.slotOrdinal(slot.id),prewarm:true,keyframeOnly:true,autoplay:false});
+    const operation=this.prepareNative({...foreground,sessionId:slot.id,sourceOrdinal:this.ordinal(source.key),slotOrdinal:this.slotOrdinal(slot.id),prewarm:true,keyframeOnly:true,autoplay:false});
     slot.operation=operation;
     try{const value=await operation.result;if(!value.keyframeAvailable)throw Error('keyframe_unavailable');}
     finally{if(slot.operation===operation)slot.operation=undefined;}

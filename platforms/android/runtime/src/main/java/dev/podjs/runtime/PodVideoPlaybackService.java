@@ -30,10 +30,10 @@ public final class PodVideoPlaybackService extends MediaSessionService {
         if(player!=null&&next!=null){player.addAnalyticsListener(next);player.addAnalyticsListener(next.playbackStats);}
     }
     private PodVideoAdmissionRetry admissionRetry;
-    PodVideoAdmissionRetry beginAdmissionRecovery(ExoPlayer expected){
+    PodVideoAdmissionRetry beginAdmissionRecovery(ExoPlayer expected,PodVideoHttpDataSources.PrepareGate prepareGate,boolean cacheOnlyOnDenial){
         if(expected!=player)throw new IllegalStateException("video_owner_changed");
         cancelAdmissionRecovery();
-        admissionRetry=new PodVideoAdmissionRetry(expected);return admissionRetry;
+        admissionRetry=new PodVideoAdmissionRetry(expected,prepareGate,cacheOnlyOnDenial);return admissionRetry;
     }
     void cancelAdmissionRecovery(){if(admissionRetry!=null){admissionRetry.close();admissionRetry=null;}}
     private PodMediaAudioPolicy audioPolicy;

@@ -17,6 +17,30 @@ public class PodMediaExitPolicyTest {
  static void denied(DataSource source,DataSpec spec,int status)throws Exception {
   try{source.open(spec);fail("request must remain blocked");}catch(IOException error){assertEquals(status,PodMediaPrefixCache.httpStatus(error));}finally{source.close();}
  }
+ @Test public void resourceRetryBlocksDirectHttpAndAllowsLocalFileUntilReady()throws Exception {
+  try(PodMediaHttpTest.Server server=new PodMediaHttpTest.Server(0,0,206,(byte)1)){
+   android.content.Context context=androidx.test.core.app.ApplicationProvider.getApplicationContext();
+   PodVideoHttpDataSources.PrepareGate gate=new PodVideoHttpDataSources.PrepareGate(true);
+   DataSource.Factory factory=PodVideoHttpDataSources.playback(context,null,Map.of(),false,gate);
+   for(String path:List.of("video","audio")){
+    DataSource remote=factory.createDataSource();
+    try{assertThrows(PodVideoHttpDataSources.RetryCacheMiss.class,()->remote.open(PodMediaHttpTest.spec(server.url()+"/"+path)));}
+    finally{remote.close();}
+   }
+   assertEquals(0,server.connections.get());
+   File file=File.createTempFile("retry-source",".mp4",context.getCacheDir());
+   try{
+    Files.write(file.toPath(),new byte[]{1,2,3});
+    DataSource local=factory.createDataSource();
+    try{assertEquals(3,local.open(new DataSpec(android.net.Uri.fromFile(file))));assertArrayEquals(new byte[]{1,2,3},PodMediaHttpTest.read(local,3));}
+    finally{local.close();}
+   }finally{assertTrue(file.delete());}
+   gate.ready();
+   DataSource remote=factory.createDataSource();
+   try{remote.open(PodMediaHttpTest.spec(server.url()));assertEquals(1,server.requests.get());}
+   finally{remote.close();}
+  }
+ }
  @Test public void cachedRetryAfterGuardsDirectBypassAudioAndFallbackUntilOriginalDeadline()throws Exception {
   AtomicLong clock=new AtomicLong();try(PodMediaHttpTest.Server server=new PodMediaHttpTest.Server(0,0,429,(byte)1);PodMediaHttp http=new PodMediaHttp(clock::get);
       PodMediaPrefixCache cache=new PodMediaPrefixCache(Files.createTempDirectory("media-exits").toFile(),http,1024*1024)){

@@ -206,7 +206,8 @@ public final class PodVideoServices implements AutoCloseable {
         applyBounds(a.optJSONObject("bounds")); autoplay=a.optBoolean("autoplay", true); mediaGate(true); backgroundPlayback=a.optBoolean("backgroundPlayback",false); lifecyclePaused=false; density=context.getResources().getDisplayMetrics().density;
         Map<String,String> headers = headers(a.optJSONObject("headers"));
         analytics=new PodVideoAnalytics();analytics.startupSeq=a.optLong("startupSeq",0);
-        androidx.media3.datasource.DataSource.Factory sources=PodVideoHttpDataSources.playback(context,mediaPrefixCache,headers,a.optBoolean("bypassCache",false));
+        PodVideoHttpDataSources.PrepareGate prepareGate=new PodVideoHttpDataSources.PrepareGate(a.optBoolean("cacheOnlyPrepare",false));
+        androidx.media3.datasource.DataSource.Factory sources=PodVideoHttpDataSources.playback(context,mediaPrefixCache,headers,a.optBoolean("bypassCache",false)&&!prepareGate.cacheOnly(),prepareGate);
         PodVideoAnalytics observer=analytics;
         DefaultMediaSourceFactory factory = new DefaultMediaSourceFactory(()->{androidx.media3.datasource.DataSource source=sources.createDataSource();source.addTransferListener(observer);return source;});
         MediaSource source;
@@ -224,7 +225,7 @@ public final class PodVideoServices implements AutoCloseable {
                     playbackService=service;
                     player=service.player();
                     audioPolicy=service.audioPolicy();audioStop=service.audioStop();
-                    configurePlayer(a,preparedSource);
+                    configurePlayer(a,preparedSource,prepareGate);
                 } catch(Exception error){Callback pending=prepareCallback;prepareCallback=null;releasePlayer();state="error";if(pending!=null)pending.fail("prepare_failed",error.getMessage());}
             }
             public void onServiceDisconnected(ComponentName name){if(connection!=this)return;Callback pending=prepareCallback;prepareCallback=null;player=null;releasePlayer();state="error";if(pending!=null)pending.fail("service_disconnected","Video service disconnected");}
@@ -234,13 +235,13 @@ public final class PodVideoServices implements AutoCloseable {
         if(backgroundPlayback) context.startForegroundService(serviceIntent);
         if(!context.bindService(new Intent(serviceIntent).setAction("dev.podjs.runtime.BIND_VIDEO"),pendingConnection,Context.BIND_AUTO_CREATE)) throw new IllegalStateException("video_service_unavailable");
     }
-    private void configurePlayer(JSONObject a,MediaSource source) throws Exception {
+    private void configurePlayer(JSONObject a,MediaSource source,PodVideoHttpDataSources.PrepareGate prepareGate) throws Exception {
         if(player==null)throw new IllegalStateException("video_service_unavailable");
         android.util.Log.i("PodVideoTiming","playerAttached seq="+prepareSequence+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-prepareStartedMs));
         frameSource=new JSONObject(a.toString());
         final ExoPlayer session = player;
         final int generation=prepareSequence;
-        final PodVideoAdmissionRetry recovery=playbackService.beginAdmissionRecovery(session);
+        final PodVideoAdmissionRetry recovery=playbackService.beginAdmissionRecovery(session,prepareGate,a.optBoolean("cacheOnlyAdmissionRetry",false));
         admissionRetry=recovery;
         final Callback frameCallback=prepareCallback;
         final String cacheUri=a.optString("url");
@@ -309,7 +310,7 @@ public final class PodVideoServices implements AutoCloseable {
             }
         };
         player.addListener(playerListener);
-        state=lifecyclePaused?"paused":"preparing"; if(videoView!=null)videoView.setKeepScreenOn(true); player.setMediaSource(source);
+        state=lifecyclePaused?"paused":"preparing"; if(videoView!=null)videoView.setKeepScreenOn(true); if(prepareGate.cacheOnly())player.setMediaSource(source,Math.max(0,a.optLong("resumePositionMs",0)));else player.setMediaSource(source);
         playbackService.observeVideo(analytics);
         player.setVideoTextureView(videoView); android.util.Log.i("PodVideoTiming","prepareCall seq="+prepareSequence+" elapsedMs="+(android.os.SystemClock.elapsedRealtime()-prepareStartedMs));player.prepare();
         if (autoplay && !lifecyclePaused) player.play(); else player.pause();

@@ -44,9 +44,9 @@ public class PodVideoReloadTest {
    byte[] stale=new byte[16];java.util.Arrays.fill(stale,(byte)127);java.nio.file.Files.write(cache.target(uri).file.toPath(),stale);cache.target(uri).length=16;
    PodVideoSessionServices host=new PodVideoSessionServices(context,new PodVideoDecoderBudget(3),cache);
    try{
-    java.lang.reflect.Method factory=PodVideoSessionServices.class.getDeclaredMethod("mediaSource",JSONObject.class,PodVideoAnalytics.class);factory.setAccessible(true);
+    java.lang.reflect.Method factory=PodVideoSessionServices.class.getDeclaredMethod("mediaSource",JSONObject.class,PodVideoAnalytics.class,PodVideoHttpDataSources.PrepareGate.class);factory.setAccessible(true);
     for(boolean bypass:new boolean[]{false,true}){
-     Object media=factory.invoke(host,new JSONObject().put("url",uri).put("bypassCache",bypass),new PodVideoAnalytics());
+     Object media=factory.invoke(host,new JSONObject().put("url",uri).put("bypassCache",bypass),new PodVideoAnalytics(),new PodVideoHttpDataSources.PrepareGate(false));
      java.lang.reflect.Field field=media.getClass().getDeclaredField("dataSourceFactory");field.setAccessible(true);
      androidx.media3.datasource.DataSource data=((androidx.media3.datasource.DataSource.Factory)field.get(media)).createDataSource();
      try{data.open(new DataSpec(Uri.parse(uri)));byte[] bytes=new byte[2];assertEquals(2,data.read(bytes,0,2));assertArrayEquals(bypass?java.util.Arrays.copyOf(remote.body,2):new byte[]{127,127},bytes);}finally{data.close();}

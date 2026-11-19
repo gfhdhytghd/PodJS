@@ -11,6 +11,8 @@ import androidx.media3.exoplayer.ExoPlayer;
  * view, callback or credential is retained across background handoff. Main only. */
 final class PodVideoAdmissionRetry implements AutoCloseable {
     private final ExoPlayer player;
+    private final PodVideoHttpDataSources.PrepareGate prepareGate;
+    private final boolean cacheOnlyOnDenial;
     private final Handler main=new Handler(Looper.getMainLooper());
     private boolean closed,deferred,suspended,playWhenReady,initializing=true;
     private MediaItem source;
@@ -29,17 +31,22 @@ final class PodVideoAdmissionRetry implements AutoCloseable {
             if(deferred&&!java.util.Objects.equals(source,item))close();
         }
         @Override public void onPlaybackStateChanged(int state){
+            if(!closed&&state==Player.STATE_READY)prepareGate.ready();
             // External MediaSession stop must not resurrect an ended source.
             if(!closed&&!initializing&&(state==Player.STATE_ENDED||state==Player.STATE_IDLE&&player.getPlayerError()==null)){suspend();cancel();}
         }
     };
-    PodVideoAdmissionRetry(ExoPlayer player){this.player=player;player.addListener(listener);}
+    PodVideoAdmissionRetry(ExoPlayer player,PodVideoHttpDataSources.PrepareGate prepareGate,boolean cacheOnlyOnDenial){
+        this.player=player;this.prepareGate=prepareGate;this.cacheOnlyOnDenial=cacheOnlyOnDenial;
+        player.addListener(listener);
+    }
     void initialized(){initializing=false;playWhenReady=player.getPlayWhenReady();schedule();}
     boolean active(){return !closed;}
     boolean deferred(){return deferred;}
     boolean suspended(){return suspended;}
     void defer(){
         if(closed||deferred)return;
+        if(cacheOnlyOnDenial)prepareGate.restrict();
         deferred=true;source=player.getCurrentMediaItem();playWhenReady=player.getPlayWhenReady();
         PodVideoCodecGate.PROCESS.requestReclaim(player,PodVideoCodecGate.PREWARM);
         schedule();

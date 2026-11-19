@@ -369,7 +369,8 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         admission(args,"allowed");
         PodVideoAnalytics analytics=new PodVideoAnalytics();analytics.startupSeq=args.optBoolean("prewarm",false)?0:args.optLong("startupSeq",0);
         if(mediaPrefixCache!=null)try{PodMediaPrefixCache.Entry entry=mediaPrefixCache.target(args.optString("url",""));analytics.cacheEntry=entry.ordinal;analytics.cacheNetworkBytes=()->entry.networkBytes;analytics.cacheRangeRequests=()->entry.rangeRequests;analytics.cacheBytes=()->entry.file.length()+entry.tail().length();}catch(Exception ignored){}
-        MediaSource source = mediaSource(args,analytics);
+        PodVideoHttpDataSources.PrepareGate prepareGate=new PodVideoHttpDataSources.PrepareGate(args.optBoolean("cacheOnlyPrepare",false));
+        MediaSource source = mediaSource(args,analytics,prepareGate);
         Session session = sessions.get(id);
         boolean created = false;
         if (session == null) {
@@ -544,6 +545,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                 else if (playbackState == Player.STATE_ENDED) { own.state = "ended"; if(!own.prewarming){if(own.analytics!=null)own.analytics.completed(generation,player.getCurrentPosition(),player.getDuration());mediaGate(false);} }
                 else if (playbackState == Player.STATE_READY && !own.prewarming) {
                     own.state = player.isPlaying() ? "playing" : "ready";
+                    prepareGate.ready();
                     own.completePrepare();
                 }
                 own.updateKeepScreenOn();
@@ -572,7 +574,10 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                     if(PodVideoCodecGate.isByteAdmissionDenied(error)&&own.prewarming){
                         Callback pending=own.takePrepareCallback();own.resetPlayer();own.state="prewarmed";own.hideOffscreen();
                         if(pending!=null)pending.fail("decoder_admission_deferred","Optional video prewarm exceeds memory budget");
-                    }else deferAdmission(own,player,generation,callback);
+                    }else{
+                        if(!own.prewarming&&args.optBoolean("cacheOnlyAdmissionRetry",false))prepareGate.restrict();
+                        deferAdmission(own,player,generation,callback);
+                    }
                     return;
                 }
                 if(!own.prewarming)mediaGate(false);
@@ -593,7 +598,8 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             }
         });
         try {
-            player.setMediaSource(source);
+            if(prepareGate.cacheOnly())player.setMediaSource(source,Math.max(0,args.optLong("resumePositionMs",0)));
+            else player.setMediaSource(source);
             // hideOffscreen keeps a live decoder's TextureView VISIBLE. Calling
             // it before player allocation leaves a new standby GONE forever,
             // so TextureView never creates the surface needed for first frame.
@@ -1091,7 +1097,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         return new float[]{-p * heightPx, (1f - p) * heightPx};
     }
 
-    private MediaSource mediaSource(JSONObject args,PodVideoAnalytics analytics) throws Exception {
+    private MediaSource mediaSource(JSONObject args,PodVideoAnalytics analytics,PodVideoHttpDataSources.PrepareGate prepareGate) throws Exception {
         String videoUrl = args.optString("videoUrl", "");
         String audioUrl = args.optString("audioUrl", "");
         if(videoUrl.isEmpty()&&!audioUrl.isEmpty())videoUrl=args.optString("url", "");
@@ -1099,7 +1105,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         if (!audioUrl.isEmpty()) audioUrl = sourceValue(audioUrl);
         if (!videoUrl.isEmpty()) videoUrl = sourceValue(videoUrl);
         Map<String, String> headers = headers(args.optJSONObject("headers"));
-        androidx.media3.datasource.DataSource.Factory sources=PodVideoHttpDataSources.playback(context,mediaPrefixCache,headers,args.optBoolean("bypassCache",false));
+        androidx.media3.datasource.DataSource.Factory sources=PodVideoHttpDataSources.playback(context,mediaPrefixCache,headers,args.optBoolean("bypassCache",false)&&!prepareGate.cacheOnly(),prepareGate);
         DefaultMediaSourceFactory factory = new DefaultMediaSourceFactory(()->{androidx.media3.datasource.DataSource data=sources.createDataSource();data.addTransferListener(analytics);return data;});
         if (!videoUrl.isEmpty() && !audioUrl.isEmpty()) {
             return new MergingMediaSource(factory.createMediaSource(item(videoUrl, args.optString("type", ""))), factory.createMediaSource(item(audioUrl, "")));
