@@ -21,6 +21,69 @@ import org.robolectric.annotation.*;
 public class PodVideoDragTest {
  static Field field(Class<?> t,String n)throws Exception {Field f=t.getDeclaredField(n);f.setAccessible(true);return f;}
  static class Reply implements PodVideoSessionServices.Callback {String error;public void complete(JSONObject v){}public void fail(String c,String m){error=c;}}
+ @Test public void coldPagerKeepsTheClipAndBlackFloorAtRestOnBothAxes() throws Exception {
+  Context context=ApplicationProvider.getApplicationContext();
+  FrameLayout parent=new FrameLayout(context);
+  PodVideoSessionServices service=new PodVideoSessionServices(context,new PodVideoDecoderBudget(2));
+  service.attachToParent(parent);Shadows.shadowOf(Looper.getMainLooper()).idle();
+  Class<?> type=Class.forName("dev.podjs.runtime.PodVideoSessionServices$Session");
+  Constructor<?> constructor=type.getDeclaredConstructor(PodVideoSessionServices.class,String.class);
+  constructor.setAccessible(true);
+  @SuppressWarnings("unchecked") Map<String,Object> sessions=(Map<String,Object>)field(PodVideoSessionServices.class,"sessions").get(service);
+  Object slot=constructor.newInstance(service,"old");sessions.put("old",slot);
+  View video=(View)field(type,"videoView").get(slot);
+  float density=context.getResources().getDisplayMetrics().density;
+  JSONObject clip=new JSONObject().put("cx",116).put("cy",116).put("radius",116);
+  try{
+   for(int[] motion:new int[][]{{0,-64},{64,0},{0,64},{-64,0}}){
+    JSONObject offset=new JSONObject().put("x",motion[0]).put("y",motion[1]);
+    JSONObject bounds=new JSONObject().put("width",232).put("height",232).put("roundClip",clip)
+      .put("translateX",motion[0]).put("translateY",motion[1]).put("pagerOffset",offset);
+    Reply reply=new Reply();service.dispatch("video.session.setBounds",new JSONObject().put("sessionId","old").put("bounds",bounds),reply);
+    assertNull(reply.error);
+    assertEquals(motion[0]*density,video.getTranslationX(),0f);
+    assertEquals(motion[1]*density,video.getTranslationY(),0f);
+    android.graphics.Outline outline=new android.graphics.Outline();
+    video.getOutlineProvider().getOutline(video,outline);
+    android.graphics.Rect rect=new android.graphics.Rect();assertTrue(outline.getRect(rect));
+    assertEquals(116*density,rect.exactCenterX()+video.getTranslationX(),1f);
+    assertEquals(116*density,rect.exactCenterY()+video.getTranslationY(),1f);
+    View floor=(View)field(PodVideoSessionServices.class,"pagerBackground").get(service);
+    assertNotNull(floor);assertEquals(View.VISIBLE,floor.getVisibility());
+    assertEquals(0f,floor.getTranslationX(),0f);
+    assertEquals(0f,floor.getTranslationY(),0f);
+   }
+  }finally{service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();}
+ }
+
+ @Test public void legacyColdPagerKeepsTheClipOnTheRouteOnBothAxes() throws Exception {
+  Context context=ApplicationProvider.getApplicationContext();
+  PodVideoServices service=new PodVideoServices(context);
+  TextureView video=new TextureView(context);
+  video.setLayoutParams(new FrameLayout.LayoutParams(232,232));
+  field(PodVideoServices.class,"videoView").set(service,video);
+  Method applyBounds=PodVideoServices.class.getDeclaredMethod("applyBounds",JSONObject.class);
+  applyBounds.setAccessible(true);
+  float density=context.getResources().getDisplayMetrics().density;
+  JSONObject clip=new JSONObject().put("cx",116).put("cy",116).put("radius",116);
+  try{
+   for(int[] motion:new int[][]{{64,0},{0,-64},{-64,0},{0,64}}){
+    JSONObject offset=new JSONObject().put("x",motion[0]).put("y",motion[1]);
+    JSONObject bounds=new JSONObject().put("width",232).put("height",232).put("roundClip",clip)
+      .put("translateX",20+motion[0]).put("translateY",10+motion[1]).put("pagerOffset",offset);
+    applyBounds.invoke(service,bounds);
+    int left=((FrameLayout.LayoutParams)video.getLayoutParams()).leftMargin;
+    assertEquals((20+motion[0])*density,left+video.getTranslationX(),1f);
+    assertEquals((10+motion[1])*density,video.getTranslationY(),1f);
+    android.graphics.Outline outline=new android.graphics.Outline();
+    video.getOutlineProvider().getOutline(video,outline);
+    android.graphics.Rect rect=new android.graphics.Rect();assertTrue(outline.getRect(rect));
+    assertEquals(136*density,rect.exactCenterX()+left+video.getTranslationX(),1f);
+    assertEquals(126*density,rect.exactCenterY()+video.getTranslationY(),1f);
+   }
+  }finally{service.close();Shadows.shadowOf(Looper.getMainLooper()).idle();}
+ }
+
  @Test public void bothDirectionsExcludeThirdTextureAndKeepOutgoingPlayingUntilRelease()throws Exception {
   Context c=ApplicationProvider.getApplicationContext();FrameLayout parent=new FrameLayout(c);
   PodVideoSessionServices service=new PodVideoSessionServices(c,new PodVideoDecoderBudget(3));service.attachToParent(parent);Shadows.shadowOf(Looper.getMainLooper()).idle();

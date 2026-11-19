@@ -76,6 +76,13 @@ public class PodVideoPreviewTransformTest {
     call(s,"transition",new JSONObject().put("fromSessionId","old").put("toSessionId","cold").put("progress",.5).put("bounds",bounds));
     assertEquals(mode,field(t,"scaleMode").get(target));View black=(View)field(t,"background").get(target);TextureView texture=(TextureView)field(t,"videoView").get(target);assertEquals(View.VISIBLE,black.getVisibility());assertEquals(texture.getTranslationY(),black.getTranslationY(),0);
    }
+   JSONObject frameSource=new JSONObject().put("transform",new JSONObject().put("rotationDeg",0));
+   field(t,"frameSource").set(target,frameSource);
+   for(int angle:new int[]{180,270,0}){
+    call(s,"transition",new JSONObject().put("fromSessionId","old").put("toSessionId","cold")
+        .put("progress",.5).put("bounds",bounds).put("rotationDeg",angle));
+    assertEquals(angle,frameSource.getJSONObject("transform").getDouble("rotationDeg"),0);
+   }
    field(t,"frameBinding").set(target,"late");PodVideoKeyframes frames=(PodVideoKeyframes)field(PodVideoSessionServices.class,"keyframes").get(s);frames.put("late",Bitmap.createBitmap(100,200,Bitmap.Config.ARGB_8888));
    float offset=((View)field(t,"videoView").get(target)).getTranslationY();Method reveal=t.getDeclaredMethod("revealKeyframe");reveal.setAccessible(true);reveal.invoke(target);
    ImageView image=(ImageView)field(t,"keyframeView").get(target);assertNotNull(image);image.layout(0,0,image.getLayoutParams().width,image.getLayoutParams().height);assertEquals(offset,image.getTranslationY(),0);assertEquals("shrunk",field(t,"scaleMode").get(target));

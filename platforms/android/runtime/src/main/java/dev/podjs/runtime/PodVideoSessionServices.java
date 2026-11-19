@@ -770,7 +770,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         Session session = require(args);
         Bounds bounds = Bounds.read(args.optJSONObject("bounds"), density, true);
         if(!session.prewarming || session == dragFrom || session == dragTo) endDrag();
-        if(!session.prewarming && bounds.visible && bounds.translateYPx!=0) showPagerBackground(bounds);
+        if(!session.prewarming && bounds.visible && bounds.pagerMoving) showPagerBackground(bounds);
         // Only the translated page and its selected neighbour contribute pixels.
         // A TextureView readback is not a composited page: FIT_XY loses the
         // aspect/rotation matrix and leaves a stationary stretched copy behind.
@@ -780,9 +780,9 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         if (session.presented) { session.showPresented(); hideStandbys(); } else session.hideOffscreen();
         if(session.presented&&!session.prewarming&&session.hasRenderedFirstFrame&&session.analytics!=null)PodBenchmark.startup(session.analytics.startupSeq,"initial_frame_adopted");
         PodBenchmark.VideoAction action=PodBenchmark.videoAction(args.optJSONObject("bounds"));
-        if(action!=null&&session.presented&&session.hasRenderedFirstFrame&&bounds.translateYPx==0){
+        if(action!=null&&session.presented&&session.hasRenderedFirstFrame&&!bounds.pagerMoving){
             long own=session.generation;
-            PodBenchmark.present(session.videoView,action.event("snap_back"),()->session.generation==own&&session.presented&&session.geometryReady&&session.hasRenderedFirstFrame&&session.videoView.getTranslationY()==0);
+            PodBenchmark.present(session.videoView,action.event("snap_back"),()->session.generation==own&&session.presented&&session.geometryReady&&session.hasRenderedFirstFrame&&session.videoView.getTranslationX()==bounds.translateXPx&&session.videoView.getTranslationY()==bounds.translateYPx);
         }
         callback.complete(session.snapshot());
     }
@@ -1006,7 +1006,9 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         if(old.width!=bounds.widthPx||old.height!=bounds.heightPx||old.leftMargin!=bounds.xPx||old.topMargin!=bounds.yPx){
             FrameLayout.LayoutParams params=new FrameLayout.LayoutParams(bounds.widthPx,bounds.heightPx);params.leftMargin=bounds.xPx;params.topMargin=bounds.yPx;pagerBackground.setLayoutParams(params);
         }
-        pagerBackground.setTranslationX(bounds.translateXPx);pagerBackground.setVisibility(View.VISIBLE);
+        pagerBackground.setTranslationX(bounds.routeXPx);
+        pagerBackground.setTranslationY(bounds.floorYPx);
+        pagerBackground.setVisibility(View.VISIBLE);
         parent.bringChildToFront(pagerBackground);
     }
 
@@ -1523,7 +1525,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             background.setTranslationX(x); background.setTranslationY(y);
             if(keyframeView!=null){keyframeView.setTranslationX(x);keyframeView.setTranslationY(y);}
             if(bounds != null && bounds.clipRadiusPx>0) {
-                float cx=bounds.clipCxPx-(x-bounds.translateXPx),cy=bounds.clipCyPx-(y-bounds.translateYPx),r=bounds.clipRadiusPx;
+                float cx=bounds.clipCxPx-(x-bounds.routeXPx),cy=bounds.clipCyPx-(y-bounds.routeYPx),r=bounds.clipRadiusPx;
                 int left=Math.round(cx-r),top=Math.round(cy-r),right=Math.round(cx+r),bottom=Math.round(cy+r);
                 boolean changed=left!=clipLeft||top!=clipTop||right!=clipRight||bottom!=clipBottom||!videoView.getClipToOutline();
                 clipLeft=left;clipTop=top;clipRight=right;clipBottom=bottom;
@@ -1864,13 +1866,19 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
 
     private static final class Bounds {
         final int xPx, yPx, widthPx, heightPx;
-        final float translateXPx, translateYPx, clipCxPx, clipCyPx, clipRadiusPx;
-        final boolean visible;
+        final float translateXPx, translateYPx, routeXPx, routeYPx, floorYPx;
+        final float clipCxPx, clipCyPx, clipRadiusPx;
+        final boolean visible, pagerMoving;
 
         private Bounds(int xPx, int yPx, int widthPx, int heightPx, float translateXPx, float translateYPx,
-                       float clipCxPx, float clipCyPx, float clipRadiusPx, boolean visible) {
+                       float clipCxPx, float clipCyPx, float clipRadiusPx, boolean visible,
+                       boolean hasPagerOffset, float pagerXPx, float pagerYPx) {
             this.xPx = xPx; this.yPx = yPx; this.widthPx = widthPx; this.heightPx = heightPx;
             this.translateXPx = translateXPx; this.translateYPx = translateYPx;
+            routeXPx = translateXPx - pagerXPx;
+            routeYPx = translateYPx - pagerYPx;
+            floorYPx = hasPagerOffset ? routeYPx : 0;
+            pagerMoving = hasPagerOffset ? pagerXPx != 0 || pagerYPx != 0 : translateYPx != 0;
             this.clipCxPx = clipCxPx; this.clipCyPx = clipCyPx; this.clipRadiusPx = clipRadiusPx;
             this.visible = visible;
         }
@@ -1887,8 +1895,12 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
             float radius = clip == null ? 0 : bounded(clip, "radius", 0, 0, 1024);
             float cx = clip == null ? width / 2f : bounded(clip, "cx", width / 2f, -1024, 2048);
             float cy = clip == null ? height / 2f : bounded(clip, "cy", height / 2f, -1024, 2048);
+            JSONObject offset = object.optJSONObject("pagerOffset");
+            float pagerX = offset == null ? 0 : bounded(offset, "x", 0, -4096, 4096);
+            float pagerY = offset == null ? 0 : bounded(offset, "y", 0, -4096, 4096);
             return new Bounds(Math.round(x * density), Math.round(y * density), Math.round(width * density), Math.round(height * density),
-                    tx * density, ty * density, cx * density, cy * density, radius * density, object.optBoolean("visible", true));
+                    tx * density, ty * density, cx * density, cy * density, radius * density, object.optBoolean("visible", true),
+                    offset != null, pagerX * density, pagerY * density);
         }
 
         private static float bounded(JSONObject object, String key, float fallback, float low, float high) {

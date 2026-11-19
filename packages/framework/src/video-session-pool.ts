@@ -157,7 +157,7 @@ export class VideoSessionPool<Source extends {key:string}> {
         await wait.result;
         if(!current())throw new Error('stale video session preparation');
         wait=undefined;
-        operation=this.port.prepare(foreground);
+        operation=this.port.prepare(this.transform===foreground.transform?foreground:{...foreground,transform:this.transform});
         value=await operation.result;
       }
       if(!current())throw new Error('stale video session preparation');
@@ -362,13 +362,15 @@ export class VideoSessionPool<Source extends {key:string}> {
     const slot=this.selected??this.slots.find(s=>s.ready),target=slot?.source;if(!slot||!target||!slot.ready)throw new Error('video session target is not prewarmed');
     if(this.promoting)throw Error('stale video session promotion');
     this.endDrag();this.promoting=true;
+    const previousTransform=this.transform;
     try{
     if(this.transitionRunning)await this.transitionRunning;
     const own=this.generation,id=slot.id,identity=slot.identity,prepareSeq=slot.prepareSeq;
     const loop=this.loop;
     // The ready receipt can outlive its cached pixels. A committed selection
     // still owns this authorized source and may finish preparing on black.
-    const promoted=await this.port.promote(id,{replaceSessionId:this.activeId,bounds,autoplay,loop,adoptPreparing:true,transform,backgroundPlayback:this.backgroundPlayback,...(benchmark?{benchmark}:{})});
+    const promotionTransform=this.transform===previousTransform?transform:this.transform;
+    const promoted=await this.port.promote(id,{replaceSessionId:this.activeId,bounds,autoplay,loop,adoptPreparing:true,transform:promotionTransform,backgroundPlayback:this.backgroundPlayback,...(benchmark?{benchmark}:{})});
     // A fast swipe can retire the initial active before it decoded anything.
     // Retain its source, but never label that surface ready without host proof.
     const retired=typeof promoted.replacedHasRenderedFirstFrame==='boolean'?{hasRenderedFirstFrame:promoted.replacedHasRenderedFirstFrame,state:'prewarmed'}:await this.port.state(this.activeId).catch(()=>undefined);
@@ -380,6 +382,12 @@ export class VideoSessionPool<Source extends {key:string}> {
     slot.recentlyActive=true;slot.id=this.activeId;slot.direction=direction==='up'?'prev':'next';slot.source=this.activeSource;slot.identity=this.activeIdentity;slot.ready=!!this.activeSource&&(retired?.hasRenderedFirstFrame===true||promoted.replacedHasCachedFirstFrame===true)&&retired?.state!=='error';slot.revision++;
     this.activeId=id;this.activeKey=target.key;this.activeSource=target;this.activeIdentity=identity;this.selected=undefined;
     for(const other of this.slots)if(other!==slot&&!retainKeys.includes(other.source?.key??''))this.evict(other,'stale');
+    if(transform&&this.transform===previousTransform){
+      this.transform={...transform};
+      const sameTransform=(Object.keys({...previousTransform,...transform}) as (keyof VideoTransform)[])
+        .every(key=>previousTransform[key]===transform[key]);
+      if(!sameTransform)this.updateNeighbourTransforms();
+    }
     return {source:target,state:state(promoted)};
     }finally{this.promoting=false;}
   }
@@ -402,12 +410,15 @@ export class VideoSessionPool<Source extends {key:string}> {
   // receipt without ending the recognizer's still-active physical gesture.
   setBounds(bounds:VideoBounds):Promise<VideoState>{this.invalidateNativeDrag();return this.port.setBounds(this.activeId,bounds).then(state);}
   state():Promise<VideoState>{return this.port.state(this.activeId).then(state);}
-  async setTransform(transform:VideoTransform):Promise<VideoState>{
-    this.transform={...transform};
+  private updateNeighbourTransforms(){
     // Include cached and decoding neighbours. Their pixels and native drag
     // offsets stay in place; changing presentation must never re-prepare media.
     const neighbours=this.slots.filter(s=>s.source&&(s.ready||s.operation));
     for(const slot of neighbours)this.neighbourUpdate(slot,this.port.setTransform(slot.id,this.transform));
+  }
+  async setTransform(transform:VideoTransform):Promise<VideoState>{
+    this.transform={...transform};
+    this.updateNeighbourTransforms();
     const active=await this.port.setTransform(this.activeId,this.transform);
     return state(active);
   }
