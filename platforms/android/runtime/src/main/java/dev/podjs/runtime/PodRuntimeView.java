@@ -81,13 +81,14 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
             // SCREEN_OFF can precede Activity.onPause. Run a nonvisual guest turn
             // inline so durable checkpoints complete before this receiver returns.
             hangPhase(MainThreadWatchdog.Phase.LIFECYCLE);
-            try {nativePumpServices(host);drainHostEffects(false,true);}
+            try {pumpNativeServices(host,false);drainHostEffects(false,true);}
             finally {hangPhase(MainThreadWatchdog.Phase.IDLE);}
         }
     };
     private final ExecutorService network = Executors.newCachedThreadPool();
     private final Map<Integer, HttpURLConnection> requests = new ConcurrentHashMap<>();
     private boolean frameScheduled;
+    private boolean previousFrameOom;
     private int activeTouchCount;
     private void requestFrame() {
         if(Looper.myLooper()!=Looper.getMainLooper()){serviceHandler.post(this::requestFrame);return;}
@@ -109,7 +110,15 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
                     nativeAccessibilityEnabled(host, enabled); accessibilityEnabled = enabled;
                     if (!enabled) accessibility.clear();
                 }
-                nativeFrame(host, frameTime);idleFramePasses++;
+                boolean oom = nativeFrame(host, frameTime);
+                if (oom) {
+                    PodProcessMemoryBudget.recoverGuestMemory();
+                    // Give a transient failure one recovery frame even when
+                    // the last touch ended and the UI would otherwise idle.
+                    if (!previousFrameOom) requestFrame();
+                }
+                previousFrameOom = oom;
+                idleFramePasses++;
                 long nativeDone = android.os.SystemClock.elapsedRealtimeNanos();
                 if (enabled) {
                     byte[] semantics = nativeAccessibilitySnapshot(host, accessibilityMetadata);
@@ -210,7 +219,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private void pumpServicesWhileSuspended() {
         if (host == 0 || lifecycleState == 0) return;
         hangPhase(MainThreadWatchdog.Phase.SERVICE);
-        try {nativePumpServices(host);drainHostEffects(false);}
+        try {pumpNativeServices(host,false);drainHostEffects(false);}
         finally {hangPhase(MainThreadWatchdog.Phase.IDLE);}
     }
 
@@ -220,7 +229,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         if(jobContinuation!=null)serviceHandler.removeCallbacks(jobContinuation);
         queuedJobTurn=null;jobContinuation=null;effectsPending=false;
         if(hangWatchdog!=null){hangWatchdog.close();hangWatchdog=null;}
-        host = handle;activeTouchCount=0;
+        host = handle;activeTouchCount=0;previousFrameOom=false;
         if(handle!=0)services.attachBenchmark(this);
         renderCheckpoint.reset();
         serviceTraceGuestEnabled=false;
@@ -254,7 +263,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
             queuedJobTurn=null;jobContinuation=null;
             hangPhase(MainThreadWatchdog.Phase.JOBS);
             try{
-                nativePumpJobs(owner.handle);
+                if (nativePumpJobs(owner.handle)) PodProcessMemoryBudget.recoverGuestMemory();
                 drainHostEffects(lifecycleState==0);
             }finally{
                 hangPhase(MainThreadWatchdog.Phase.IDLE);
@@ -406,12 +415,20 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
         }
         serviceTurnRunning = true;
         try {
-            boolean deferred = lifecycleState == 0 ? nativePumpServiceResults(owner.handle) : nativePumpServices(owner.handle);
+            boolean deferred = pumpNativeServices(owner.handle,lifecycleState == 0);
             if (ownsHost(owner)) {
                 if (deferred) queueServiceRetry(owner, 250);
                 drainHostEffects(lifecycleState == 0);
             }
         } finally { serviceTurnRunning = false;requestFrame(); }
+    }
+
+    private boolean pumpNativeServices(long handle, boolean resultsOnly) {
+        // Keep these in sync with the status codes in podjs_runtime.h.
+        final int serviceDeferred = -4, guestOutOfMemory = -5;
+        int status = resultsOnly ? nativePumpServiceResults(handle) : nativePumpServices(handle);
+        if (status == guestOutOfMemory) PodProcessMemoryBudget.recoverGuestMemory();
+        return status == serviceDeferred || status == guestOutOfMemory;
     }
 
     public PodRuntimeView(Context context, String targetId) {
@@ -897,7 +914,7 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private void flushActivityState() {
         if(host==0)return;
         hangPhase(MainThreadWatchdog.Phase.LIFECYCLE);
-        try {nativePumpServices(host);drainHostEffects(false,true);}
+        try {pumpNativeServices(host,false);drainHostEffects(false,true);}
         finally {hangPhase(MainThreadWatchdog.Phase.IDLE);}
     }
     public String savedActivityState() { flushActivityState(); return services.activityState.saved(); }
@@ -934,13 +951,13 @@ public final class PodRuntimeView extends TextureView implements TextureView.Sur
     private static native void nativeResize(long host, Surface surface, int width, int height);
     private static native void nativeDetachSurface(long host);
     private static native void nativeInput(long host, int[] ids, float[] xy, int count, int rotaryMilliDegrees);
-    private static native boolean nativePumpServices(long host);
-    private static native boolean nativePumpServiceResults(long host);
-    private static native void nativePumpJobs(long host);
+    private static native int nativePumpServices(long host);
+    private static native int nativePumpServiceResults(long host);
+    private static native boolean nativePumpJobs(long host);
     private static native boolean nativeHasPendingJobs(long host);
     private static native boolean nativeHasContent(long host);
     private static native void nativeRenderCheckpoint(long host,long sequence);
-    private static native void nativeFrame(long host, long frameTimeNanos);
+    private static native boolean nativeFrame(long host, long frameTimeNanos);
     private static native boolean nativeNeedsFrame(long host);
     private static native boolean nativeBeginRendererTiming(long host,int capacity);
     private static native long[] nativeEndRendererTiming(long host);

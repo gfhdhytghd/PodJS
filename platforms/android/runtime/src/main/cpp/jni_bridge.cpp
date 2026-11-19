@@ -135,7 +135,7 @@ static int32_t systemFontMetrics(uintptr_t userdata,float px,uint32_t bold,uint3
   else if(values&&env->GetArrayLength(values)==4){jint data[4];env->GetIntArrayRegion(values,0,4,data);for(int i=0;i<4;i++)output[i]=uint32_t(data[i]);result=0;}
   if(values)env->DeleteLocalRef(values);if(attached)host->vm->DetachCurrentThread();return result;
 }
-static void renderFrame(Host* h, int64_t frameTimeNanos = 0);
+static bool renderFrame(Host* h, int64_t frameTimeNanos = 0);
 extern "C" JNIEXPORT jstring JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeProbeGlyphCache(JNIEnv* env,jclass,jlong p,jbyteArray input,jint slot) {
   auto* h=reinterpret_cast<Host*>(p);if(!h||!input||slot<0||slot>63)return nullptr;
   jsize n=env->GetArrayLength(input);if(n>1024)return nullptr;std::vector<uint8_t> text(n),result(65537);
@@ -523,22 +523,25 @@ extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nati
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeResize(JNIEnv* env,jclass,jlong p,jobject s,jint w,jint ht){auto*h=reinterpret_cast<Host*>(p);if(!h)return;h->width=static_cast<uint32_t>(w);h->height=static_cast<uint32_t>(ht);auto*n=ANativeWindow_fromSurface(env,s);h->renderer->replaceWindow(n,w,ht);ANativeWindow_release(n);}
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeDetachSurface(JNIEnv*,jclass,jlong p){auto*h=reinterpret_cast<Host*>(p);if(h)h->renderer->replaceWindow(nullptr,0,0);}
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeInput(JNIEnv* env,jclass,jlong p,jintArray ids,jfloatArray xy,jint count,jint rotary){auto*h=reinterpret_cast<Host*>(p);if(!h)return;std::vector<jint> id(count);std::vector<jfloat> pos(count*2);if(count){env->GetIntArrayRegion(ids,0,count,id.data());env->GetFloatArrayRegion(xy,0,count*2,pos.data());}std::vector<PodTouch> next(count);for(int i=0;i<count;i++)next[i]={(uint32_t)id[i],pos[i*2]*h->logicalWidth/std::max(1u,h->width),pos[i*2+1]*h->logicalHeight/std::max(1u,h->height)};h->touches.submit(std::move(next));h->rotary+=rotary;}
-static jboolean pumpHostServices(jlong p,bool resultsOnly) {
-  auto* h=reinterpret_cast<Host*>(p);if(!h)return JNI_FALSE;
+static jint pumpHostServices(jlong p,bool resultsOnly) {
+  auto* h=reinterpret_cast<Host*>(p);if(!h)return 0;
   const auto status=resultsOnly ? pod_runtime_pump_service_results(h->runtime) : pod_runtime_pump_services(h->runtime);
-  if(status==POD_RUNTIME_SERVICE_DEFERRED)return JNI_TRUE;
-  if(status<0)__android_log_print(ANDROID_LOG_ERROR,"PodJS","Service pump failed: %s",pod_runtime_last_error());
-  return JNI_FALSE;
+  if(status<0&&status!=POD_RUNTIME_SERVICE_DEFERRED&&status!=POD_RUNTIME_GUEST_OOM)
+    __android_log_print(ANDROID_LOG_ERROR,"PodJS","Service pump failed: %s",pod_runtime_last_error());
+  return status;
 }
-extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePumpServices(JNIEnv*,jclass,jlong p) {
+extern "C" JNIEXPORT jint JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePumpServices(JNIEnv*,jclass,jlong p) {
   return pumpHostServices(p,false);
 }
-extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePumpServiceResults(JNIEnv*,jclass,jlong p) {
+extern "C" JNIEXPORT jint JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePumpServiceResults(JNIEnv*,jclass,jlong p) {
   return pumpHostServices(p,true);
 }
-extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePumpJobs(JNIEnv*,jclass,jlong p) {
-  auto* h=reinterpret_cast<Host*>(p);if(!h)return;
-  if(pod_runtime_pump_jobs(h->runtime)<0)__android_log_print(ANDROID_LOG_ERROR,"PodJS","Job pump failed: %s",pod_runtime_last_error());
+extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePumpJobs(JNIEnv*,jclass,jlong p) {
+  auto* h=reinterpret_cast<Host*>(p);if(!h)return JNI_FALSE;
+  const auto status=pod_runtime_pump_jobs(h->runtime);
+  if(status==POD_RUNTIME_GUEST_OOM)return JNI_TRUE;
+  if(status<0)__android_log_print(ANDROID_LOG_ERROR,"PodJS","Job pump failed: %s",pod_runtime_last_error());
+  return JNI_FALSE;
 }
 extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeNeedsFrame(JNIEnv*,jclass,jlong p) {
   auto* h=reinterpret_cast<Host*>(p);
@@ -592,8 +595,8 @@ extern "C" JNIEXPORT jlongArray JNICALL Java_dev_podjs_runtime_PodRuntimeView_na
   env->SetLongArrayRegion(result,0,static_cast<jsize>(length),values.get());
   return env->ExceptionCheck()?nullptr:result;
 }
-static void renderFrame(Host* h, int64_t frameTimeNanos) {
-  if (!h) return;
+static bool renderFrame(Host* h, int64_t frameTimeNanos) {
+  if (!h) return false;
   const uint64_t sequence = ++h->diagnosticFrameSequence;
   auto hostTiming = h->hostDiagnostics.beginHostFrame(sequence,0);
   const double start = monoMs();
@@ -604,9 +607,10 @@ static void renderFrame(Host* h, int64_t frameTimeNanos) {
   auto guestTiming = h->hostDiagnostics.scope(podjs_gpu::RendererTimingStage::Guest);
   const int result = pod_runtime_frame(h->runtime,&in);
 
-  if (result != 0 && !h->frameFailed) __android_log_print(ANDROID_LOG_ERROR,"PodJS","Frame failed: %s",pod_runtime_last_error());
+  if (result != 0 && result != POD_RUNTIME_GUEST_OOM && !h->frameFailed)
+    __android_log_print(ANDROID_LOG_ERROR,"PodJS","Frame failed: %s",pod_runtime_last_error());
   guestTiming.finish(result==0,result);
-  h->frameFailed = result != 0;
+  h->frameFailed = result != 0 && result != POD_RUNTIME_GUEST_OOM;
   bool queued=false;
   double snapshotMs = 0, submitMs = 0, gpuDecodeMs = 0,
       uploadFenceMs = 0, gpuUploadMs = 0, frameFenceMs = 0, acquireMs = 0,
@@ -754,10 +758,11 @@ static void renderFrame(Host* h, int64_t frameTimeNanos) {
 
   hostTiming.setFlags(queued ? int64_t{1}<<19 : 0);
   hostTiming.finish(result==0,result);
+  return result==POD_RUNTIME_GUEST_OOM;
 }
 extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeHasContent(JNIEnv*,jclass,jlong p){auto*h=reinterpret_cast<Host*>(p);return h&&h->contentSubmitted?JNI_TRUE:JNI_FALSE;}
-extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeFrame(JNIEnv*,jclass,jlong p,jlong frameTimeNanos) {
-  renderFrame(reinterpret_cast<Host*>(p),frameTimeNanos);
+extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeFrame(JNIEnv*,jclass,jlong p,jlong frameTimeNanos) {
+  return renderFrame(reinterpret_cast<Host*>(p),frameTimeNanos)?JNI_TRUE:JNI_FALSE;
 }
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeRenderCheckpoint(JNIEnv*,jclass,jlong p,jlong id) {
   auto*h=reinterpret_cast<Host*>(p);if(!h||id<1)return;

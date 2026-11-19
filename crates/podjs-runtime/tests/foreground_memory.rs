@@ -1,9 +1,17 @@
 use podjs_runtime::{
-    PodRuntimeConfig, pod_runtime_create, pod_runtime_destroy, pod_runtime_eval_bundle,
-    pod_runtime_frame, pod_runtime_load_pak, pod_runtime_validate_package,
+    PodInputFrame, PodRuntimeConfig, pod_runtime_create, pod_runtime_destroy, pod_runtime_eval_bundle,
+    pod_runtime_frame, pod_runtime_load_pak, pod_runtime_poll_effect, pod_runtime_validate_package,
 };
 use serde_json::json;
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static OVER_BUDGET: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn account(_: u32, bytes: usize, action: u32, _: u64) -> u64 {
+    // Inject a host that rejects the old foreground lane when it is over budget.
+    u64::from(!(OVER_BUDGET.load(Ordering::Relaxed) && matches!(action, 0 | 4) && bytes >= 64 * 1024))
+}
 
 unsafe extern "C" {
     fn pod_runtime_memory_budget(bytes: usize, callback: Option<extern "C" fn(u32, usize, u32, u64) -> u64>);
@@ -19,7 +27,7 @@ fn fnv(bytes: &[u8]) -> String {
 #[test]
 fn a_budgeted_foreground_realm_retains_gc_headroom_above_24_mb() {
     // This test binary owns its process-wide memory configuration.
-    unsafe { pod_runtime_memory_budget(128_000_000, None) };
+    unsafe { pod_runtime_memory_budget(128_000_000, Some(account)) };
     let target = CString::new("android-watch").unwrap();
     let capabilities = CString::new("[]").unwrap();
     let config = PodRuntimeConfig {
@@ -44,7 +52,12 @@ fn a_budgeted_foreground_realm_retains_gc_headroom_above_24_mb() {
     let pak = b"pak";
     let bundle = br#"
         globalThis.library = Array.from({length:8192}, () => new Uint8Array(4096));
-        globalThis.frame = () => { globalThis.frameState = {size:library.length}; };
+        globalThis.frame = buttons => {
+            if (buttons) {
+                const inputWork = new Uint8Array(128 * 1024);
+                pod.emit(JSON.stringify({buttons, bytes: inputWork.length}));
+            }
+        };
     "#;
     let manifest = CString::new(json!({
         "target": "android-watch",
@@ -61,6 +74,25 @@ fn a_budgeted_foreground_realm_retains_gc_headroom_above_24_mb() {
     assert_eq!(pod_runtime_frame(runtime, std::ptr::null()), 0);
 
     let stats = unsafe { &*runtime }.memory_stats();
+    let mut input = PodInputFrame {
+        struct_size: std::mem::size_of::<PodInputFrame>() as u32,
+        buttons: 1,
+        analog: 0,
+        touches: std::ptr::null(),
+        touch_count: 0,
+        rotary_primary_millidegrees: 0,
+        rotary_secondary_millidegrees: 0,
+    };
+    OVER_BUDGET.store(true, Ordering::Relaxed);
+    for buttons in [1, 2] {
+        input.buttons = buttons;
+        assert_eq!(pod_runtime_frame(runtime, &input), 0, "foreground input failed under pressure");
+        let effect = pod_runtime_poll_effect(runtime);
+        assert!(!effect.is_null());
+        let effect: serde_json::Value =
+            serde_json::from_slice(unsafe { CStr::from_ptr(effect) }.to_bytes()).unwrap();
+        assert_eq!(effect, json!({"buttons": buttons, "bytes": 128 * 1024}));
+    }
     pod_runtime_destroy(runtime);
     let allocated = stats["quickjs"]["mallocBytes"].as_u64().unwrap();
     let threshold = stats["quickjs"]["gcThresholdBytes"].as_u64().unwrap();

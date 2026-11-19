@@ -6,19 +6,21 @@ import android.view.MotionEvent;
  * Recognition, target identity, cancellation and commit remain with the pager. */
 final class PodVideoDragInput {
     private int pointerId = -1;
-    private float downY, currentY;
+    private float downX, downY, currentX, currentY;
     private boolean down, armed;
 
     boolean accept(MotionEvent event) {
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
                 pointerId = event.getPointerId(0);
+                downX = currentX = event.getX(0);
                 downY = currentY = event.getY(0);
                 down = true; armed = false;
                 return false;
             case MotionEvent.ACTION_MOVE:
                 int index = event.findPointerIndex(pointerId);
                 if (!down || event.getPointerCount() != 1 || index < 0) { disarm(); return false; }
+                currentX = event.getX(index);
                 currentY = event.getY(index);
                 return armed;
             case MotionEvent.ACTION_POINTER_DOWN:
@@ -32,6 +34,7 @@ final class PodVideoDragInput {
 
     boolean arm() { armed = down; return armed; }
     boolean tracking() { return down && armed; }
+    float distanceX() { return currentX - downX; }
     float distanceY() { return currentY - downY; }
     void disarm() { armed = false; }
 }

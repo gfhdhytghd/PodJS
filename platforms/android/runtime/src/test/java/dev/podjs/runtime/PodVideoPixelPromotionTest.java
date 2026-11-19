@@ -2,6 +2,7 @@ package dev.podjs.runtime;
 
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.widget.ImageView;
 import android.os.Looper;
 import android.widget.FrameLayout;
 import androidx.test.core.app.ApplicationProvider;
@@ -46,10 +47,15 @@ public class PodVideoPixelPromotionTest {
             frames.put(PodVideoFrameCache.binding(args,cache),Bitmap.createBitmap(100,200,Bitmap.Config.ARGB_8888));
             Reply prepared=new Reply();service.dispatch("video.session.prepare",args,prepared);Shadows.shadowOf(Looper.getMainLooper()).idle();
             assertNull(prepared.error);long generation=prepared.value.getLong("sourceGeneration");
-            Reply promoted=new Reply();service.dispatch("video.session.promote",new JSONObject().put("sessionId","cached").put("bounds",bounds).put("autoplay",true),promoted);Shadows.shadowOf(Looper.getMainLooper()).idle();
-            assertNotNull(painted[0]);assertNull(promoted.value);assertNull(promoted.error);assertEquals(3,budget.inUse());
             Map<?,?> sessions=(Map<?,?>)field(PodVideoSessionServices.class,"sessions").get(service);Object slot=sessions.get("cached");
+            ImageView image=(ImageView)field(slot.getClass(),"keyframeView").get(slot);
+            image.layout(0,0,image.getLayoutParams().width,image.getLayoutParams().height);
+            Reply promoted=new Reply();service.dispatch("video.session.promote",new JSONObject().put("sessionId","cached").put("bounds",bounds).put("autoplay",true).put("transform",new JSONObject().put("rotationDeg",90)),promoted);Shadows.shadowOf(Looper.getMainLooper()).idle();
+            assertNotNull(painted[0]);assertNull(promoted.value);assertNull(promoted.error);assertEquals(3,budget.inUse());
             assertNull(field(slot.getClass(),"player").get(slot));assertTrue(field(slot.getClass(),"presented").getBoolean(slot));
+            float[] axis={1,0};image.getImageMatrix().mapVectors(axis);
+            assertEquals(0f,axis[0],.001f);
+            assertTrue("the first cached frame already faces 90 degrees",axis[1]>0);
             Object pixels=field(slot.getClass(),"cachedFrame").get(slot);assertNotNull(pixels);
             if(hardware){
                 painted[0].accept(true);Shadows.shadowOf(Looper.getMainLooper()).idle();

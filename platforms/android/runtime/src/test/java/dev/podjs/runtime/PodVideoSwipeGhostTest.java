@@ -3,6 +3,7 @@ import static org.junit.Assert.*;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.os.Looper;
+import android.view.MotionEvent;
 import android.view.TextureView;
 import android.view.View;
 import android.widget.FrameLayout;
@@ -24,7 +25,11 @@ import org.robolectric.annotation.*;
 @RunWith(RobolectricTestRunner.class) @Config(sdk=30) @LooperMode(LooperMode.Mode.PAUSED)
 public class PodVideoSwipeGhostTest {
  static Field field(Class<?> t,String n)throws Exception{Field f=t.getDeclaredField(n);f.setAccessible(true);return f;}
- static class Reply implements PodVideoSessionServices.Callback{String error;public void complete(JSONObject v){}public void fail(String c,String m){error=c;}}
+ static class Reply implements PodVideoSessionServices.Callback{String error;JSONObject value;public void complete(JSONObject v){value=v;}public void fail(String c,String m){error=c;}}
+ static void pointer(PodVideoSessionServices service,int action,float x,float y){
+  MotionEvent event=MotionEvent.obtain(0,10,action,x,y,0);
+  try{service.pagerInput(event);}finally{event.recycle();}
+ }
  @Test public void coldDragAndHandoffNeverReadBackOrAddAnUntransformedImage()throws Exception{
   Context c=ApplicationProvider.getApplicationContext();FrameLayout parent=new FrameLayout(c);
   PodVideoSessionServices service=new PodVideoSessionServices(c,new PodVideoDecoderBudget(3));service.attachToParent(parent);Shadows.shadowOf(Looper.getMainLooper()).idle();
@@ -52,7 +57,7 @@ public class PodVideoSwipeGhostTest {
  @Test public void selectedCachedPageKeepsUniformPixelScaleAtEveryDragSample()throws Exception{
   Context c=ApplicationProvider.getApplicationContext();FrameLayout parent=new FrameLayout(c);PodVideoSessionServices service=new PodVideoSessionServices(c,new PodVideoDecoderBudget(3));service.attachToParent(parent);Shadows.shadowOf(Looper.getMainLooper()).idle();
   Class<?> t=Class.forName("dev.podjs.runtime.PodVideoSessionServices$Session");Constructor<?> ctor=t.getDeclaredConstructor(PodVideoSessionServices.class,String.class);ctor.setAccessible(true);
-  @SuppressWarnings("unchecked") Map<String,Object> slots=(Map<String,Object>)field(PodVideoSessionServices.class,"sessions").get(service);JSONObject bounds=new JSONObject().put("width",233).put("height",233).put("roundClip",new JSONObject().put("cx",116.5).put("cy",116.5).put("radius",116.5));
+  @SuppressWarnings("unchecked") Map<String,Object> slots=(Map<String,Object>)field(PodVideoSessionServices.class,"sessions").get(service);JSONObject bounds=new JSONObject().put("width",233).put("height",211).put("roundClip",new JSONObject().put("cx",116.5).put("cy",105.5).put("radius",105.5));
   try{
    for(String id:new String[]{"old","next","other"}){
     Object slot=ctor.newInstance(service,id);slots.put(id,slot);ExoPlayer player=new ExoPlayer.Builder(c).build();field(t,"player").set(slot,player);field(t,"audioPolicy").set(slot,new PodMediaAudioPolicy(c,player));field(t,"hasRenderedFirstFrame").setBoolean(slot,id.equals("old"));field(t,"hasUpdatedFrame").setBoolean(slot,id.equals("old"));field(t,"prewarming").setBoolean(slot,!id.equals("old"));Reply r=new Reply();service.dispatch("video.session.setBounds",new JSONObject().put("sessionId",id).put("bounds",bounds),r);assertNull(r.error);
@@ -62,7 +67,14 @@ public class PodVideoSwipeGhostTest {
     ImageView picture=new ImageView(c);picture.setScaleType(ImageView.ScaleType.MATRIX);Bitmap pixels=Bitmap.createBitmap(size[0],size[1],Bitmap.Config.ARGB_8888);picture.setImageBitmap(pixels);parent.addView(picture,new FrameLayout.LayoutParams((FrameLayout.LayoutParams)((View)field(t,"videoView").get(next)).getLayoutParams()));picture.layout(0,0,picture.getLayoutParams().width,picture.getLayoutParams().height);PodVideoKeyframes.Frame frame=new PodVideoKeyframes.Frame(pixels);frame.pins=1;field(t,"cachedFrame").set(next,frame);field(t,"keyframeView").set(next,picture);
     service.dispatch("video.session.setTransform",new JSONObject().put("sessionId","old").put("scaleMode",mode).put("rotationDeg",angle),new Reply());
     for(String direction:new String[]{"up","down"})for(int i=0;i<=20;i++){
-     Reply r=new Reply();service.dispatch("video.session.transition",new JSONObject().put("fromSessionId","old").put("toSessionId","next").put("direction",direction).put("progress",i/20d).put("bounds",bounds),r);assertNull(r.error);
+     Reply r=new Reply();service.dispatch("video.session.transition",new JSONObject().put("fromSessionId","old").put("toSessionId","next").put("direction",direction).put("progress",i/20d).put("rotationDeg",angle).put("bounds",bounds),r);assertNull(r.error);
+     float distance=angle%180==0?picture.getLayoutParams().height:picture.getLayoutParams().width;
+     double vertical=Math.toRadians(angle), sign=direction.equals("up")?-1:1;
+     View outgoing=(View)field(t,"videoView").get(slots.get("old"));
+     assertEquals("outgoing x at "+angle, -Math.sin(vertical)*sign*i/20*distance,outgoing.getTranslationX(),.001);
+     assertEquals("outgoing y at "+angle, Math.cos(vertical)*sign*i/20*distance,outgoing.getTranslationY(),.001);
+     assertEquals("incoming x at "+angle, -Math.sin(vertical)*sign*(i/20d-1)*distance,picture.getTranslationX(),.001);
+     assertEquals("incoming y at "+angle, Math.cos(vertical)*sign*(i/20d-1)*distance,picture.getTranslationY(),.001);
      for(String id:new String[]{"old","next"}){
       Object slot=slots.get(id);assertEquals(mode,field(t,"scaleMode").get(slot));assertEquals(angle,field(t,"rotationDeg").getFloat(slot),.001);assertEquals(angle,field(t,"scaleRotationDeg").getFloat(slot),.001);
      }
@@ -77,6 +89,27 @@ public class PodVideoSwipeGhostTest {
      assertEquals("actual angle changes the horizontal pixel axis",Math.cos(Math.toRadians(angle)),(axes[2]-axes[0])/sx,.001);assertEquals(Math.sin(Math.toRadians(angle)),(axes[3]-axes[1])/sx,.001);
      Method hide=t.getDeclaredMethod("hideOffscreen");hide.setAccessible(true);hide.invoke(slots.get("other"));
      View third=(View)field(t,"videoView").get(slots.get("other"));assertNotEquals("late standby callback cannot expose a third page",View.VISIBLE,third.getVisibility());assertTrue(parent.indexOfChild(picture)>parent.indexOfChild(third));int images=0;for(int j=0;j<parent.getChildCount();j++)if(parent.getChildAt(j) instanceof ImageView)images++;assertEquals(1,images);
+    }
+    for(String direction:new String[]{"up","down"}){
+     // Start with an unfinished tween. Arming and subsequent physical moves
+     // must use the destination axis and give both textures the same angle.
+     service.dispatch("video.session.setTransform",new JSONObject().put("sessionId","old").put("scaleMode",mode)
+       .put("rotationDeg",angle-45).put("scaleRotationDeg",angle),new Reply());
+     pointer(service,MotionEvent.ACTION_DOWN,100,100);
+     Reply tracked=new Reply();service.dispatch("video.session.transition",new JSONObject().put("fromSessionId","old").put("toSessionId","next")
+       .put("direction",direction).put("progress",0).put("rotationDeg",angle).put("bounds",bounds).put("trackPointer",true),tracked);
+     assertNull(tracked.error);assertTrue(tracked.value.getBoolean("nativeTracking"));
+     float sign=direction.equals("up")?-1:1, axisX=(float)-Math.sin(Math.toRadians(angle)),axisY=(float)Math.cos(Math.toRadians(angle));
+     float dx=60*sign*axisX,dy=60*sign*axisY;
+     pointer(service,MotionEvent.ACTION_MOVE,100+dx+12*axisY,100+dy+12*axisX);
+     Object old=slots.get("old");View outgoing=(View)field(t,"videoView").get(old);
+     assertEquals(dx,outgoing.getTranslationX(),.001);assertEquals(dy,outgoing.getTranslationY(),.001);
+     float length=angle%180==0?picture.getLayoutParams().height:picture.getLayoutParams().width;
+     assertEquals(dx-length*sign*axisX,picture.getTranslationX(),.001);
+     assertEquals(dy-length*sign*axisY,picture.getTranslationY(),.001);
+     assertEquals(angle,field(t,"rotationDeg").getFloat(old),.001);
+     assertEquals(angle,field(t,"rotationDeg").getFloat(next),.001);
+     pointer(service,MotionEvent.ACTION_CANCEL,100+dx,100+dy);
     }
     Method clear=t.getDeclaredMethod("clearKeyframe");clear.setAccessible(true);clear.invoke(next);
    }

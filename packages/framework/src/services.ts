@@ -484,11 +484,13 @@ export interface VideoSessionState { isBuffering?:boolean;playWhenReady?:boolean
 }
 export interface VideoSessionTransition {
   fromSessionId:string; toSessionId:string; progress:number; direction:"up"|"down"; bounds?:VideoBounds; benchmark?:VideoBenchmarkAction; trackPointer?:boolean;
+  /** Clockwise picture angle for both pages and the pager axis. Must be a multiple of 90. */
+  rotationDeg?:number;
 }
 export type VideoSessionTransitionState = {
   fromSessionId:string; toSessionId:string; progress:number; direction:"up"|"down";
 } & ({
-  fromOffsetYPx:number; toOffsetYPx:number; composited:true;
+  fromOffsetXPx?:number; toOffsetXPx?:number; fromOffsetYPx:number; toOffsetYPx:number; composited:true;
   /** Current touch is driven by native coordinates until the caller ends its drag. */
   nativeTracking?:boolean;
 } | {

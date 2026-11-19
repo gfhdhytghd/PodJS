@@ -57,25 +57,62 @@ export function breakUnits(paragraph: string): string[] {
   return result;
 }
 
-export function layoutUiText(text: string, options: LayoutOptions): string[] {
-  const lines: string[] = [];
+function fitsUnit(line: string, unit: string, width: number, measure: LayoutOptions["measure"], clusters?: string[]): boolean {
+  if (clusters) {
+    // Measuring a run can synchronously load every missing glyph. Grow the
+    // probe only while it fits, so a long word does not load its entire tail
+    // before the line iterator can yield.
+    for (let end = 16; end < clusters.length; end *= 2) {
+      if (measure(line + clusters.slice(0, end).join("")) > width) return false;
+    }
+  }
+  return measure(line + unit) <= width;
+}
+
+/** Yield complete lines so a frame-driven caller can pause before measuring more. */
+export function* layoutUiTextLines(text: string, { width, measure }: Omit<LayoutOptions, "maxLines">): Generator<string> {
+  let emitted = false;
   for (const paragraph of text.replace(/\r\n?/g, "\n").split("\n")) {
-    if (paragraph === "") { lines.push(""); continue; }
+    if (paragraph === "") {
+      emitted = true;
+      yield "";
+      continue;
+    }
     let line = "";
-    const push = () => { lines.push(line.replace(/\s+$/u, "")); line = ""; };
     for (const unit of breakUnits(paragraph)) {
       const space = /^\s+$/u.test(unit);
-      if (!line && space) continue; // no leading whitespace on a wrapped line
-      if (options.measure(line + unit) <= options.width) { line += unit; continue; }
-      if (space) { push(); continue; }
-      if (line) push();
-      if (options.measure(unit) <= options.width) { line = unit; continue; }
-      for (const g of graphemes(unit)) { // overlong unit: grapheme fallback
-        if (line && options.measure(line + g) > options.width) push();
+      if (!line && space) continue;
+      const clusters = unit.length > 16 ? graphemes(unit) : undefined;
+      if (fitsUnit(line, unit, width, measure, clusters)) { line += unit; continue; }
+      if (line || space) {
+        emitted = true;
+        yield line.trimEnd();
+        line = "";
+        if (!space && fitsUnit(line, unit, width, measure, clusters)) { line = unit; continue; }
+      }
+      if (space) continue;
+      for (const g of clusters ?? graphemes(unit)) {
+        if (line && measure(line + g) > width) {
+          emitted = true;
+          yield line.trimEnd();
+          line = "";
+        }
         line += g;
       }
     }
-    if (line || !lines.length) lines.push(line.replace(/\s+$/u, ""));
+    if (line || !emitted) {
+      emitted = true;
+      yield line.trimEnd();
+    }
   }
-  return options.maxLines ? lines.slice(0, options.maxLines) : lines;
+}
+
+export function layoutUiText(text: string, options: LayoutOptions): string[] {
+  const lines: string[] = [];
+  const max = options.maxLines;
+  for (const line of layoutUiTextLines(text, options)) {
+    lines.push(line);
+    if (max && max > 0 && lines.length >= Math.trunc(max)) break;
+  }
+  return max ? lines.slice(0, max) : lines;
 }

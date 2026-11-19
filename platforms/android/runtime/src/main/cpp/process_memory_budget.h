@@ -27,29 +27,25 @@ class Budget {
   bool reserve(uint32_t owner,uint64_t bytes,bool background=false,bool quietQuota=false,uint64_t extraHeadroom=0) {
     std::lock_guard lock(mutex_);
     if(owner>=OwnerCount)return false;
+    if(owner==QuickJs&&!background) {
+      pending_[owner]+=bytes;
+      if(limit_&&(upperLocked(4000000)>limit_||
+                  resident_[owner]+pending_[owner]>quota(QuickJs)*3/4))pressure_=true;
+      return true;
+    }
     if(!limit_) { pending_[owner]+=bytes;return true; }
     const uint64_t quotaBytes=quota(owner);
-    const uint64_t cap=owner==QuickJs?(background?quotaBytes-std::min<uint64_t>(quotaBytes,4000000):limit_):quotaBytes;
+    const uint64_t cap=owner==QuickJs?quotaBytes-std::min<uint64_t>(quotaBytes,4000000):quotaBytes;
     if(owner==QuickJs&&resident_[owner]+pending_[owner]+bytes>quotaBytes*3/4)pressure_=true;
     if(bytes>cap || resident_[owner]+pending_[owner]>cap-bytes) {if(!quietQuota)pressure_=true;return false;}
     if(bytes>limit_ || extraHeadroom>limit_-bytes) {pressure_=true;return false;}
-    const uint64_t margin=((owner==QuickJs&&!background)||owner==Graphics)?4000000:12000000;
+    const uint64_t margin=owner==Graphics?4000000:12000000;
     const uint64_t remaining=limit_-bytes-extraHeadroom;
     if(upperLocked(margin)>remaining) {
       pressure_=true;
-      // Leave the foreground result and input pumps enough room to process
-      // reclamation while there is still space below the budget. Large guest
-      // buffers and headless jobs do not borrow this margin.
-      if(owner!=QuickJs||background||bytes>32*1024||upperLocked(0)>remaining)return false;
+      return false;
     }
     pending_[owner]+=bytes;return true;
-  }
-  bool reserveQuickJsStartup(uint64_t bytes) {
-    std::lock_guard lock(mutex_);
-    pending_[QuickJs]+=bytes;
-    if(limit_&&(upperLocked(4000000)>limit_||
-                resident_[QuickJs]+pending_[QuickJs]>quota(QuickJs)*3/4))pressure_=true;
-    return true;
   }
   uint64_t commit(uint32_t owner,uint64_t bytes) {
     std::lock_guard lock(mutex_);if(owner>=OwnerCount)return 0;
@@ -93,7 +89,7 @@ inline Budget process;
 inline uint64_t allocation(uint32_t owner,size_t bytes,uint32_t action,uint64_t generation) {
   switch(action){case 0:return process.reserve(owner,bytes);case 1:return process.commit(owner,bytes);
     case 4:return process.reserve(owner,bytes,true);
-    case 5:return owner==QuickJs&&process.reserveQuickJsStartup(bytes);
+    case 5:return owner==QuickJs&&process.reserve(QuickJs,bytes);
     case 2:process.cancel(owner,bytes);break;case 3:process.release(owner,bytes,generation);break;default:return false;}
   return true;
 }

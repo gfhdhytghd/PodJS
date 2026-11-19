@@ -32,24 +32,25 @@ int main(){
  assert(priority.available(QuickJs)==0);assert(priority.reserve(QuickJs,4000000));priority.cancel(QuickJs,4000000);
  auto observed=priority.sampleStart();priority.sample(120000000,observed);
  assert(priority.reserve(QuickJs,4000000));priority.commit(QuickJs,4000000);
- assert(!priority.reserve(QuickJs,64*1024));
+ assert(priority.reserve(QuickJs,64*1024));priority.cancel(QuickJs,64*1024);
  assert(!priority.reserve(QuickJs,256,true));
  assert(priority.reserve(QuickJs,256));priority.cancel(QuickJs,256);
  observed=priority.sampleStart();priority.sample(128000000,observed);
- assert(!priority.reserve(QuickJs,1)); // small control allocations still obey the cap
+ assert(priority.reserve(QuickJs,1));priority.cancel(QuickJs,1);
 
  // The boot lane accounts every allocation, even when an existing
  // process sample leaves no normal admission headroom.
  process.configure(128000000);
  observed=process.sampleStart();process.sample(127000000,observed);
- assert(!allocation(QuickJs,2000000,0,0));
+ assert(allocation(QuickJs,2000000,0,0));allocation(QuickJs,2000000,2,0);
  assert(!allocation(QuickJs,2000000,4,0));
+ assert(!process.reserve(Media,1000000,false,true));
  assert(allocation(QuickJs,2000000,5,0));
  assert(process.takePressure());
  assert(process.pending()==2000000);
  auto boot=allocation(QuickJs,2000000,1,0);
  assert(process.resident(QuickJs)==2000000);
- assert(!allocation(QuickJs,256,0,0));
+ assert(allocation(QuickJs,256,0,0));allocation(QuickJs,256,2,0);
  allocation(QuickJs,2000000,3,boot);
  assert(process.resident(QuickJs)==0);
  assert(process.pending()==0);

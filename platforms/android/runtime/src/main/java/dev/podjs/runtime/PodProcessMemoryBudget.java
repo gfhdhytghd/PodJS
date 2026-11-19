@@ -22,7 +22,7 @@ public final class PodProcessMemoryBudget implements ComponentCallbacks2 {
     private final PodProcessMemoryReader memory;
     private volatile long pss;
     private volatile int lastLevel;
-    private long lastPressure,lastPurge;
+    private long lastPressure,lastPurge,lastGuestOom;
     private PodProcessMemoryBudget(Context context,long bytes) {
         limit=bytes;
         oww242Graphics=bytes>0&&"OWW242".equals(android.os.Build.DEVICE);
@@ -60,10 +60,20 @@ public final class PodProcessMemoryBudget implements ComponentCallbacks2 {
         PodProcessMemoryBudget b=instance;if(b==null||b.limit==0)return ()->{};
         b.listeners.add(listener);return ()->b.listeners.remove(listener);
     }
-    private void pressure(int level) {
+    /** Called after the guest turn has unwound, with the current player still owned. */
+    static void recoverGuestMemory() {
+        PodProcessMemoryBudget budget=instance;
+        if(budget!=null)budget.pressure(3,true);
+    }
+    private void pressure(int level) { pressure(level,false); }
+    private void pressure(int level,boolean guestOom) {
         main.post(()->{
             long now=android.os.SystemClock.elapsedRealtime();
-            if(level==lastLevel&&now-lastPressure<2000)return;
+            if(guestOom){
+                if(lastGuestOom!=0&&now-lastGuestOom<2000)return;
+                lastGuestOom=now;
+                android.util.Log.w("PodMemoryBudget","guest allocator exhausted; reclaim and resume");
+            }else if(level==lastLevel&&now-lastPressure<2000)return;
             lastPressure=now;lastLevel=level;
             for(java.util.function.IntConsumer listener:listeners){try{listener.accept(level);}catch(RuntimeException unavailable){android.util.Log.w("PodMemoryBudget","trimCallbackUnavailable");}}
         });
@@ -77,8 +87,8 @@ public final class PodProcessMemoryBudget implements ComponentCallbacks2 {
         if(measured<=0)throw new IllegalStateException("PSS unavailable");
         pss=measured;nativeSample(pss,start);
         int level=pss>=limit-12_000_000?3:pss>=limit-32_000_000?2:0;
-        boolean denied=nativePressure();if(denied)level=Math.max(level,2);
-        if(denied)android.util.Log.i("PodMemoryBudget","allocationPressure budgetPssBytes="+pss+" measuredPssKiB="+value.totalKiB+" upperBytes="+nativeUpper()+" "+nativeResidents());
+        boolean needsTrim=nativePressure();if(needsTrim)level=Math.max(level,2);
+        if(needsTrim)android.util.Log.i("PodMemoryBudget","allocationPressure budgetPssBytes="+pss+" measuredPssKiB="+value.totalKiB+" upperBytes="+nativeUpper()+" "+nativeResidents());
         if(level!=0||lastLevel!=0)pressure(level);
         long now=android.os.SystemClock.elapsedRealtime();
         if(level>0&&now-lastPurge>=3000){nativePurge();lastPurge=now;}

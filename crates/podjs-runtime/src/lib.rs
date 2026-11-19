@@ -72,6 +72,7 @@ const ERR_ARGUMENT: i32 = -1;
 const ERR_STATE: i32 = -2;
 const ERR_GUEST: i32 = -3;
 const ERR_SERVICE_DEFERRED: i32 = -4;
+const ERR_GUEST_OOM: i32 = -5;
 const PAK_INTEGRITY_NONE: u32 = 0;
 const PAK_INTEGRITY_LEGACY_FULL_FNV: u32 = 1;
 const PAK_INTEGRITY_ENTRY_SHA256: u32 = 2;
@@ -492,8 +493,12 @@ fn dispatch_pod_event<'js>(ctx: Ctx<'js>, dispatch: Function<'js>, bridge: &RefC
         (index, event, bridge.events.remove(index).unwrap())
     };
     let denials = memory_budget::denial_count();
+    let ooms = memory_budget::oom_count();
     let result = dispatch.call::<_, ()>((event,));
-    if result.is_err() && memory_budget::denial_count() != denials && is_service_event(&raw) {
+    if result.is_err()
+        && (memory_budget::denial_count() != denials || memory_budget::oom_count() != ooms)
+        && is_service_event(&raw)
+    {
         // The callback may need to construct a rejection before it can settle
         // the request. Retry the queued reply without repeating host IO.
         let mut bridge = bridge.borrow_mut();
@@ -788,13 +793,10 @@ pub extern "C" fn pod_runtime_create(config: *const PodRuntimeConfig) -> *mut Po
         set_error("capabilities_json must be a JSON string array");
         return std::ptr::null_mut();
     };
-    let guest = match {
-        let _startup = memory_budget::ForegroundStartup::enter();
-        if memory_budget::limit() == 0 {
-            Guest::new()
-        } else {
-            Guest::new_with_alloc(memory_budget::ProcessAllocator::default())
-        }
+    let guest = match if memory_budget::limit() == 0 {
+        Guest::new()
+    } else {
+        Guest::new_with_alloc(memory_budget::ProcessAllocator::default())
     } {
         Ok(value) => value,
         Err(error) => {
@@ -1231,7 +1233,6 @@ pub extern "C" fn pod_runtime_eval_bundle(
         set_error("bundle is not UTF-8");
         return ERR_ARGUMENT;
     };
-    let _startup = memory_budget::ForegroundStartup::enter();
     if let Err(error) = mount_runtime(runtime) {
         set_error(format!("surface mount failed: {error}"));
         return ERR_GUEST;
@@ -1280,7 +1281,6 @@ pub extern "C" fn pod_runtime_eval_bundle_bytecode(
         return ERR_STATE;
     }
     let began = Instant::now();
-    let _startup = memory_budget::ForegroundStartup::enter();
     if let Err(error) = mount_runtime(runtime) {
         set_error(format!("surface mount failed: {error}"));
         return ERR_GUEST;
@@ -1452,10 +1452,31 @@ fn collect_memory_pressure(guest: &Guest, event: &Value, budget_enabled: bool) {
         // Serialized host boundary, never an allocator callback. Reclaim
         // unreachable cycles before the next service result needs JS space.
         // Java coalesces pressure notifications; roots and host FIFO stay live.
-        guest.with(|ctx| unsafe {
-            rquickjs::qjs::JS_RunGC(rquickjs::qjs::JS_GetRuntime(ctx.as_raw().as_ptr()));
-        });
+        collect_guest_cycles(guest);
     }
+}
+
+fn collect_guest_cycles(guest: &Guest) {
+    guest.with(|ctx| unsafe {
+        rquickjs::qjs::JS_RunGC(rquickjs::qjs::JS_GetRuntime(ctx.as_raw().as_ptr()));
+    });
+}
+
+fn recover_guest_oom(guest: &Guest, before: usize) -> bool {
+    if memory_budget::oom_count() == before {
+        return false;
+    }
+    // The failing guest turn has unwound. Keep its realm, input state,
+    // committed draw list and queued replies while requesting host reclamation.
+    guest.with(|ctx| {
+        // Preparing native-to-JS arguments can leave an exception pending.
+        if unsafe { rquickjs::qjs::JS_HasException(ctx.as_raw().as_ptr()) } {
+            drop(ctx.catch());
+        }
+    });
+    collect_guest_cycles(guest);
+    set_error("guest allocator exhausted; reclaim and resume");
+    true
 }
 
 #[unsafe(no_mangle)]
@@ -1505,7 +1526,10 @@ pub extern "C" fn pod_runtime_pump_services(runtime: *mut PodRuntime) -> i32 {
     // Unlike frame(), this does not tick the UI surface or advance its committed
     // draw snapshot. Hosts call it for lifecycle/IO completion, never as a timer.
     runtime.net.begin_tick();
-    finish_service_pump(memory_budget::denial_count(), call_service_pump(&runtime.guest))
+    let denials = memory_budget::denial_count();
+    let ooms = memory_budget::oom_count();
+    let result = call_service_pump(&runtime.guest);
+    finish_service_pump(&runtime.guest, denials, ooms, result)
 }
 
 fn call_service_pump(guest: &Guest) -> anyhow::Result<()> {
@@ -1549,9 +1573,10 @@ pub extern "C" fn pod_runtime_pump_jobs(runtime: *mut PodRuntime) -> i32 {
     let Ok(runtime) = runtime_mut(runtime) else { return ERR_ARGUMENT; };
     if !runtime.mounted { return ERR_STATE; }
     let previous = std::mem::replace(&mut runtime.bridge.borrow_mut().service_results_only, true);
+    let ooms = memory_budget::oom_count();
     runtime.guest.drain_jobs();
     runtime.bridge.borrow_mut().service_results_only = previous;
-    OK
+    if recover_guest_oom(&runtime.guest, ooms) { ERR_GUEST_OOM } else { OK }
 }
 
 #[unsafe(no_mangle)]
@@ -1572,12 +1597,16 @@ pub extern "C" fn pod_runtime_pump_service_results(runtime: *mut PodRuntime) -> 
     // Keep the mode active through the Promise-job drain, without retaining
     // a RefCell borrow while guest code can call pod.takeEvents().
     let denials = memory_budget::denial_count();
+    let ooms = memory_budget::oom_count();
     let result = call_service_pump(&runtime.guest);
     runtime.bridge.borrow_mut().service_results_only = previous_mode;
-    finish_service_pump(denials, result)
+    finish_service_pump(&runtime.guest, denials, ooms, result)
 }
 
-fn finish_service_pump(denials: usize, result: anyhow::Result<()>) -> i32 {
+fn finish_service_pump(guest: &Guest, denials: usize, ooms: usize, result: anyhow::Result<()>) -> i32 {
+    if recover_guest_oom(guest, ooms) {
+        return ERR_GUEST_OOM;
+    }
     let Err(error) = result else { return OK };
     if memory_budget::denial_count() != denials {
         set_error("memory budget deferred service result delivery");
@@ -1643,21 +1672,21 @@ pub extern "C" fn pod_runtime_frame(runtime: *mut PodRuntime, input: *const PodI
     } else {
         input.analog
     };
-    // Keep QuickJS's adaptive threshold for the foreground realm. Its live
-    // heap can exceed an advisory partition. The process ledger still enforces
-    // admission and memory.pressure requests an explicit collection.
+    // Keep QuickJS's adaptive foreground threshold. The process ledger
+    // requests collection and cache reclamation when pressure rises.
+    let ooms = memory_budget::oom_count();
     let guest_began = Instant::now();
-    if let Err(error) =
-        runtime
-            .guest
-            .frame_with_touch_hits(input.buttons, analog, &words, &hits[..hit_count])
-    {
-        runtime.guest_micros = guest_began.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+    let result = runtime.guest.frame_with_touch_hits(input.buttons, analog, &words, &hits[..hit_count]);
+    runtime.guest_micros = guest_began.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+    if recover_guest_oom(&runtime.guest, ooms) {
+        runtime.surface_tick_micros = 0;
+        return ERR_GUEST_OOM;
+    }
+    if let Err(error) = result {
         runtime.surface_tick_micros = 0;
         set_error(format!("guest frame failed: {error}"));
         return ERR_GUEST;
     }
-    runtime.guest_micros = guest_began.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
     let surface_began = Instant::now();
     runtime.surface.tick();
     runtime.surface_tick_micros = surface_began.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
