@@ -65,6 +65,7 @@ final class PodMediaStartupPreview {
         });
     }
     void raise(){/* The native overlay is always above the guest/video children. */}
+    boolean needsTexture(JSONObject source){return image!=null&&!handingOff&&source!=null&&uri.equals(source.optString("url"));}
     /** Texture update + matching source + window commit, not decoder readiness. */
     void handoff(String source,View texture,BooleanSupplier current){
         if(image==null||handingOff||!uri.equals(source)||!current.getAsBoolean())return;

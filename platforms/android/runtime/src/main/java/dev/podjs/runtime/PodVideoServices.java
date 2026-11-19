@@ -67,6 +67,7 @@ public final class PodVideoServices implements AutoCloseable {
     private boolean benchmarkFramePending;
     private TextureView videoView;
     private AutoCloseable surfaceCharge;
+    private boolean surfaceCommitted;
     private View videoBackground;
     private boolean opaqueBackdrop;
     private ViewGroup parent;
@@ -123,13 +124,21 @@ public final class PodVideoServices implements AutoCloseable {
             if (closed || host == null) return;
             parent = host;
             if (videoView == null) {
-                videoView = new PodObservedTextureView(context, texture -> {
-                    PodMediaMemoryAccounting.commitResource(surfaceCharge);
+                videoView = new PodObservedTextureView(context, (output,texture) -> {
+                    if(output!=videoView||closed)return;
+                    if(!surfaceCommitted&&surfaceCharge!=null){PodMediaMemoryAccounting.commitResource(surfaceCharge);surfaceCommitted=true;}
                     if(benchmarkFramePending&&benchmarkAction!=null&&hasRenderedFirstFrame&&boundsVisible&&videoView.getAlpha()>0){
-                        PodBenchmark.VideoAction action=benchmarkAction;final int own=prepareSequence;benchmarkFramePending=false;
-                        PodBenchmark.watchVideo(videoView,action,()->prepareSequence==own&&boundsVisible&&hasRenderedFirstFrame&&videoView.getTranslationY()==0);
+                        PodBenchmark.VideoAction action=benchmarkAction;final int own=prepareSequence;final long revision=output.outputRevision();benchmarkFramePending=false;
+                        PodBenchmark.watchVideo(output,action,()->!closed&&output==videoView&&output.outputRevision()==revision&&prepareSequence==own&&boundsVisible&&hasRenderedFirstFrame&&output.getTranslationY()==0);
                     }
-                    if(mediaPrefixCache!=null&&mediaPrefixCache.startupPreview!=null&&frameSource!=null){int own=prepareSequence;main.post(()->mediaPrefixCache.startupPreview.handoff(frameSource.optString("url"),videoView,()->prepareSequence==own&&hasRenderedFirstFrame&&boundsVisible));}
+                    PodMediaStartupPreview preview=mediaPrefixCache==null?null:mediaPrefixCache.startupPreview;
+                    if(preview!=null&&preview.needsTexture(frameSource)){
+                        final int own=prepareSequence;final long revision=output.outputRevision();
+                        output.afterUpdate(main,own,()->{
+                            if(!closed&&output==videoView&&prepareSequence==own&&frameSource!=null)
+                                preview.handoff(frameSource.optString("url"),output,()->!closed&&output==videoView&&output.outputRevision()==revision&&prepareSequence==own&&hasRenderedFirstFrame&&boundsVisible);
+                        });
+                    }
                     if(frameStats!=null)frameStats.updated(android.os.SystemClock.elapsedRealtimeNanos());
                     if(!hasRenderedFirstFrame||observedTextureFrames>=8)return;
                     observedTextureFrames++;

@@ -24,7 +24,7 @@ public class PodRenderCheckpointTest {
   assertArrayEquals(new int[]{98,1,1},PodRenderCheckpoint.alphaCounts(bitmap));bitmap.recycle();
  }
  @Test public void observationPreservesMedia3ListenerOwnershipAndDestructionResult(){
-  int[] calls=new int[2];PodObservedTextureView view=new PodObservedTextureView(RuntimeEnvironment.getApplication(),t->calls[1]++);
+  int[] calls=new int[2];PodObservedTextureView view=new PodObservedTextureView(RuntimeEnvironment.getApplication(),(v,t)->calls[1]++);
   TextureView.SurfaceTextureListener listener=new TextureView.SurfaceTextureListener(){
    public void onSurfaceTextureAvailable(SurfaceTexture t,int w,int h){}
    public void onSurfaceTextureSizeChanged(SurfaceTexture t,int w,int h){}

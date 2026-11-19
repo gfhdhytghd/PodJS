@@ -1273,6 +1273,7 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
         android.widget.ImageView keyframeView;
         PodVideoKeyframes.Frame cachedFrame;
         AutoCloseable bufferCharge,surfaceCharge;
+        boolean surfaceCommitted;
         Runnable frameCompletionCancel, frameCompletionRetry;
         long frameCompletionRevision;
         PodVideoAnalytics analytics;
@@ -1303,28 +1304,14 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                 android.util.DisplayMetrics screen=context.getResources().getDisplayMetrics();
                 surfaceCharge=PodMediaMemoryAccounting.reserveResource(this,generation,sessionPriority(this),PodMediaMemoryBudget.Kind.SURFACE,Math.max(1L,(long)screen.widthPixels*screen.heightPixels)*12);
                 if(surfaceCharge==null)throw new IllegalStateException("memory_budget_deferred",new PodVideoCodecGate.ByteAdmissionDenied(sessionPriority(this)));
+                surfaceCommitted=false;
                 // A retained cached page can replace its TextureView without
                 // changing source generation. Never inherit the old paint fence.
                 cancelFrameCompletion();resetGeometryWait();hasUpdatedFrame=false;
-                videoView = new PodObservedTextureView(context, texture -> {
-                    hasUpdatedFrame=true;
-                    PodMediaMemoryAccounting.commitResource(surfaceCharge);
-                    // TextureView calls this from draw(). Releasing its layer or
-                    // removing an overlay there invalidates the ongoing traversal.
-                    long updatedGeneration=generation;
-                    main.post(()->{
-                    if(disposed||generation!=updatedGeneration)return;
-                    if(mediaPrefixCache!=null&&mediaPrefixCache.startupPreview!=null&&frameSource!=null)
-                        mediaPrefixCache.startupPreview.handoff(frameSource.optString("url"),videoView,()->!disposed&&generation==updatedGeneration&&presented&&!prewarming&&hasRenderedFirstFrame&&bounds!=null&&bounds.visible);
-                    confirmGeometry();
-                    if(hasRenderedFirstFrame&&(prewarming||hasCachedFrame()))finishDecodedFrame();
-                    if(benchmarkAction!=null&&!swapTextureLogged){swapTextureLogged=true;PodBenchmark.swapStage(benchmarkAction,"texture_updated",generation);}
-                    if(benchmarkFramePending&&benchmarkAction!=null&&!prewarming&&presented&&geometryReady&&hasRenderedFirstFrame&&bounds!=null&&bounds.visible&&videoView.getAlpha()>0){
-                        PodBenchmark.VideoAction original=benchmarkAction;PodBenchmark.VideoAction action=new PodBenchmark.VideoAction(original.seq,original.generation,generation,original.delta);long own=generation;benchmarkFramePending=false;
-                        PodBenchmark.watchVideo(videoView,action,()->generation==own&&!prewarming&&presented&&geometryReady&&hasRenderedFirstFrame&&bounds!=null&&bounds.visible&&videoView.getTranslationY()==bounds.translateYPx);
+                videoView = new PodObservedTextureView(context, (output,texture) -> textureUpdated(output)) {
+                    @Override void outputChanged(){
+                        if(videoView==this){hasUpdatedFrame=false;cancelFrameCompletion();resetGeometryWait();}
                     }
-                    });
-                }) {
                     @Override public boolean onTouchEvent(android.view.MotionEvent event) { return false; }
                     @Override public boolean dispatchTouchEvent(android.view.MotionEvent event) { return false; }
                 };
@@ -1337,6 +1324,54 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                 host.addView(background, index, new FrameLayout.LayoutParams(1, 1));
                 host.addView(videoView, index + 1, new FrameLayout.LayoutParams(1, 1));
             }
+        }
+
+        private boolean visibleDecodedTexture(){
+            return !prewarming&&presented&&hasRenderedFirstFrame&&bounds!=null&&bounds.visible;
+        }
+
+        private boolean benchmarkReady(){
+            return benchmarkFramePending&&benchmarkAction!=null&&hasUpdatedFrame&&geometryReady&&visibleDecodedTexture()
+                &&videoView!=null&&videoView.getAlpha()>0;
+        }
+
+        private void watchDecodedBenchmark(){
+            if(!benchmarkReady())return;
+            final long own=generation;
+            final TextureView output=videoView;
+            PodObservedTextureView observed=output instanceof PodObservedTextureView?(PodObservedTextureView)output:null;
+            final long revision=observed==null?0:observed.outputRevision();
+            PodBenchmark.VideoAction action=new PodBenchmark.VideoAction(benchmarkAction.seq,benchmarkAction.generation,own,benchmarkAction.delta);
+            benchmarkFramePending=false;
+            PodBenchmark.watchVideo(output,action,()->!disposed&&generation==own&&videoView==output&&
+                (observed==null||observed.outputRevision()==revision)&&geometryReady&&visibleDecodedTexture()&&output.getTranslationY()==bounds.translateYPx);
+        }
+
+        private boolean needsDecodedFrame(){
+            if(!hasRenderedFirstFrame||player==null||frameCompletionCancel!=null)return false;
+            if(!prewarming)return hasCachedFrame();
+            return frameBinding!=null&&(prepareCallback!=null||keyframes.get(frameBinding)==null);
+        }
+
+        private void textureUpdated(PodObservedTextureView output){
+            if(disposed||videoView!=output)return;
+            final long revision=output.outputRevision(),own=generation;
+            hasUpdatedFrame=true;
+            if(!surfaceCommitted){PodMediaMemoryAccounting.commitResource(surfaceCharge);surfaceCommitted=true;}
+            PodMediaStartupPreview preview=mediaPrefixCache==null?null:mediaPrefixCache.startupPreview;
+            boolean overlay=preview!=null&&preview.needsTexture(frameSource);
+            boolean geometry=!geometryReady&&geometryCommitCancel==null&&player!=null&&hasRenderedFirstFrame;
+            boolean benchmark=benchmarkAction!=null&&(!swapTextureLogged||benchmarkReady());
+            if(!overlay&&!geometry&&!benchmark&&!needsDecodedFrame())return;
+            output.afterUpdate(main,own,()->{
+                if(disposed||videoView!=output||generation!=own)return;
+                if(preview!=null&&preview.needsTexture(frameSource))preview.handoff(frameSource.optString("url"),output,
+                    ()->!disposed&&generation==own&&videoView==output&&output.outputRevision()==revision&&visibleDecodedTexture());
+                confirmGeometry();
+                if(needsDecodedFrame())finishDecodedFrame();
+                if(benchmarkAction!=null&&!swapTextureLogged){swapTextureLogged=true;PodBenchmark.swapStage(benchmarkAction,"texture_updated",generation);}
+                watchDecodedBenchmark();
+            });
         }
 
         boolean matches(ExoPlayer candidate, long expectedGeneration) { return !disposed && player == candidate && generation == expectedGeneration; }
@@ -1570,6 +1605,9 @@ final class PodVideoSessionServices implements AutoCloseable, ComponentCallbacks
                 geometryReady=true;geometryWaitExpired=false;
                 if(geometryDeadline!=null){main.removeCallbacks(geometryDeadline);geometryDeadline=null;}
                 revealGeometry();
+                // A paused decoder can latch exactly one frame. Its actual
+                // geometry commit can be the last condition for observation.
+                watchDecodedBenchmark();
             });
             try{geometryCommitCancel=PodAfterPaint.await(expectedTexture,main,1,(frame,time)->{},complete);}
             catch(RuntimeException unavailable){complete.accept(false);}
