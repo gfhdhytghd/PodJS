@@ -23,9 +23,9 @@ public class PodVideoBackgroundAnalyticsTest {
         Field field=object.getClass().getDeclaredField(name);field.setAccessible(true);return field.get(object);
     }
     private static PodVideoServices host()throws Exception {
-        Class<?> type=Class.forName("sun.misc.Unsafe");Field field=type.getDeclaredField("theUnsafe");field.setAccessible(true);
-        Object unsafe=field.get(null);PodVideoServices host=(PodVideoServices)type.getMethod("allocateInstance",Class.class).invoke(unsafe,PodVideoServices.class);
-        set(host,"statsWindowLogged",true);set(host,"context",ApplicationProvider.<Context>getApplicationContext());return host;
+        PodVideoServices host = new PodVideoServices(ApplicationProvider.<Context>getApplicationContext());
+        set(host,"statsWindowLogged",true);
+        return host;
     }
     private static ExoPlayer player(List<String> actions,List<Object> removed) {
         return (ExoPlayer)Proxy.newProxyInstance(ExoPlayer.class.getClassLoader(),new Class[]{ExoPlayer.class},(proxy,method,args)->{
