@@ -41,27 +41,71 @@ export function strokeArcPixels(shape: StrokeArcShape, density: number) {
     bytes[n * 4 + 3] = Math.round(n * alpha / 255);
   }
   const inner2 = Math.max(0, r - half) ** 2, outer2 = (r + half) ** 2;
-  const scanInner = Math.max(0, r - half - 1) ** 2, scanOuter = (r + half + 1) ** 2;
   const half2 = half * half, startX = ax * r, startY = ay * r, endX = bx * r, endY = by * r;
-  function covered(x: number, y: number) {
-    const d2 = x * x + y * y;
-    if (d2 < inner2 || d2 > outer2) return false;
-    if (extent === 360) return true;
-    const afterStart = ax * y - ay * x >= 0, beforeEnd = bx * y - by * x <= 0;
-    if (extent > 180 ? afterStart || beforeEnd : afterStart && beforeEnd) return true;
-    return (x - startX) ** 2 + (y - startY) ** 2 <= half2 ||
-      (x - endX) ** 2 + (y - endY) ** 2 <= half2;
+  // Each sample row intersects the ring, its angular limits and two cap discs
+  // in a few horizontal spans. Mark their union on the same 4×4 sample grid.
+  const samples = new Uint8Array(w * 4);
+  let first = w, last = 0;
+  function span(lo: number, hi: number) {
+    const from = Math.max(0, Math.ceil((lo - left) * 4 - .5));
+    const to = Math.min(samples.length, Math.floor((hi - left) * 4 - .5) + 1);
+    if (from >= to) return;
+    samples.fill(1, from, to);
+    first = Math.min(first, from >> 2);
+    last = Math.max(last, (to + 3) >> 2);
+  }
+  let startMin: number, startMax: number, endMin: number, endMax: number;
+  function ring(lo: number, hi: number) {
+    if (extent === 360) span(lo, hi);
+    else if (extent <= 180) span(Math.max(lo, startMin, endMin), Math.min(hi, startMax, endMax));
+    else {
+      span(Math.max(lo, startMin), Math.min(hi, startMax));
+      span(Math.max(lo, endMin), Math.min(hi, endMax));
+    }
+  }
+  function cap(x0: number, dy: number) {
+    const side2 = half2 - dy * dy;
+    if (side2 < 0) return;
+    const side = Math.sqrt(side2);
+    span(x0 - side, x0 + side);
   }
   for (let row = 0; row < h; row++) {
-    const y = top + row, y2 = (y + .5) ** 2;
-    for (let col = 0; col < w; col++) {
-      const x = left + col, d2 = (x + .5) ** 2 + y2;
-      if (d2 < scanInner || d2 > scanOuter) continue;
-      let hits = 0;
-      for (let sy = .125; sy < 1; sy += .25) for (let sx = .125; sx < 1; sx += .25) {
-        if (covered(x + sx, y + sy)) hits++;
+    const offset = 1024 + row * textureWidth;
+    let firstCol = w, lastCol = 0;
+    for (let sy = .125; sy < 1; sy += .25) {
+      const y = top + row + sy, y2 = y * y;
+      if (y2 > outer2) continue;
+      first = w;
+      last = 0;
+      samples.fill(0);
+      const outer = Math.sqrt(outer2 - y2), inner = Math.sqrt(Math.max(0, inner2 - y2));
+      // At a fixed y, each angular half-plane is an interval on the x axis.
+      startMin = endMin = -Infinity;
+      startMax = endMax = Infinity;
+      if (ay < 0) startMin = ax * y / ay;
+      else if (ay > 0) startMax = ax * y / ay;
+      else if (ax * y < 0) startMax = -Infinity;
+      if (by > 0) endMin = bx * y / by;
+      else if (by < 0) endMax = bx * y / by;
+      else if (bx * y > 0) endMax = -Infinity;
+      if (inner > 0) {
+        ring(-outer, -inner);
+        ring(inner, outer);
+      } else ring(-outer, outer);
+      if (extent !== 360) {
+        cap(startX, y - startY);
+        cap(endX, y - endY);
       }
-      bytes[1024 + row * textureWidth + col] = Math.round(hits * 255 / 16);
+      for (let col = first; col < last; col++) {
+        const s = col * 4;
+        bytes[offset + col]! += samples[s]! + samples[s + 1]! + samples[s + 2]! + samples[s + 3]!;
+      }
+      firstCol = Math.min(firstCol, first);
+      lastCol = Math.max(lastCol, last);
+    }
+    for (let col = firstCol; col < lastCol; col++) {
+      const hits = bytes[offset + col]!;
+      bytes[offset + col] = Math.round(hits * 255 / 16);
     }
   }
   return {bytes, textureWidth, textureHeight, left: left / density, top: top / density,
