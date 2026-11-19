@@ -63,6 +63,39 @@ final class PodVideoFrameCache {
         Bitmap bitmap=view.getBitmap(Math.max(1,(int)(view.getWidth()*scale)),Math.max(1,(int)(view.getHeight()*scale)));
         if(bitmap==null)throw new IllegalStateException("frame_unavailable");return bitmap;
     }
+    static void captureAndSave(File root, String key, String binding, long generation, long position,
+            TextureView texture, PodVideoDirectOutput direct, JSONObject args, AutoCloseable memory,
+            android.os.Handler main, java.util.function.Consumer<JSONObject> complete) throws Exception {
+        JSONObject absent = new JSONObject().put("available", false);
+        java.util.function.Consumer<Bitmap> save = frame -> {
+            if (frame == null) {
+                PodMediaMemoryAccounting.close(memory);
+                complete.accept(absent);
+                return;
+            }
+            PodMediaMemoryAccounting.commitResource(memory);
+            try {
+                IO.execute(() -> {
+                    try {
+                        JSONObject result = new PodVideoFrameCache(root).save(key, binding, generation, position, frame);
+                        main.post(() -> complete.accept(result));
+                    } catch (Exception | OutOfMemoryError unavailable) {
+                        main.post(() -> complete.accept(absent));
+                    } finally { frame.recycle(); PodMediaMemoryAccounting.close(memory); }
+                });
+            } catch (java.util.concurrent.RejectedExecutionException busy) {
+                frame.recycle();
+                PodMediaMemoryAccounting.close(memory);
+                complete.accept(absent);
+            }
+        };
+        if (direct.capture(MAX_EDGE, save)) return;
+        Bitmap frame;
+        try { frame = capture(texture, true, generation, args); }
+        catch (Exception | OutOfMemoryError unavailable) { frame = null; }
+        save.accept(frame);
+    }
+
     synchronized JSONObject save(String key,String binding,long generation,long position,Bitmap frame)throws Exception {
         if(frame.getWidth()>MAX_EDGE||frame.getHeight()>MAX_EDGE)throw new IllegalArgumentException("frame_too_large");
         root.mkdirs();String token=hash(key+"\n"+binding);File image=new File(root,token+".jpg"),meta=new File(root,token+".json");

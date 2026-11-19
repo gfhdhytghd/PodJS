@@ -40,6 +40,7 @@ export interface ShellDiagnostics {
  pssProtectedQueryAgeMs?:number;pssProtectedMayBeCached?:boolean;
  sql:Record<string,{count:number;queueNs:number;workNs:number;cpuNs:number;failures:number}>;
  videoSessions:{active:number;created:number;released:number;
-  surfaceViews?:{attached:number;available:number;idleAvailable:number;playingWidth:number;playingHeight:number};
+  /** Frame rate declared by the playing track, when supplied by its container. */
+  surfaceViews?:{attached:number;available:number;idleAvailable:number;playingWidth:number;playingHeight:number;playingFormatFrameRate?:number;directOutputs?:number};
   mediaMemory?:Partial<Record<"VIDEO_CODEC"|"AUDIO_CODEC"|"RETRIEVER"|"COMPRESSED_BUFFER"|"SURFACE"|"KEYFRAME"|"FRAME_CAPTURE",{estimatedBytes:number;allocations:number}>>};
 }

@@ -24,6 +24,7 @@
     "./media-surface": "./src/media-surface.tsx",
     "./bytes": "./src/bytes.ts",
     "./async-bytes": "./src/async-bytes.ts",
+    "./stroke-arc": "./src/StrokeArc.tsx",
     "./watch-ui": "./src/watch-ui.ts",
     "./navigation": "./src/navigation.ts",
     "./windowed-list": "./src/windowed-list.ts",
