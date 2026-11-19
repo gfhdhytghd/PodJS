@@ -955,6 +955,7 @@ extern "C" JNIEXPORT jlong JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget_nativeSample(JNIEnv*,jclass,jlong bytes,jlong generation){podjs_memory::process.sample(bytes,generation);}
 extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget_nativePressure(JNIEnv*,jclass){return podjs_memory::process.takePressure();}
 extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget_nativeReserve(JNIEnv*,jclass,jint owner,jlong bytes){return bytes>=0&&podjs_memory::process.reserve(owner,bytes);}
+extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget_nativeReserveCurrentCodec(JNIEnv*,jclass,jlong bytes){return bytes>=0&&podjs_memory::process.reserveCurrentCodec(bytes);}
 extern "C" JNIEXPORT jlong JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget_nativeCommit(JNIEnv*,jclass,jint owner,jlong bytes){return podjs_memory::process.commit(owner,bytes);}
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget_nativeCancel(JNIEnv*,jclass,jint owner,jlong bytes){podjs_memory::process.cancel(owner,bytes);}
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodProcessMemoryBudget_nativeRelease(JNIEnv*,jclass,jint owner,jlong bytes,jlong generation){podjs_memory::process.release(owner,bytes,generation);}

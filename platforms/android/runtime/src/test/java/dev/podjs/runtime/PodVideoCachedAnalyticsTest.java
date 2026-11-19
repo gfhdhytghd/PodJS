@@ -32,8 +32,8 @@ public class PodVideoCachedAnalyticsTest {
    String uri=cache.register("fixture","https://example.test/clip.mp4",Map.of());
    PodVideoSessionServices host=new PodVideoSessionServices(context,new PodVideoDecoderBudget(3),cache);
    try{
-    PodVideoAnalytics analytics=new PodVideoAnalytics();Method factory=PodVideoSessionServices.class.getDeclaredMethod("mediaSource",JSONObject.class,PodVideoAnalytics.class);factory.setAccessible(true);
-    Object media=factory.invoke(host,new JSONObject().put("url",uri).put("type","video/mp4"),analytics);
+    PodVideoAnalytics analytics=new PodVideoAnalytics();Method factory=PodVideoSessionServices.class.getDeclaredMethod("mediaSource",JSONObject.class,PodVideoAnalytics.class,PodVideoHttpDataSources.PrepareGate.class);factory.setAccessible(true);
+    Object media=factory.invoke(host,new JSONObject().put("url",uri).put("type","video/mp4"),analytics,new PodVideoHttpDataSources.PrepareGate(false));
     Field field=media.getClass().getDeclaredField("dataSourceFactory");field.setAccessible(true);
     DataSource source=((DataSource.Factory)field.get(media)).createDataSource();
     source.open(new DataSpec(Uri.parse(uri)));byte[] b=new byte[8192];assertEquals(8192,source.read(b,0,b.length));

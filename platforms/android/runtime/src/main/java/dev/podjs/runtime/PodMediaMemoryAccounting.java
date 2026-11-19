@@ -8,7 +8,11 @@ import java.util.concurrent.atomic.AtomicLong;
 final class PodMediaMemoryAccounting implements PodMediaMemoryBudget,
         PodVideoCodecGate.LifecycleListener, PodVideoCodecGate.ByteAdmission {
     interface Charge extends AutoCloseable { void commit(); void close(); }
-    interface Bytes { Charge reserve(long bytes); default Charge reserve(Owner owner,long bytes){return reserve(bytes);} }
+    interface Bytes {
+        Charge reserve(long bytes);
+        default Charge reserve(Owner owner,long bytes){return reserve(bytes);}
+        default Charge reserveCurrentCodec(long bytes){return null;}
+    }
     private static volatile PodMediaMemoryAccounting process;
     private static final AtomicLong resourceIds=new AtomicLong();
     private final PodVideoCodecGate gate;
@@ -29,7 +33,12 @@ final class PodMediaMemoryAccounting implements PodMediaMemoryBudget,
         PodMediaMemoryAccounting next=new PodMediaMemoryAccounting(PodVideoCodecGate.PROCESS,new Bytes(){
             public Charge reserve(long n){return reserve(null,n);}
             public Charge reserve(Owner owner,long n){
-                PodProcessMemoryBudget.Lease lease=PodProcessMemoryBudget.reserveMedia(n,owner!=null&&owner.priority!=Priority.CURRENT);
+                return asCharge(PodProcessMemoryBudget.reserveMedia(n,owner!=null&&owner.priority!=Priority.CURRENT));
+            }
+            public Charge reserveCurrentCodec(long n){
+                return asCharge(PodProcessMemoryBudget.reserveCurrentCodec(n));
+            }
+            private Charge asCharge(PodProcessMemoryBudget.Lease lease){
                 return lease==null?null:new Charge(){public void commit(){lease.commit();}public void close(){lease.close();}};
             }
         });
@@ -41,6 +50,10 @@ final class PodMediaMemoryAccounting implements PodMediaMemoryBudget,
         // The native optional lane distinguishes domain quota from global PSS
         // pressure atomically, including simultaneous codec/capture requests.
         Charge charge=bytes.reserve(owner,worstCaseBytes);
+        if(charge==null&&owner.priority==Priority.CURRENT&&(owner.kind==Kind.VIDEO_CODEC||owner.kind==Kind.AUDIO_CODEC)){
+            gate.requestReclaim(owner.identity,PodVideoCodecGate.PREWARM);
+            charge=bytes.reserveCurrentCodec(worstCaseBytes);
+        }
         if(charge==null)return null;Token token=new Token(this,owner,worstCaseBytes,charge);live.put(token,Boolean.TRUE);return token;
     }
     private Token token(Reservation reservation){

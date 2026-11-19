@@ -97,6 +97,7 @@ final class PodVideoAnalytics implements AnalyticsListener, TransferListener {
         // Bounded cause walk. Never send exception messages containing URLs.
         Throwable current = error;
         for (int i = 0; current != null && i < 16; i++, current = current.getCause()) {
+            if (current instanceof PodVideoHttpDataSources.RetryCacheMiss) return "video_retry_cache_miss";
             if (current instanceof PodVideoShortEdge.Rejected) return PodVideoShortEdge.ERROR;
             if (current instanceof java.io.IOException && "media_source_expired".equals(current.getMessage())) return "source_expired";
             if (current instanceof HttpDataSource.InvalidResponseCodeException) {

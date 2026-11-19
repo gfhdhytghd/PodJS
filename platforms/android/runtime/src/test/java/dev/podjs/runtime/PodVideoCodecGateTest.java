@@ -8,6 +8,20 @@ import org.robolectric.RobolectricTestRunner;
 import org.robolectric.annotation.Config;
 @RunWith(RobolectricTestRunner.class) @Config(manifest=Config.NONE,sdk=34)
 public class PodVideoCodecGateTest {
+ @Test public void onlyCancellable256MbPrefixMayBorrowTheThirdCodec(){
+  PodVideoCodecGate gate=new PodVideoCodecGate();
+  try(PodVideoCodecGate.Permit current=gate.acquire("current",PodVideoCodecGate.CURRENT);
+      PodVideoCodecGate.Permit warm=gate.acquire("warm",PodVideoCodecGate.PREWARM)){
+   assertNotNull(current);assertNotNull(warm);
+   assertNull(gate.acquireCancellablePrefix("prefix",128_000_000L));
+   assertNull(gate.acquire("cover",PodVideoCodecGate.OTHER));
+   try(PodVideoCodecGate.Permit prefix=gate.acquireCancellablePrefix("prefix",256_000_000L)){
+    assertNotNull(prefix);assertEquals(3,gate.live());assertNull(gate.acquire("fourth",PodVideoCodecGate.CURRENT));
+   }
+   assertEquals(2,gate.live());assertEquals(3,gate.peak());
+  }
+  assertEquals(0,gate.live());
+ }
  @Test public void concurrentPurposesNeverExceedThree()throws Exception {
   PodVideoCodecGate gate=new PodVideoCodecGate();ExecutorService workers=Executors.newFixedThreadPool(12);
   try{List<Future<?>> results=new ArrayList<>();for(int i=0;i<100;i++)results.add(workers.submit(()->{

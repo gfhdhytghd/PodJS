@@ -47,6 +47,7 @@ public class PodVideoLegacyAdmissionTest {
         final Reply reply=new Reply();
         final List<PodVideoCodecGate.Permit> permits=new ArrayList<>();
         int prepares,sources,stops,clears;MediaItem item;Player.Listener listener;
+        PodVideoHttpDataSources.PrepareGate prepareGate;
         Fixture()throws Exception {this(3);}
         Fixture(int limit)throws Exception {
             logicalLimit=limit;budget=new PodVideoDecoderBudget(limit);host=new PodVideoServices(context,budget);
@@ -70,8 +71,10 @@ public class PodVideoLegacyAdmissionTest {
         }
         void configure(String key)throws Exception {
             MediaSource source=new DefaultMediaSourceFactory(context).createMediaSource(MediaItem.fromUri("file:///offline-"+key+".mp4"));
-            Method configure=PodVideoServices.class.getDeclaredMethod("configurePlayer",JSONObject.class,MediaSource.class);configure.setAccessible(true);
-            configure.invoke(host,new JSONObject().put("url","offline-"+key+".mp4"),source);
+            Method configure=PodVideoServices.class.getDeclaredMethod("configurePlayer",JSONObject.class,MediaSource.class,PodVideoHttpDataSources.PrepareGate.class);
+            configure.setAccessible(true);
+            prepareGate=new PodVideoHttpDataSources.PrepareGate(false);
+            configure.invoke(host,new JSONObject().put("url","offline-"+key+".mp4").put("cacheOnlyAdmissionRetry",true),source,prepareGate);
             listener=(Player.Listener)get(host,"playerListener");
         }
         PodVideoAdmissionRetry recovery()throws Exception{return (PodVideoAdmissionRetry)get(owner,"admissionRetry");}
@@ -110,6 +113,20 @@ public class PodVideoLegacyAdmissionTest {
         void noFailure(){assertFalse(ShadowLog.getLogs().stream().anyMatch(row->row.msg.contains("code=error_page")));}
         public void close(){
             free();host.close();idle(0);owner.cancelAdmissionRecovery();owner.observeVideo(null);real.release();assertEquals(0,PodVideoCodecGate.PROCESS.live());
+        }
+    }
+    @Test public void serviceKeepsTheResourceRetryOfflineUntilReadyEvenAfterTheFirstPrepare()throws Exception {
+        try(Fixture f=new Fixture()){
+            f.ready();
+            Player.Listener service=f.serviceListener();
+            service.onPlayerError(f.error(f.denial()));
+            assertTrue(f.prepareGate.cacheOnly());
+            f.free();idle(100);
+            assertEquals(2,f.prepares);
+            assertTrue(f.prepareGate.cacheOnly());
+            service.onPlaybackStateChanged(Player.STATE_READY);
+            assertFalse(f.prepareGate.cacheOnly());
+            assertEquals(1,f.reply.completed);
         }
     }
     @Test public void preparingLegacyKeepsSourceGenerationPlayerAndPendingCallback()throws Exception {
@@ -235,7 +252,7 @@ public class PodVideoLegacyAdmissionTest {
             Class<?> type=method.getReturnType();if(type==boolean.class)return true;if(type==int.class)return 0;if(type==long.class)return 0L;if(type==float.class)return 0f;return null;
         });
         try{
-            set(service,"player",fake);PodVideoAdmissionRetry recovery=service.beginAdmissionRecovery(fake);recovery.initialized();recovery.defer();Runnable pending=(Runnable)get(recovery,"pending");
+            set(service,"player",fake);PodVideoAdmissionRetry recovery=service.beginAdmissionRecovery(fake,new PodVideoHttpDataSources.PrepareGate(false),false);recovery.initialized();recovery.defer();Runnable pending=(Runnable)get(recovery,"pending");
             controller.destroy();pending.run();idle(300);assertEquals(0,prepares[0]);assertEquals(1,releases[0]);assertNull(get(service,"admissionRetry"));
         }finally{if(original!=null)original.release();}
     }

@@ -13,48 +13,71 @@ const NO_START = new Set(Array.from("）〕］｝〉》」』】〙〗〟’”�
 const NO_END = new Set(Array.from("（〔［｛〈《「『【〘〖〝‘“｟«([{"));
 const WORD = lazyRegExpTest("[\\p{L}\\p{N}\\p{M}'’\\-_.@#&=+~*$^|\\\\]",'u');
 
-function graphemes(value: string): string[] {
+function* graphemeClusters(value: string): Generator<string> {
   // Without joiners or extenders every code point is already a cluster.
-  if (!/[\u200d\ufe0f\u0300-\u036f]/u.test(value)) return Array.from(value);
-  const out: string[] = [];
-  for (const cp of Array.from(value)) {
-    const code = cp.codePointAt(0)!;
-    const last = out[out.length - 1];
-    if (last && (code === 0x200d || code === 0xfe0f || (code >= 0x300 && code <= 0x36f) || last.endsWith("‍"))) out[out.length - 1] = last + cp;
-    else out.push(cp);
+  if (!/[\u200d\ufe0f\u0300-\u036f]/u.test(value)) {
+    yield* value;
+    return;
   }
-  return out;
+  let cluster = "";
+  for (const cp of value) {
+    const code = cp.codePointAt(0)!;
+    if (cluster && (code === 0x200d || code === 0xfe0f || (code >= 0x300 && code <= 0x36f) || cluster.endsWith("‍"))) {
+      cluster += cp;
+    } else {
+      if (cluster) yield cluster;
+      cluster = cp;
+    }
+  }
+  if (cluster) yield cluster;
+}
+
+function* rawUnits(paragraph: string): Generator<string> {
+  let word = "";
+  for (const cluster of graphemeClusters(paragraph)) {
+    const cjk = CJK(cluster);
+    const separate = cjk ? !NO_START.has(cluster) && !NO_END.has(cluster) : /^\s+$/u.test(cluster);
+    if (!separate && cluster !== "/" && WORD(cluster) && !NO_START.has(cluster)) {
+      word += cluster;
+      continue;
+    }
+    if (word) yield word;
+    word = "";
+    if (cluster === "/") word = cluster; // break opportunity before a slash
+    else yield cluster;
+  }
+  if (word) yield word;
+}
+
+// Kinsoku needs one unit of lookahead in each direction. Keep only the units
+// that can still change, so a caller reading one line never tokenizes the tail.
+function* glueClosing(units: Iterable<string>): Generator<string> {
+  let previous = "";
+  for (const unit of units) {
+    if (previous && NO_START.has(unit[0]) && !/^\s+$/u.test(previous)) previous += unit;
+    else {
+      if (previous) yield previous;
+      previous = unit;
+    }
+  }
+  if (previous) yield previous;
+}
+
+function* lineUnits(paragraph: string): Generator<string> {
+  let previous = "";
+  for (const unit of glueClosing(rawUnits(paragraph))) {
+    if (previous && NO_END.has(previous[previous.length - 1]) && !/^\s+$/u.test(unit)) previous += unit;
+    else {
+      if (previous) yield previous;
+      previous = unit;
+    }
+  }
+  if (previous) yield previous;
 }
 
 /** Splits one paragraph into unbreakable units; whitespace is kept as its own unit. */
 export function breakUnits(paragraph: string): string[] {
-  const units: string[] = [];
-  let word = "";
-  const flush = () => { if (word) { units.push(word); word = ""; } };
-  for (const g of graphemes(paragraph)) {
-    if (/^\s+$/u.test(g) && !CJK(g)) { flush(); units.push(g); continue; }
-    if (CJK(g) && !NO_START.has(g) && !NO_END.has(g)) { flush(); units.push(g); continue; }
-    if (g === "/") { flush(); word = g; continue; } // break opportunity before a slash
-    if (WORD(g) && !NO_START.has(g)) { word += g; continue; }
-    flush(); units.push(g);
-  }
-  flush();
-  // Kinsoku: glue closing punctuation backwards and opening punctuation forwards.
-  const glued: string[] = [];
-  for (let i = 0; i < units.length; i++) {
-    const unit = units[i];
-    // Both punctuation sets contain BMP characters only.
-    const first = unit[0];
-    if (glued.length && NO_START.has(first) && !/^\s+$/u.test(glued[glued.length - 1])) glued[glued.length - 1] += unit;
-    else glued.push(unit);
-  }
-  const result: string[] = [];
-  for (let i = 0; i < glued.length; i++) {
-    let unit = glued[i];
-    while (i + 1 < glued.length && NO_END.has(unit[unit.length - 1]) && !/^\s+$/u.test(glued[i + 1])) unit += glued[++i];
-    result.push(unit);
-  }
-  return result;
+  return Array.from(lineUnits(paragraph));
 }
 
 function fitsUnit(line: string, unit: string, width: number, measure: LayoutOptions["measure"], clusters?: string[]): boolean {
@@ -79,10 +102,10 @@ export function* layoutUiTextLines(text: string, { width, measure }: Omit<Layout
       continue;
     }
     let line = "";
-    for (const unit of breakUnits(paragraph)) {
+    for (const unit of lineUnits(paragraph)) {
       const space = /^\s+$/u.test(unit);
       if (!line && space) continue;
-      const clusters = unit.length > 16 ? graphemes(unit) : undefined;
+      const clusters = unit.length > 16 ? Array.from(graphemeClusters(unit)) : undefined;
       if (fitsUnit(line, unit, width, measure, clusters)) { line += unit; continue; }
       if (line || space) {
         emitted = true;
@@ -91,7 +114,7 @@ export function* layoutUiTextLines(text: string, { width, measure }: Omit<Layout
         if (!space && fitsUnit(line, unit, width, measure, clusters)) { line = unit; continue; }
       }
       if (space) continue;
-      for (const g of clusters ?? graphemes(unit)) {
+      for (const g of clusters ?? graphemeClusters(unit)) {
         if (line && measure(line + g) > width) {
           emitted = true;
           yield line.trimEnd();

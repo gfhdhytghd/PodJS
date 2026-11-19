@@ -32,6 +32,29 @@ public class PodMediaPrefixCacheTest {
  static JSONObject window(String uri,int bytes)throws Exception{return new JSONObject().put("items",new JSONArray().put(new JSONObject().put("uri",uri).put("prefetchBytes",bytes).put("captureBytes",4*M)));}
  static byte[] read(DataSource d,int limit)throws Exception {ByteArrayOutputStream out=new ByteArrayOutputStream();byte[] b=new byte[8192];int n;while(out.size()<limit&&(n=d.read(b,0,Math.min(b.length,limit-out.size())))!=-1)out.write(b,0,n);return out.toByteArray();}
  static void idle(PodMediaPrefixCache c)throws Exception {long end=System.currentTimeMillis()+5000;while(c.stats().getInt("activePrefetches")>0&&System.currentTimeMillis()<end)Thread.sleep(10);assertEquals(0,c.stats().getInt("activePrefetches"));}
+ @Test public void resourceRetryReadsCachedBytesAndBlocksManagedUpstreamUntilReady()throws Exception {
+  Remote remote=new Remote(16384);
+  try(PodMediaPrefixCache cache=new PodMediaPrefixCache(root(),remote,6*M)){
+   String uri=register(cache,"resource-retry");
+   DataSpec start=new DataSpec(Uri.parse(uri));
+   DataSource initial=cache.factory(remote).createDataSource();
+   try{initial.open(start);assertEquals(4096,read(initial,4096).length);}finally{initial.close();}
+   assertEquals(1,remote.opened.size());
+
+   PodVideoHttpDataSources.PrepareGate gate=new PodVideoHttpDataSources.PrepareGate(true);
+   DataSource retry=cache.factory(remote,false,gate).createDataSource();
+   try{
+    retry.open(start);
+    assertArrayEquals(Arrays.copyOf(remote.body,4096),read(retry,4096));
+    assertThrows(PodVideoHttpDataSources.RetryCacheMiss.class,()->read(retry,1));
+    assertEquals(1,remote.opened.size());
+    gate.ready();
+    assertEquals(64,read(retry,64).length);
+    assertEquals(2,remote.opened.size());
+    assertEquals(4096,remote.opened.get(1).position);
+   }finally{retry.close();}
+  }
+ }
  @Test public void metadataKeepsItsRangeOffsetWhenForegroundExtendsThePrefix()throws Exception {
   Remote r=new Remote(16384);try(PodMediaPrefixCache c=new PodMediaPrefixCache(root(),r,6*M)){
    String uri=register(c,"metadata-overlap");PodMediaPrefixCache.Job job=c.beginPreparation(uri,16384);

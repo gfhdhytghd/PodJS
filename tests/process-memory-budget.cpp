@@ -59,6 +59,27 @@ int main(){
  observed=guarded.sampleStart();guarded.sample(100000000,observed);
  assert(!guarded.reserve(Media,8000000,false,true,12*1024*1024));
  assert(guarded.reserve(Media,8000000)); // same starting budget can play a current source
+ // 1321-style envelope: only 5.2 MB remain before a 6 MB codec request.
+ Budget foreground;foreground.configure(128000000);
+ observed=foreground.sampleStart();foreground.sample(110800000,observed);
+ assert(foreground.upper()==122800000);
+ assert(!foreground.reserve(Media,6000000));
+ assert(foreground.takePressure());
+ assert(foreground.reserveCurrentCodec(6000000));
+ assert(foreground.takePressure());
+ assert(foreground.pending()==6000000);
+ assert(!foreground.reserve(Media,1000000,false,true));
+ auto codec=foreground.commit(Media,6000000);
+ assert(foreground.resident(Media)==6000000);
+ foreground.release(Media,6000000,codec);
+ assert(foreground.resident(Media)==0);
+ assert(foreground.reserveCurrentCodec(6000000));
+ foreground.cancel(Media,6000000);
+ assert(foreground.pending()==0);
+ Budget expanded;expanded.configure(256000000);
+ observed=expanded.sampleStart();expanded.sample(110800000,observed);
+ assert(expanded.reserve(Media,6000000));
+ expanded.cancel(Media,6000000);
  // A codec factory may span several PSS observations. Its unallocated
  // promise stays pending until physical construction reports completion.
  Budget delayed;delayed.configure(128000000);assert(delayed.reserve(Media,6000000));

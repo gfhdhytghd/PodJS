@@ -14,7 +14,10 @@ import java.util.Map;
 final class PodVideoKeyframes implements AutoCloseable {
     static final int MAX_EDGE = 466, MAX_ENTRIES = 10;
     static final long MAX_BYTES = (long) MAX_EDGE * MAX_EDGE * 4 * MAX_ENTRIES;
-    private int maximumEntries(){return PodProcessMemoryBudget.limit()>0?3:MAX_ENTRIES;}
+    static int maximumEntries(long processBudgetBytes){
+        return processBudgetBytes>0&&processBudgetBytes<256_000_000L?3:MAX_ENTRIES;
+    }
+    private int maximumEntries(){return maximumEntries(PodProcessMemoryBudget.limit());}
     private long maximumBytes(){return (long)MAX_EDGE*MAX_EDGE*4*maximumEntries();}
     static final class Frame {
         final Bitmap pixels;

@@ -27,6 +27,13 @@ public class PodVideoKeyframesTest {
         assertEquals(3,PodVideoDecoderCapabilities.validatedLimit(new PodVideoDecoderCapabilities.Profile("video/avc",240,240),"c2.android.avc.decoder",true));
     }
 
+    @Test public void previewCacheRestoresItsFullWindowAt256Mb() {
+        assertEquals(3,PodVideoKeyframes.maximumEntries(128_000_000L));
+        assertEquals(3,PodVideoKeyframes.maximumEntries(255_999_999L));
+        assertEquals(10,PodVideoKeyframes.maximumEntries(256_000_000L));
+        assertEquals(10,PodVideoKeyframes.maximumEntries(0));
+    }
+
     @Test public void cachedLayerFollowsTheDragWithTheSameFixedRoundClip()throws Exception {
         Context context=ApplicationProvider.getApplicationContext();FrameLayout host=new FrameLayout(context);
         PodVideoSessionServices service=new PodVideoSessionServices(context,new PodVideoDecoderBudget(3));service.attachToParent(host);Shadows.shadowOf(Looper.getMainLooper()).idle();
