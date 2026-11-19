@@ -4,7 +4,7 @@ import type {VideoSessionState,VideoTransform} from '../src/services';
 const bounds={x:0,y:0,width:233,height:233};
 function contentRect(t:VideoTransform,w:number,h:number,offset=0){const factor=t.scaleMode==='expanded'?Math.max(233/w,233/h):t.scaleMode==='shrunk'?233/Math.hypot(w,h):Math.min(233/w,233/h);return {x:(233-w*factor)/2,y:(233-h*factor)/2+offset,width:w*factor,height:h*factor};}
 function fixture(){
- const previews:any[]=[];let settled:any;
+ const previews:any[]=[];let settled:any;let promoteGate:Promise<void>|undefined;
  const transforms=new Map<string,VideoTransform>(),states=new Map<string,VideoSessionState>();let prepares=0;
  const value=(id:string):VideoSessionState=>({ok:true,sessionId:id,state:'prewarmed',positionMs:0,durationMs:1000,width:100,height:200,volume:1,muted:false,prewarming:true,presented:false,hasRenderedFirstFrame:true,targetBufferBytes:1});
  const port={
@@ -13,10 +13,10 @@ function fixture(){
   setTransform:async(id:string,t:VideoTransform)=>{expect(states.has(id)).toBe(true);transforms.set(id,{...t});return states.get(id)!;},
   setLoop:async(id:string)=>states.get(id)!,state:async(id:string)=>states.get(id)!,setBounds:async(id:string)=>states.get(id)!,
   release:async(id:string)=>{states.delete(id);return {sessionId:id,released:true};},
-  promote:async(id:string,o:any)=>{settled={bounds:o.bounds,transform:transforms.get(id)};return {...states.get(id)!,replacedHasRenderedFirstFrame:true};},
+  promote:async(id:string,o:any)=>{if(o.transform)transforms.set(id,{...o.transform});if(promoteGate)await promoteGate;settled={bounds:o.bounds,transform:transforms.get(id)};return {...states.get(id)!,replacedHasRenderedFirstFrame:true};},
   transition:async(o:any)=>{previews.push({...o,transform:transforms.get(o.toSessionId)});return {...o,composited:true,fromOffsetYPx:0,toOffsetYPx:0};},
  } as unknown as VideoSessionPort;
- return {pool:new VideoSessionPool(port),transforms,states,previews,get settled(){return settled;},get prepares(){return prepares;}};
+ return {pool:new VideoSessionPool(port),transforms,states,previews,holdPromotion(gate:Promise<void>){promoteGate=gate;},get settled(){return settled;},get prepares(){return prepares;}};
 }
 for(const mode of ['standard','expanded','shrunk'] as const)for(const [width,height] of [[100,200],[200,100]])for(const direction of ['up','down'] as const){
  test(`preview inherits ${mode} ${width}x${height} ${direction} and keeps it after promotion`,async()=>{
@@ -37,4 +37,32 @@ test('mode changes relayout cached, pending and future neighbours without prepar
  for(const scaleMode of ['expanded','shrunk','standard'] as const){await f.pool.setTransform({scaleMode});for(const t of f.transforms.values())expect(t).toEqual({scaleMode});}
  await pending;expect(f.prepares).toBe(3);
  await f.pool.prewarm({key:'d'},{url:'d',bounds});expect([...f.transforms.values()].at(-1)).toEqual({scaleMode:'standard'});
+});
+
+test('GEMINI explicit promotion transform reaches reused and newly prepared neighbours',async()=>{
+ const f=fixture();await f.pool.supportsPrewarm();
+ await f.pool.prepare({key:'a'},{url:'a',bounds,transform:{rotationDeg:90}}).result;
+ await f.pool.prewarm({key:'b'},{url:'b',bounds});
+ f.pool.selectStandby('b');
+ const transform={rotationDeg:270};
+ await f.pool.promote('up',bounds,true,undefined,[],transform);
+ await f.pool.prewarm({key:'a'},{url:'a',bounds});
+ expect(f.prepares).toBe(2);
+ expect([...f.transforms.values()]).toEqual([transform,transform]);
+ await f.pool.prewarm({key:'c'},{url:'c',bounds});
+ expect(f.prepares).toBe(3);
+ expect([...f.transforms.values()]).toEqual([transform,transform]);
+});
+
+test('GEMINI a rotation requested during promotion wins for active and future pages',async()=>{
+ const f=fixture();await f.pool.supportsPrewarm();
+ await f.pool.prepare({key:'a'},{url:'a',bounds}).result;
+ await f.pool.prewarm({key:'b'},{url:'b',bounds});
+ f.pool.selectStandby('b');
+ let finish!:()=>void;f.holdPromotion(new Promise<void>(done=>{finish=done;}));
+ const promotion=f.pool.promote('up',bounds,true,undefined,[],{rotationDeg:180});
+ const latest={rotationDeg:270};await f.pool.setTransform(latest);
+ finish();await promotion;
+ await f.pool.prewarm({key:'c'},{url:'c',bounds});
+ expect([...f.transforms.values()]).toEqual([latest,latest]);
 });

@@ -61,6 +61,23 @@ test('one cold foreground prepare waits for memory sampling before retrying the 
  expect(requests[1]).toBe(requests[0]);
 });
 
+test('GEMINI deferred foreground prepare retries with the latest rotation',async()=>{
+ const model=new Model(),prepare=model.port.prepare;
+ const rotations:(number|undefined)[]=[];
+ const refusal=Object.assign(new Error('video_memory_budget_deferred'),{code:'decoder_admission_deferred'});
+ model.port.prepare=args=>{
+  rotations.push(args.transform?.rotationDeg);
+  return rotations.length===1?{result:Promise.reject(refusal),cancel(){}}:prepare(args);
+ };
+ let resume!:()=>void;
+ const pool=new VideoSessionPool(model.port,()=>({result:new Promise<void>(resolve=>{resume=resolve;}),cancel(){}}));
+ const pending=pool.prepare(source(1),{...options(1),transform:{rotationDeg:0}}).result;
+ await model.advance(0);
+ await pool.setTransform({rotationDeg:270}).catch(()=>{});
+ resume();await model.advance(500);await pending;
+ expect(rotations).toEqual([0,270]);
+});
+
 test('retiring the route while waiting for memory never submits another prepare',async()=>{
  const model=new Model();let calls=0,resume!:()=>void;
  model.port.prepare=()=>{
