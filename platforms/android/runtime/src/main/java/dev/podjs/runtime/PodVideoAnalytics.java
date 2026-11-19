@@ -102,6 +102,12 @@ final class PodVideoAnalytics implements AnalyticsListener, TransferListener {
     private boolean playbackEnd(String kind,long generation,long positionMs,long durationMs,boolean ended){
         try {JSONObject m=snapshot();android.util.Log.i("PodVideoStats",kind+" source_ordinal="+Math.max(0,sourceOrdinal)+" source_generation="+Math.max(0,generation)+" position_ms="+Math.max(0,positionMs)+" first_frame_ms="+m.optLong("firstFrameMs",-1)+" rebuffer_count="+m.optLong("rebufferCount",0)+" dropped_frames="+m.optLong("droppedFrames",0)+" duration_ms="+Math.max(0,durationMs)+" ended="+(ended?1:0));return true;}catch(Exception ignored){return false;}
     }
+    static JSONObject progress(androidx.media3.common.Player player,long generation,PodVideoAnalytics analytics)throws Exception {
+        long position=player.getCurrentPosition();
+        return new JSONObject().put("sourceGeneration",generation).put("positionMs",position)
+                .put("durationMs",Math.max(0,player.getDuration())).put("bufferedMs",Math.max(0,player.getBufferedPosition()-position))
+                .put("networkStalled",analytics!=null&&analytics.networkStalled()).put("metrics",analytics==null?null:analytics.snapshot());
+    }
     synchronized JSONObject snapshot() throws Exception {
         androidx.media3.exoplayer.analytics.PlaybackStats stats=playbackStats.getPlaybackStats();
         JSONObject result = new JSONObject().put("sourceOrdinal",sourceOrdinal).put("bytesLoaded", bytes).put("droppedFrames", dropped)

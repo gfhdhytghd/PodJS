@@ -545,7 +545,10 @@ extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nati
 }
 extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeNeedsFrame(JNIEnv*,jclass,jlong p) {
   auto* h=reinterpret_cast<Host*>(p);
-  return h&&(pod_runtime_needs_frame(h->runtime)||h->touches.needsFrame()||h->renderCheckpointFrames>0)?JNI_TRUE:JNI_FALSE;
+  if (!h) return JNI_FALSE;
+  if (h->renderCheckpointFrames > 0 && monoMs() > h->renderCheckpointUntilMs)
+    h->renderCheckpointFrames = 0;
+  return pod_runtime_needs_frame(h->runtime)||h->touches.needsFrame()||h->renderCheckpointFrames>0 ? JNI_TRUE : JNI_FALSE;
 }
 extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeHasPendingJobs(JNIEnv*,jclass,jlong p) {
   auto* h=reinterpret_cast<Host*>(p);return h&&pod_runtime_has_pending_jobs(h->runtime)?JNI_TRUE:JNI_FALSE;
@@ -775,7 +778,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativ
 extern "C" JNIEXPORT jstring JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativePollNet(JNIEnv* env,jclass,jlong p){auto*h=reinterpret_cast<Host*>(p);if(!h)return nullptr;const char* line=pod_runtime_poll_net_command(h->runtime);return line?env->NewStringUTF(line):nullptr;}
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeCompleteHttp(JNIEnv* env,jclass,jlong p,jint handle,jint status,jstring url,jstring headers,jbyteArray body){auto*h=reinterpret_cast<Host*>(p);if(!h)return;const char*u=env->GetStringUTFChars(url,nullptr);const char*hs=env->GetStringUTFChars(headers,nullptr);jsize n=env->GetArrayLength(body);std::vector<uint8_t>b(n);env->GetByteArrayRegion(body,0,n,reinterpret_cast<jbyte*>(b.data()));pod_runtime_complete_http(h->runtime,handle,status,u,hs,b.data(),b.size());env->ReleaseStringUTFChars(url,u);env->ReleaseStringUTFChars(headers,hs);}
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeFailHttp(JNIEnv* env,jclass,jlong p,jint handle,jstring code,jstring message){auto*h=reinterpret_cast<Host*>(p);if(!h)return;const char*c=env->GetStringUTFChars(code,nullptr);const char*m=env->GetStringUTFChars(message,nullptr);pod_runtime_fail_http(h->runtime,handle,c,m);env->ReleaseStringUTFChars(code,c);env->ReleaseStringUTFChars(message,m);}
-extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeLifecycle(JNIEnv*,jclass,jlong p,jint s){auto*h=reinterpret_cast<Host*>(p);if(h){h->renderer->setPaused(s!=0);if(s==2){h->touches.clear();h->rotary=0;h->framePerf.resetCadence();}pod_runtime_set_lifecycle(h->runtime,s);}}
+extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeLifecycle(JNIEnv*,jclass,jlong p,jint s){auto*h=reinterpret_cast<Host*>(p);if(h){h->renderer->setPaused(s!=0);if(s!=0)h->renderCheckpointFrames=0;if(s==2){h->touches.clear();h->rotary=0;h->framePerf.resetCadence();}pod_runtime_set_lifecycle(h->runtime,s);}}
 extern "C" JNIEXPORT void JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeTheme(JNIEnv* env,jclass,jlong p,jstring theme){auto*h=reinterpret_cast<Host*>(p);if(!h)return;const char*t=env->GetStringUTFChars(theme,nullptr);pod_runtime_set_theme(h->runtime,t);env->ReleaseStringUTFChars(theme,t);}
 extern "C" JNIEXPORT jboolean JNICALL Java_dev_podjs_runtime_PodRuntimeView_nativeBack(JNIEnv*,jclass,jlong p){
   auto*h=reinterpret_cast<Host*>(p);

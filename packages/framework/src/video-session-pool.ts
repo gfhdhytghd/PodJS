@@ -424,9 +424,9 @@ export class VideoSessionPool<Source extends {key:string}> {
     const neighbours=this.slots.filter(s=>s.source&&(s.ready||s.operation));
     for(const slot of neighbours)this.neighbourUpdate(slot,this.port.setTransform(slot.id,this.transform));
   }
-  async setTransform(transform:VideoTransform):Promise<VideoState>{
+  async setTransform(transform:VideoTransform,updateNeighbours=true):Promise<VideoState>{
     this.transform={...transform};
-    this.updateNeighbourTransforms();
+    if(updateNeighbours)this.updateNeighbourTransforms();
     const active=await this.port.setTransform(this.activeId,this.transform);
     return state(active);
   }

@@ -8,5 +8,6 @@ interface VideoFrameObserver {
     default void fail(String code,String message,int mirrorIndex){fail(code,message);}
     default void firstFrame(JSONObject value){}
     default void volumeChanged(JSONObject value){}
+    default void progress(JSONObject value){}
     default void stateChanged(JSONObject value){}
 }

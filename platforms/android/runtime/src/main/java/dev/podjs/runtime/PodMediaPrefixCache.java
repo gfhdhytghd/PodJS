@@ -23,6 +23,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
     static final int MAX_REGISTRATIONS=1024;
     static final long MAX_METADATA_BYTES=8L*1024*1024;
     final File root;
+    private final PodMediaPrefixDisk disk;
     File frameRoot;
     long maxTotal;volatile long frameDiskBytes=10L*1024*1024;
     final PodMediaLocalStore localStore;
@@ -68,6 +69,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
         volatile boolean revoked,oversized;
         String windowToken=""; long windowGeneration;
         volatile long expiresAt=Long.MAX_VALUE;volatile long networkBytes,rangeRequests;volatile long length=-1;int captureBytes=MAX_ENTRY;
+        long nextTouch;
         File tail(){return new File(file.getParentFile(),token+".tail");}
         int mirrorIndex(){return Math.max(0,mirrors.indexOf(selectedRemote));}
         Entry(String token,String remote,Map<String,String> headers,File file,boolean persistent){this.token=token;this.remote=remote;this.selectedRemote=remote;this.headers=headers;this.file=file;this.persistent=persistent;}
@@ -82,7 +84,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
     }
     PodMediaPrefixCache(File root){this(root,new PodMediaHttp(),Math.max(6L*1024*1024,Math.min(16L*1024*1024,Runtime.getRuntime().maxMemory()/4)));}
     PodMediaPrefixCache(File root,DataSource.Factory upstream,long budget){
-        this.root=root;this.frameRoot=root;this.upstream=upstream;this.maxTotal=Math.max(MAX_ENTRY,Math.min(16L*1024*1024,budget));
+        this.root=root;this.disk=PodMediaPrefixDisk.open(root);this.frameRoot=root;this.upstream=upstream;this.maxTotal=Math.max(MAX_ENTRY,Math.min(16L*1024*1024,budget));
         // Files are opaque media bytes, never a durable capability. Registrations
         // must be recreated with a fresh authorized remote source after restart.
         if(!root.isDirectory())root.mkdirs();
@@ -283,7 +285,11 @@ final class PodMediaPrefixCache implements AutoCloseable {
         notifyAll();
     }
     private void deleteParts(String token){
-        for(String suffix:new String[]{".prefix",".tail",".length",".limit"})new File(root,token+suffix).delete();
+        synchronized(disk){
+            disk.discard(token);
+            for(String suffix:new String[]{".prefix",".tail",".length",".limit"})new File(root,token+suffix).delete();
+            disk.update(token,new File(root,token+".prefix"));
+        }
     }
     void rejectResolution(String uri){
         if(uri.startsWith("file:")){localStore.removeUri(uri);return;}
@@ -339,16 +345,41 @@ final class PodMediaPrefixCache implements AutoCloseable {
                 for(String token:protectedTokens){Job candidate=jobs.get(token);if(eligible(candidate,stage)){next=candidate;break;}}
                 if(next==null)for(Job candidate:jobs.values())if(eligible(candidate,stage)){next=candidate;break;}
             }
-            if(next==null||closed){if(!closed&&!jobs.isEmpty())wakePump();pumps--;PodMediaPrefixCache.this.notifyAll();return;}
+            if(next==null||closed){
+                pumps--;
+                if(!closed)scheduleDeferredWork();
+                return;
+            }
             next.fetching=true;
         }fetchStep(next);}
     });}}
     private final ScheduledExecutorService wakeups=Executors.newSingleThreadScheduledExecutor(r->{Thread t=new Thread(r,"PodMediaWake");t.setDaemon(true);return t;});
-    private boolean wakePending;
-    private synchronized void wakePump(){if(wakePending||closed)return;wakePending=true;wakeups.schedule(()->{synchronized(this){wakePending=false;schedule();}},250,TimeUnit.MILLISECONDS);}
+    private ScheduledFuture<?> wakeTask;
+    private long wakeAt=Long.MAX_VALUE;
+    private void scheduleDeferredWork(){
+        long now=android.os.SystemClock.uptimeMillis(),delay=Long.MAX_VALUE;
+        for(Job job:jobs.values()){
+            if(job.active&&!job.done&&!job.fetching)
+                delay=Math.min(delay,job.deferredUntil>now?job.deferredUntil-now:250);
+        }
+        if(delay==Long.MAX_VALUE)return;
+        long at=now+delay;
+        if(wakeTask!=null&&wakeAt<=at)return;
+        if(wakeTask!=null)wakeTask.cancel(false);
+        wakeAt=at;
+        wakeTask=wakeups.schedule(()->{synchronized(this){if(wakeAt!=at)return;wakeAt=Long.MAX_VALUE;wakeTask=null;schedule();}},delay,TimeUnit.MILLISECONDS);
+    }
     private boolean eligible(Job job,int stage){return job!=null&&job.active&&!job.done&&!job.fetching&&job.stage==stage
         &&android.os.SystemClock.uptimeMillis()>=job.deferredUntil&&(job.preStore?preStoreAllowed():!job.background||!HostWorkPriority.DEVICE.mediaActive());}
-    void prefetch(Job job){synchronized(this){while(job.current()&&!job.done)try{schedule();wait(100);}catch(InterruptedException error){Thread.currentThread().interrupt();job.cancel();job.failure=error;break;}}}
+    void prefetch(Job job){
+        synchronized(this){
+            schedule();
+            // Cancellation can come from a host request without owning this monitor.
+            while(job.current()&&!job.done)try{wait(100);}catch(InterruptedException error){
+                Thread.currentThread().interrupt();job.cancel();job.failure=error;break;
+            }
+        }
+    }
     private final class ObservedSource implements DataSource {
         final DataSource delegate;final Entry entry;final boolean foreground;final long ordinal,request=ORDINALS.incrementAndGet();long transferred,opened=-1,first=-1,last=-1,rangePosition,requested;boolean logged;
         private final java.util.concurrent.atomic.AtomicBoolean disposed=new java.util.concurrent.atomic.AtomicBoolean();
@@ -515,7 +546,10 @@ final class PodMediaPrefixCache implements AutoCloseable {
         if(!job.current())throw new IOException("preparation_cancelled");
         long prefix=budget-job.entry.tail().length();
         if(prefix<0)throw new IOException("media_cache_budget_exceeded");
-        if(job.entry.file.length()>prefix)try(RandomAccessFile file=new RandomAccessFile(job.entry.file,"rw")){file.setLength(prefix);}
+        if(job.entry.file.length()>prefix){
+            try(RandomAccessFile file=new RandomAccessFile(job.entry.file,"rw")){file.setLength(prefix);}
+            disk.update(job.entry.token,job.entry.file);
+        }
     }
     synchronized void saveTail(Job job,byte[] bytes,int budget)throws Exception {
         if(!job.current())throw new IOException("preparation_cancelled");
@@ -525,7 +559,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
             // Publish only a complete suffix. Both ranges share the caller's byte budget.
             if(job.entry.file.length()>budget-bytes.length)try(RandomAccessFile prefix=new RandomAccessFile(job.entry.file,"rw")){prefix.setLength(budget-bytes.length);}
             java.nio.file.Files.move(temporary.toPath(),job.entry.tail().toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            downloadedBytes+=bytes.length;trim();
+            downloadedBytes+=bytes.length;disk.update(job.entry.token,job.entry.file);trim();
         }finally{temporary.delete();}
     }
     private synchronized void publish(Job job,boolean success,int status){
@@ -584,7 +618,9 @@ final class PodMediaPrefixCache implements AutoCloseable {
         if(closed||epoch!=generation||entries.get(e.token)!=e||position!=e.file.length()||position>=Math.min(e.captureBytes,MAX_ENTRY-e.tail().length()))return;
         int count=(int)Math.min(n,Math.min(e.captureBytes,MAX_ENTRY-e.tail().length())-position);if(!root.isDirectory())root.mkdirs();
         if(e.maxVideoShortEdge>0&&(position==0||!new File(root,e.token+".limit").isFile()))storePolicy(e);
-        try(RandomAccessFile f=new RandomAccessFile(e.file,"rw")){f.seek(position);f.write(buffer,offset,count);}if(!new File(root,e.token+".length").isFile())persistLength(e);e.file.setLastModified(System.currentTimeMillis());trim();frameBytes(e);
+        if(!disk.append(e.token,e.file,position,buffer,offset,count))return;
+        if(!new File(root,e.token+".length").isFile())persistLength(e);
+        trim();frameBytes(e);
     }
     synchronized int read(Entry e,long position,byte[] bytes,int offset,int size)throws IOException {
         if(position<0||entries.get(e.token)!=e)return 0;
@@ -593,20 +629,25 @@ final class PodMediaPrefixCache implements AutoCloseable {
             if(!tail.isFile()||e.length<0||position<start||position>=e.length)return 0;
             try(RandomAccessFile f=new RandomAccessFile(tail,"r")){f.seek(position-start);int n=f.read(bytes,offset,(int)Math.min(size,e.length-position));if(n>0)cacheReadBytes+=n;return Math.max(0,n);}
         }
-        int n;try(RandomAccessFile f=new RandomAccessFile(e.file,"r")){f.seek(position);n=f.read(bytes,offset,(int)Math.min(size,e.file.length()-position));}if(n>0){cacheReadBytes+=n;e.file.setLastModified(System.currentTimeMillis());}return Math.max(0,n);
+        int n=disk.read(e.token,e.file,position,bytes,offset,(int)Math.min(size,e.file.length()-position));if(n>0){cacheReadBytes+=n;long now=android.os.SystemClock.elapsedRealtime();if(now>=e.nextTouch){e.file.setLastModified(System.currentTimeMillis());e.nextTouch=now+1000;}}return Math.max(0,n);
     }
     private static final java.util.regex.Pattern PREFIX_NAME=java.util.regex.Pattern.compile("[a-f0-9]{64}\\.prefix");
+    private static final java.util.regex.Pattern CACHE_PART=java.util.regex.Pattern.compile("[a-f0-9]{64}\\.(prefix|length|tail|limit|limit\\.tmp)");
     private File[] files(){File[] f=root.listFiles((dir,name)->PREFIX_NAME.matcher(name).matches());return f==null?new File[0]:f;}
-    private long fileBytes(){long n=0;for(File f:files())n+=f.length()+new File(root,f.getName().replace(".prefix",".tail")).length();return n;}
+    private long fileBytes(){return disk.bytes();}
     private void trimFiles(){
-        File[] fs=files();Arrays.sort(fs,Comparator.comparingLong(File::lastModified));long bytes=fileBytes();int count=fs.length;
-        for(int pass=0;pass<2;pass++)for(File f:fs){
-            if(bytes<=maxTotal&&count<=MAX_ENTRIES)return;
-            if(!f.isFile())continue;String t=f.getName().substring(0,64);
-            if(pass==0&&protectedTokens.contains(t))continue;
-            // The first requested source keeps foreground priority under a saturated window.
-            if(pass==1&&!protectedTokens.isEmpty()&&t.equals(protectedTokens.iterator().next()))continue;
-            bytes-=f.length()+new File(root,t+".tail").length();count--;deleteParts(t);
+        synchronized(disk){
+            File[] fs=files();
+            disk.refresh(fs);
+            if(!disk.exceeds(maxTotal,MAX_ENTRIES))return;
+            Arrays.sort(fs,Comparator.comparingLong(File::lastModified));
+            for(int pass=0;pass<2;pass++)for(File file:fs){
+                if(!disk.exceeds(maxTotal,MAX_ENTRIES))return;
+                String token=file.getName().substring(0,64);
+                if(pass==0&&protectedTokens.contains(token))continue;
+                if(pass==1&&!protectedTokens.isEmpty()&&token.equals(protectedTokens.iterator().next()))continue;
+                deleteParts(token);
+            }
         }
     }
     private static long metadataBytes(Entry entry){
@@ -617,23 +658,40 @@ final class PodMediaPrefixCache implements AutoCloseable {
         return bytes;
     }
     private long metadataBytes(){long bytes=0;for(Entry entry:entries.values())bytes+=metadataBytes(entry);return bytes;}
-    private void trim(){trimFiles();}
+    private void trim(){if(disk.exceeds(maxTotal,MAX_ENTRIES))trimFiles();}
     private void trimSnapshots(){File[] fs=files();Arrays.sort(fs,Comparator.comparingLong(File::lastModified).reversed());for(int i=6;i<fs.length;i++)deleteParts(fs[i].getName().substring(0,64));}
     /** One closed counter snapshot at a real foreground decoded first frame. */
     synchronized void logPlaybackStats(){
-        android.util.Log.i("PodMediaCache","cache_stats mono_ms="+android.os.SystemClock.elapsedRealtime()+" files="+files().length+" bytes="+fileBytes()+" downloadedBytes="+downloadedBytes+" cacheReadBytes="+cacheReadBytes+" networkReadBytes="+networkReadBytes+" maxBytes="+maxTotal);
+        android.util.Log.i("PodMediaCache","cache_stats mono_ms="+android.os.SystemClock.elapsedRealtime()+" files="+disk.count()+" bytes="+fileBytes()+" downloadedBytes="+downloadedBytes+" cacheReadBytes="+cacheReadBytes+" networkReadBytes="+networkReadBytes+" maxBytes="+maxTotal);
     }
     synchronized void logFirstCardStats(long seq){
-        android.util.Log.i("PodMediaCache","cache_first_card seq="+seq+" mono_ms="+android.os.SystemClock.uptimeMillis()+" files="+files().length+" bytes="+fileBytes()+" downloadedBytes="+downloadedBytes+" cacheReadBytes="+cacheReadBytes+" networkReadBytes="+networkReadBytes+" maxBytes="+maxTotal);
+        android.util.Log.i("PodMediaCache","cache_first_card seq="+seq+" mono_ms="+android.os.SystemClock.uptimeMillis()+" files="+disk.count()+" bytes="+fileBytes()+" downloadedBytes="+downloadedBytes+" cacheReadBytes="+cacheReadBytes+" networkReadBytes="+networkReadBytes+" maxBytes="+maxTotal);
     }
-    synchronized JSONObject stats()throws Exception {return new JSONObject().put("files",files().length).put("bytes",fileBytes()).put("maxBytes",maxTotal).put("maxEntries",MAX_ENTRIES).put("activePrefetches",jobs.size()).put("downloadedBytes",downloadedBytes).put("networkReadBytes",networkReadBytes).put("cacheReadBytes",cacheReadBytes).put("failures",failures).put("bandwidthBytesPerSecond",totalBandwidth);}
+    synchronized JSONObject stats()throws Exception {return new JSONObject().put("files",disk.count()).put("bytes",fileBytes()).put("maxBytes",maxTotal).put("maxEntries",MAX_ENTRIES).put("activePrefetches",jobs.size()).put("downloadedBytes",downloadedBytes).put("networkReadBytes",networkReadBytes).put("cacheReadBytes",cacheReadBytes).put("failures",failures).put("bandwidthBytesPerSecond",totalBandwidth);}
     synchronized JSONObject memoryStats()throws Exception {
         return new JSONObject().put("entries",entries.size()).put("metadataUtf16BytesUpperBound",metadataBytes())
             .put("metadataMaxBytes",MAX_METADATA_BYTES).put("registrationMaxEntries",MAX_REGISTRATIONS)
             .put("jobs",jobs.size()).put("protectedEntries",protectedTokens.size()).put("activePumps",pumps).put("diskMaxBytes",maxTotal);
     }
-    private void clear(){trafficStoppedUntil=0;if(upstream instanceof PodMediaHttp)((PodMediaHttp)upstream).recover();verifiedLocal.clear();if(frameListener!=null)frameListener.clear();generation++;for(Job j:jobs.values())j.cancel();jobs.clear();for(Entry entry:entries.values())revoke(entry);entries.clear();protectedTokens.clear();for(File f:root.listFiles()==null?new File[0]:root.listFiles())if(f.getName().matches("[a-f0-9]{64}\\.(prefix|length|tail|limit|limit\\.tmp)"))f.delete();}
-    @Override public synchronized void close(){closed=true;verifiedLocal.clear();generation++;for(Job j:jobs.values())j.cancel();jobs.clear();protectedTokens.clear();for(Entry entry:entries.values())revoke(entry);entries.clear();wakeups.shutdownNow();workers.shutdownNow();cancellations.shutdown();if(upstream instanceof PodMediaHttp)((PodMediaHttp)upstream).close();notifyAll();}
+    private void clear(){
+        trafficStoppedUntil=0;
+        if(upstream instanceof PodMediaHttp)((PodMediaHttp)upstream).recover();
+        verifiedLocal.clear();
+        if(frameListener!=null)frameListener.clear();
+        generation++;
+        for(Job job:jobs.values())job.cancel();
+        jobs.clear();
+        for(Entry entry:entries.values())revoke(entry);
+        entries.clear();
+        protectedTokens.clear();
+        synchronized(disk){
+            disk.closeHandles();
+            File[] parts=root.listFiles((dir,name)->CACHE_PART.matcher(name).matches());
+            if(parts!=null)for(File part:parts)part.delete();
+            disk.refresh(files());
+        }
+    }
+    @Override public synchronized void close(){closed=true;disk.closeHandles();verifiedLocal.clear();generation++;for(Job j:jobs.values())j.cancel();jobs.clear();protectedTokens.clear();for(Entry entry:entries.values())revoke(entry);entries.clear();wakeups.shutdownNow();workers.shutdownNow();cancellations.shutdown();if(upstream instanceof PodMediaHttp)((PodMediaHttp)upstream).close();notifyAll();}
     DataSource.Factory factory(DataSource.Factory fallback){return factory(fallback,false);}
     DataSource.Factory factory(DataSource.Factory fallback,boolean bypass){return factory(fallback,bypass,null);}
     DataSource.Factory factory(DataSource.Factory fallback,boolean bypass,PodVideoHttpDataSources.PrepareGate gate){

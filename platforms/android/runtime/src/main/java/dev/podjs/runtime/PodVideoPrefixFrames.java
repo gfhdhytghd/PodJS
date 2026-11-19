@@ -34,9 +34,14 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
     private final java.util.function.Consumer<String> ready;
     private final ExecutorService worker=Executors.newSingleThreadExecutor(r->{Thread t=new Thread(r,"PodPrefixFrame");t.setDaemon(true);return t;});
     private final LinkedHashMap<PodMediaPrefixCache.Entry, Long> wanted=new LinkedHashMap<>();
-    // Owned by worker. Entries are trimmed to the current window on each pass.
-    private final Map<PodMediaPrefixCache.Entry, Long> attempted=new HashMap<>();
+    // Main clears a rejected publication so the same bytes can be retried after admission.
+    private final Map<PodMediaPrefixCache.Entry, Long> attempted=new java.util.concurrent.ConcurrentHashMap<>();
     private final Map<PodMediaPrefixCache.Entry, String> bindings=new HashMap<>();
+    private final Map<PodMediaPrefixCache.Entry,Long> deniedFrames=new HashMap<>();
+    private final Runnable retryAdmission=this::retryDeniedFrames;
+    private boolean retryPosted;
+    private long retryDelayMs=1000;
+    private final Runnable unsubscribeMemory;
     private volatile boolean closed;
     private final java.util.concurrent.atomic.AtomicBoolean waitingForDecoder=new java.util.concurrent.atomic.AtomicBoolean();
     private final AutoCloseable codecLifecycle;
@@ -55,7 +60,32 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
                 if(waitingForDecoder.getAndSet(false))main.post(PodVideoPrefixFrames.this::signal);
             }
         });
+        unsubscribeMemory=PodProcessMemoryBudget.observe(level->{if(level==0)retryDeniedFrames();});
         frames.onStored(this::persist);cache.setFrameListener(this);
+    }
+    private synchronized void deferFrame(PodMediaPrefixCache.Entry entry,long bytes){
+        if(!current(entry))return;
+        attempted.remove(entry);
+        deniedFrames.put(entry,bytes);
+        scheduleAdmissionRetry();
+    }
+    private void scheduleAdmissionRetry(){
+        if(retryPosted||closed||deniedFrames.isEmpty())return;
+        retryPosted=true;
+        main.postDelayed(retryAdmission,retryDelayMs);
+    }
+    private synchronized void retryDeniedFrames(){
+        main.removeCallbacks(retryAdmission);retryPosted=false;
+        if(closed||deniedFrames.isEmpty())return;
+        boolean available=deniedFrames.entrySet().removeIf(item->{
+            AutoCloseable lease=PodMediaMemoryAccounting.reserveResource(frames,0,PodVideoCodecGate.OTHER,PodMediaMemoryBudget.Kind.KEYFRAME,item.getValue()*2);
+            if(lease==null)return false;
+            PodMediaMemoryAccounting.close(lease);
+            return true;
+        });
+        retryDelayMs=available?1000:Math.min(8000,retryDelayMs*2);
+        if(available)signal();
+        scheduleAdmissionRetry();
     }
     private void persist(String binding,PodVideoKeyframes.Frame frame){
         if(closed)return;
@@ -71,7 +101,7 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
         });}catch(java.util.concurrent.RejectedExecutionException busy){frames.unpin(frame);}
     }
     @Override public synchronized void clear(){
-        wanted.clear();
+        wanted.clear();deniedFrames.clear();
         if(!closed)diskWorker.execute(disk::clear);
     }
     @Override public synchronized void window(List<PodMediaPrefixCache.Entry> entries){
@@ -81,6 +111,7 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
             for(PodMediaPrefixCache.Entry entry:entries)android.util.Log.i("PodMediaCache","frame_window entry="+entry.ordinal+" rank="+(rank++)+" count="+entries.size()+" mono_ms="+at);
             if(entries.isEmpty())android.util.Log.i("PodMediaCache","frame_window entry=0 rank=0 count=0 mono_ms="+at);
         }
+        deniedFrames.keySet().retainAll(entries);
         LinkedHashMap<PodMediaPrefixCache.Entry,Long> next=new LinkedHashMap<>();
         for(PodMediaPrefixCache.Entry entry:entries)next.put(entry,wanted.getOrDefault(entry,SystemClock.uptimeMillis()));
         wanted.clear();wanted.putAll(next);signal();
@@ -115,7 +146,7 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
                 PodMediaPrefixCache.Entry entry=item.getKey();
                 // One staged RGBA frame bounds the main-thread handoff even
                 // when a blocked UI cannot consume worker results promptly.
-                synchronized(this){if(pendingBytes>0)break;}
+                synchronized(this){if(pendingBytes>0)break;if(deniedFrames.containsKey(entry))continue;}
                 if(!current(entry)||publishing.contains(entry))continue;
                 long available=entry.file.length()+entry.tail().length();
                 String binding=bindings.get(entry);
@@ -152,7 +183,11 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
                     try{
                         if(!current(entry)){if(pixels!=null)pixels.recycle();trace(entry,5,requested,started,ended,available);}
                         else {
-                            if(pixels!=null){PodVideoKeyframes.Frame frame=frames.put(key,pixels,outcome!=6,entry.ordinal);if(frame!=null)ready.accept(key);}
+                            if(pixels!=null){
+                                PodVideoKeyframes.Frame frame=frames.put(key,pixels,outcome!=6,entry.ordinal);
+                                if(frame!=null)ready.accept(key);
+                                else deferFrame(entry,staged);
+                            }
                             trace(entry,outcome,requested,started,ended,available);
                         }
                     }finally{
@@ -298,5 +333,5 @@ final class PodVideoPrefixFrames implements PodMediaPrefixCache.FrameListener, A
             .put("pendingBytes",pendingBytes).put("pendingMaxBytes",MAX_PENDING_BYTES)
             .put("hardwareDisabled",hardwareFailed).put("diskMaxBytes",PodVideoKeyframeDisk.MAX_BYTES);
     }
-    @Override public void close(){closed=true;try{codecLifecycle.close();}catch(Exception ignored){}frames.onStored(null);cache.setFrameListener(null);synchronized(this){wanted.clear();}worker.shutdownNow();diskWorker.shutdown();}
+    @Override public void close(){closed=true;unsubscribeMemory.run();main.removeCallbacks(retryAdmission);try{codecLifecycle.close();}catch(Exception ignored){}frames.onStored(null);cache.setFrameListener(null);synchronized(this){wanted.clear();deniedFrames.clear();}worker.shutdownNow();diskWorker.shutdown();}
 }

@@ -51,6 +51,41 @@ public class PodVideoPrefixSchedulingTest {
             assertTrue("disk pixels must publish with zero video bytes",ready.get());assertTrue(frames.contains(binding));
         }finally{worker.close();cache.close();frames.close();}
     }
+    @Test public void deniedDiskFrameDoesNotLoopAndCanBeAdmittedLater() throws Exception {
+        File root=Files.createTempDirectory("frame-admission").toFile();
+        PodMediaPrefixCache cache=new PodMediaPrefixCache(root);
+        PodVideoKeyframes frames=new PodVideoKeyframes();
+        String uri=cache.register("fixture","https://example.invalid/fixture.mp4",Collections.emptyMap());
+        String binding=PodVideoFrameCache.binding(new org.json.JSONObject().put("url",uri),cache);
+        java.util.concurrent.ExecutorService io=java.util.concurrent.Executors.newSingleThreadExecutor();
+        java.lang.reflect.Field account=PodMediaMemoryAccounting.class.getDeclaredField("process");
+        account.setAccessible(true);
+        Object original=account.get(null);
+        java.util.concurrent.atomic.AtomicInteger denials=new java.util.concurrent.atomic.AtomicInteger();
+        PodVideoPrefixFrames worker=null;
+        try{
+            io.submit(()->{
+                android.graphics.Bitmap bitmap=android.graphics.Bitmap.createBitmap(8,8,android.graphics.Bitmap.Config.ARGB_8888);
+                try{new PodVideoKeyframeDisk(new File(root,"decoded-keyframes")).save(binding,bitmap);}finally{bitmap.recycle();}
+                return null;
+            }).get(5,java.util.concurrent.TimeUnit.SECONDS);
+            account.set(null,new PodMediaMemoryAccounting(PodVideoCodecGate.PROCESS,n->{denials.incrementAndGet();return null;}));
+            worker=new PodVideoPrefixFrames(cache,new Handler(Looper.getMainLooper()),frames,ignored->{});
+            PodMediaPrefixCache.Entry entry=cache.target(uri);
+            worker.window(Collections.singletonList(entry));
+            long deadline=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            while(denials.get()==0&&System.nanoTime()<deadline){Thread.sleep(10);Shadows.shadowOf(Looper.getMainLooper()).idle();}
+            assertEquals(1,denials.get());
+            for(int i=0;i<10;i++){Thread.sleep(10);Shadows.shadowOf(Looper.getMainLooper()).idle();}
+            assertEquals("same window and unchanged headroom",1,denials.get());
+            account.set(null,original);
+            worker.window(Collections.emptyList());
+            worker.window(Collections.singletonList(entry));
+            deadline=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            while(!frames.contains(binding)&&System.nanoTime()<deadline){Thread.sleep(10);Shadows.shadowOf(Looper.getMainLooper()).idle();}
+            assertTrue(frames.contains(binding));
+        }finally{if(worker!=null)worker.close();account.set(null,original);io.shutdownNow();cache.close();frames.close();}
+    }
     @Test public void digestRetainsPersistentCacheIdentity() throws Exception {
         assertEquals("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",PodVideoFrameCache.hash(""));
         assertEquals("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",PodVideoFrameCache.hash("abc"));

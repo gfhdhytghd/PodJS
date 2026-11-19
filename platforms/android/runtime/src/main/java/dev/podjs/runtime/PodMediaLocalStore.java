@@ -22,6 +22,37 @@ final class PodMediaLocalStore {
     volatile long entryLimit=ENTRY_LIMIT,totalLimit=TOTAL_LIMIT,minFree=512L<<20;
     volatile boolean enabled=true;
     private int recoveredShortEdgeLimit;
+    // Only private regular files with a strong filesystem identity can reuse a digest.
+    private final Map<File,String> verifiedFiles=new HashMap<>();
+    private String identity(File file,String expected){
+        try{
+            android.system.StructStat stat=android.system.Os.lstat(file.getPath());
+            if(stat!=null&&stat.st_ino!=0&&android.system.OsConstants.S_ISREG(stat.st_mode)
+                    &&stat.st_ctim!=null&&stat.st_mtim!=null){
+                return expected+":"+stat.st_dev+":"+stat.st_ino+":"+stat.st_size+":"+stat.st_ctim.tv_sec
+                        +":"+stat.st_ctim.tv_nsec+":"+stat.st_mtim.tv_sec+":"+stat.st_mtim.tv_nsec;
+            }
+        }catch(android.system.ErrnoException|UnsupportedOperationException unavailable){/* Try the filesystem provider. */}
+        try{
+            Map<String,Object> stamp=Files.readAttributes(file.toPath(),
+                    "unix:dev,ino,size,ctime,lastModifiedTime,isRegularFile",LinkOption.NOFOLLOW_LINKS);
+            if(!Boolean.TRUE.equals(stamp.get("isRegularFile"))||stamp.get("ctime")==null
+                    ||!(stamp.get("ino") instanceof Number)||((Number)stamp.get("ino")).longValue()==0)return null;
+            return expected+":"+stamp.get("dev")+":"+stamp.get("ino")+":"+stamp.get("size")
+                    +":"+stamp.get("ctime")+":"+stamp.get("lastModifiedTime");
+        }catch(UnsupportedOperationException|IllegalArgumentException|IOException unavailable){return null;}
+    }
+    private boolean matchesDigest(File file,String expected)throws Exception{
+        String before=identity(file,expected);
+        if(before!=null&&before.equals(verifiedFiles.get(file)))return true;
+        verifiedFiles.remove(file);
+        if(!expected.equals(digest(file)))return false;
+        if(before!=null){
+            if(!before.equals(identity(file,expected)))return false;
+            verifiedFiles.put(file,before);
+        }
+        return true;
+    }
     PodMediaLocalStore(PodMediaPrefixCache cache){this.cache=cache;root=new File(cache.root,"complete-media");recover();}
     static String digest(File file)throws Exception {
         MessageDigest hash=MessageDigest.getInstance("SHA-256");byte[] buffer=new byte[64*1024];
@@ -72,7 +103,7 @@ final class PodMediaLocalStore {
     synchronized JSONObject lookupToken(String token)throws Exception {return lookupToken(token,0);}
     synchronized JSONObject lookupToken(String token,int limit)throws Exception {
         JSONObject value=manifest(token);File media=file(token,".mp4");
-        if(value==null||!media.isFile()||media.length()!=value.getLong("bytes")||!digest(media).equals(value.getString("sha256"))){remove(token);return null;}
+        if(value==null||!media.isFile()||media.length()!=value.getLong("bytes")||!matchesDigest(media,value.getString("sha256"))){remove(token);return null;}
         if(exceedsCachedResolution(token,value,limit)){remove(token);return null;}
         // Older inventories did not describe tracks. Inspect the existing local bytes;
         // no URL refresh or network read is needed for this migration.
@@ -89,7 +120,7 @@ final class PodMediaLocalStore {
             }
         }
         String uri=Uri.fromFile(media).toString();File pixels=frame(token);
-        if(!pixels.isFile()||pixels.length()>400*1024||!digest(pixels).equals(value.optString("frameSha256"))){remove(token);return null;}
+        if(!pixels.isFile()||pixels.length()>400*1024||!matchesDigest(pixels,value.optString("frameSha256"))){remove(token);return null;}
         JSONObject frame=value.optJSONObject("frame");if(frame==null||!frame.optBoolean("available")||!frame.optString("path").equals("local-media-frames/"+token+".jpg"))return null;
         cache.grantLocal(uri);return new JSONObject(value.toString()).put("uri",uri).put("frame",frame);
     }
@@ -112,9 +143,9 @@ final class PodMediaLocalStore {
             if(Uri.fromFile(file(token,".mp4")).toString().equals(uri))remove(token);
         }
     }
-    synchronized void remove(String token){cache.revokeLocal(Uri.fromFile(file(token,".mp4")).toString());file(token,".json").delete();file(token,".mp4").delete();frame(token).delete();}
+    synchronized void remove(String token){File media=file(token,".mp4"),image=frame(token);verifiedFiles.remove(media);verifiedFiles.remove(image);cache.revokeLocal(Uri.fromFile(media).toString());file(token,".json").delete();media.delete();image.delete();}
     void removePartials(String token){file(token,".part").delete();file(token,".audio.part").delete();file(token,".mux.part").delete();}
-    synchronized void clear(){for(File f:root.listFiles()==null?new File[0]:root.listFiles())if(f.getName().matches("[a-f0-9]{64}\\.mp4"))cache.revokeLocal(Uri.fromFile(f).toString());File frames=new File(cache.frameRoot,"local-media-frames");for(File f:frames.listFiles()==null?new File[0]:frames.listFiles())if(f.getName().matches("[a-f0-9]{64}\\.(jpg|part)"))f.delete();for(File f:root.listFiles()==null?new File[0]:root.listFiles())if(f.getName().matches("[a-f0-9]{64}\\.(json|mp4|part|tmp)"))f.delete();}
+    synchronized void clear(){verifiedFiles.clear();for(File f:root.listFiles()==null?new File[0]:root.listFiles())if(f.getName().matches("[a-f0-9]{64}\\.mp4"))cache.revokeLocal(Uri.fromFile(f).toString());File frames=new File(cache.frameRoot,"local-media-frames");for(File f:frames.listFiles()==null?new File[0]:frames.listFiles())if(f.getName().matches("[a-f0-9]{64}\\.(jpg|part)"))f.delete();for(File f:root.listFiles()==null?new File[0]:root.listFiles())if(f.getName().matches("[a-f0-9]{64}\\.(json|mp4|part|tmp)"))f.delete();}
     private void writeManifest(String token,JSONObject value)throws Exception {
         File part=file(token,".tmp");try{try(FileOutputStream out=new FileOutputStream(part)){out.write(value.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));out.getFD().sync();}
             Files.move(part.toPath(),file(token,".json").toPath(),StandardCopyOption.REPLACE_EXISTING,StandardCopyOption.ATOMIC_MOVE);

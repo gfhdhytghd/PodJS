@@ -18,7 +18,12 @@ final class PodVideoKeyframeDisk {
     private static final Pattern KEY=Pattern.compile("[a-f0-9]{64}");
     private static final Pattern IMAGE=Pattern.compile("[a-f0-9]{64}\\.jpg");
     private final File root;private long maxBytes=MAX_BYTES;
-    synchronized void budget(long bytes){maxBytes=Math.min(MAX_BYTES,Math.max(128*1024,bytes));trim();}
+    private boolean budgetChecked;
+    synchronized void budget(long bytes){
+        long next=Math.min(MAX_BYTES,Math.max(128*1024,bytes));
+        if(budgetChecked&&next==maxBytes)return;
+        maxBytes=next;budgetChecked=true;trim();
+    }
     PodVideoKeyframeDisk(File root){this.root=root;File[] parts=root.listFiles((d,n)->n.startsWith("keyframe-")&&n.endsWith(".tmp"));if(parts!=null)for(File part:parts)part.delete();}
     synchronized boolean contains(String key){File f=file(key);return f.isFile()&&f.length()>0&&f.length()<=MAX_FILE_BYTES;}
     private static void worker(){if(Looper.myLooper()==Looper.getMainLooper())throw new IllegalStateException("keyframe_disk_on_main");}

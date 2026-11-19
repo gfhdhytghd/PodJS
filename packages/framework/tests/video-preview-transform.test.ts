@@ -39,6 +39,16 @@ test('mode changes relayout cached, pending and future neighbours without prepar
  await f.pool.prewarm({key:'d'},{url:'d',bounds});expect([...f.transforms.values()].at(-1)).toEqual({scaleMode:'standard'});
 });
 
+test('intermediate rotation updates the visible page and the settled angle reaches its neighbour',async()=>{
+ const f=fixture();await f.pool.supportsPrewarm();
+ await f.pool.prepare({key:'a'},{url:'a',bounds,transform:{rotationDeg:0}}).result;
+ await f.pool.prewarm({key:'b'},{url:'b',bounds});
+ await f.pool.setTransform({rotationDeg:45,scaleRotationDeg:90},false);
+ expect([...f.transforms.values()].map(t=>t.rotationDeg).sort()).toEqual([0,45]);
+ await f.pool.setTransform({rotationDeg:90});
+ expect([...f.transforms.values()].map(t=>t.rotationDeg)).toEqual([90,90]);expect(f.prepares).toBe(2);
+});
+
 test('GEMINI explicit promotion transform reaches reused and newly prepared neighbours',async()=>{
  const f=fixture();await f.pool.supportsPrewarm();
  await f.pool.prepare({key:'a'},{url:'a',bounds,transform:{rotationDeg:90}}).result;

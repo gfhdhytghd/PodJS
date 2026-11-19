@@ -90,6 +90,8 @@ final class PodMediaAudioPolicy implements AutoCloseable {
         output.accept(1f);
         IntentFilter filter = new IntentFilter(AudioManager.RINGER_MODE_CHANGED_ACTION);
         filter.addAction(VOLUME_CHANGED);
+        filter.addAction("android.media.STREAM_DEVICES_CHANGED_ACTION");
+        filter.addAction(AudioManager.ACTION_AUDIO_BECOMING_NOISY);
         filter.addAction(NotificationManager.ACTION_INTERRUPTION_FILTER_CHANGED);
         filter.addAction(NotificationManager.ACTION_NOTIFICATION_POLICY_CHANGED);
         filter.addAction(NotificationManager.ACTION_CONSOLIDATED_NOTIFICATION_POLICY_CHANGED);
@@ -116,6 +118,13 @@ final class PodMediaAudioPolicy implements AutoCloseable {
         policies.add(this);
     }
     void observeVolume(Runnable changed) { volumeChanged=changed;refresh(); }
+    boolean writeVolume(org.json.JSONObject state)throws org.json.JSONException{
+        if(lastIndex==null)return false;
+        state.put("ringerMode",lastRinger).put("silenced",lastSilenced)
+                .put("volume",lastIndex/(double)Math.max(1,lastMax)).put("volumeIndex",lastIndex)
+                .put("volumeMax",lastMax).put("muted",lastMute);
+        return true;
+    }
 
     void setVolume(float requestedVolume, boolean prewarming) {
         if (closed) return;

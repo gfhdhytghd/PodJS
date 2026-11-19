@@ -40,6 +40,24 @@ public class PodMediaLocalStoreTest {
    preview.hide(8);assertFalse(pixels.isRecycled());preview.hide(9);assertTrue(pixels.isRecycled());
   }
  }
+ @Test public void deferredStockWaitsForProgressWithoutResubmittingWorkers()throws Exception {
+  try(PodMediaPrefixCache cache=cache(root())){
+   java.util.concurrent.atomic.AtomicInteger probes=new java.util.concurrent.atomic.AtomicInteger();
+   java.util.concurrent.CountDownLatch checked=new java.util.concurrent.CountDownLatch(1);
+   cache.batteryPercent=()->{probes.incrementAndGet();checked.countDown();return 0;};
+   String uri=cache.register("deferred","https://fixture.invalid/deferred",Map.of());
+   java.util.concurrent.ExecutorService executor=java.util.concurrent.Executors.newSingleThreadExecutor();
+   try {
+    java.util.concurrent.Future<?> prepare=executor.submit(()->cache.execute("video.cache.local.prepare",
+        new JSONObject().put("uri",uri).put("key","deferred").put("metadata",new JSONObject())));
+    assertTrue(checked.await(5,java.util.concurrent.TimeUnit.SECONDS));
+    Thread.sleep(120);
+    assertTrue("idle workers repeatedly probed a blocked job: "+probes.get(),probes.get()<=12);
+    cache.execute("video.cache.local.cancel",new JSONObject());
+    assertThrows(java.util.concurrent.ExecutionException.class,()->prepare.get(2,java.util.concurrent.TimeUnit.SECONDS));
+   }finally{cache.execute("video.cache.local.cancel",new JSONObject());executor.shutdownNow();}
+  }
+ }
  @Test public void requiredAudioRejectsSilentCompleteVideo()throws Exception {
   assertThrows(IOException.class,()->PodMediaLocalStore.requireTracks(0,1,true));
   assertThrows(IOException.class,()->PodMediaLocalStore.requireTracks(1,0,true));
@@ -49,6 +67,22 @@ public class PodMediaLocalStoreTest {
   File root=root();String good,bad;
   try(PodMediaPrefixCache c=cache(root)){good=seed(c,"good",8192,false,1);bad=seed(c,"bad",8192,false,2);Files.write(c.localStore.file(bad,".mp4").toPath(),new byte[]{1});Files.write(c.localStore.file(good,".part").toPath(),new byte[]{1});Files.write(c.localStore.file(PodMediaLocalStore.token("orphan"),".mp4").toPath(),new byte[]{1});}
   try(PodMediaPrefixCache c=cache(root)){assertFalse(c.localStore.file(good,".part").exists());assertNotNull(c.localStore.lookupToken(good));assertNull(c.localStore.lookupToken(bad));assertEquals(1,c.localStore.list().length());assertFalse(c.localStore.file(PodMediaLocalStore.token("orphan"),".mp4").exists());}
+ }
+ @Test public void cachedDigestRejectsReplacementWithRestoredSizeAndMtime()throws Exception {
+  try(PodMediaPrefixCache cache=cache(root())){
+   for(boolean replaceImage:new boolean[]{false,true}){
+    String token=seed(cache,"changed-"+replaceImage,4096,false,1);
+    assertNotNull(cache.localStore.lookupToken(token));
+    assertNotNull(cache.localStore.lookupToken(token));
+    File file=replaceImage?cache.localStore.frame(token):cache.localStore.file(token,".mp4");
+    java.nio.file.attribute.FileTime modified=Files.getLastModifiedTime(file.toPath());
+    byte[] changed=Files.readAllBytes(file.toPath());changed[changed.length-1]^=1;
+    java.nio.file.Path replacement=Files.createTempFile(file.getParentFile().toPath(),"replacement",".tmp");
+    Files.write(replacement,changed);Files.setLastModifiedTime(replacement,modified);
+    Files.move(replacement,file.toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+    assertNull(cache.localStore.lookupToken(token));
+   }
+  }
  }
  @Test public void existingStockRejectsActualPortraitDimensionsAndKeepsInCapFiles()throws Exception {
   try(PodMediaPrefixCache cache=cache(root())){
@@ -120,7 +154,10 @@ public class PodMediaLocalStoreTest {
   try(java.net.ServerSocket server=new java.net.ServerSocket(0);PodMediaPrefixCache c=new PodMediaPrefixCache(root())){
    java.util.concurrent.FutureTask<Void> served=new java.util.concurrent.FutureTask<>(()->{try(java.net.Socket socket=server.accept()){BufferedReader input=new BufferedReader(new InputStreamReader(socket.getInputStream()));String line;while((line=input.readLine())!=null&&!line.isEmpty()){}socket.getOutputStream().write("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".getBytes());}return null;});new Thread(served).start();
    c.setResultSink(events::add);String uri=c.register("foreground","http://127.0.0.1:"+server.getLocalPort()+"/private",Map.of());DataSource player=c.factory(new PodMediaPrefixCacheTest.Remote(1000)).createDataSource();
-   assertThrows(IOException.class,()->player.open(new DataSpec(Uri.parse(uri))));player.close();served.get(3,java.util.concurrent.TimeUnit.SECONDS);assertTrue(c.trafficStopped());assertEquals(1,events.size());JSONObject event=events.get(0).getJSONObject("value");assertEquals("traffic-stop",event.getString("itemToken"));assertEquals(403,event.getInt("httpStatus"));assertFalse(events.toString().contains("127.0.0.1"));
+   assertThrows(IOException.class,()->player.open(new DataSpec(Uri.parse(uri))));player.close();served.get(3,java.util.concurrent.TimeUnit.SECONDS);assertFalse(c.trafficStopped());assertEquals(1,events.size());JSONObject event=events.get(0).getJSONObject("value");assertEquals("cooldown",event.getString("itemToken"));assertEquals(403,event.getInt("httpStatus"));assertFalse(events.toString().contains("127.0.0.1"));
+   server.close();
+   DataSource retry=c.factory(new PodMediaPrefixCacheTest.Remote(1000)).createDataSource();
+   try{assertEquals(403,PodMediaPrefixCache.httpStatus(assertThrows(IOException.class,()->retry.open(new DataSpec(Uri.parse(uri))))));}finally{retry.close();}
   }
  }
 
@@ -179,7 +216,10 @@ public class PodMediaLocalStoreTest {
    }return null;});new Thread(served).start();
    String host="http://127.0.0.1:"+server.getLocalPort(),uri=c.register("audio-stop",host+"/video",Map.of(),true,Collections.emptyList(),host+"/audio");
    Exception error=assertThrows(Exception.class,()->c.execute("video.cache.local.prepare",new JSONObject().put("key","audio-stop").put("uri",uri).put("metadata",new JSONObject()).put("requireAudio",true)));
-   assertEquals(403,PodMediaPrefixCache.httpStatus(error));assertTrue(c.trafficStopped());assertEquals(0,c.localStore.list().length());served.get(3,java.util.concurrent.TimeUnit.SECONDS);
+   assertEquals(403,PodMediaPrefixCache.httpStatus(error));assertFalse(c.trafficStopped());assertEquals(0,c.localStore.list().length());served.get(3,java.util.concurrent.TimeUnit.SECONDS);
+   server.close();
+   DataSource audioRetry=c.upstream.createDataSource();
+   try{assertEquals(403,PodMediaPrefixCache.httpStatus(assertThrows(IOException.class,()->audioRetry.open(new DataSpec(Uri.parse(host+"/audio"))))));}finally{audioRetry.close();}
    assertFalse(c.localStore.file(PodMediaLocalStore.token("audio-stop"),".part").exists());assertFalse(c.localStore.file(PodMediaLocalStore.token("audio-stop"),".audio.part").exists());
   }
  }

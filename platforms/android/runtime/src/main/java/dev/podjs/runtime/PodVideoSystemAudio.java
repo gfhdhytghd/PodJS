@@ -7,6 +7,10 @@ import org.json.JSONObject;
 /** STREAM_MUSIC on its currently routed output. No persisted or player-local volume. */
 final class PodVideoSystemAudio {
     static AudioManager audio(Context context) { return (AudioManager)context.getSystemService(Context.AUDIO_SERVICE); }
+    static JSONObject snapshot(Context context, PodMediaAudioPolicy policy,JSONObject state) throws Exception {
+        if(policy!=null&&policy.writeVolume(state))return state;
+        return snapshot(context,state.put("silenced",policy!=null&&policy.silenced()));
+    }
     static JSONObject snapshot(Context context, JSONObject state) throws Exception {
         AudioManager audio=audio(context);
         int max=audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC),index=audio.getStreamVolume(AudioManager.STREAM_MUSIC);

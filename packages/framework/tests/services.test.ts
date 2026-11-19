@@ -888,9 +888,9 @@ test('silent video opt-in and explicit crown intent reach both native backends',
  const {video,videoSessions}=await import('../src/services.ts');
  for(const backend of [video,videoSessions]){
   const session=backend===videoSessions;
-  const options={bounds:{x:0,y:0,width:100,height:100},respectSilentMode:true};
+  const options={bounds:{x:0,y:0,width:100,height:100},respectSilentMode:true,compactProgress:true};
   const op=session?videoSessions.prepare({...options,sessionId:'active'}):video.prepare(options);
-  let request=emitted.at(-1)!;expect(request.args).toMatchObject({respectSilentMode:true});
+  let request=emitted.at(-1)!;expect(request.args).toMatchObject({respectSilentMode:true,compactProgress:true});
   events.push({t:'service.result',id:request.id,ok:true,value:{ok:true}});api.__pumpPodEvents();await op.result;
   for(const direction of [1,-1] as const){
    const task=session?videoSessions.setVolume('active',.5,direction):video.setVolume(.5,direction);
@@ -916,8 +916,14 @@ test('numeric idle diagnostics preserve SQL arguments and cannot change settleme
  }finally{setServiceDiagnostics(undefined);}
 });
 
-test('native playback transitions and progress remain session-scoped payloads and unsubscribe',async()=>{
- const {onVideoStateChanged}=await import('../src/services');const seen:unknown[]=[];const remove=onVideoStateChanged(value=>seen.push(value));
- const value={state:'ended',positionMs:1000,sessionId:'active',sourceGeneration:9};events.push({t:'video.stateChanged',value});api.__pumpPodEvents();expect(seen).toEqual([value]);
- remove();events.push({t:'video.stateChanged',value});api.__pumpPodEvents();expect(seen).toHaveLength(1);
+test('native playback transitions and compact progress use separate session-scoped payloads and unsubscribe',async()=>{
+ const {onVideoStateChanged,onVideoProgress}=await import('../src/services');
+ const states:unknown[]=[],progress:unknown[]=[];
+ const remove=onVideoStateChanged(value=>states.push(value)),removeProgress=onVideoProgress(value=>progress.push(value));
+ const value={state:'ended',positionMs:1000,sessionId:'active',sourceGeneration:9};
+ const tick={sessionId:'active',sourceGeneration:9,positionMs:400,durationMs:1000,bufferedMs:600,networkStalled:false};
+ events.push({t:'video.progress',value:tick},{t:'video.stateChanged',value});api.__pumpPodEvents();
+ expect(states).toEqual([value]);expect(progress).toEqual([tick]);
+ remove();removeProgress();events.push({t:'video.progress',value:tick},{t:'video.stateChanged',value});api.__pumpPodEvents();
+ expect(states).toHaveLength(1);expect(progress).toHaveLength(1);
 });

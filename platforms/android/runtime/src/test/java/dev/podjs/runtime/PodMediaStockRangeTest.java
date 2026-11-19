@@ -134,7 +134,7 @@ public class PodMediaStockRangeTest {
             assertEquals("complete metadata needs no second download",before,cache.stats().getLong("networkReadBytes"));
         }
         remote.opened.clear();try(PodMediaPrefixCache cache=new PodMediaPrefixCache(root,remote,6*M)){
-            String fresh=cache.register("large-moov","https://new.test/fresh",Map.of("Cookie","rotated"),true);assertEquals(uri,fresh);
+            String fresh=cache.register("large-moov","https://www.douyin.com/fresh",Map.of("Cookie","rotated"),true);assertEquals(uri,fresh);
             DataSource source=cache.factory(remote).createDataSource();source.open(new DataSpec.Builder().setUri(fresh).setPosition(tailStart).setLength(5*M-tailStart).build());
             assertArrayEquals(Arrays.copyOfRange(remote.body,tailStart,5*M),PodMediaPrefixCacheTest.read(source,5*M-tailStart));source.close();assertEquals(0,remote.opened.size());
         }
