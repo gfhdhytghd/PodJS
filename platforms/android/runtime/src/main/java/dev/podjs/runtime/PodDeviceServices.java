@@ -136,6 +136,8 @@ public final class PodDeviceServices implements AutoCloseable {
             case "log.append": return new JSONObject().put("bytes",PodAppendLog.append(safeFile(required(args,"path")),required(args,"text"),args.optInt("maxBytes",5*1024*1024)));
             case "file.write": return fileWrite(args);
             case "file.publishBytes": return filePublishBytes(args);
+            case "file.publishUtf8": return filePublishUtf8(args);
+            case "file.syncDirectory": return fileSyncDirectory(args);
             case "file.hash": return fileHash(args);
             case "uri.parse": return uriParse(args);
             case "file.htmlText": return fileHtmlText(args);
@@ -541,6 +543,7 @@ public final class PodDeviceServices implements AutoCloseable {
         JSONObject temporary=fileCreateTemp(new JSONObject().put("directory","cloud-crypto"));
         try{
             File target=safeFile(temporary.getString("path"));int total=0;
+            MessageDigest digest=MessageDigest.getInstance("SHA-256");
             try(FileOutputStream output=new FileOutputStream(target)){
                 for(int i=0;i<parts.length();i++){
                     if(Thread.currentThread().isInterrupted()||args.has("deadlineMs")&&System.currentTimeMillis()>=args.getLong("deadlineMs"))throw new IOException("cloud_sync_deadline_exceeded");
@@ -549,11 +552,11 @@ public final class PodDeviceServices implements AutoCloseable {
                     try{File source=safeFile(required(part,"path"));if(!source.isFile()||source.length()!=size+28)throw new IOException("invalid_part");
                         plain=LocalPlaintextPart.read(source,decode(part,"aadBase64"),size,key,args.optBoolean("plaintext",false));
                     }catch(Exception invalid){throw new IOException("sealed_part_invalid_"+i);}
-                    try{output.write(plain);total+=plain.length;}finally{Arrays.fill(plain,(byte)0);}
+                    try{output.write(plain);digest.update(plain);total+=plain.length;}finally{Arrays.fill(plain,(byte)0);}
                 }
                 if(total!=length)throw new IOException("invalid_sealed_parts");
             }
-            return hashFile(target).put("path",temporary.getString("path"));
+            return new JSONObject().put("size",total).put("sha256",hexDigest(digest.digest())).put("path",temporary.getString("path"));
         }catch(Exception error){discardTemporary(temporary);throw error;}finally{Arrays.fill(key,(byte)0);}
     }
     private void closeSealedGzip(String id) throws IOException {
@@ -585,11 +588,7 @@ public final class PodDeviceServices implements AutoCloseable {
             }
             SealedGzipSession.Step step=stream.next(offset,deadline,(at,bytes)->{
                 File target=safeFile(prefix+at+".bin");File parent=target.getParentFile();if(!parent.isDirectory()&&!parent.mkdirs())throw new IOException("parent_unavailable");
-                // Every piece has its own fsynced temporary and atomic publish.
-                JSONObject temp=fileCreateTemp(new JSONObject().put("directory",root.toPath().relativize(parent.toPath()).toString()));
-                try{File staged=safeFile(temp.getString("path"));atomicWrite(staged,bytes);JSONObject hash=hashFile(staged);
-                    fileCommit(new JSONObject().put("path",temp.getString("path")).put("target",prefix+at+".bin").put("expectedSize",bytes.length).put("expectedSha256",hash.getString("sha256")));
-                }finally{discardTemporary(temp);}
+                publishOwnedBytes(target,prefix+at+".bin",bytes,sha256(bytes),true,deadline);
             });
             JSONObject result=new JSONObject().put("offset",step.offset).put("bytes",step.bytes).put("done",step.done);
             if(step.done){result.put("sha256",step.sha256);closeSealedGzip(prefix);}return result;
@@ -967,25 +966,61 @@ public final class PodDeviceServices implements AutoCloseable {
                 }
             }finally{Arrays.fill(buffer,(byte)0);}
             if(total!=expected)throw new IOException("file_compose_size_mismatch");
-            return fileCommit(new JSONObject().put("path",temp.getString("path")).put("target",a.getString("target")).put("expectedSize",expected).put("expectedSha256",expectedHash));
+            return fileCommit(new JSONObject().put("path",temp.getString("path")).put("target",a.getString("target")).put("expectedSize",expected).put("expectedSha256",expectedHash).put("syncDirectory",a.optBoolean("syncDirectory")));
         }finally{discardTemporary(temp);}
     }
     /** One bounded transfer, verified before atomic publication. Safe to retry
      * after a lost reply: an existing target must match the requested digest. */
     private JSONObject filePublishBytes(JSONObject a)throws Exception {
-        if(Thread.currentThread().isInterrupted()||a.has("deadlineMs")&&System.currentTimeMillis()>=a.getLong("deadlineMs"))throw new IOException("cloud_sync_deadline_exceeded");
+        checkFileDeadline(a.optLong("deadlineMs",Long.MAX_VALUE));
         File target=safeFile(required(a,"target"));long size=exactFileSize(a,"expectedSize");
         String digest=required(a,"expectedSha256");
         if(size>MAX_CHUNK_BYTES||!digest.matches("[a-f0-9]{64}"))throw new IllegalArgumentException("invalid_file_publication");
         byte[] bytes=a.optBoolean("_podByteMode")?PodBytePayload.input(a):decode(a,"dataBase64");
-        if(bytes.length!=size||!hexDigest(MessageDigest.getInstance("SHA-256").digest(bytes)).equals(digest))throw new IOException("commit_checksum_mismatch");
-        boolean reused=target.isFile()&&target.length()==size&&hashFile(target).getString("sha256").equals(digest);
-        if(reused)return new JSONObject().put("path",a.getString("target")).put("size",size).put("sha256",digest).put("reused",true);
-        String directory=root.toPath().relativize(target.getParentFile().toPath()).toString();
-        JSONObject temp=fileCreateTemp(new JSONObject().put("directory",directory.isEmpty()?"publish":directory));
-        try{try(FileOutputStream out=new FileOutputStream(safeFile(temp.getString("path")))){out.write(bytes);}
-            return fileCommit(new JSONObject().put("path",temp.getString("path")).put("target",a.getString("target")).put("expectedSize",size).put("expectedSha256",digest));
-        }finally{discardTemporary(temp);}
+        if(bytes.length!=size||!sha256(bytes).equals(digest))throw new IOException("commit_checksum_mismatch");
+        return publishOwnedBytes(target,a.getString("target"),bytes,digest,a.optBoolean("syncDirectory"),a.optLong("deadlineMs",Long.MAX_VALUE));
+    }
+    private JSONObject filePublishUtf8(JSONObject args)throws Exception {
+        long deadline=args.optLong("deadlineMs",Long.MAX_VALUE);
+        checkFileDeadline(deadline);
+        String text=args.getString("text"),pattern=required(args,"targetPattern"),token="{sha256}";
+        int marker=pattern.indexOf(token);
+        if(text.length()>65536||marker<0||marker!=pattern.lastIndexOf(token)||marker<=pattern.lastIndexOf('/'))
+            throw new IllegalArgumentException("invalid_utf8_publication");
+        byte[] bytes=text.getBytes(StandardCharsets.UTF_8);
+        String digest=sha256(bytes),path=pattern.replace(token,digest);
+        return publishOwnedBytes(safeFile(path),path,bytes,digest,args.optBoolean("syncDirectory"),deadline);
+    }
+    private static String sha256(byte[] bytes)throws Exception {
+        return hexDigest(MessageDigest.getInstance("SHA-256").digest(bytes));
+    }
+    /** The caller owns the verified bytes. A private, fsynced temporary
+     * holds exactly those bytes, so publication can skip hashing it again. */
+    private JSONObject publishOwnedBytes(File target,String path,byte[] bytes,String digest,boolean syncDirectory,long deadline)throws Exception {
+        return FileCommitGuard.locked(root,target,()->{
+            checkFileDeadline(deadline);
+            File parent=target.getParentFile();
+            boolean reused=target.isFile()&&target.length()==bytes.length&&hashFile(target).getString("sha256").equals(digest);
+            if(!reused){
+                if(!parent.isDirectory()&&!parent.mkdirs()&&!parent.isDirectory())throw new IOException("parent_unavailable");
+                java.nio.file.Path temporary=PodScratchFiles.create(parent.toPath(),".pod-write-",".part");
+                try{
+                    try(FileOutputStream out=new FileOutputStream(temporary.toFile())){
+                        out.write(bytes);
+                        out.getFD().sync();
+                    }
+                    checkFileDeadline(deadline);
+                    Files.move(temporary,target.toPath(),StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);
+                }finally{
+                    try{Files.deleteIfExists(temporary);}finally{PodScratchFiles.release(temporary);}
+                }
+            }
+            if(syncDirectory)forceDirectoryChain(parent);
+            return new JSONObject().put("path",path).put("size",bytes.length).put("sha256",digest).put("reused",reused);
+        });
+    }
+    private static void checkFileDeadline(long deadline)throws IOException {
+        if(Thread.currentThread().isInterrupted()||System.currentTimeMillis()>=deadline)throw new IOException("cloud_sync_deadline_exceeded");
     }
     private static String hexDigest(byte[] bytes){char[] out=new char[bytes.length*2];String alphabet="0123456789abcdef";for(int i=0;i<bytes.length;i++){out[i*2]=alphabet.charAt((bytes[i]&255)>>>4);out[i*2+1]=alphabet.charAt(bytes[i]&15);}return new String(out);}
     /** Verify the complete staged file before atomically publishing its final path. */
@@ -1086,6 +1121,13 @@ public final class PodDeviceServices implements AutoCloseable {
     }
     private JSONObject fileStat(JSONObject a) throws Exception {
         File f = safeFile(required(a, "path")); return new JSONObject().put("exists", f.exists()).put("file", f.isFile()).put("directory", f.isDirectory()).put("size", f.isFile() ? f.length() : 0).put("modified", f.exists() ? f.lastModified() : 0).put("changeToken", f.exists()?fileChangeToken(f):"missing").put("usableBytes", root.getUsableSpace());
+    }
+    private JSONObject fileSyncDirectory(JSONObject args)throws Exception {
+        File directory=safeFile(required(args,"path"));
+        checkFileDeadline(args.optLong("deadlineMs",Long.MAX_VALUE));
+        if(!directory.isDirectory())throw new IOException("not_directory");
+        forceDirectoryChain(directory);
+        return new JSONObject().put("synced",true);
     }
     private void forceDirectoryChain(File directory) throws IOException {
         for(File parent=directory;parent!=null&&parent.toPath().startsWith(root.toPath());parent=parent.getParentFile())

@@ -94,7 +94,7 @@ final class ServiceResultTrace {
         "display.keepAwake", "display.state", "file.closeText", "file.commit", "file.compose", "file.createTemp",
         "file.delete", "file.gunzip", "file.gzip", "file.gzipBytes", "file.hash",
         "file.htmlText", "file.list", "file.openText", "file.read", "file.readTextChunk",
-        "file.stat", "file.touch", "file.write", "http.download", "image.decode",
+        "file.stat", "file.touch", "file.write", "file.publishUtf8","file.syncDirectory", "http.download", "image.decode",
         "image.decodeRegion", "image.release", "image.surface.close", "image.surface.open", "image.surface.state",
         "image.surface.update", "input.inline.close", "input.inline.open", "input.inline.set", "input.text",
         "input.text.dismiss", "input.text.pending", "input.time", "location.current", "notifications.cancel",

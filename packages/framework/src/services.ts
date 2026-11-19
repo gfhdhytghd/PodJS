@@ -74,7 +74,7 @@ const methods: Record<string, PodCapabilityId> = {
   // cloud.acquire accepts localTransferOwner:true only for this host's sole active
   // cloud.localTransfer pause; the process-independent writer lock still applies.
   "cloud.schedule":"host.lifecycle", "cloud.cancel":"host.lifecycle", "cloud.acquire":"host.lifecycle", "cloud.release":"host.lifecycle",
-  "sql.notify":"data.sqlite", "file.publishBytes":"data.fs", "file.copyRanges":"data.fs",
+  "sql.notify":"data.sqlite", "file.publishBytes":"data.fs", "file.publishUtf8":"data.fs", "file.syncDirectory":"data.fs", "file.copyRanges":"data.fs",
   "file.resumable.stage":"data.files.resumable", "file.resumable.status":"data.files.resumable", "file.resumable.missing":"data.files.resumable", "file.resumable.finalize":"data.files.resumable", "file.resumable.release":"data.files.resumable",
   "secure.keys":"data.secure",
   "secure.acquire":"data.secure", "secure.release":"data.secure",

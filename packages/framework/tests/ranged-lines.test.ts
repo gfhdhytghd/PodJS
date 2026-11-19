@@ -14,3 +14,12 @@ test('ranged line bounds, truncation, CRLF, BOM and malformed UTF-8 fail closed'
  }
  await expect((async()=>{for await(const _ of rangedLines(async()=>({size:2,bytes:bytes('a\n')}),3)){} })()).rejects.toThrow('line_source_changed');
 });
+test('wide reads retain newline offsets across input buffers and do not copy complete lines to the next read',async()=>{
+ const body='中😀'.repeat(20000),input=bytes(body+'\n'+body+'\n'+body+'\n'),calls:number[]=[];
+ const read=async(offset:number,max:number)=>{calls.push(offset);return {size:input.length,bytes:input.subarray(offset,offset+max)};};
+ const lines=[];
+ for await(const line of rangedLines(read,input.length,0,{chunkBytes:262144}))lines.push(line);
+ expect(lines).toEqual([1,2,3].map(n=>({text:body,end:n*140001})));
+ expect(calls).toEqual([0,262144]);
+ for(const chunkBytes of [0,262145,1.5])await expect(rangedLines(read,input.length,0,{chunkBytes}).next()).rejects.toThrow('invalid_line_range');
+});

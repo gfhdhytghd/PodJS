@@ -26,6 +26,23 @@ public final class FileComposeServiceTest {
    check(host.execute("file.publishBytes",publish).getBoolean("reused"));
    check(Arrays.equals(bounded,Files.readAllBytes(dir.resolve("private/atomic"))));
    for(String mode:new String[]{"hash","size","deadline","path"}){JSONObject bad=new JSONObject(publish.toString());if(mode.equals("hash"))bad.put("expectedSha256","0".repeat(64));if(mode.equals("size"))bad.put("expectedSize",262145);if(mode.equals("deadline"))bad.put("deadlineMs",1);if(mode.equals("path"))bad.put("target","../outside");boolean failed=false;try{host.execute("file.publishBytes",bad);}catch(Exception expected){failed=true;}check(failed);check(Arrays.equals(bounded,Files.readAllBytes(dir.resolve("private/atomic"))));}
+   String text="Reader 汉😀" + (char)0xd800;
+   byte[] encoded="Reader 汉😀?".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+   String textHash=hash(encoded),textPath="private/chapter-"+textHash+".txt";
+   JSONObject utf8=new JSONObject().put("text",text).put("targetPattern","private/chapter-{sha256}.txt").put("syncDirectory",true);
+   JSONObject saved=host.execute("file.publishUtf8",utf8);
+   check(saved.getString("path").equals(textPath));check(saved.getString("sha256").equals(textHash));
+   check(Arrays.equals(encoded,Files.readAllBytes(dir.resolve(textPath))));
+   check(host.execute("file.publishUtf8",utf8).getBoolean("reused"));
+   check(host.execute("file.syncDirectory",new JSONObject().put("path","private")).getBoolean("synced"));
+   try{host.execute("file.syncDirectory",new JSONObject().put("path",textPath));throw new AssertionError();}
+   catch(java.io.IOException expected){check(expected.getMessage().equals("not_directory"));}
+   for(String pattern:new String[]{"../out-{sha256}","private/name","private/{sha256}/body","private/{sha256}-{sha256}"}){
+    JSONObject bad=new JSONObject(utf8.toString()).put("targetPattern",pattern);
+    boolean failed=false;try{host.execute("file.publishUtf8",bad);}catch(Exception expected){failed=true;}
+    check(failed);check(Arrays.equals(encoded,Files.readAllBytes(dir.resolve(textPath))));
+   }
+   System.out.println("FILE_PUBLISH_UTF8_PASS deterministic Java UTF-8, durability, reuse and path bounds");
    System.out.println("FILE_PUBLISH_BYTES_PASS bounds/hash/deadline/path/reuse preserve exact old target");
    System.out.println("FILE_COMPOSE_SERVICE_PASS exact 786449 bytes; tamper/deadline/traversal/size/hash/overlap preserve old target; empty and cleanup");
   }finally{try(var paths=Files.walk(dir)){for(Path p:paths.sorted(Comparator.reverseOrder()).toList())Files.deleteIfExists(p);}}

@@ -19,7 +19,7 @@ public final class SealedPartsServiceTest {
     parts.put(new JSONObject().put("path","part-"+i).put("aadBase64",b64(aad)).put("bytes",body.length));
    }
    JSONObject args=new JSONObject().put("keyBase64",b64(key)).put("parts",parts).put("length",expected.size());
-   JSONObject result=host.execute("crypto.openSealedParts",args);check(result.getInt("size")==expected.size());check(Arrays.equals(expected.toByteArray(),Files.readAllBytes(root.resolve(result.getString("path")))));host.execute("file.delete",new JSONObject().put("path",result.getString("path")));check(temporaryCount(root)==0);
+   JSONObject result=host.execute("crypto.openSealedParts",args);check(result.getInt("size")==expected.size());check(java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(expected.toByteArray())).equals(result.getString("sha256")));check(Arrays.equals(expected.toByteArray(),Files.readAllBytes(root.resolve(result.getString("path")))));host.execute("file.delete",new JSONObject().put("path",result.getString("path")));check(temporaryCount(root)==0);
    byte[] before=Files.readAllBytes(root.resolve("part-17"));byte[] bad=before.clone();bad[20]^=1;Files.write(root.resolve("part-17"),bad);
    try{host.execute("crypto.openSealedParts",args);throw new AssertionError();}catch(java.io.IOException e){check(e.getMessage().equals("sealed_part_invalid_17"));}check(temporaryCount(root)==0);Files.write(root.resolve("part-17"),before);
    args.put("deadlineMs",1);try{host.execute("crypto.openSealedParts",args);throw new AssertionError();}catch(java.io.IOException e){check(e.getMessage().equals("cloud_sync_deadline_exceeded"));}check(temporaryCount(root)==0);
