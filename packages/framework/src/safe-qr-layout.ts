@@ -17,17 +17,30 @@ export interface SafeTopBlockOptions { margin?: number; minTop?: number; maxWidt
 /** Centered top block whose four corners stay inside the round viewport and whose bottom edge is as
  * high as possible, leaving the most room below. Width at each candidate top is the circle's chord
  * there (capped by maxWidth); `measure` returns the height for a width, so a narrower chord can wrap
- * text taller — a lower, wider block often ends higher. Returns undefined if nothing fits. */
+ * text taller. Crossing the centre can also narrow the available width at the
+ * bottom edge. Returns undefined if nothing fits. */
 export function safeTopBlock(width: number, height: number, measure: (width: number) => number, options: SafeTopBlockOptions = {}): QrRect | undefined {
   const { margin = 2, minTop = 0, maxWidth = width, minWidth = 1 } = options;
   const cx = width / 2, cy = height / 2, radius = Math.min(width, height) / 2, inner = radius - margin;
+  if (inner <= 0) return;
+  const chord = (distance: number) => Math.floor(2 * Math.sqrt(Math.max(0, inner * inner - distance * distance)));
   let best: QrRect | undefined;
-  for (let y = Math.max(minTop, cy - inner); y <= cy; y++) {
+  for (let y = Math.max(minTop, cy - inner); y < cy + inner; y++) {
     if (best && y >= best.y + best.height) break;
-    const blockWidth = Math.floor(Math.min(maxWidth, 2 * Math.sqrt(Math.max(0, inner * inner - (cy - y) ** 2))));
-    if (blockWidth < minWidth) continue;
-    const rect = { x: cx - blockWidth / 2, y, width: blockWidth, height: measure(blockWidth) };
-    if (rectInsideCircle(rect, { cx, cy, radius }, margin) && (!best || rect.y + rect.height < best.y + best.height)) best = rect;
+    let blockWidth = Math.min(Math.floor(maxWidth), chord(cy - y));
+    while (blockWidth >= minWidth) {
+      const rect = { x: cx - blockWidth / 2, y, width: blockWidth, height: measure(blockWidth) };
+      if (!Number.isFinite(rect.height) || rect.height < 0) break;
+      const bottom = rect.y + rect.height;
+      if (rectInsideCircle(rect, { cx, cy, radius }, margin)) {
+        if (!best || bottom < best.y + best.height) best = rect;
+        break;
+      }
+      // A block crossing the centre can be constrained by its bottom edge instead.
+      const narrowed = chord(bottom - cy);
+      if (narrowed >= blockWidth) break;
+      blockWidth = narrowed;
+    }
   }
   return best;
 }
