@@ -69,7 +69,13 @@ public final class PodVideoPlaybackService extends MediaSessionService {
     @Override public MediaSession onGetSession(MediaSession.ControllerInfo controllerInfo) { return session; }
     @Override public int onStartCommand(Intent intent,int flags,int id) { if (!PodTakeover.ready(this)) { stopSelf(); return Service.START_NOT_STICKY; } if(intent!=null&&ACTION_STOP.equals(intent.getAction())) { cancelAdmissionRecovery();if(player!=null)player.stop(); stopForeground(true);stopSelf(); return Service.START_NOT_STICKY; }
         PendingIntent stop=PendingIntent.getService(this,0,new Intent(this,PodVideoPlaybackService.class).setAction(ACTION_STOP),PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);
-        Notification notification=new Notification.Builder(this,"pod_video").setSmallIcon(android.R.drawable.ic_media_play).setContentTitle("WatchRSS").setContentText("正在播放视频").setOngoing(true).addAction(new Notification.Action.Builder(android.R.drawable.ic_media_pause,"停止",stop).build()).build();
+        Notification notification = new Notification.Builder(this,"pod_video")
+            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setContentTitle(getApplicationInfo().loadLabel(getPackageManager()))
+            .setContentText("正在播放视频")
+            .setOngoing(true)
+            .addAction(new Notification.Action.Builder(android.R.drawable.ic_media_pause,"停止",stop).build())
+            .build();
         startForeground(1907,notification);
         super.onStartCommand(intent,flags,id);
         return Service.START_NOT_STICKY; }

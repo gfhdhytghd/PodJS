@@ -100,3 +100,15 @@ test('inactive generation GC is wired from CLI through a default-off Gradle plac
     }
   } finally { rmSync(out, { recursive: true, force: true }); }
 });
+
+test('Android launcher activity declares the same app label as the application', () => {
+  const template = readFileSync(join(root, 'platforms/android/app/src/main/AndroidManifest.xml'), 'utf8');
+  const out = mkdtempSync(join(tmpdir(), 'pod-launcher-label-'));
+  try {
+    writeAndroidManifest(out, template, []);
+    const xml = readFileSync(join(out, 'pod-android/AndroidManifest.xml'), 'utf8');
+    expect(xml.match(/<application\b[^>]*>/)?.[0]).toContain('android:label="${podAppName}"');
+    expect(xml.match(/<activity\b[^>]*android:name="\.MainActivity"[^>]*>/)?.[0])
+      .toContain('android:label="${podAppName}"');
+  } finally { rmSync(out, {recursive:true, force:true}); }
+});
