@@ -47,6 +47,13 @@ final class PodMediaPrefixCache implements AutoCloseable {
     private final ExecutorService cancellations=Executors.newSingleThreadExecutor();
     private final LinkedHashMap<String,Entry> entries=new LinkedHashMap<>(16,.75f,true);
     private final Map<String,StagedRegistration> stagedRegistrations=new HashMap<>();
+    private final android.os.Handler stageExpiryHandler=new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable expireStages=()->{
+        synchronized(this){
+            discardExpiredStages(android.os.SystemClock.elapsedRealtime());
+            scheduleStageExpiry();
+        }
+    };
     private long stageSequence;
     private final Map<Entry,Set<ObservedSource>> foregroundSources=new IdentityHashMap<>();
     private final Map<String,Job> jobs=new LinkedHashMap<>();
@@ -92,11 +99,12 @@ final class PodMediaPrefixCache implements AutoCloseable {
     private static final class StagedRegistration {
         final Registration registration;
         final String replacesUri;
-        final Entry predecessor;
+        final Entry predecessor,previous;
         final long expiresAt,deadline;
-        StagedRegistration(Registration registration,String replacesUri,Entry predecessor,long expiresAt,long deadline){
+        boolean overtaken;
+        StagedRegistration(Registration registration,String replacesUri,Entry predecessor,Entry previous,long expiresAt,long deadline){
             this.registration=registration;this.replacesUri=replacesUri;this.predecessor=predecessor;
-            this.expiresAt=expiresAt;this.deadline=deadline;
+            this.previous=previous;this.expiresAt=expiresAt;this.deadline=deadline;
         }
     }
     final class Job {
@@ -194,25 +202,37 @@ final class PodMediaPrefixCache implements AutoCloseable {
         return entry!=null&&entry.maxVideoShortEdge==registration.limit
             &&registration.key.equals(entry.replacementKey)&&!registration.token.equals(entry.token);
     }
+    private static boolean reusesEntry(Registration registration,Entry entry){
+        return entry!=null&&entry.remote.equals(registration.remote)&&entry.headers.equals(registration.headers)
+            &&entry.mirrors.equals(registration.mirrors);
+    }
+    private String checkRegistrationBudget(Registration registration,String replacesUri,Entry previous,Entry superseded)throws IOException {
+        boolean reuse=reusesEntry(registration,previous);
+        String replacementKey=replacesUri!=null&&!registration.persistent?registration.key:reuse?previous.replacementKey:null;
+        if(reuse&&superseded==null&&Objects.equals(replacementKey,previous.replacementKey))return replacementKey;
+        long nextBytes=metadataBytes(registration.token,registration.remote,registration.audio,registration.headers,
+            registration.mirrors,replacementKey);
+        long previousBytes=previous==null?0:metadataBytes(previous);
+        long supersededBytes=superseded==null?0:metadataBytes(superseded);
+        int count=entries.size()+(previous==null?1:0)-(superseded==null?0:1);
+        if(count>MAX_REGISTRATIONS||metadataBytes()-previousBytes-supersededBytes+nextBytes>MAX_METADATA_BYTES)
+            throw new IOException("media_cache_metadata_budget");
+        return replacementKey;
+    }
     private String register(Registration registration,String replacesUri)throws Exception {
         Entry e=entries.get(registration.token);
         Entry superseded=replacementTarget(registration,replacesUri);
+        // Check the final state, including a key added to an existing URI.
+        // No active capability changes if the registration exceeds budget.
+        String replacementKey=checkRegistrationBudget(registration,replacesUri,e,superseded);
         String token=registration.token,remote=registration.remote;
         int limit=registration.limit;
         List<String> mirrors=registration.mirrors;
-        if(e==null||!e.remote.equals(remote)||!e.headers.equals(registration.headers)||!e.mirrors.equals(mirrors)){
+        if(!reusesEntry(registration,e)){
             Entry next=new Entry(token,remote,registration.headers,new File(root,token+".prefix"),registration.persistent);
             next.mirrors=mirrors;next.frameAudioUrl=registration.audio;
-            // A returned URI is a process-local capability, not an evictable
-            // bitmap. Reject new registrations at the byte limit without
-            // invalidating addresses still held by players or the guest.
             next.maxVideoShortEdge=limit;
-            int replacing=superseded==null?0:1;
-            long replacedBytes=superseded==null?0:metadataBytes(superseded);
-            if(entries.size()+(e==null?1:0)-replacing>MAX_REGISTRATIONS
-                ||metadataBytes()-(e==null?0:metadataBytes(e))-replacedBytes+metadataBytes(next)>MAX_METADATA_BYTES)
-                throw new IOException("media_cache_metadata_budget");
-            if(e!=null){Job old=jobs.remove(token);if(old!=null)old.cancel();}
+            Entry previous=e;
             e=next;
             if(limit>0&&e.file.isFile()){
                 if(storedPolicy(token,0)!=limit)deleteParts(token);
@@ -223,11 +243,12 @@ final class PodMediaPrefixCache implements AutoCloseable {
             }
             storePolicy(e);
             File lengthFile=new File(root,token+".length");if(lengthFile.isFile())try(DataInputStream input=new DataInputStream(new FileInputStream(lengthFile))){long length=input.readLong();if(length>=e.file.length())e.length=length;}catch(IOException ignored){}
+            if(previous!=null){Job old=jobs.remove(token);if(old!=null)old.cancel();}
             entries.put(token,e);
         }
         // Match replacement registration even when the URI already existed
         // as a non-replacing registration.
-        if(replacesUri!=null&&!registration.persistent)e.replacementKey=registration.key;
+        e.replacementKey=replacementKey;
         if(superseded!=null)remove(superseded);
         trim();
         return registration.uri();
@@ -244,20 +265,42 @@ final class PodMediaPrefixCache implements AutoCloseable {
     private void discardExpiredStages(long now){
         stagedRegistrations.values().removeIf(stage->stage.deadline<=now);
     }
+    private void scheduleStageExpiry(){
+        stageExpiryHandler.removeCallbacks(expireStages);
+        long deadline=Long.MAX_VALUE;
+        for(StagedRegistration stage:stagedRegistrations.values())deadline=Math.min(deadline,stage.deadline);
+        if(deadline!=Long.MAX_VALUE)
+            stageExpiryHandler.postDelayed(expireStages,Math.max(0,deadline-android.os.SystemClock.elapsedRealtime()));
+    }
+    private void clearStages(){
+        stagedRegistrations.clear();
+        stageExpiryHandler.removeCallbacks(expireStages);
+    }
     private JSONObject stage(Registration registration,String replacesUri,long expiresAt)throws Exception {
         long now=android.os.SystemClock.elapsedRealtime();
         discardExpiredStages(now);
+        Entry predecessor=replacementTarget(registration,replacesUri),previous=entries.get(registration.token);
+        checkRegistrationBudget(registration,replacesUri,previous,predecessor);
         // Staged candidates do not enter the live registry or own disk files.
         if(stagedRegistrations.size()>=MAX_ENTRIES)throw new IOException("media_cache_metadata_budget");
+        // A later successful stage closes the older commit token for this key.
+        // Keep the token until discard, commit or expiry, without reviving it.
+        for(StagedRegistration candidate:stagedRegistrations.values()){
+            if(candidate.registration.persistent==registration.persistent&&candidate.registration.key.equals(registration.key))
+                candidate.overtaken=true;
+        }
         String id=Long.toUnsignedString(++stageSequence);
-        stagedRegistrations.put(id,new StagedRegistration(registration,replacesUri,replacementTarget(registration,replacesUri),
+        stagedRegistrations.put(id,new StagedRegistration(registration,replacesUri,predecessor,previous,
             expiresAt,now+30_000));
+        scheduleStageExpiry();
         return new JSONObject().put("stageId",id).put("uri",registration.uri());
     }
     private JSONObject commit(String stageId)throws Exception {
         discardExpiredStages(android.os.SystemClock.elapsedRealtime());
         StagedRegistration stage=stagedRegistrations.remove(stageId);
-        if(stage==null||replacementTarget(stage.registration,stage.replacesUri)!=stage.predecessor)
+        scheduleStageExpiry();
+        if(stage==null||stage.overtaken||entries.get(stage.registration.token)!=stage.previous
+            ||replacementTarget(stage.registration,stage.replacesUri)!=stage.predecessor)
             throw new IOException("media_request_cancelled");
         if(System.currentTimeMillis()>=stage.expiresAt)throw new IOException("media_source_expired");
         String uri=register(stage.registration,stage.replacesUri);
@@ -309,6 +352,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
         }
         if(method.equals("video.cache.discard")){
             stagedRegistrations.remove(a.getString("stageId"));
+            scheduleStageExpiry();
             return new JSONObject();
         }
         if(method.equals("video.cache.stats"))return stats();
@@ -729,10 +773,13 @@ final class PodMediaPrefixCache implements AutoCloseable {
         }
     }
     private static long metadataBytes(Entry entry){
-        int selectedMax=entry.remote.length();for(String mirror:entry.mirrors)selectedMax=Math.max(selectedMax,mirror.length());
-        long bytes=256+2L*(entry.token.length()+entry.remote.length()+selectedMax+entry.frameAudioUrl.length()+(entry.replacementKey==null?0:entry.replacementKey.length()));
-        for(String mirror:entry.mirrors)bytes+=32+2L*mirror.length();
-        for(Map.Entry<String,String> header:entry.headers.entrySet())bytes+=64+2L*(header.getKey().length()+header.getValue().length());
+        return metadataBytes(entry.token,entry.remote,entry.frameAudioUrl,entry.headers,entry.mirrors,entry.replacementKey);
+    }
+    private static long metadataBytes(String token,String remote,String audio,Map<String,String> headers,List<String> mirrors,String replacementKey){
+        int selectedMax=remote.length();for(String mirror:mirrors)selectedMax=Math.max(selectedMax,mirror.length());
+        long bytes=256+2L*(token.length()+remote.length()+selectedMax+audio.length()+(replacementKey==null?0:replacementKey.length()));
+        for(String mirror:mirrors)bytes+=32+2L*mirror.length();
+        for(Map.Entry<String,String> header:headers.entrySet())bytes+=64+2L*(header.getKey().length()+header.getValue().length());
         return bytes;
     }
     private long metadataBytes(){long bytes=0;for(Entry entry:entries.values())bytes+=metadataBytes(entry);return bytes;}
@@ -760,7 +807,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
         for(Job job:jobs.values())job.cancel();
         jobs.clear();
         for(Entry entry:entries.values())revoke(entry);
-        entries.clear();stagedRegistrations.clear();
+        entries.clear();clearStages();
         protectedTokens.clear();
         synchronized(disk){
             disk.closeHandles();
@@ -769,7 +816,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
             disk.refresh(files());
         }
     }
-    @Override public synchronized void close(){closed=true;disk.closeHandles();verifiedLocal.clear();generation++;for(Job j:jobs.values())j.cancel();jobs.clear();protectedTokens.clear();for(Entry entry:entries.values())revoke(entry);entries.clear();stagedRegistrations.clear();wakeups.shutdownNow();workers.shutdownNow();cancellations.shutdown();if(upstream instanceof PodMediaHttp)((PodMediaHttp)upstream).close();notifyAll();}
+    @Override public synchronized void close(){closed=true;disk.closeHandles();verifiedLocal.clear();generation++;for(Job j:jobs.values())j.cancel();jobs.clear();protectedTokens.clear();for(Entry entry:entries.values())revoke(entry);entries.clear();clearStages();wakeups.shutdownNow();workers.shutdownNow();cancellations.shutdown();if(upstream instanceof PodMediaHttp)((PodMediaHttp)upstream).close();notifyAll();}
     DataSource.Factory factory(DataSource.Factory fallback){return factory(fallback,false);}
     DataSource.Factory factory(DataSource.Factory fallback,boolean bypass){return factory(fallback,bypass,null);}
     DataSource.Factory factory(DataSource.Factory fallback,boolean bypass,PodVideoHttpDataSources.PrepareGate gate){
