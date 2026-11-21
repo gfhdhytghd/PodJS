@@ -126,6 +126,8 @@ const methods: Record<string, PodCapabilityId> = {
   "location.current": "device.location",
   "battery.percent": "device.battery",
   "device.info": "device.info",
+  "crypto.v2.signingKey": "crypto.basic", "crypto.v2.sign": "crypto.basic", "crypto.v2.verify": "crypto.basic",
+  "crypto.v2.encrypt": "crypto.basic", "crypto.v2.decrypt": "crypto.basic", "crypto.v2.gunzip": "crypto.basic",
   "crypto.verifyP256": "crypto.basic", "crypto.ecdhPublicKey": "crypto.basic", "crypto.ecdhUnwrap": "crypto.basic", "crypto.ecdhPossessionProof": "crypto.basic", "crypto.hkdfSha256": "crypto.basic",
   "crypto.gunzipSealedParts": "crypto.basic", "crypto.closeSealedGzip": "crypto.basic", "crypto.openSealedParts": "crypto.basic", "crypto.largeAesGcmEncrypt": "crypto.basic", "crypto.largeAesGcmDecrypt": "crypto.basic", "crypto.gzip": "crypto.basic", "crypto.gunzip": "crypto.basic",
   "crypto.rsaOaepSha256": "crypto.basic", "crypto.random": "crypto.basic", "crypto.hash": "crypto.basic", "crypto.hmacSha256": "crypto.basic", "crypto.aesGcmEncrypt": "crypto.basic", "crypto.aesGcmDecrypt": "crypto.basic", "crypto.encrypt": "crypto.basic", "crypto.decrypt": "crypto.basic",
