@@ -101,7 +101,6 @@ final class PodMediaPrefixCache implements AutoCloseable {
         final String replacesUri;
         final Entry predecessor,previous;
         final long expiresAt,deadline;
-        boolean overtaken;
         StagedRegistration(Registration registration,String replacesUri,Entry predecessor,Entry previous,long expiresAt,long deadline){
             this.registration=registration;this.replacesUri=replacesUri;this.predecessor=predecessor;
             this.previous=previous;this.expiresAt=expiresAt;this.deadline=deadline;
@@ -265,6 +264,12 @@ final class PodMediaPrefixCache implements AutoCloseable {
     private void discardExpiredStages(long now){
         stagedRegistrations.values().removeIf(stage->stage.deadline<=now);
     }
+    private void pruneExpiredStages(){
+        if(stagedRegistrations.isEmpty())return;
+        int pending=stagedRegistrations.size();
+        discardExpiredStages(android.os.SystemClock.elapsedRealtime());
+        if(stagedRegistrations.size()!=pending)scheduleStageExpiry();
+    }
     private void scheduleStageExpiry(){
         stageExpiryHandler.removeCallbacks(expireStages);
         long deadline=Long.MAX_VALUE;
@@ -278,17 +283,15 @@ final class PodMediaPrefixCache implements AutoCloseable {
     }
     private JSONObject stage(Registration registration,String replacesUri,long expiresAt)throws Exception {
         long now=android.os.SystemClock.elapsedRealtime();
-        discardExpiredStages(now);
+        pruneExpiredStages();
         Entry predecessor=replacementTarget(registration,replacesUri),previous=entries.get(registration.token);
         checkRegistrationBudget(registration,replacesUri,previous,predecessor);
+        // A successful newer stage consumes the older token's slot, even
+        // when the pool is at capacity. Removed tokens cannot be committed.
+        stagedRegistrations.values().removeIf(candidate->candidate.registration.persistent==registration.persistent
+            &&candidate.registration.key.equals(registration.key));
         // Staged candidates do not enter the live registry or own disk files.
         if(stagedRegistrations.size()>=MAX_ENTRIES)throw new IOException("media_cache_metadata_budget");
-        // A later successful stage closes the older commit token for this key.
-        // Keep the token until discard, commit or expiry, without reviving it.
-        for(StagedRegistration candidate:stagedRegistrations.values()){
-            if(candidate.registration.persistent==registration.persistent&&candidate.registration.key.equals(registration.key))
-                candidate.overtaken=true;
-        }
         String id=Long.toUnsignedString(++stageSequence);
         stagedRegistrations.put(id,new StagedRegistration(registration,replacesUri,predecessor,previous,
             expiresAt,now+30_000));
@@ -296,10 +299,10 @@ final class PodMediaPrefixCache implements AutoCloseable {
         return new JSONObject().put("stageId",id).put("uri",registration.uri());
     }
     private JSONObject commit(String stageId)throws Exception {
-        discardExpiredStages(android.os.SystemClock.elapsedRealtime());
+        pruneExpiredStages();
         StagedRegistration stage=stagedRegistrations.remove(stageId);
         scheduleStageExpiry();
-        if(stage==null||stage.overtaken||entries.get(stage.registration.token)!=stage.previous
+        if(stage==null||entries.get(stage.registration.token)!=stage.previous
             ||replacementTarget(stage.registration,stage.replacesUri)!=stage.predecessor)
             throw new IOException("media_request_cancelled");
         if(System.currentTimeMillis()>=stage.expiresAt)throw new IOException("media_source_expired");
@@ -309,14 +312,18 @@ final class PodMediaPrefixCache implements AutoCloseable {
     }
     private String token(String uri){Uri u=Uri.parse(uri);if(!SCHEME.equals(u.getScheme())||!"play".equals(u.getHost()))return null;String p=u.getLastPathSegment();return p!=null&&p.matches("[a-f0-9]{64}\\.mp4")?p.substring(0,64):null;}
     synchronized Entry target(String uri)throws IOException {
+        pruneExpiredStages();
         Entry entry=entries.get(token(uri));
         if(entry==null)throw new IOException("media_cache_registration_missing");
         return entry;
     }
-    synchronized Entry registration(String uri){return entries.get(token(uri));}
+    synchronized Entry registration(String uri){pruneExpiredStages();return entries.get(token(uri));}
     synchronized boolean owns(String uri){try{target(uri);return true;}catch(IOException e){return false;}}
     JSONObject execute(String method,JSONObject a)throws Exception {return execute(method,a,()->true);}
     JSONObject execute(String method,JSONObject a,java.util.function.BooleanSupplier current)throws Exception {
+        // The looper's idle timer uses uptime. Sweep by elapsed time upon
+        // entry so device suspend counts toward the deadline.
+        synchronized(this){pruneExpiredStages();}
         if(!current.getAsBoolean())throw new IOException("media_request_cancelled");
         if(method.equals("video.cache.local.prepare"))return prepareLocal(a,current);
         if(method.equals("video.cache.local.list")){
@@ -794,6 +801,7 @@ final class PodMediaPrefixCache implements AutoCloseable {
     }
     synchronized JSONObject stats()throws Exception {return new JSONObject().put("files",disk.count()).put("bytes",fileBytes()).put("maxBytes",maxTotal).put("maxEntries",MAX_ENTRIES).put("activePrefetches",jobs.size()).put("downloadedBytes",downloadedBytes).put("networkReadBytes",networkReadBytes).put("cacheReadBytes",cacheReadBytes).put("failures",failures).put("bandwidthBytesPerSecond",totalBandwidth);}
     synchronized JSONObject memoryStats()throws Exception {
+        pruneExpiredStages();
         return new JSONObject().put("entries",entries.size()).put("metadataUtf16BytesUpperBound",metadataBytes())
             .put("metadataMaxBytes",MAX_METADATA_BYTES).put("registrationMaxEntries",MAX_REGISTRATIONS)
             .put("jobs",jobs.size()).put("protectedEntries",protectedTokens.size()).put("activePumps",pumps).put("diskMaxBytes",maxTotal);

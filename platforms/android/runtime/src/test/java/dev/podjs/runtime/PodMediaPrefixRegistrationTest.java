@@ -14,6 +14,7 @@ import org.junit.runner.RunWith;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
+import org.robolectric.shadows.ShadowSystemClock;
 @RunWith(RobolectricTestRunner.class) @Config(sdk=30)
 public class PodMediaPrefixRegistrationTest {
  @Test public void invalidSourceDiagnosticsDistinguishClosedValidationReasonsWithoutTheSource()throws Exception {
@@ -73,6 +74,22 @@ public class PodMediaPrefixRegistrationTest {
    assertEquals(uri,pending.getString("uri"));
    assertEquals("media_request_cancelled",assertThrows(IOException.class,()->commit(cache,pending)).getMessage());
    assertEquals("https://fixture.invalid/newer",cache.target(uri).remote);
+  }
+ }
+
+ @Test public void supersedingATokenReusesItsSlotInAFullStagePool()throws Exception {
+  for(boolean persistent:new boolean[]{true,false}){
+   try(PodMediaPrefixCache cache=stageCache()){
+    JSONObject first=cache.execute("video.cache.stage",request("shared","older",persistent));
+    for(int index=1;index<PodMediaPrefixCache.MAX_ENTRIES;index++)
+     cache.execute("video.cache.stage",request("stage-"+index,"filler",persistent));
+    JSONObject latest=cache.execute("video.cache.stage",request("shared","latest",persistent));
+    assertEquals("media_request_cancelled",assertThrows(IOException.class,()->commit(cache,first)).getMessage());
+    assertEquals("media_cache_metadata_budget",assertThrows(IOException.class,
+     ()->cache.execute("video.cache.stage",request("extra","fresh",persistent))).getMessage());
+    assertNotNull(cache.target(commit(cache,latest)));
+    assertNotNull(cache.execute("video.cache.stage",request("extra","fresh",persistent)));
+   }
   }
  }
 
@@ -138,6 +155,23 @@ public class PodMediaPrefixRegistrationTest {
    assertTrue(stages.isEmpty());
    assertEquals("media_request_cancelled",assertThrows(IOException.class,()->commit(cache,pending)).getMessage());
    assertNotNull(cache.target(old));
+  }
+ }
+
+ @Test public void firstCacheReadAfterDeepSleepFreesExpiredStage()throws Exception {
+  try(PodMediaPrefixCache cache=stageCache()){
+   String old=cache.execute("video.cache.register",request("sleep","old",false)).getString("uri");
+   JSONObject pending=cache.execute("video.cache.stage",request("sleep","next",false));
+   Field field=PodMediaPrefixCache.class.getDeclaredField("stagedRegistrations");
+   field.setAccessible(true);
+   Map<?,?> stages=(Map<?,?>)field.get(cache);
+   assertEquals(1,stages.size());
+   long uptime=android.os.SystemClock.uptimeMillis();
+   ShadowSystemClock.simulateDeepSleep(Duration.ofSeconds(31));
+   assertEquals(uptime,android.os.SystemClock.uptimeMillis());
+   assertNotNull(cache.target(old));
+   assertTrue(stages.isEmpty());
+   assertEquals("media_request_cancelled",assertThrows(IOException.class,()->commit(cache,pending)).getMessage());
   }
  }
 
