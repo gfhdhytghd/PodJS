@@ -44,3 +44,13 @@ export function safeTopBlock(width: number, height: number, measure: (width: num
   }
   return best;
 }
+
+/** Largest whole-unit square below the header, centered as close to the display center as it can fit. */
+export function safeCenteredSquareBelow(width: number, height: number, minTop: number, maxSize: number, margin = 2): QrRect | undefined {
+  const cx = width / 2, cy = height / 2, radius = Math.min(width, height) / 2;
+  for (let size = Math.floor(Math.min(maxSize, 2 * radius)); size > 0; size--) {
+    const rect = { x: cx - size / 2, y: Math.max(minTop, cy - size / 2), width: size, height: size };
+    if (rectInsideCircle(rect, { cx, cy, radius }, margin)) return rect;
+  }
+  return undefined;
+}

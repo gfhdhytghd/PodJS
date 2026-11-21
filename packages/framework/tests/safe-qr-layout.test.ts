@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { rectInsideCircle, safeQrLayout, safeTopBlock } from "../src/safe-qr-layout.ts";
+import { rectInsideCircle, safeCenteredSquareBelow, safeQrLayout, safeTopBlock } from "../src/safe-qr-layout.ts";
 
 describe("safe QR geometry", () => {
   for (const [width, height] of [[233, 233], [192, 192], [160, 160], [280, 233], [233, 280]]) {
@@ -59,4 +59,17 @@ describe("safe top block", () => {
     expect(safeTopBlock(233, 233, () => 10, { maxWidth: 40 })!.width).toBeLessThanOrEqual(40);
     expect(safeTopBlock(233, 233, () => 400)).toBeUndefined();
   });
+});
+
+test("a square below the header includes its full corners on a round display", () => {
+  for (const [width, height] of [[233, 233], [192, 240], [240, 192]] as const) {
+    const top = height * 0.29;
+    const square = safeCenteredSquareBelow(width, height, top, width)!;
+    const circle = { cx: width / 2, cy: height / 2, radius: Math.min(width, height) / 2 };
+    expect(square.y).toBeGreaterThanOrEqual(top);
+    expect(rectInsideCircle(square, circle, 2)).toBe(true);
+    const larger = square.width + 1;
+    expect(rectInsideCircle({x: (width - larger) / 2, y: Math.max(top, (height - larger) / 2), width: larger, height: larger}, circle, 2)).toBe(false);
+  }
+  expect(safeCenteredSquareBelow(233, 233, 235, 100)).toBeUndefined();
 });
