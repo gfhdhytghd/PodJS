@@ -14,12 +14,14 @@ import android.view.View;
 import android.view.WindowManager;
 import android.widget.TextView;
 import android.widget.Toast;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * The one way the framework shows a toast.
  *
  * <p>On a round screen, while the app is in the foreground, the message is a dark pill whose four
- * corners stay inside the circle at its tallest ({@link #MAX_LINES} lines). Everywhere else it is a
+ * corners fit the circle using the measured wrapped height. Everywhere else it is a
  * plain {@link Toast#makeText} toast: square screens keep the platform look, and since Android 11
  * the system drops custom-view toasts posted from the background but still shows text toasts.
  */
@@ -95,25 +97,6 @@ final class PodToast {
         return info.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND;
     }
 
-    /**
-     * Widest centred box with its top edge at {@code top} and the given height whose corners all lie
-     * at least {@code margin} inside the circle inscribed in {@code width}×{@code height}. The edge
-     * farther from the centre limits the width. Returns 0 when no width fits.
-     */
-    static int chordWidth(int width, int height, int top, int boxHeight, int margin) {
-        double cy = height / 2.0, inner = Math.min(width, height) / 2.0 - margin;
-        double far = Math.max(Math.abs(top - cy), Math.abs(top + boxHeight - cy));
-        double square = inner * inner - far * far;
-        return square <= 0 ? 0 : (int) Math.floor(2 * Math.sqrt(square));
-    }
-
-    static boolean cornersInside(int width, int height, int left, int top, int boxWidth, int boxHeight) {
-        double cx = width / 2.0, cy = height / 2.0, radius = Math.min(width, height) / 2.0;
-        for (int x : new int[]{left, left + boxWidth}) for (int y : new int[]{top, top + boxHeight})
-            if (Math.hypot(x - cx, y - cy) > radius + 1e-6) return false;
-        return true;
-    }
-
     @SuppressWarnings("deprecation") // setView: foreground only, see roundView().
     private static Toast round(Context context, CharSequence message, int duration) {
         DisplayMetrics metrics = context.getResources().getDisplayMetrics();
@@ -128,10 +111,14 @@ final class PodToast {
         int padX = px(metrics, PAD_X_DP), padY = px(metrics, PAD_Y_DP);
         text.setPadding(padX, padY, padX, padY);
         int top = Math.round(height * TOP_FRACTION);
-        int tallest = text.getLineHeight() * MAX_LINES + 2 * padY;
-        int box = chordWidth(width, height, top, tallest, px(metrics, MARGIN_DP));
-        if (box < 2 * padX + 4 * text.getLineHeight()) return Toast.makeText(context, message, duration);
-        text.setMaxWidth(box);
+        int margin = px(metrics, MARGIN_DP);
+        PodRecoveryRoundLayout.Rect box = fit(text, width, height, top, margin);
+        if (box == null) {
+            text.setMaxLines(1);
+            box = fit(text, width, height, top, margin);
+        }
+        if (box == null) return Toast.makeText(context, message, duration);
+        text.setMaxWidth(box.width);
         GradientDrawable pill = new GradientDrawable();
         pill.setColor(BACKGROUND);
         pill.setCornerRadius(text.getLineHeight() / 2f + padY);
@@ -140,8 +127,18 @@ final class PodToast {
         Toast toast = new Toast(context);
         toast.setView(text); // Before setGravity, which warns on text toasts.
         toast.setDuration(duration);
-        toast.setGravity(Gravity.TOP | Gravity.CENTER_HORIZONTAL, 0, top);
+        toast.setGravity(Gravity.TOP | Gravity.CENTER_HORIZONTAL, 0, box.y);
         return toast;
+    }
+
+    private static PodRecoveryRoundLayout.Rect fit(TextView text, int width, int height, int top, int margin) {
+        Map<Integer,Integer> heights = new HashMap<>();
+        int minimumWidth = text.getPaddingLeft() + text.getPaddingRight() + text.getLineHeight();
+        return PodRecoveryRoundLayout.safeTopBlock(width, height, available -> heights.computeIfAbsent(available, size -> {
+            text.measure(View.MeasureSpec.makeMeasureSpec(size, View.MeasureSpec.AT_MOST),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+            return text.getMeasuredHeight();
+        }), top, width - 2 * margin, height, minimumWidth, margin);
     }
 
     private static int px(DisplayMetrics metrics, float dp) { return Math.round(dp * metrics.density); }

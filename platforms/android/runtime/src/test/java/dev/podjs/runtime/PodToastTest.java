@@ -95,24 +95,27 @@ public class PodToastTest {
     }
 
     @Test public void chordUsesTheEdgeFartherFromCentre() {
-        // 466 round, top edge 79 px: the top edge is 154 px from centre and limits the width.
-        int width = PodToast.chordWidth(466, 466, 79, 160, 8);
-        assertEquals((int) Math.floor(2 * Math.sqrt(225.0 * 225 - 154.0 * 154)), width);
-        // A box reaching far below centre is limited by its bottom edge instead.
-        assertTrue(PodToast.chordWidth(466, 466, 79, 380, 8) < width);
-        // A box that cannot fit at all.
-        assertEquals(0, PodToast.chordWidth(466, 466, 0, 40, 8));
+        PodRecoveryRoundLayout.Rect topLimited = PodRecoveryRoundLayout.safeTopBlock(466, 466, w -> 160, 79, 466, 466, 1, 8);
+        assertEquals(79, topLimited.y);
+        int expected = (int)Math.floor(2 * Math.sqrt(225.0 * 225 - 154.0 * 154));
+        assertEquals(expected - expected % 2, topLimited.width);
+        PodRecoveryRoundLayout.Rect bottomLimited = PodRecoveryRoundLayout.safeTopBlock(466, 466, w -> 320, 79, 466, 466, 1, 8);
+        assertEquals(79, bottomLimited.y);
+        assertTrue(bottomLimited.width < topLimited.width);
+        assertNull(PodRecoveryRoundLayout.safeTopBlock(466, 466, w -> 470, 0, 466, 466, 1, 8));
     }
 
     @Test public void everyCornerStaysInsideForAllTopsAndHeights() {
-        for (int size : new int[]{390, 454, 466}) for (int top = 0; top < size / 2; top += 3) for (int h = 20; h <= 200; h += 7) {
-            int w = PodToast.chordWidth(size, size, top, h, 8);
-            if (w == 0) continue;
-            int left = (size - w) / 2;
-            assertTrue(size + "/" + top + "/" + h, PodToast.cornersInside(size, size, left, top, w, h));
-            // The fit is tight: one more pixel on each side crosses the 8 px inner margin.
-            double far = Math.max(Math.abs(top - size / 2.0), Math.abs(top + h - size / 2.0));
-            assertTrue(Math.hypot(w / 2.0 + 1, far) > size / 2.0 - 8);
+        for (int size : new int[]{390, 454, 466}) {
+            for (int top = 0; top < size * .66; top += 13) {
+                for (int height = 20; height <= 200; height += 17) {
+                    int blockHeight = height;
+                    PodRecoveryRoundLayout.Rect box = PodRecoveryRoundLayout.safeTopBlock(size, size, w -> blockHeight, top, size, size, 1, 8);
+                    if (box == null) continue;
+                    assertTrue(box.y >= top);
+                    assertTrue(PodRecoveryRoundLayout.rectInsideCircle(box, size, size, 8));
+                }
+            }
         }
     }
 
@@ -126,14 +129,42 @@ public class PodToastTest {
         assertEquals(PodToast.MAX_LINES, text.getMaxLines());
         assertEquals(PodToast.BACKGROUND, ((GradientDrawable) text.getBackground()).getColor().getDefaultColor());
         assertEquals(Gravity.TOP | Gravity.CENTER_HORIZONTAL, toast.getGravity());
-        int size = context.getResources().getDisplayMetrics().widthPixels;
-        int tallest = text.getLineHeight() * PodToast.MAX_LINES + text.getPaddingTop() + text.getPaddingBottom();
-        int left = (size - text.getMaxWidth()) / 2;
-        assertTrue(PodToast.cornersInside(size, size, left, toast.getYOffset(), text.getMaxWidth(), tallest));
+        assertMeasuredPillInside(context, toast);
         assertEquals(android.view.View.VISIBLE, text.getVisibility());
         Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(3000));
         assertEquals(android.view.View.INVISIBLE, text.getVisibility());
         assertTrue(Shadows.shadowOf(toast).isCancelled());
+    }
+
+    @Config(qualifiers = "w160dp-h160dp-round-xhdpi")
+    @Test public void shortAndWrappedMessagesStayInsideWithLargeFont() {
+        Context context = RuntimeEnvironment.getApplication();
+        android.content.res.Configuration configuration = context.getResources().getConfiguration();
+        float original = configuration.fontScale;
+        try {
+            android.content.res.Configuration larger = new android.content.res.Configuration(configuration);
+            larger.fontScale = 1.6f;
+            context.getResources().updateConfiguration(larger, context.getResources().getDisplayMetrics());
+            for (String message : new String[]{"完成", "状态更新：请检查网络后重试", String.join("", java.util.Collections.nCopies(28, "LongUnbrokenToken")), "第一行\n第二行\n第三行\n第四行\n结束"}) {
+                Toast toast = PodToast.show(context, message, 3000, true);
+                assertMeasuredPillInside(context, toast);
+            }
+        } finally {
+            android.content.res.Configuration restored = new android.content.res.Configuration(configuration);
+            restored.fontScale = original;
+            context.getResources().updateConfiguration(restored, context.getResources().getDisplayMetrics());
+        }
+    }
+
+    private static void assertMeasuredPillInside(Context context, Toast toast) {
+        TextView text = (TextView) toast.getView();
+        assertNotNull(text);
+        android.util.DisplayMetrics metrics = context.getResources().getDisplayMetrics();
+        text.measure(android.view.View.MeasureSpec.makeMeasureSpec(text.getMaxWidth(), android.view.View.MeasureSpec.AT_MOST),
+            android.view.View.MeasureSpec.makeMeasureSpec(0, android.view.View.MeasureSpec.UNSPECIFIED));
+        int left = (metrics.widthPixels - text.getMeasuredWidth()) / 2;
+        PodRecoveryRoundLayout.Rect rect = new PodRecoveryRoundLayout.Rect(left, toast.getYOffset(), text.getMeasuredWidth(), text.getMeasuredHeight());
+        assertTrue(PodRecoveryRoundLayout.rectInsideCircle(rect, metrics.widthPixels, metrics.heightPixels, 2));
     }
 
     @Config(qualifiers = "w233dp-h233dp-round-xhdpi")

@@ -42,6 +42,19 @@ describe("safe top block", () => {
     }
     expect(block.height).toBeLessThan(100);
   });
+  test("fits short and wrapped blocks below the preferred top on either side of centre", () => {
+    for (const [width,height] of [[160,160],[192,220],[233,233],[240,200]]) {
+      const circle={cx:width/2,cy:height/2,radius:Math.min(width,height)/2};
+      for (const minTop of [0,12,height*.35,height*.55]) {
+        for (const length of [12,70,170,320]) {
+          const block=safeTopBlock(width,height,w=>12+14*Math.min(3,Math.ceil(length/Math.max(1,w-24))),{minTop,maxWidth:width-24,minWidth:48});
+          expect(block).toBeDefined();
+          expect(block!.y).toBeGreaterThanOrEqual(minTop);
+          expect(rectInsideCircle(block!,circle,2)).toBe(true);
+        }
+      }
+    }
+  });
   test("respects maxWidth and reports when nothing fits", () => {
     expect(safeTopBlock(233, 233, () => 10, { maxWidth: 40 })!.width).toBeLessThanOrEqual(40);
     expect(safeTopBlock(233, 233, () => 400)).toBeUndefined();

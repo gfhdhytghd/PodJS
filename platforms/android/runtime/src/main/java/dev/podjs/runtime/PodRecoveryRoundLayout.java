@@ -14,15 +14,33 @@ final class PodRecoveryRoundLayout {
         return true;
     }
     static Rect safeTopBlock(int width,int height,Measure measure,int minTop,int maxWidth,int bottom,int minWidth) {
-        double cx=width/2d,cy=height/2d,inner=Math.min(width,height)/2d-2;Rect best=null;
-        for(int y=(int)Math.ceil(Math.max(minTop,cy-inner));y<=cy;y++) {
+        return safeTopBlock(width,height,measure,minTop,maxWidth,bottom,minWidth,2);
+    }
+    static Rect safeTopBlock(int width,int height,Measure measure,int minTop,int maxWidth,int bottom,int minWidth,int margin) {
+        double cy=height/2d,inner=Math.min(width,height)/2d-margin;
+        if(inner<=0)return null;
+        Rect best=null;
+        for(int y=(int)Math.ceil(Math.max(minTop,cy-inner));y<Math.min(bottom,cy+inner);y++) {
             if(best!=null&&y>=best.y+best.height)break;
-            int w=(int)Math.floor(Math.min(maxWidth,2*Math.sqrt(Math.max(0,inner*inner-(cy-y)*(cy-y)))));
-            if((w&1)!=(width&1))w--;
-            if(w<Math.max(1,minWidth))continue;Rect rect=new Rect((width-w)/2,y,w,measure.height(w));
-            if(rect.y+rect.height<=bottom&&rectInsideCircle(rect,width,height,2)&&(best==null||rect.y+rect.height<best.y+best.height))best=rect;
+            int w=Math.min(maxWidth,chord(inner,cy-y));
+            while(w>=Math.max(1,minWidth)){
+                if((w&1)!=(width&1))w--;
+                if(w<Math.max(1,minWidth))break;
+                Rect rect=new Rect((width-w)/2,y,w,measure.height(w));
+                if(y+rect.height>bottom)break;
+                if(rectInsideCircle(rect,width,height,margin)){
+                    if(best==null||y+rect.height<best.y+best.height)best=rect;
+                    break;
+                }
+                int narrowed=chord(inner,y+rect.height-cy);
+                if(narrowed>=w)break;
+                w=narrowed;
+            }
         }
         return best;
+    }
+    private static int chord(double radius,double distance) {
+        return (int)Math.floor(2*Math.sqrt(Math.max(0,radius*radius-distance*distance)));
     }
     static Rect button(int width,int height,double top,double buttonHeight,double maxWidth) {
         double diameter=Math.min(width,height),cy=height/2d,inner=diameter/2d-10*diameter/233;
