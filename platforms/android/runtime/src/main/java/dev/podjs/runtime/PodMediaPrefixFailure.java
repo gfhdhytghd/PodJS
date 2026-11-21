@@ -54,7 +54,7 @@ final class PodMediaPrefixFailure {
  static int httpStatus(Throwable error){for(int i=0;error!=null&&i<12;i++,error=error.getCause())if(error instanceof androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)return Math.max(0,Math.min(999,((androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)error).responseCode));return 0;}
  static void record(String method,Throwable error,PodMediaPrefixCache cache){
   String operation=method.startsWith("video.cache.")?method.substring("video.cache.".length()):"other";
-  if(!Arrays.asList("register","window","prepare","inspect","remove","stats","clear","stopTraffic","local.lookup","local.list","local.prepare","local.configure","local.watched","local.clear","local.cancel").contains(operation))operation="other";
+  if(!Arrays.asList("register","stage","commit","discard","window","prepare","inspect","remove","stats","clear","stopTraffic","local.lookup","local.list","local.prepare","local.configure","local.watched","local.clear","local.cancel").contains(operation))operation="other";
   long entries=0,metadata=0;int available=0;
   try{JSONObject stats=cache==null?null:cache.memoryStats();if(stats!=null){entries=stats.optLong("entries",0);metadata=stats.optLong("metadataUtf16BytesUpperBound",0);available=1;}}catch(Exception ignored){}
   android.util.Log.w("PodMediaCache","cache_failure operation="+operation+" reason="+reason(error)+" stats="+available+" entries="+Math.max(0,entries)+" metadata_bytes="+Math.max(0,metadata)+" http_status="+httpStatus(error)+" errno="+errno(error));

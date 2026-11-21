@@ -25,6 +25,21 @@ test('persistent registration and preparation retain the media capability contra
  for(const [start,method,value] of operations){const op=start();const call=emitted.at(-1);expect(call.method).toBe(method);if(method==='video.cache.register')expect(call.args.persistent).toBe(true);events.push({t:'service.result',id:call.id,ok:true,value});__pumpPodEvents();expect(await op.result).toEqual(value as any);}
 });
 
+test('replacement staging sends an opaque stage ID to commit or discard',async()=>{
+ const prior='podjs-media-cache://play/prior',uri='podjs-media-cache://play/candidate';
+ const staged=mediaPrefixCache.stage('track','https://example.test/new',{},false,[],undefined,undefined,720,prior);
+ const call=emitted.at(-1);expect(call.method).toBe('video.cache.stage');
+ expect(call.args).toMatchObject({key:'track',url:'https://example.test/new',maxVideoShortEdge:720,replacesUri:prior});
+ events.push({t:'service.result',id:call.id,ok:true,value:{uri,stageId:'1'}});__pumpPodEvents();
+ expect(await staged.result).toEqual({uri,stageId:'1'});
+ const committed=mediaPrefixCache.commit('1'),commit=emitted.at(-1);
+ expect(commit.method).toBe('video.cache.commit');expect(commit.args).toEqual({stageId:'1'});
+ events.push({t:'service.result',id:commit.id,ok:true,value:{uri}});__pumpPodEvents();expect(await committed.result).toEqual({uri});
+ const discarded=mediaPrefixCache.discard('2'),discard=emitted.at(-1);
+ expect(discard.method).toBe('video.cache.discard');expect(discard.args).toEqual({stageId:'2'});
+ events.push({t:'service.result',id:discard.id,ok:true,value:{}});__pumpPodEvents();await discarded.result;
+});
+
  test('same-track alternates cross the host bridge without losing headers or identity',async()=>{
   const op=mediaPrefixCache.register('track','https://a.test/track',{Cookie:'fixture'},false,['https://b.test/track']);const call=emitted.at(-1);
   expect(call.args).toEqual({key:'track',url:'https://a.test/track',headers:{Cookie:'fixture'},persistent:false,alternates:['https://b.test/track']});

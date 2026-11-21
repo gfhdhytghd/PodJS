@@ -159,6 +159,55 @@ public class PodMediaResolutionLimitTest {
         }
     }
 
+    @Test public void stagedReplacementsRemainReplaceableWithoutGuestState() throws Exception {
+        try(PodMediaPrefixCache cache=new PodMediaPrefixCache(PodMediaPrefixCacheTest.root(),new PodMediaStockRangeTest.Ranges(),6L<<20)){
+            String current=cache.execute("video.cache.register",replacement("0","")).getString("uri");
+            for(int cycle=0;cycle<3;cycle++){
+                String previous=current;
+                JSONObject candidate=cache.execute("video.cache.stage",replacement(String.valueOf(cycle*2+1),previous));
+                String candidateUri=candidate.getString("uri");
+                assertNotNull(cache.target(previous));
+                assertNull(cache.registration(candidateUri));
+                assertEquals(1,cache.memoryStats().getInt("entries"));
+
+                assertEquals(candidateUri,cache.execute("video.cache.commit",new JSONObject()
+                    .put("stageId",candidate.getString("stageId"))).getString("uri"));
+                assertNull(cache.registration(previous));
+                assertEquals("stage-lifecycle",cache.target(candidateUri).replacementKey);
+
+                // No URI is passed when the app has left and rebuilt its index.
+                current=cache.execute("video.cache.register",replacement(String.valueOf(cycle*2+2),"")).getString("uri");
+                assertNull(cache.registration(candidateUri));
+                assertEquals(1,cache.memoryStats().getInt("entries"));
+            }
+        }
+    }
+
+    @Test public void discardAndOvertakenCommitPreserveTheCurrentRegistration() throws Exception {
+        try(PodMediaPrefixCache cache=new PodMediaPrefixCache(PodMediaPrefixCacheTest.root(),new PodMediaStockRangeTest.Ranges(),6L<<20)){
+            String old=cache.execute("video.cache.register",replacement("old","")).getString("uri");
+            JSONObject rejected=cache.execute("video.cache.stage",replacement("rejected",old));
+            JSONObject rejectedId=new JSONObject().put("stageId",rejected.getString("stageId"));
+            cache.execute("video.cache.discard",rejectedId);
+            assertNull(cache.registration(rejected.getString("uri")));
+            assertNotNull(cache.target(old));
+            assertThrows(java.io.IOException.class,()->cache.execute("video.cache.commit",rejectedId));
+
+            JSONObject stale=cache.execute("video.cache.stage",replacement("stale",old));
+            String newer=cache.execute("video.cache.register",replacement("newer","")).getString("uri");
+            assertThrows(java.io.IOException.class,()->cache.execute("video.cache.commit",
+                new JSONObject().put("stageId",stale.getString("stageId"))));
+            assertNull(cache.registration(stale.getString("uri")));
+            assertNotNull(cache.target(newer));
+            assertEquals(1,cache.memoryStats().getInt("entries"));
+        }
+    }
+
+    private static JSONObject replacement(String suffix,String previous)throws Exception {
+        return new JSONObject().put("key","stage-lifecycle").put("url","https://fixture.invalid/video-"+suffix)
+            .put("maxVideoShortEdge",720).put("replacesUri",previous);
+    }
+
     @Test public void restartScrubsOversizedPrefixAndRejectRemovesUnregisteredBytes() throws Exception {
         File root=PodMediaPrefixCacheTest.root();
         PodMediaStockRangeTest.Ranges remote=new PodMediaStockRangeTest.Ranges();
