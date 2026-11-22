@@ -1,6 +1,7 @@
 package dev.podjs.runtime;
 
 import android.content.Context;
+import android.database.sqlite.SQLiteDatabase;
 import android.os.CancellationSignal;
 import android.os.Looper;
 import androidx.test.core.app.ApplicationProvider;
@@ -22,6 +23,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.annotation.Config;
+import org.robolectric.annotation.SQLiteMode;
 import org.robolectric.util.ReflectionHelpers;
 
 import static org.junit.Assert.*;
@@ -55,6 +57,55 @@ public class PodTransferFenceTest {
             JSONObject row=dispatch(host,replies,5,"sql.query",new JSONObject()
                     .put("sql","SELECT count(*) AS n FROM transfer_guard_probe"));
             assertEquals(1,row.getJSONArray("value").getJSONObject(0).getInt("n"));
+        }
+    }
+
+    @Test
+    @Config(sdk=35)
+    @SQLiteMode(SQLiteMode.Mode.NATIVE)
+    public void fullAndGuardedWritesFollowTheOuterTransaction() throws Exception {
+        Context context=ApplicationProvider.getApplicationContext();
+        CancellationSignal signal=new CancellationSignal();
+        try(PodServices host=new PodServices(context,ignored->{})) {
+            PodByteStreamServices streams=ReflectionHelpers.getField(host,"byteStreams");
+            String original=streams.attach(new ByteArrayInputStream(new byte[0]),new ByteArrayOutputStream(),()->{});
+            String channel=streams.execute("stream.claim",channel(original),signal).getString("id");
+            streams.execute("stream.framedOpen",channel(channel),signal);
+            streams.execute("stream.framedEnable",channel(channel).put("lease",new JSONObject().put("epoch",1))
+                    .put("stream",1).put("window",1),signal);
+
+            SQLiteDatabase database=ReflectionHelpers.callInstanceMethod(host,"db");
+            database.execSQL("CREATE TABLE nested_guard_probe (k INTEGER PRIMARY KEY)");
+            for(boolean commit : new boolean[]{false,true}) {
+                database.beginTransaction();
+                try {
+                    JSONObject full=operation("INSERT INTO nested_guard_probe VALUES(1)").put("reportChanges",true);
+                    JSONObject guarded=operation("INSERT INTO nested_guard_probe VALUES(2)").put("reportChanges",true)
+                            .put("channel",channel).put("epoch",1).put("mode","immediate");
+                    assertEquals(1,((JSONArray)invokeSql(host,"sql.transactionFull",full,signal)).getInt(0));
+                    assertEquals(1,((JSONArray)invokeSql(host,"sql.transactionGuarded",guarded,signal)).getInt(0));
+                    assertTrue(database.inTransaction());
+                    assertEquals(2L,scalar(database,"PRAGMA synchronous"));
+                    assertEquals(2L,scalar(database,"SELECT count(*) FROM nested_guard_probe"));
+                    if(commit) database.setTransactionSuccessful();
+                } finally {
+                    database.endTransaction();
+                }
+                assertEquals(commit?2L:0L,scalar(database,"SELECT count(*) FROM nested_guard_probe"));
+            }
+        }
+    }
+
+    private static Object invokeSql(PodServices host,String method,JSONObject args,CancellationSignal signal) {
+        return ReflectionHelpers.callInstanceMethod(host,"sqlForeground",
+                ReflectionHelpers.ClassParameter.from(String.class,method),
+                ReflectionHelpers.ClassParameter.from(JSONObject.class,args),
+                ReflectionHelpers.ClassParameter.from(CancellationSignal.class,signal));
+    }
+
+    private static long scalar(SQLiteDatabase database,String sql) {
+        try(android.database.sqlite.SQLiteStatement statement=database.compileStatement(sql)) {
+            return statement.simpleQueryForLong();
         }
     }
 

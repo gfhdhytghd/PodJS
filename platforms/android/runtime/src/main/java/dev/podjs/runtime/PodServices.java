@@ -946,9 +946,13 @@ final class PodServices implements Closeable {
         if (database == null) {
             java.io.File path = PodTakeover.database(context);
             try {PodRoomV18Converter.checkDatabaseFamily(path);}catch(java.io.IOException unsafe){throw new IllegalStateException("migration_storage_invalid",unsafe);}
-            SQLiteDatabase opened = path.equals(context.getDatabasePath("podjs.sqlite"))
-                ? context.openOrCreateDatabase("podjs.sqlite", Context.MODE_PRIVATE, null)
-                : SQLiteDatabase.openOrCreateDatabase(path, null);
+            // Configure the pool before it opens any connections. Android rejects
+            // changes to synchronous while a connection is in a transaction.
+            SQLiteDatabase.OpenParams options = new SQLiteDatabase.OpenParams.Builder()
+                    .addOpenFlags(SQLiteDatabase.CREATE_IF_NECESSARY)
+                    .setSynchronousMode("FULL") // Also supported before the API 33 constant.
+                    .build();
+            SQLiteDatabase opened = SQLiteDatabase.openDatabase(context.getDatabasePath(path.getPath()), options);
             try {
             opened.setForeignKeyConstraintsEnabled(true);
             // Sync transactions touch more than the default 25 distinct SQL
@@ -972,15 +976,9 @@ final class PodServices implements Closeable {
     }
 
     private Object fullTransaction(JSONObject args,CancellationSignal cancellation,PodTransferFence fence)throws Exception {
-        SQLiteDatabase database=db();
-        long saved=synchronous(database);
-        if(saved<0||saved>3)throw new IOException("LOCAL_IO");
-        try{
-            database.execSQL("PRAGMA synchronous=FULL");
-            JSONObject options=new JSONObject(args.toString()).put("guardedFull",true);
-            if(fence==null)return sqlForeground("sql.transaction",options,cancellation);
-            return fence.publish(()->sqlForeground("sql.transaction",options,cancellation));
-        }finally{database.execSQL("PRAGMA synchronous="+saved);}
+        JSONObject options=new JSONObject(args.toString()).put("guardedFull",true);
+        if(fence==null)return sqlForeground("sql.transaction",options,cancellation);
+        return fence.publish(()->sqlForeground("sql.transaction",options,cancellation));
     }
 
     private Object sqlForeground(String method, JSONObject args, CancellationSignal cancellation) throws Exception {
