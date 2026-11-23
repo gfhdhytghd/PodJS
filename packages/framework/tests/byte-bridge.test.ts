@@ -3,7 +3,7 @@ const events:any[]=[],requests:any[]=[],slots=new Map<number,Uint8Array>();let n
 const pod:any={byteBridgeVersion:()=>1,putBytes:(v:Uint8Array)=>{if(slots.size>=64)return 0;const id=next++;slots.set(id,v.slice());return id;},takeBytes:(id:number)=>{const b=slots.get(id);slots.delete(id);return b;},dropBytes:(id:number)=>slots.delete(id),emit:(line:string)=>requests.push(JSON.parse(line)),takeEvents:()=>JSON.stringify(events.splice(0)),capabilities:()=>JSON.stringify(['net.stream','data.files.chunks','data.files.resumable'])};
 (globalThis as any).pod=pod;
 const {__pumpPodEvents}=await import('../src/watch');
-const {byteHostOperation,byteStreams,fileChunks,hasByteBridge,serviceResourceCounts}=await import('../src/services');
+const {byteHostOperation,byteStreams,fileChunks,framedStreams,hasByteBridge,serviceResourceCounts}=await import('../src/services');
 const {VerifiedChunkStore}=await import('../src/verified-chunk-store');
 const complete=(request:any,value:any,bytes?:Uint8Array)=>{events.push({t:'service.result',id:request.id,ok:true,value,...(bytes?{byteHandle:pod.putBytes(bytes)}:{})});__pumpPodEvents();};
 afterEach(()=>{expect(slots.size).toBe(0);expect(serviceResourceCounts().pending).toBe(0);requests.length=0;events.length=0;pod.byteBridgeVersion=()=>1;});
@@ -15,6 +15,18 @@ test('binary snapshots respect subarray, empty, 1 B, 64 KiB and maximum; old wri
   const old=byteStreams.write('stream',expected),legacy=requests.at(-1);expect(legacy.method).toBe('stream.write');expect(Buffer.from(legacy.args.dataBase64,'base64')).toEqual(Buffer.from(expected));complete(legacy,{written:size});await old.result;
  }
  expect(()=>byteHostOperation('file.write',{},new Uint8Array(65537))).toThrow('Invalid byte attachment');
+});
+test('framed DATA reaches the native stream with its binary attachment',async()=>{
+ const header=new Uint8Array(96),bytes=new Uint8Array([1,2,3]);
+ const result=framedStreams.data('framed',header,bytes);
+ const request=requests.at(-1);
+ if(!request)await result;
+ expect(request.method).toBe('stream.framedData.bytes');
+ expect(request.args).toMatchObject({id:'framed',header:Array.from(header),timeoutMs:60000});
+ expect(request.args.dataBase64).toBeUndefined();
+ expect(pod.takeBytes(request.args.byteHandle)).toEqual(bytes);
+ complete(request,undefined);
+ await result;
 });
 test('read byte differential, EOF and file range; unsupported host falls back before any mutation',async()=>{
  for(const size of [0,1,65536]){const bytes=Uint8Array.from({length:size},(_,i)=>i%256),op=byteStreams.readBytes('s',65536,1000),r=requests.at(-1);complete(r,{eof:size===0},bytes);expect((await op.result).bytes).toEqual(bytes);}

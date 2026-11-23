@@ -176,7 +176,7 @@ export function byteHostOperation<T>(method:string,args:Record<string,unknown>,b
   throw error;
  }
 }
-for(const method of ['stream.read','stream.write','file.read','file.write','file.resumable.stage','file.publishBytes'])methods[method+'.bytes']=methods[method]!;
+for(const method of ['stream.read','stream.write','stream.framedData','file.read','file.write','file.resumable.stage','file.publishBytes'])methods[method+'.bytes']=methods[method]!;
 __onHostEvent(event => {
   // Consume even late/cancelled completions so they cannot retain native slots.
   if(typeof event.byteHandle==='number'){
