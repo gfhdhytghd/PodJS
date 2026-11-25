@@ -45,12 +45,59 @@ final class PodInlineTextInput {
         final double top;
         final double left,width,overhang;
         final int viewportHeight;
+        int roundWidth,roundHeight;
         EditText title,body;
         View unfocusedCaret;
         DocumentGroup(ScrollView scroll,FrameLayout content,double left,double top,double width,double overhang,int viewportHeight){
             this.scroll=scroll;this.content=content;this.left=left;this.top=top;this.width=width;this.overhang=overhang;this.viewportHeight=viewportHeight;
         }
     }
+    private static final class DocumentField extends EditText {
+        Runnable selectionChanged;
+        DocumentField(Context context){super(context);}
+        @Override protected void onSelectionChanged(int start,int end){
+            super.onSelectionChanged(start,end);
+            if(selectionChanged!=null)selectionChanged.run();
+        }
+    }
+
+    /** A native field owns its touch stream. Cancel that stream before requesting
+     * app back, so its UP cannot focus the field or also reach the guest swipe. */
+    private final class DocumentScroll extends ScrollView {
+        private final boolean swipeBack;
+        private float startX,startY;
+        private boolean tracking,claimed;
+        DocumentScroll(boolean swipeBack){super(context);this.swipeBack=swipeBack;}
+        @Override public boolean dispatchTouchEvent(MotionEvent event){
+            if(!swipeBack)return super.dispatchTouchEvent(event);
+            int action=event.getActionMasked();
+            if(action==MotionEvent.ACTION_DOWN){
+                startX=event.getX();startY=event.getY();tracking=true;claimed=false;
+            }else if(action==MotionEvent.ACTION_POINTER_DOWN){
+                tracking=false;
+            }else if(action==MotionEvent.ACTION_MOVE&&tracking&&!claimed){
+                float dx=event.getX()-startX,dy=Math.abs(event.getY()-startY);
+                int slop=ViewConfiguration.get(context).getScaledTouchSlop();
+                if(dy>slop&&dy>=Math.abs(dx))tracking=false;
+                else if(dx>slop&&dx>dy*1.2f){
+                    MotionEvent cancel=MotionEvent.obtain(event);
+                    cancel.setAction(MotionEvent.ACTION_CANCEL);
+                    super.dispatchTouchEvent(cancel);
+                    cancel.recycle();
+                    claimed=true;
+                }
+            }
+            if(action==MotionEvent.ACTION_UP||action==MotionEvent.ACTION_CANCEL){
+                boolean handled=claimed;
+                if(tracking&&handled&&action==MotionEvent.ACTION_UP&&event.getX()-startX>=getWidth()*.4f)
+                    events.send("{\"t\":\"back\"}");
+                tracking=false;claimed=false;
+                if(handled)return true;
+            }
+            return claimed||super.dispatchTouchEvent(event);
+        }
+    }
+
     /** Same detent-to-code-point curve as the native NoteCursorCrownAccelerator. */
     static final class CrownAccelerator {
         private double fractional;
@@ -88,7 +135,7 @@ final class PodInlineTextInput {
         if(!Double.isFinite(fontSize)||fontSize<8||fontSize>32)throw new IllegalArgumentException("Invalid inline input font size");
         if(!args.optBoolean("keepExisting",false))closeFields();
         boolean multiline=args.optBoolean("multiline",false);
-        EditText input=new EditText(context);
+        EditText input=args.has("document")?new DocumentField(context):new EditText(context);
         input.setSingleLine(!multiline);
         if(multiline)input.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         else if("uri".equals(args.optString("inputType","text")))input.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_URI);
@@ -163,7 +210,7 @@ final class PodInlineTextInput {
             if(group!=null)throw new IllegalArgumentException("Inline document already opened");
             double overhang=spec.optDouble("viewportOverhangDp",0);
             if(!Double.isFinite(overhang)||overhang<0||overhang>4||x<overhang)throw new IllegalArgumentException("Invalid inline document overhang");
-            ScrollView scroll=new ScrollView(context);
+            ScrollView scroll=new DocumentScroll(spec.optBoolean("swipeBack",false));
             scroll.setFillViewport(true);
             scroll.setVerticalScrollBarEnabled(false);
             scroll.setClipChildren(false);
@@ -178,6 +225,15 @@ final class PodInlineTextInput {
             parent.addView(scroll,frame);
             group=new DocumentGroup(scroll,content,x,y,width,overhang,dp(viewport));
             documents.put(key,group);
+            if(spec.optBoolean("roundSafe",false)){
+                group.roundWidth=parent.getWidth();
+                group.roundHeight=parent.getHeight();
+                DocumentGroup roundGroup=group;
+                scroll.setOnScrollChangeListener((view,sx,sy,oldX,oldY)->{
+                    positionUnfocusedCaret(roundGroup);
+                    updateCursorVisibility(roundGroup);
+                });
+            }
             String metadata=spec.optString("metadata","");
             if(!metadata.isEmpty()){
                 TextView label=new TextView(context);
@@ -206,8 +262,25 @@ final class PodInlineTextInput {
         group.sessions.add(id);
         fieldDocuments.put(id,key);
         DocumentGroup activeGroup=group;
-        input.setOnFocusChangeListener((view,focused)->positionUnfocusedCaret(activeGroup));
+        input.setOnFocusChangeListener((view,focused)->{
+            if(focused&&activeGroup.roundWidth>0){
+                if(activeGroup.title==input)activeGroup.scroll.scrollTo(0,0);
+                else input.post(()->ensureDocumentCursorVisible(activeGroup,input));
+            }
+            positionUnfocusedCaret(activeGroup);
+            updateCursorVisibility(activeGroup);
+        });
         if("body".equals(role)){
+            if(group.roundWidth>0){
+                Runnable position=()->{
+                    if(activeGroup.body!=input)return;
+                    ensureDocumentCursorVisible(activeGroup,input);
+                    positionUnfocusedCaret(activeGroup);
+                    updateCursorVisibility(activeGroup);
+                };
+                ((DocumentField)input).selectionChanged=()->input.post(position);
+                input.addOnLayoutChangeListener((view,l,t,r,b,ol,ot,or,ob)->input.post(position));
+            }
             installDocumentCursorSwipe(group,input);
             String caretColor=spec.optString("unfocusedCaretColor","");
             if(!caretColor.isEmpty()){
@@ -240,13 +313,14 @@ final class PodInlineTextInput {
         params.leftMargin=input.getLeft()+input.getCompoundPaddingLeft()+Math.round(layout.getPrimaryHorizontal(selection))-dp(1);
         params.topMargin=input.getTop()+input.getCompoundPaddingTop()+layout.getLineTop(line);
         caret.setLayoutParams(params);
-        caret.setVisibility(View.VISIBLE);
+        caret.setVisibility(documentLineIsSafe(group,input,line)?View.VISIBLE:View.INVISIBLE);
     }
     private void centerDocumentSelection(DocumentGroup group,EditText input){
         if(input.getParent()!=group.content||input.getLayout()==null)return;
         int line=input.getLayout().getLineForOffset(input.getSelectionStart());
         int center=input.getTop()+(input.getLayout().getLineTop(line)+input.getLayout().getLineBottom(line))/2;
         group.scroll.scrollTo(0,Math.max(0,center-group.scroll.getHeight()/2));
+        if(group.roundWidth>0)ensureDocumentCursorVisible(group,input);
     }
     private void installDocumentCursorSwipe(DocumentGroup group,EditText input){
         final int slop=ViewConfiguration.get(context).getScaledTouchSlop();
@@ -308,6 +382,29 @@ final class PodInlineTextInput {
         }
         if(boundarySteps>0)group.scroll.scrollBy(0,-boundarySteps*stepPx);
     }
+    private PodRecoveryRoundLayout.Rect bodySafeSpan(DocumentGroup group,EditText input){
+        int left=group.scroll.getLeft()+input.getLeft();
+        // The unfocused caret can extend one dp beyond the layout's advance.
+        return PodRecoveryRoundLayout.verticalSpan(group.roundWidth,group.roundHeight,
+                left-dp(1),left+input.getWidth()+dp(1),dp(1));
+    }
+
+    private boolean documentLineIsSafe(DocumentGroup group,EditText input,int line){
+        if(group.roundWidth<=0)return true;
+        PodRecoveryRoundLayout.Rect span=bodySafeSpan(group,input);
+        int origin=group.scroll.getTop()+input.getTop()+input.getCompoundPaddingTop()-group.scroll.getScrollY();
+        return origin+input.getLayout().getLineTop(line)>=span.y
+                && origin+input.getLayout().getLineBottom(line)<=span.y+span.height;
+    }
+
+    private void updateCursorVisibility(DocumentGroup group){
+        if(group.roundWidth<=0||group.body==null||group.body.getLayout()==null)return;
+        EditText body=group.body;
+        int line=body.getLayout().getLineForOffset(body.getSelectionStart());
+        boolean visible=documentLineIsSafe(group,body,line);
+        if(body.isCursorVisible()!=visible)body.setCursorVisible(visible);
+    }
+
     private void ensureDocumentCursorVisible(DocumentGroup group,EditText input){
         android.text.Layout layout=input.getLayout();
         if(layout==null)return;
@@ -315,9 +412,14 @@ final class PodInlineTextInput {
         int top=input.getTop()+layout.getLineTop(line);
         int bottom=input.getTop()+layout.getLineBottom(line);
         int current=group.scroll.getScrollY();
-        int visibleTop=current+dp(22),visibleBottom=current+group.scroll.getHeight()-dp(8);
-        if(top<visibleTop)group.scroll.scrollTo(0,Math.max(0,top-dp(22)));
-        else if(bottom>visibleBottom)group.scroll.scrollTo(0,bottom-group.scroll.getHeight()+dp(8));
+        int topInset=dp(22),bottomInset=group.scroll.getHeight()-dp(8);
+        if(group.roundWidth>0){
+            PodRecoveryRoundLayout.Rect span=bodySafeSpan(group,input);
+            topInset=Math.max(0,span.y-group.scroll.getTop());
+            bottomInset=Math.min(bottomInset,span.y+span.height-group.scroll.getTop());
+        }
+        if(top<current+topInset)group.scroll.scrollTo(0,Math.max(0,top-topInset));
+        else if(bottom>current+bottomInset)group.scroll.scrollTo(0,bottom-bottomInset);
     }
     /** Activity-level interception keeps the crown authoritative even when an EditText has focus. */
     boolean handleCrownScroll(MotionEvent event){

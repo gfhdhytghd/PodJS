@@ -42,6 +42,15 @@ final class PodRecoveryRoundLayout {
     private static int chord(double radius,double distance) {
         return (int)Math.floor(2*Math.sqrt(Math.max(0,radius*radius-distance*distance)));
     }
+    /** The safe vertical span for a fixed horizontal interval. */
+    static Rect verticalSpan(int width,int height,int left,int right,double margin) {
+        double radius=Math.min(width,height)/2d-margin;
+        double edge=Math.max(Math.abs(left-width/2d),Math.abs(right-width/2d));
+        if(radius<=edge)return new Rect(left,height/2,right-left,0);
+        double half=Math.sqrt(radius*radius-edge*edge);
+        int top=(int)Math.ceil(height/2d-half), bottom=(int)Math.floor(height/2d+half);
+        return new Rect(left,top,right-left,Math.max(0,bottom-top));
+    }
     static Rect button(int width,int height,double top,double buttonHeight,double maxWidth) {
         double diameter=Math.min(width,height),cy=height/2d,inner=diameter/2d-10*diameter/233;
         int y=(int)Math.round((height-diameter)/2+top*diameter/233),h=(int)Math.round(buttonHeight*diameter/233);
