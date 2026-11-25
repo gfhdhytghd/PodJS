@@ -37,6 +37,8 @@ final class PodNetworkServices implements Closeable {
                 cancellation.throwIfCanceled();
                 Network network=manager==null?null:manager.getActiveNetwork();NetworkCapabilities caps=network==null?null:manager.getNetworkCapabilities(network);
                 JSONObject result=new JSONObject().put("metered",manager==null||manager.isActiveNetworkMetered()).put("active",network!=null).put("internet",caps!=null&&caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)).put("validated",caps!=null&&caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)).put("wifi",caps!=null&&caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)).put("cellular",caps!=null&&caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)).put("bluetooth",caps!=null&&caps.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH));
+                // The active network handle is stable across callback registrations.
+                if(network!=null)result.put("defaultNetworkId",Long.toString(network.getNetworkHandle()));
                 boolean localWifi=false;
                 if(manager!=null)for(Network candidate:manager.getAllNetworks()){
                     NetworkCapabilities local=manager.getNetworkCapabilities(candidate);
