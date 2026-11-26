@@ -9,8 +9,11 @@ const require=createRequire(new URL('../../../vendor/pocketjs/package.json',impo
 plugin({name:'variable-list-solid',setup(b){b.onLoad({filter:/\/variable-list\.tsx$/},async a=>({contents:transformSync(await Bun.file(a.path).text(),{filename:a.path,babelrc:false,configFile:false,presets:[[require('babel-preset-solid'),{generate:'universal',moduleName:'@pocketjs/framework/renderer'}],[require('@babel/preset-typescript'),{isTSX:true,allExtensions:true}]]}).code,loader:'js'}));}});
 let gestures:any[]=[],frames=new Set<()=>void>();
 const element=(props:any)=>{const p=Object.create(props);Object.defineProperty(p,'children',{value:props.children,enumerable:true});const n={props:p};props.ref?.(n);return n;};
+const hitNode=mock((_x:number,_y:number)=>null as import('@pocketjs/framework/components').NodeMirror|null);
+const pressNode=mock((_node:import('@pocketjs/framework/components').NodeMirror)=>{});
 const base=import.meta.dir+'/../src';mock.module(Bun.resolveSync('solid-js',Bun.resolveSync('@pocketjs/framework/kinetics',base)),()=>solid);
-for(const [name,impl] of Object.entries({renderer:{createComponent,mergeProps,memo:createMemo,effect:createRenderEffect},components:{View:element},gesture:{createGesture:(g:any)=>{gestures.push(g);onCleanup(()=>gestures=gestures.filter(x=>x!==g));}},lifecycle:{onFrame:(f:any)=>{frames.add(f);onCleanup(()=>frames.delete(f));}},kinetics:{createScroller:(o:any)=>createScrollerWith(createSignal,o),bindDpadScroll:()=>{}},input:{pressNode:()=>{},hitNode:()=>undefined}}))mock.module(Bun.resolveSync('@pocketjs/framework/'+name,base),()=>impl);
+for(const [name,impl] of Object.entries({renderer:{createComponent,mergeProps,memo:createMemo,effect:createRenderEffect},components:{View:element},gesture:{createGesture:(g:any)=>{gestures.push(g);onCleanup(()=>gestures=gestures.filter(x=>x!==g));}},lifecycle:{onFrame:(f:any)=>{frames.add(f);onCleanup(()=>frames.delete(f));}},kinetics:{createScroller:(o:any)=>createScrollerWith(createSignal,o),bindDpadScroll:()=>{}},input:{pressNode,hitNode}}))mock.module(Bun.resolveSync('@pocketjs/framework/'+name,base),()=>impl);
+const {createListHitSlop}=await import("../src/list-hit-slop.ts");
 const {VariableList}=await import('../src/variable-list.tsx');
 const {RouteStateProvider,restoredSignal,finiteState}=await import('../src/navigation.ts');
 const frame=()=>{for(const f of [...frames])f();};
@@ -101,4 +104,46 @@ test('a window row can own its press action without another native wrapper',()=>
  let dispose!:()=>void,pressed=0;
  const tree=createRoot(stop=>{dispose=stop;return VariableList({height:100,padding:18,entries:[{height:40,onPress:()=>pressed++,render:()=>null}]});});
  const entry=children(tree).find(n=>n.props.style?.insetR===18)!;expect(entry).toBeDefined();entry.props.onPress();expect(pressed).toBe(1);dispose();
+});
+
+test('expanded row taps preserve visual press priority and follow the scroll offset',()=>{
+ const slop=createListHitSlop({x:30,y:5,width:40,height:20},3);
+ const node=(parent:ReturnType<typeof hitNode>=null)=>({id:1,type:0,parent,children:[]});
+ const row=node(),button={...node(row),onPress:()=>{}},neighbor={...node(row),onPress:()=>{}};
+ const label=node(neighbor);
+ slop.ref(button);
+ expect(slop.bounds.width*slop.bounds.height).toBeCloseTo(40*20*3);
+ let dispose!:()=>void,scroller:any;
+ createRoot(stop=>{
+  dispose=stop;
+  VariableList({height:100,padding:10,verticalPadding:0,hitSlopOrigin:{x:2,y:4},
+   entries:[{height:80,render:()=>null},{height:120,hitSlop:slop,render:()=>null}],
+   ref:v=>scroller=v.scroller});
+ });
+ try {
+  scroller.scrollTo(50,{immediate:true});
+  const gesture=gestures[0], centerX=62, centerY=49;
+  const edgeX=centerX+slop.bounds.width/2,edgeY=centerY+slop.bounds.height/2;
+  hitNode.mockImplementation((x,y)=>{
+   if(y<=40&&x<70)return label;
+   if(x>=42&&x<82&&y>=39&&y<59)return button;
+   return null;
+  });
+  const tap=(x:number,y:number,startX=x,startY=y)=>{
+   pressNode.mockClear();
+   gesture.onTap({x,y,startX,startY,surface:'primary'});
+   return pressNode.mock.calls[0]?.[0];
+  };
+  expect(tap(centerX,centerY)).toBe(button);
+  expect(tap(82-.01,centerY)).toBe(button);
+  expect(tap(82+20*.3,centerY)).toBe(button);
+  expect(tap(edgeX-.01,centerY)).toBe(button);
+  expect(tap(edgeX+.01,centerY)).toBeUndefined();
+  expect(tap(72,edgeY-.01)).toBe(button);
+  expect(tap(72,edgeY+.01)).toBeUndefined();
+  expect(tap(62,38)).toBe(label);
+  expect(tap(72,38,69,38)).toBeUndefined();
+ }finally{
+  hitNode.mockImplementation(()=>null);pressNode.mockClear();dispose();
+ }
 });

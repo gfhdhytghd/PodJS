@@ -12,12 +12,14 @@ import { createScroller, bindDpadScroll, type Scroller } from "@pocketjs/framewo
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import { pressNode, hitNode } from "@pocketjs/framework/input";
 
-export interface ScrollEntry { height: number; onPress?:()=>void; render: (current?:()=>ScrollEntry) => JSX.Element; retain?:boolean; key?:unknown; data?:unknown; /** Legacy visible content bounds relative to the row's padded left/top. */ bounds?:QrRect; /** Preferred explicit visible bounds; overrides bounds. */ visibleBounds?:QrRect; /** Existing child hit targets: may extend outside the circle, but must fit the viewport/screen. */ interactionBounds?:QrRect }
+import { containsTap, hitControl, type ListHitSlop } from "./list-hit-slop.ts";
+
+export interface ScrollEntry { height: number; onPress?:()=>void; render: (current?:()=>ScrollEntry) => JSX.Element; retain?:boolean; key?:unknown; data?:unknown; /** Legacy visible content bounds relative to the row's padded left/top. */ bounds?:QrRect; /** Preferred explicit visible bounds; overrides bounds. */ visibleBounds?:QrRect; /** Existing child hit targets: may extend outside the circle, but must fit the viewport/screen. */ interactionBounds?:QrRect; /** Optional expanded touch target for a child button. */ hitSlop?:ListHitSlop }
 export interface PositionedScrollEntry extends ScrollEntry {top:number}
 export type IndexedScrollEntries=IndexedWindowEntries<PositionedScrollEntry,unknown>;
 export interface VariableListHandle {scroller:Scroller;/** Additional layout whitespace, for caller-owned hit tests and overlays. */ roundInsets:()=>{start:number;end:number};/** Round-list touch rectangle in display coordinates at the current offset; independent of visible bounds. */ interactionBounds:(index:number)=>QrRect|undefined}
 /** Variable-height, windowed column; the clipping viewport never translates. */
-export function VariableList(props: { height: number; round?:RoundListOptions|null; entries: ScrollEntry[]; indexedEntries?:IndexedWindowInput<PositionedScrollEntry>; footerEntries?:ScrollEntry[]; gap?: number; padding?: number; verticalPadding?: number; retainRows?:number; minRows?:number; recycleKey?:(row:PositionedScrollEntry)=>unknown; /** Equality for immutable keyed row revisions; the original keyed renderer remains mounted. */ entryEquals?:(a:PositionedScrollEntry,b:PositionedScrollEntry)=>boolean; fixed?: boolean; controller?: Scroller; inputActive?: () => boolean; accessibilityLabel?:string; onRefresh?: () => void; onManualScroll?:()=>void; onTap?:(contact:GestureContact)=>boolean|void; onLongPress?: (contact: GestureContact) => void; onScrollStateChange?:(scrolling:boolean)=>void; onOffsetChange?:(previous:number,current:number)=>void; onSettledRange?:(first:number,last:number)=>void; settleKey?:unknown; restorationOwner?:()=>ListRestorationOwner|undefined; overscan?:number;refreshDistance?:number; ref?: (handle: VariableListHandle) => void }) {
+export function VariableList(props: { height: number; round?:RoundListOptions|null; /** Origin in logical display coordinates for hit slop when it differs from the round viewport origin. */ hitSlopOrigin?:{x:number;y:number}; entries: ScrollEntry[]; indexedEntries?:IndexedWindowInput<PositionedScrollEntry>; footerEntries?:ScrollEntry[]; gap?: number; padding?: number; verticalPadding?: number; retainRows?:number; minRows?:number; recycleKey?:(row:PositionedScrollEntry)=>unknown; /** Equality for immutable keyed row revisions; the original keyed renderer remains mounted. */ entryEquals?:(a:PositionedScrollEntry,b:PositionedScrollEntry)=>boolean; fixed?: boolean; controller?: Scroller; inputActive?: () => boolean; accessibilityLabel?:string; onRefresh?: () => void; onManualScroll?:()=>void; onTap?:(contact:GestureContact)=>boolean|void; onLongPress?: (contact: GestureContact) => void; onScrollStateChange?:(scrolling:boolean)=>void; onOffsetChange?:(previous:number,current:number)=>void; onSettledRange?:(first:number,last:number)=>void; settleKey?:unknown; restorationOwner?:()=>ListRestorationOwner|undefined; overscan?:number;refreshDistance?:number; ref?: (handle: VariableListHandle) => void }) {
   let viewport: NodeMirror | undefined;
   const rawRows = createMemo(() => {
     if(props.indexedEntries)return createIndexedWindowSource(props.indexedEntries,props.entries,props.footerEntries??[],{padding:props.verticalPadding??props.padding??0,gap:props.gap??0});
@@ -57,6 +59,26 @@ export function VariableList(props: { height: number; round?:RoundListOptions|nu
   const takeScroll=()=>restoration.cancel();
   const visible=createWindowedList({source:rows,lower:()=>scroller.offset()-(props.overscan??60),upper:()=>scroller.offset()+props.height+(props.overscan??60),retainRows:props.retainRows,minRows:props.minRows,recycleKey:props.recycleKey,equals:props.entryEquals});
   const active=()=>props.inputActive?.()??true;
+  const expandedTarget = (contact: GestureContact, hit: NodeMirror | null) => {
+    if (hitControl(hit)) return;
+    const origin = props.hitSlopOrigin ?? props.round?.viewport;
+    const left = (origin?.x ?? 0) + (props.padding ?? 0);
+    const offset = props.fixed ? 0 : scroller.offset();
+    const top = (origin?.y ?? 0) - offset;
+    for (const item of visible()) {
+      const row = item.value();
+      const slop = row.hitSlop;
+      if (!slop || !containsTap(slop.bounds, contact.x - left, contact.y - top - row.top) ||
+        !containsTap(slop.bounds, contact.startX - left, contact.startY - top - row.top)) continue;
+      const visualTop = row.top + slop.visual.y - offset;
+      if (visualTop >= props.height || visualTop + slop.visual.height <= 0) continue;
+      const target = slop.target();
+      if (!target?.parent || !target.onPress) continue;
+      const moved = contact.startX !== contact.x || contact.startY !== contact.y;
+      const startControl = moved ? hitControl(hitNode(contact.startX, contact.startY, contact.surface)) : null;
+      if (!startControl || startControl === target) return target;
+    }
+  };
   let refreshEligible=false,pullDistance=0;
   createGesture({ region: {node: () => viewport}, axis: "y",
     onLongPress: props.onLongPress ? contact => { if(active())props.onLongPress?.(contact); } : undefined,
@@ -64,7 +86,12 @@ export function VariableList(props: { height: number; round?:RoundListOptions|nu
     onPanStart: () => {if(!active())return;props.onManualScroll?.();if(!props.fixed)scroller.beginDrag();},
     onPanMove: c => {if(!active())return;if(refreshEligible)pullDistance=Math.max(0,pullDistance+c.fdy);if(!props.fixed)scroller.drag(-c.fdy);},
     onPanEnd: c => {if(!active())return;if(!props.fixed)scroller.endDrag(-c.vy);if(refreshEligible&&pullDistance>=(props.refreshDistance??48))props.onRefresh?.();refreshEligible=false;pullDistance=0;},
-    onTap: c => {if(!active())return;if(props.onTap?.(c))return;const hit = hitNode(c.x, c.y, c.surface); if (hit) pressNode(hit); },
+    onTap: c => {
+      if (!active() || props.onTap?.(c)) return;
+      const hit = hitNode(c.x, c.y, c.surface);
+      const target = expandedTarget(c, hit) ?? hit;
+      if (target) pressNode(target);
+    },
     onCancel: () => { refreshEligible=false;pullDistance=0;if (scroller.state() === "tracking") scroller.endDrag(0); }
   });
   bindDpadScroll(scroller,{active:()=>active()&&!props.fixed});
