@@ -11,11 +11,14 @@ import android.util.DisplayMetrics;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewTreeObserver;
 import android.view.WindowManager;
+import android.widget.FrameLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.Supplier;
 
 /**
  * The one way the framework shows a toast.
@@ -101,15 +104,7 @@ final class PodToast {
     private static Toast round(Context context, CharSequence message, int duration) {
         DisplayMetrics metrics = context.getResources().getDisplayMetrics();
         int width = metrics.widthPixels, height = metrics.heightPixels;
-        TextView text = new TextView(context);
-        text.setText(message);
-        text.setTextColor(Color.WHITE);
-        text.setTextSize(TypedValue.COMPLEX_UNIT_SP, TEXT_SP);
-        text.setGravity(Gravity.CENTER);
-        text.setMaxLines(MAX_LINES);
-        text.setEllipsize(TextUtils.TruncateAt.END);
-        int padX = px(metrics, PAD_X_DP), padY = px(metrics, PAD_Y_DP);
-        text.setPadding(padX, padY, padX, padY);
+        TextView text = pill(context, message, metrics);
         int top = Math.round(height * TOP_FRACTION);
         int margin = px(metrics, MARGIN_DP);
         PodRecoveryRoundLayout.Rect box = fit(text, width, height, top, margin);
@@ -119,11 +114,6 @@ final class PodToast {
         }
         if (box == null) return Toast.makeText(context, message, duration);
         text.setMaxWidth(box.width);
-        GradientDrawable pill = new GradientDrawable();
-        pill.setColor(BACKGROUND);
-        pill.setCornerRadius(text.getLineHeight() / 2f + padY);
-        text.setBackground(pill);
-        text.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
         Toast toast = new Toast(context);
         toast.setView(text); // Before setGravity, which warns on text toasts.
         toast.setDuration(duration);
@@ -131,14 +121,90 @@ final class PodToast {
         return toast;
     }
 
+    /** An inline document can keep this pill clear of its caret as the caret moves.
+     * The view has no input handlers and shares the ordinary toast's style and lifetime. */
+    static Runnable showInDocument(FrameLayout parent, String message,
+            Supplier<PodRecoveryRoundLayout.Rect> caretLine) {
+        Context context = parent.getContext();
+        DisplayMetrics metrics = context.getResources().getDisplayMetrics();
+        int width = parent.getWidth(), height = parent.getHeight();
+        int margin = px(metrics, MARGIN_DP);
+        int top = Math.round(height * TOP_FRACTION);
+        TextView text = pill(context, message, metrics);
+        boolean round = context.getResources().getConfiguration().isScreenRound();
+        PodRecoveryRoundLayout.Rect box;
+        if (round) {
+            box = fit(text, width, height, top, margin);
+        } else {
+            int available = width - 2 * margin;
+            box = available > 0
+                ? new PodRecoveryRoundLayout.Rect(margin, top, available, heightAtWidth(text, available))
+                : null;
+        }
+        if (box == null) return () -> {};
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(box.width, box.height);
+        params.leftMargin = box.x;
+        text.setFocusable(false);
+        text.setClickable(false);
+        text.setVisibility(View.INVISIBLE);
+        parent.addView(text, params);
+
+        PodRecoveryRoundLayout.Rect span = round
+            ? PodRecoveryRoundLayout.verticalSpan(width, height, box.x, box.x + box.width, margin)
+            : new PodRecoveryRoundLayout.Rect(box.x, margin, box.width, height - 2 * margin);
+        ViewTreeObserver.OnPreDrawListener place = () -> {
+            int bottom = Math.min(span.y + span.height, parent.getHeight() - margin);
+            int y = Math.min(box.y, bottom - box.height);
+            PodRecoveryRoundLayout.Rect line = caretLine.get();
+            if (line != null && y < line.y + line.height && y + box.height > line.y) {
+                int above = line.y - box.height;
+                y = above >= span.y ? above : line.y + line.height;
+            }
+            boolean fits = y >= span.y && y + box.height <= bottom;
+            if (fits) text.setTranslationY(y);
+            text.setVisibility(fits ? View.VISIBLE : View.INVISIBLE);
+            return true;
+        };
+        parent.getViewTreeObserver().addOnPreDrawListener(place);
+        Runnable dismiss = () -> {
+            parent.getViewTreeObserver().removeOnPreDrawListener(place);
+            parent.removeView(text);
+        };
+        MAIN.postDelayed(dismiss, DEFAULT_DURATION_MS);
+        return () -> {
+            MAIN.removeCallbacks(dismiss);
+            dismiss.run();
+        };
+    }
+
+    private static TextView pill(Context context, CharSequence message, DisplayMetrics metrics) {
+        TextView text = new TextView(context);
+        text.setText(message);
+        text.setTextColor(Color.WHITE);
+        text.setTextSize(TypedValue.COMPLEX_UNIT_SP, TEXT_SP);
+        text.setGravity(Gravity.CENTER);
+        text.setMaxLines(MAX_LINES);
+        text.setEllipsize(TextUtils.TruncateAt.END);
+        int padX = px(metrics, PAD_X_DP), padY = px(metrics, PAD_Y_DP);
+        text.setPadding(padX, padY, padX, padY);
+        GradientDrawable pill = new GradientDrawable();
+        pill.setColor(BACKGROUND);
+        pill.setCornerRadius(text.getLineHeight() / 2f + padY);
+        text.setBackground(pill);
+        text.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+        return text;
+    }
+
+    private static int heightAtWidth(TextView text, int width) {
+        text.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.AT_MOST),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+        return text.getMeasuredHeight();
+    }
+
     private static PodRecoveryRoundLayout.Rect fit(TextView text, int width, int height, int top, int margin) {
         Map<Integer,Integer> heights = new HashMap<>();
         int minimumWidth = text.getPaddingLeft() + text.getPaddingRight() + text.getLineHeight();
-        return PodRecoveryRoundLayout.safeTopBlock(width, height, available -> heights.computeIfAbsent(available, size -> {
-            text.measure(View.MeasureSpec.makeMeasureSpec(size, View.MeasureSpec.AT_MOST),
-                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
-            return text.getMeasuredHeight();
-        }), top, width - 2 * margin, height, minimumWidth, margin);
+        return PodRecoveryRoundLayout.safeTopBlock(width, height, available -> heights.computeIfAbsent(available, size -> heightAtWidth(text, size)), top, width - 2 * margin, height, minimumWidth, margin);
     }
 
     private static int px(DisplayMetrics metrics, float dp) { return Math.round(dp * metrics.density); }
