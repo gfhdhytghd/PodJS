@@ -48,6 +48,8 @@ final class PodInlineTextInput {
         int roundWidth,roundHeight;
         EditText title,body;
         View unfocusedCaret;
+        Runnable dismissEntryToast;
+        boolean bodyKeyboardDeferred;
         DocumentGroup(ScrollView scroll,FrameLayout content,double left,double top,double width,double overhang,int viewportHeight){
             this.scroll=scroll;this.content=content;this.left=left;this.top=top;this.width=width;this.overhang=overhang;this.viewportHeight=viewportHeight;
         }
@@ -189,7 +191,12 @@ final class PodInlineTextInput {
             if(fields.get(id)==input)emit("input.inline.submit",id,input.getText().toString());
             return true;
         });
-        if(args.optBoolean("autoFocus",true)) {
+        if(document!=null&&"body".equals(document.optString("role"))
+                &&document.optBoolean("focusOnOpenWithoutKeyboard",false)) {
+            input.setShowSoftInputOnFocus(false);
+            input.requestFocus();
+            input.setSelection(Math.max(0,Math.min(input.length(),selection)));
+        } else if(args.optBoolean("autoFocus",true)) {
             input.requestFocus();
             input.post(()->{if(fields.get(id)==input){InputMethodManager imm=(InputMethodManager)context.getSystemService(Context.INPUT_METHOD_SERVICE);if(imm!=null)imm.showSoftInput(input,InputMethodManager.SHOW_IMPLICIT);}});
         } else {
@@ -281,6 +288,7 @@ final class PodInlineTextInput {
                 ((DocumentField)input).selectionChanged=()->input.post(position);
                 input.addOnLayoutChangeListener((view,l,t,r,b,ol,ot,or,ob)->input.post(position));
             }
+            group.bodyKeyboardDeferred=spec.optBoolean("focusOnOpenWithoutKeyboard",false);
             installDocumentCursorSwipe(group,input);
             String caretColor=spec.optString("unfocusedCaretColor","");
             if(!caretColor.isEmpty()){
@@ -294,11 +302,30 @@ final class PodInlineTextInput {
                 input.post(()->positionUnfocusedCaret(activeGroup));
             }
         }
-        if("body".equals(role)&&args.has("selectionStart")){
-            DocumentGroup targetGroup=group;
-            input.post(()->centerDocumentSelection(targetGroup,input));
+        if ("body".equals(role)) {
+            if (args.has("selectionStart")) input.post(() -> centerDocumentSelection(activeGroup, input));
+            String entryToast = spec.optString("entryToast", "");
+            if (!entryToast.isEmpty()) input.post(() -> {
+                if (activeGroup.body == input) {
+                    activeGroup.dismissEntryToast = PodToast.showInDocument(parent, entryToast,
+                        () -> caretLine(activeGroup));
+                }
+            });
         }
     }
+
+    private static PodRecoveryRoundLayout.Rect caretLine(DocumentGroup group) {
+        EditText input = group.title != null && group.title.hasFocus() ? group.title : group.body;
+        if (input == null || input.getLayout() == null) return null;
+        android.text.Layout layout = input.getLayout();
+        int line = layout.getLineForOffset(Math.max(0, input.getSelectionStart()));
+        int origin = group.scroll.getTop() + input.getTop() + input.getTotalPaddingTop()
+            - group.scroll.getScrollY() - input.getScrollY();
+        int top = Math.max(group.scroll.getTop(), origin + layout.getLineTop(line));
+        int bottom = Math.min(group.scroll.getBottom(), origin + layout.getLineBottom(line));
+        return bottom > top ? new PodRecoveryRoundLayout.Rect(0, top, 0, bottom - top) : null;
+    }
+
     private void contentAddCaret(DocumentGroup group,View caret){
         group.content.addView(caret,new FrameLayout.LayoutParams(dp(2),dp(20)));
     }
@@ -329,7 +356,7 @@ final class PodInlineTextInput {
             float previousY,totalY,accumulated;
             boolean dragging;
             @Override public boolean onTouch(View view,MotionEvent event){
-                if(input.hasFocus())return false;
+                if(input.hasFocus()&&!group.bodyKeyboardDeferred)return false;
                 switch(event.getActionMasked()){
                     case MotionEvent.ACTION_DOWN:
                         previousY=event.getRawY();totalY=0;accumulated=0;dragging=false;
@@ -350,9 +377,15 @@ final class PodInlineTextInput {
                         return true;
                     case MotionEvent.ACTION_UP:
                         if(!dragging){
+                            boolean firstTap=group.bodyKeyboardDeferred;
+                            if(firstTap){
+                                group.bodyKeyboardDeferred=false;
+                                input.setShowSoftInputOnFocus(true);
+                            }
                             input.requestFocus();
                             InputMethodManager imm=(InputMethodManager)context.getSystemService(Context.INPUT_METHOD_SERVICE);
-                            if(imm!=null)imm.showSoftInput(input,InputMethodManager.SHOW_IMPLICIT);
+                            // The first tap is explicit. Fullscreen IMEs may decline an implicit request.
+                            if(imm!=null)imm.showSoftInput(input,firstTap?0:InputMethodManager.SHOW_IMPLICIT);
                         }
                         return true;
                     case MotionEvent.ACTION_CANCEL:return true;
@@ -423,9 +456,9 @@ final class PodInlineTextInput {
     }
     /** Activity-level interception keeps the crown authoritative even when an EditText has focus. */
     boolean handleCrownScroll(MotionEvent event){
-        if(documents.isEmpty()||event.getActionMasked()!=MotionEvent.ACTION_SCROLL)return false;
-        float delta=event.getAxisValue(MotionEvent.AXIS_VSCROLL);
-        if(delta==0f||!Float.isFinite(delta))return false;
+        if(documents.isEmpty())return false;
+        float delta=PodRuntimeView.rawScrollDelta(event);
+        if(Float.isNaN(delta))return false;
         DocumentGroup group=documents.values().iterator().next();
         if(group.body==null)return false;
         if(group.title!=null&&group.title.hasFocus()){
@@ -476,6 +509,10 @@ final class PodInlineTextInput {
             if(group!=null){
                 if(group.title==old)group.title=null;
                 if(group.body==old){
+                    if(group.dismissEntryToast!=null){
+                        group.dismissEntryToast.run();
+                        group.dismissEntryToast=null;
+                    }
                     group.body=null;
                     if(group.unfocusedCaret!=null){group.content.removeView(group.unfocusedCaret);group.unfocusedCaret=null;}
                 }
