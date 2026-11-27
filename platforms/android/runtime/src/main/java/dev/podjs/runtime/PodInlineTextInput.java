@@ -50,6 +50,8 @@ final class PodInlineTextInput {
         View unfocusedCaret;
         Runnable dismissEntryToast;
         boolean bodyKeyboardDeferred;
+        boolean lastFocusedTitle;
+        String focusFromTitleToast = "";
         DocumentGroup(ScrollView scroll,FrameLayout content,double left,double top,double width,double overhang,int viewportHeight){
             this.scroll=scroll;this.content=content;this.left=left;this.top=top;this.width=width;this.overhang=overhang;this.viewportHeight=viewportHeight;
         }
@@ -270,6 +272,22 @@ final class PodInlineTextInput {
         fieldDocuments.put(id,key);
         DocumentGroup activeGroup=group;
         input.setOnFocusChangeListener((view,focused)->{
+            if (focused) {
+                if (activeGroup.title == input) {
+                    activeGroup.lastFocusedTitle = true;
+                } else if (activeGroup.body == input && activeGroup.lastFocusedTitle) {
+                    activeGroup.lastFocusedTitle = false;
+                    if (!activeGroup.focusFromTitleToast.isEmpty()) {
+                        activeGroup.bodyKeyboardDeferred = true;
+                        input.setShowSoftInputOnFocus(false);
+                        InputMethodManager imm = (InputMethodManager) context.getSystemService(Context.INPUT_METHOD_SERVICE);
+                        if (imm != null) imm.hideSoftInputFromWindow(input.getWindowToken(), 0);
+                        if (activeGroup.dismissEntryToast != null) activeGroup.dismissEntryToast.run();
+                        activeGroup.dismissEntryToast = PodToast.showInDocument(parent, activeGroup.focusFromTitleToast,
+                            () -> caretLine(activeGroup));
+                    }
+                }
+            }
             if(focused&&activeGroup.roundWidth>0){
                 if(activeGroup.title==input)activeGroup.scroll.scrollTo(0,0);
                 else input.post(()->ensureDocumentCursorVisible(activeGroup,input));
@@ -289,6 +307,7 @@ final class PodInlineTextInput {
                 input.addOnLayoutChangeListener((view,l,t,r,b,ol,ot,or,ob)->input.post(position));
             }
             group.bodyKeyboardDeferred=spec.optBoolean("focusOnOpenWithoutKeyboard",false);
+            group.focusFromTitleToast = spec.optString("focusFromTitleToast", "");
             installDocumentCursorSwipe(group,input);
             String caretColor=spec.optString("unfocusedCaretColor","");
             if(!caretColor.isEmpty()){
@@ -306,7 +325,7 @@ final class PodInlineTextInput {
             if (args.has("selectionStart")) input.post(() -> centerDocumentSelection(activeGroup, input));
             String entryToast = spec.optString("entryToast", "");
             if (!entryToast.isEmpty()) input.post(() -> {
-                if (activeGroup.body == input) {
+                if (activeGroup.body == input && activeGroup.dismissEntryToast == null) {
                     activeGroup.dismissEntryToast = PodToast.showInDocument(parent, entryToast,
                         () -> caretLine(activeGroup));
                 }
@@ -377,6 +396,10 @@ final class PodInlineTextInput {
                         return true;
                     case MotionEvent.ACTION_UP:
                         if(!dragging){
+                            if (group.lastFocusedTitle && !group.focusFromTitleToast.isEmpty()) {
+                                input.requestFocus();
+                                return true;
+                            }
                             boolean firstTap=group.bodyKeyboardDeferred;
                             if(firstTap){
                                 group.bodyKeyboardDeferred=false;
